@@ -1,0 +1,11 @@
+*.swift text eol=lf diff=swift
+Package.swift text eol=lf diff=swift
+*.sh text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.plist text eol=lf
+*.fixture text eol=lf
+*.png binary
+*.icns binary
