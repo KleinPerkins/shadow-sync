@@ -9,3 +9,4 @@ Accepted decisions are immutable; semantic changes use successors.
 | [0003](0003-installation-lifecycle-and-update-authority.md) | Accepted | Installation, lifecycle, and update authority |
 | [0004](0004-repository-specific-native-github-delivery.md) | Accepted | Repository-specific native GitHub delivery |
 | [0005](0005-governed-safety-release-without-controller-rebinding.md) | Accepted | Governed safety release without controller rebinding |
+| [0006](0006-bounded-policy-classification-before-repository-selection.md) | Accepted | Bounded policy classification before repository selection |
