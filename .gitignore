@@ -73,3 +73,7 @@ service-account*.json
 .export-private/
 private-export-receipt*.json
 agent-learnings.md
+
+# Python verification caches
+__pycache__/
+*.py[cod]
