@@ -33,6 +33,10 @@ Build and test instructions will accompany the source import. No build command i
 
 Do not post real repository inventories, credentials, local paths, screenshots, or unredacted logs in public issues. Report vulnerabilities through the private process in [SECURITY.md](SECURITY.md).
 
+## Native acceptance
+
+Physical desktop acceptance remains open and follows the [native acceptance runbook](docs/runbooks/native-acceptance.md). Its disposable-fixture scenario names the first selected clone `00-dirty-first`, makes it dirty after review, and requires execution-time revalidation to report it as `SKIPPED_DIRTY` without mutation. Cancellation, child cleanup, keyboard/VoiceOver behavior, installation and updates retain their separate evidence gates.
+
 ## License
 
 Repository contents are public and proprietary; application source is not yet present. See [LICENSE](LICENSE) for reserved rights; public visibility does not grant an open-source license. Third-party assets and libraries retain their own identified licenses when imported. Binary-use terms will accompany any qualified distribution.
