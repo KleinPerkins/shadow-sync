@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-SOURCE = Path(__file__).resolve().parents[1] / 'scripts/release-credential-readiness.py'
+SOURCE = Path(__file__).resolve().parents[2] / 'scripts/release-credential-readiness.py'
 SPEC = importlib.util.spec_from_file_location('release_readiness', SOURCE)
 app = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(app)

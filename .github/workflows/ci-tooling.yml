@@ -1,0 +1,44 @@
+name: CI tooling qualification
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-tooling-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  ci-tooling:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record tool versions
+        run: |
+          python3 --version
+          git --version
+      - name: Verify revision-to-checkout binding
+        env:
+          EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 -I -B - <<'PY'
+          import importlib.util, json, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('ci_shards', 'scripts/ci-shards.py')
+          ci = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(ci)
+          revision = os.environ['EXPECTED_REVISION']
+          print(json.dumps({'schema': 'shadow-sync-tooling-source/v1', 'revision': revision,
+                            'source_sha256': ci.git_source_digest(Path.cwd(), revision)}, sort_keys=True))
+          PY
+      - name: Execute shard, evidence and source-binding failure tests
+        run: python3 -I -B -m unittest discover -s Tests/Tooling -p 'test_*.py' -v
+# This workflow qualifies the CI tools only. It is not the application's five-job
+# ci-required gate, runtime suite execution, release qualification or App canary.
