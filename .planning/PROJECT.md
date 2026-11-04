@@ -16,3 +16,5 @@ This is a navigation projection of accepted records, not a new design or approva
 - [Architectural decisions](../docs/adr/README.md)
 - [Requirement and execution traceability](TRACEABILITY.md)
 - [Current execution evidence and open gates](STATE.md)
+
+- [Runtime fixture custody specification](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-37618186-09f2-595f-bb4b-2908c75ad137-v1.md).
