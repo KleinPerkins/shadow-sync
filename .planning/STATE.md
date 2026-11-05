@@ -1,5 +1,9 @@
 # Authoring state
 
+## Current private-candidate qualification — 2026-11-05
+
+The latest source-bound observation is the registry qualification below: 334 tooling tests and 461 cases in four complete runtime suites pass on the 252-file candidate. The original caller remains failed at the unchanged 750 ms aggregate deadline. Earlier sections retain historical source/build evidence; they are not current qualification. Public source export, hosted application CI, signed release, installation/update, minimum-OS acceptance, physical UAT and legacy retirement remain open.
+
 - Repository key: `29e9090a-7b77-443d-b953-9b1deef3bc60`
 - Lifecycle: active implementation
 - Documentation coverage: [derived requirement/execution matrix](TRACEABILITY.md) indexes all 37 active product requirements and all 18 approved unsuperseded project/design/plan/ADR records at the reviewed discovery-resource successor transaction. This refresh preserves all 24 preexisting frozen records and includes the previously omitted runtime-fixture custody specification; it introduces no requirement or phase completion.
@@ -1083,3 +1087,35 @@ Private evidence bindings:
 - runtime-integration/prefetch-review--result-v3.json: `e8b7f772e04ff1c3d8f0a701d5064a9a1d1bd0bad75e536318e1b6b1f0846533`.
 - runtime-integration/diagnostic-review--result-v1.json: `5073c428b4f02f7cb7de894bba4ec131e9588462fbf8d9ef097888b0b805c006`.
 - runtime-integration/diagnostic-review--result-v2.json: `88b6c9cefd145432a1c7564a65b2885ec8c11e4dff3771df6d4c282eb5d9f500`.
+
+## Registry progress and policy-deadline diagnosis
+
+The application engineer added independently reviewed, testing-only boundary observations with closed fields. Traces remain opt-in and retain the existing 64-record, 16,384-byte and 512-byte-line caps. Boundary-only mode keeps successful helper chatter from exhausting that budget. Assertions and original errors remain unchanged.
+
+The immediate caller refusal is now established: fresh admission revalidation crossed the absolute 750 ms catalog deadline, ending at 751,584,666 ns in one attempt. A preceding attempt completed the initial catalog in 715,094,875 ns but failed later; these are separate attempts, not a complete passing caller. The earlier T23 failure is preserved. All 61 policy cases, including T23 and the diagnostic-output regression, subsequently passed; this does not establish a causal T23 correction.
+
+A reviewed registry correction attempts the already validated nonblocking admission write in the same serialized turn and re-observes the same retained child after terminal status arrives. The 20 ms timer and 5 ms leeway, bounded I/O, admission checks, absolute deadlines, cancellation, stream EOF, actual reaping and durable retirement proof remain intact. No second process or update owner is introduced.
+
+At the latest exact source/build binding, 334 tooling tests pass. Complete native coverage is 461 of 840 cases in 4 of 41 suites: guardian 7, runtime custody 11, policy session 61 and lifecycle/process M6 382. Applicable cancellation/loss probes, compiled-roster correspondence and original-child cleanup checks passed. The original caller remains 0 of 2, failing catalog admission after 750,607,334 ns. The registry correction alone therefore does not satisfy caller performance. Failed attempts, raw receipts and scoped cleanup evidence remain retained. Partial or older passes do not satisfy current aggregate coverage.
+
+Next owned work is bounded measurement of publisher versus host-policy revalidation cost and a reviewed optimization within the accepted trust and timing contract, followed by the original caller and affected suites. Full current runtime/native/production qualification, source export, hosted application CI/App delivery, deployed safety dependencies, signed distribution, migration/update, minimum macOS qualification, physical UAT and the two-release/90-day retirement receipt remain open. This observation changes no frozen requirement, decision, specification, plan or acceptance state.
+
+Private evidence bindings:
+
+- registry-qualification/source-v5.json: `39f790afda884f3cf9bf9ea8a1c61baa89808525f538cf3efe26021bee03172c`.
+- registry-qualification/source-v6.json: `11ad79d16f50bb8ae589992b389e7f9ecdb6d4fabde22b5dd2e2268e58ee92fc`.
+- registry-qualification/source-v7.json: `8110de423f295ef3f503326fc13217c6a8d50c2ed59b5c8795d285ec93a89d28`.
+- registry-qualification/build-v8.json: `cb248702b952aff3383a053283a49be639ee4fa222cd0324c687c5f8d24ebf9e`.
+- registry-qualification/tooling-v8.json: `99461b90a8277ebc3fcaa68a876b12e2f9bf23677ba53096472e1bd19cfb66f6`.
+- registry-qualification/native-transport-v7.json: `c88f0b8a9bcf1e2df1528c617a348c36780e80619c6238c122737eaed54c137d`.
+- registry-qualification/registry-custody-v1.json: `bb0f475797dda9a18861c33268cb3f206e574091835b5148cee01171e926294b`.
+- registry-qualification/registry-policy-v1.json: `8788135c41211866bb73891c5e01f0fe264d1932d44a98612730d7f9eb4dc843`.
+- registry-qualification/registry-m6-v1.json: `f629d1244db15982e7f5d3328fa23883ea93638844d3c0ab70c9649869219a7e`.
+- registry-qualification/caller-boundary-v3.json: `48a1f4e051a112cacfbe3878134e5bda071e7892cc4d4019f1f85d949ac960bc`.
+- registry-qualification/caller-deadline-v1.json: `45be23ffdd5dc826fa4aaf9e1c90998ec128538e205996d436153e8f2a6d5df7`.
+- registry-qualification/registry-caller-observation-v1.json: `0cf5ab3e43bef9e3791bdf9734715b60a49cc30169ae784ef83e610462573214`.
+- registry-qualification/qualification-ledger-v2.json: `3b14c1ab1a885267819589d81a1a17c779c7fd2c92836a797a26f0a33a2ac336`.
+- registry-qualification/refusal-boundary-observation-v1.json: `56b31b78580d7a9714303213ec075e9ea781919c22dd714d12fcba10ad9a9a04`.
+- registry-qualification/refusal-boundary-review--result-v1.json: `a72eae39f0adaeddbf0af54387216080d88456ef1c01fdc4e87331033420c14d`.
+- registry-qualification/boundary-filter-review--result-v1.json: `10f941ae022017045f3d9cf92302781f4d6c892f4f80ed7c48f7c37d6e8ed429`.
+- registry-qualification/registry-readiness-review--result-v1.json: `a52bbacc597524c65838e769b45a9c1fe0b529df987305bf696bf2d8a5e83a4e`.
