@@ -2,7 +2,7 @@
 
 ## Current private-candidate qualification — 2026-11-05
 
-The latest source-bound observation is the fresh authority-read qualification below: 334 tooling tests and 479 of 842 cases in five complete runtime suites pass on the 252-file candidate. Testing and production builds pass; the production marker-exclusion check passes. The original caller now passes catalog creation and selection, but fails a later discovery deadline check and remains 0 of 2 overall. Earlier sections retain historical source/build evidence; they are not current qualification. Public source export, hosted application CI, signed release, installation/update, minimum-OS acceptance, physical UAT and legacy retirement remain open.
+The latest retained evidence covers two separate 252-file candidates. The preserved base has 334 passing tooling tests and **681 of 845 mandatory cases in 21 complete suites**, with both discovery caller cases passing. A separate testing-only M2 integration candidate builds and passes 334 tooling tests plus **47 of 845 cases in four complete suites**: guardian 7, custody 11, M2 19 and practical-M2 10. These source/build identities are distinct; their counts are not added, and neither candidate has been silently promoted or exported. Earlier sections retain historical observations. Complete current-source runtime/native qualification, production integration, reviewed source export, hosted application CI and ordinary App delivery, signed release, installation/update, minimum-OS acceptance, physical UAT and legacy retirement remain open.
 
 - Repository key: `29e9090a-7b77-443d-b953-9b1deef3bc60`
 - Lifecycle: active implementation
@@ -1218,3 +1218,46 @@ Private evidence bindings (sanitized digests only):
 - discovery-boundary/boundary-caller-failure-v1.json: `a5b002140d28fa119151d25b444bc88505f0a572057dc8e8da7c348cf948f811`.
 - discovery-boundary/metadata-boundary-review/result-v1.json: `3f7fd445e5f3f18b28fb3fc65587263b6ca9365692bff32b9ee9096ba13f6aaf`.
 - discovery-boundary/metadata-receipt-review/result-v1.json: `6feca7237c2afa5e6a806c4b71dabe6fa5b479f66b259ac659df477efa5630f1`.
+
+
+## Legacy discovery suite custody integration
+
+The application engineer completed the remaining 14 already-integrated suites on the preserved base: all 186 expected cases passed, bringing that exact source/build to 681 cases across 21 complete suites. The run also completed 26 before-run cancellation/caller-loss refusals and six discovery-spawn cut-point probes. Retained receipt replay and independent review verified exact rosters, source/build bindings, original-child reaping, complete streams and owned-fixture cleanup. Its remaining 20 legacy suites/164 cases were still mandatory.
+
+A separate testing-only candidate integrates M2 and practical-M2 with the accepted fixture-custody design. Case entry/exit now binds each existing assertion to custody; setup Git and the unrelated sentinel retain original child ownership; legacy discovery holds one case scope through parallel-worker completion. Fixtures use only their nonce-scoped temporary roots. The first native attempt exposed a setup-account mismatch at the existing path-alias fixture after 16 M2 passes; all 841 children were reaped and the failure is retained. The correction gives that fixture a separate permitted execution home while preserving its repository, working directory, explicit config, alias assertions and unchanged account validator. Production discovery behavior and the existing test inventory are unchanged.
+
+The corrected candidate passes all 29 M2/practical-M2 cases, plus seven guardian and 11 custody cases. The two discovery suites reaped all 1,070 children. Cancellation/caller-loss probes, exact-source raw receipt replay and cleanup checks passed; no current-run fixture roots remain. All 334 tooling tests, the source-contract check and the technical-identity check pass. This establishes 47 cases on this separate source only. Its guardian registration now covers 23 suites/710 cases; registration does not establish their execution. Another 18 legacy suites/135 cases still need custody integration, and all 845 mandatory cases must eventually qualify on the final exact source/build.
+
+The application/release engineer owns that remaining integration, native UI and production process/lifecycle qualification before reviewed candidate promotion and public export. These observations change no approved requirement, design, phase gate, accepted decision or frozen historical record. They establish no hosted application-CI, ordinary reviewer-App delivery, signing, distribution, installation, update, minimum-OS, physical-UAT or two-release/90-day retirement completion.
+
+Private evidence bindings (sanitized digests only):
+
+- legacy-discovery/qualification-ledger-v10.json: `4005ad826576fa24e292b4bcfd30d7f7336cf4660aed3447e6a97a74ffc64b56`.
+
+- legacy-discovery/source-v17.json: `5e1f65eb503363a4175dc693c2b2d3440a7a29d331270847a0ee38c7b204dc5e`.
+
+- legacy-discovery/build-v18.json: `32037550a255d0cee92b7717744ff71a8b61cc57d8d92ba570fcc7361401f689`.
+
+- legacy-discovery/remaining-guarded-v1.json: `df5f371134b0899303a23f0e1d7c581506d066309337449c7a92b570f8d504f1`.
+
+- legacy-discovery/remaining-guarded-review/result-v2.json: `a926910f15f6c8d8cfd984ee0542c0cfdff154e0788ce8f4ccfbe71ad07e19cb`.
+
+- legacy-discovery/legacy-suite-integration-v1/source-v5.json: `7cbec036e3277ff47c3685a0900ae9c13e7d26018fea109e29d44e9d1eb7b84e`.
+
+- legacy-discovery/legacy-suite-integration-v1/build-v5.json: `4533177640546808c2e3bca7dd62458e0c531954ed2862788b43fb76019fb9db`.
+
+- legacy-discovery/legacy-suite-integration-v1/tooling-v4.json: `46f79a4c10d397f973005e26d6562484a2733d78d4bb59626a9d7fc8e76ccdd6`.
+
+- legacy-discovery/legacy-suite-integration-v1/native-transport-v5.json: `0f069508ef83f33ab4bafc984130d86150421dabd25a550c8291cab565181d3b`.
+
+- legacy-discovery/legacy-suite-integration-v1/native-m2-v5.json: `c3946eded158aeb9468732c10aa14ab8406132776c1fd3a804abf265c1d6d20b`.
+
+- legacy-discovery/legacy-suite-integration-v1/qualification-ledger-v1.json: `22c2fe12a12aa8bdc87bee161098e6fe5ae2059eab7de3b3968f730c2957265f`.
+
+- legacy-discovery/legacy-suite-integration-v1/m2-failure-v4.json: `120c849b898772e1f1093dbd70f603fa9636145949aab32888fe493fbbdc54f8`.
+
+- legacy-discovery/legacy-suite-integration-v1/source-review/result-v5.json: `cbb6f541f3d03677941a7ef9c5436b009cf7033a34f1caee5e4095840c7458fd`.
+
+- legacy-discovery/legacy-suite-integration-v1/source-contract-v5.json: `afa428b95af1af7113c82cd579a97af0a559a26a44eed02b9273afb5ec848915`.
+
+- legacy-discovery/legacy-suite-integration-v1/identity-v5.json: `44c3fd64ca8dd06f6abdf762fcac09554550034207ed8d4223a3aa1b6324830a`.
