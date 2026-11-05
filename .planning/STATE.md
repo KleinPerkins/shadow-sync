@@ -92,6 +92,27 @@ Current owner-foundation evidence bindings (SHA-256; private receipts, no raw ho
 - production-process-ownership/foundation-review-outcome.json: `ee2d6ac72532ed45d680644fd5f8c1a61f8616812601fd6e3887a3d610a3e08b`.
 - production-process-ownership/audit-result.json: `8ccfc99832d109046c1c8c40391a354c693053684bc868cc854bcf4def336820`.
 
+## Captured-preflight implementation evidence
+
+This bounded private candidate implements the nonspawning capture/snapshot foundation of the [discovery resource successor](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-3e33d85e-9b58-53cd-abd0-38e0fb7b697b-v3.md). Captured account and ordered configuration sources are checked before access; an explicitly absent system source cannot repeat the probe, and capture does not allocate or sweep temporary snapshots. This is component evidence, not completed production discovery.
+
+The candidate source manifest digest is `ca57c6bb85337067b94b4187d52a326c2df8776e4600fb3fd32ae3662a1b5b64`. Testing and production builds succeeded. All 329 tooling tests passed; the updated runtime inventory has 39 suites and 762 cases. On these exact source and binary identities, all 328 M6 cases (including ten new capture/snapshot cases) and seven guardian cases passed: **335 of 762 cases across two complete suites**, with **427 cases across 37 suites still unqualified on this candidate**. The previous candidate's 373 passes remain historical evidence and are not added to this total.
+
+Raw replay verifies 21 execution receipts and 63 streams, including deliberate guardian refusal/cancellation cases. The M6 terminal records 20 spawned and 20 reaped fixture processes; no owned fixture roots remained. All 230 checked testing markers are absent from all three production products. Source-contract and technical-identity checks passed. Independent source review identified and then verified correction of two positive fixtures' directory binding; the earlier tooling failure was an outdated 752-case expectation and remains preserved with its failed receipt. Assertions and isolation were retained.
+
+Helper-owned resource creation, durable resource receipts, explicit cleanup, production-helper/caller integration and actual tool-graph qualification remain open. The application source remains unpublished. Full final-source runtime/native/hosted verification, ordinary reviewer-App delivery, deployed safety prerequisites, signed distribution, installed migration/update, minimum-OS qualification, physical UAT and the two-release/90-day retirement gate are not completed by this observation. Frozen design and requirement records are unchanged.
+
+Private receipt digests (aggregate observations only):
+
+- captured-preflight/execution-ledger-v1.json: `c2f77f53b6e1112b43ce15b7c06587d61e13963f37fe3a43497eb4814231359f`.
+- captured-preflight/build-v3.json: `0bf1a36af28086f3f2006b32cb04386d8fd00984bb463e6762515b1b9242219a`.
+- captured-preflight/production-build-v1.json: `e933495ccf8931fe5d3f76acec8a894a27386973d7696967cceca2cace759fb5`.
+- captured-preflight/tooling-v2.json: `df269ed68f7808145bbf94e1b06603cd1720af37d491e7d7f8eb3fd28348b760`.
+- captured-preflight/native-transport-v2.json: `aa3dadd2aa9c869852f6f5c0dbe5cd9db1d3bd21a62baaf471df5275fddcd991`.
+- captured-preflight/native-discovery-v2.json: `4c8a85174ebd01e69f4b2081fd5bfeb6ec2edd3bca513ba1c015a21e76ccad82`.
+- captured-preflight/production-exclusion-v1.json: `dcc3d1cc98e898607300658396655fd55a5796353c48001ccef19bf49aa46b60`.
+- captured-preflight/capture-review-v3.json: `e3c7384cb022a03912d13fa873c277886cf4223734719367b12bfbfab3977717`.
+
 ## Runner integration evidence
 
 These private receipts bind the observed component without exporting raw local evidence.
