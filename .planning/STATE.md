@@ -1187,3 +1187,34 @@ Private evidence digests (sanitized bindings only):
 - runtime-zip-integration/helper-cost-observation-v1.json: `2a3189e247a239b600228ccd2084e07882d1d2e4381918c1941252c74217a3bf`.
 - runtime-zip-integration/metadata-failure-diagnosis-v2.json: `c3fd546baf0b47de59ef82c82415fbbb9d5902f70ad98905f22231d4920a1f5c`.
 - runtime-zip-integration/metadata-prefetch-review/result-v1.json: `791e8f952375a7ab7492a3684784d7a2441cfcc59dea661ed4711c3ea1a8c19a`.
+
+
+## Discovery caller and metadata boundary qualification
+
+The application engineer consolidated nested lexical preparation in metadata admission. Public preparation and access boundaries retain local phase/cancellation checks, exact ancestor classification, full classifier pre/post validation, and final complete validation before target access. The 750 ms metadata deadline, batch limits and policy authority are unchanged. Independent review found no remaining safety findings in this correction; the existing causal resource-revocation and cleanup-precedence tests remain intact.
+
+A separate testing-only cost diagnostic identified repeated validation in the failed metadata phase: 134 local authority checks and 130 session revalidations. Its publisher/session/access timings overlap and are not additive. That diagnostic remains a failed, separately bound source observation. On the next candidate, discovery body execution reached completion, but the fixture rejected three valid resource sidecars as unpaired journals. The retained failure contains 93 complete journal/caller pairs plus three retired sidecars matching their embedded records. The corrected testing fixture requires exact journal/caller/resource inventory, sidecar binding and content equality, retirement state and digest; missing, orphan, unknown or mismatched records still fail before removal. The original failed fixture and its readback-verified copy are retained.
+
+On the single current 252-file source/build identity below, both actual discovery caller cases pass with absent and present system/user Git configuration. All 12 fixture children were reaped and no current-run fixture roots remain. Raw protocol replay also verifies 64 policy-session cases, seven guardian cases, 15 policy-snapshot cases, 14 publisher-policy cases, 382 lifecycle/process cases and 11 runtime-custody cases: **495 of 845 mandatory cases in seven complete suites**. No earlier-source or diagnostic-fork passes are added. Per-suite original process reaping, exact case rosters, stream completeness and owned-root cleanup were verified.
+
+All 334 tooling tests pass. Testing and production configurations build with the local toolchain. All 226 testing-positive literals and the testing-positive callback field remain absent from all three production products. Source-contract and technical-identity checks pass. Local toolchain builds do not establish the release toolchain or minimum macOS qualification. The two caller cases establish this integration path; they do not satisfy the separate 20-trial native performance acceptance gate.
+
+The application/release engineer owns the remaining 350 mandatory cases and native UI qualification, then the remaining production process/lifecycle integration and reviewed source export. Hosted application sharding and ordinary exact-head reviewer-App delivery, deployed safety prerequisites, signed distributed bytes, preserved-state migration, installed update, minimum-OS behavior, physical UAT, and the two-release/90-day retirement receipt remain open. Existing requirements, specifications, plans, accepted decisions and historical observations are unchanged.
+
+Private evidence bindings (sanitized digests only):
+
+- discovery-boundary/qualification-ledger-v9.json: `5c3a476ec56f1bc41b424a7b8bfe319330a04b5c07fe5f7a99b3f98f3b5cd5d6`.
+- discovery-boundary/source-v17.json: `5e1f65eb503363a4175dc693c2b2d3440a7a29d331270847a0ee38c7b204dc5e`.
+- discovery-boundary/build-v18.json: `32037550a255d0cee92b7717744ff71a8b61cc57d8d92ba570fcc7361401f689`.
+- discovery-boundary/production-build-v4.json: `49f67328d07cdb1cc4917a57783e2ff0bfd3d88bf8a389fb4dc029faf18bd11d`.
+- discovery-boundary/tooling-v18.json: `16acc51785933dc25dcaf3ae2cd634fd590e350372e0e336c6bbbae0f46dafe4`.
+- discovery-boundary/production-exclusion-v6.json: `1b88ef592ce28c992d542919ede34d4ba516f00b111a5265f70ff2b3282d8a4f`.
+- discovery-boundary/source-contract-v17.json: `3a005b861f29184e0a16b5de5d8ac68075e832c8f0aaab8fe5383d74b1217f38`.
+- discovery-boundary/identity-v17.json: `c4187dc0da48bcc0a9af92949e06c589400aa50760edd758b46dad68a65905a6`.
+- discovery-boundary/boundary-caller-v2.json: `4f5a713bbc1fbbce34be2c08fb690123aeac4432a7b7e29267fb189bcb8d2b39`.
+- discovery-boundary/boundary-policy-v2.json: `421ab02e5148debe433b4089d4492c636149f76535ed7a602a0a45390c77c414`.
+- discovery-boundary/boundary-regressions-v1.json: `3eab425797ae2c5eb06e6e5d522b7fe39783c19f8080f741e7990aae25367d4c`.
+- discovery-boundary/cost-observation-v1.json: `108b5eae64cb12fac44570c243b9d1fd77b859f0acc35e3bb0b1f23bbfdaf03f`.
+- discovery-boundary/boundary-caller-failure-v1.json: `a5b002140d28fa119151d25b444bc88505f0a572057dc8e8da7c348cf948f811`.
+- discovery-boundary/metadata-boundary-review/result-v1.json: `3f7fd445e5f3f18b28fb3fc65587263b6ca9365692bff32b9ee9096ba13f6aaf`.
+- discovery-boundary/metadata-receipt-review/result-v1.json: `6feca7237c2afa5e6a806c4b71dabe6fa5b479f66b259ac659df477efa5630f1`.
