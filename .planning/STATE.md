@@ -2,7 +2,7 @@
 
 ## Current private-candidate qualification — 2026-11-05
 
-The latest source-bound observation is the registry qualification below: 334 tooling tests and 461 cases in four complete runtime suites pass on the 252-file candidate. The original caller remains failed at the unchanged 750 ms aggregate deadline. Earlier sections retain historical source/build evidence; they are not current qualification. Public source export, hosted application CI, signed release, installation/update, minimum-OS acceptance, physical UAT and legacy retirement remain open.
+The latest source-bound observation is the fresh authority-read qualification below: 334 tooling tests and 479 of 842 cases in five complete runtime suites pass on the 252-file candidate. Testing and production builds pass; the production marker-exclusion check passes. The original caller now passes catalog creation and selection, but fails a later discovery deadline check and remains 0 of 2 overall. Earlier sections retain historical source/build evidence; they are not current qualification. Public source export, hosted application CI, signed release, installation/update, minimum-OS acceptance, physical UAT and legacy retirement remain open.
 
 - Repository key: `29e9090a-7b77-443d-b953-9b1deef3bc60`
 - Lifecycle: active implementation
@@ -1119,3 +1119,42 @@ Private evidence bindings:
 - registry-qualification/refusal-boundary-review--result-v1.json: `a72eae39f0adaeddbf0af54387216080d88456ef1c01fdc4e87331033420c14d`.
 - registry-qualification/boundary-filter-review--result-v1.json: `10f941ae022017045f3d9cf92302781f4d6c892f4f80ed7c48f7c37d6e8ed429`.
 - registry-qualification/registry-readiness-review--result-v1.json: `a52bbacc597524c65838e769b45a9c1fe0b529df987305bf696bf2d8a5e83a4e`.
+
+## Fresh authority-read qualification
+
+The application engineer reduced repeated allocation during exact runtime-tree revalidation, then introduced bounded batch reads for policy authority files. The batch shares freshly opened ancestor descriptors only within one synchronous call. Every payload is still read and compared byte-for-byte against its captured authority; type, owner, mode, ACL, inode and name binding remain checked. Retained descriptors receive final payload and ancestor postflight checks before reverse-order closure. No cross-call authority cache, alternate matcher, relaxed deadline or removed admission check was introduced.
+
+Independent review corrected the new ancestor-drift fixture so it leaves earlier payloads intact and specifically exercises final ancestor binding. Two mandatory native cases cover empty/64/65 bounds, shared ancestors, duplicate reads, unrelated siblings, earlier-file byte/identity/mode changes and ancestor replacement after both reads. The inventory is now 842 cases in 41 suites; no existing case was removed. The strict tooling expectation was updated to that new inventory, with the original stale-count failure retained.
+
+At one exact current source/build binding, 334 tooling tests and 479 runtime cases pass in five complete suites: guardian 7, policy snapshot 15, publisher policy 14, policy session 61 and lifecycle/process M6 382. Evidence replay checks unique exact case sets, source/binary bindings, terminal status, original-child reaping, all stream EOFs and scoped fixture cleanup. A replay-only declaration-order assumption was corrected to the executor's actual exact-set contract; the original failed replay is retained. No earlier-source passes are included.
+
+The original discovery caller completes initial catalog construction in 599,452,500 ns. Initial selection returns successfully, but has no separate duration trace. During discovery, the catalog recheck completes in 599,239,125 ns; a later admission deadline check fails. Both observed catalog durations are within their unchanged 750 ms budgets. This is one failed attempt, not a complete caller pass, a startup benchmark or satisfaction of the 20-trial native performance gate. The caller remains 0 of 2, with all six spawned children reaped and no owned fixtures remaining. The precise later budget/call site requires a bounded closed-phase diagnostic before another correction.
+
+Both testing and production configurations build successfully with the local toolchain. The production exclusion check requires all three expected executables, excludes 223 literals positively observed in testing, and separately proves the testing callback field is absent from all three production products. Its first function-name positive-control failed because that literal was not observable; the retained correction uses the actual testing-positive field symbol. The technical-identity scan passes with only the eleven documented exceptions. These are component checks, not signed-artifact, production adapter, minimum-OS or release-toolchain qualification.
+
+The first eight instrumented samples show median resource-file revalidation of 450,500 ns and host-policy snapshot revalidation of 426,916.5 ns. These small diagnostic samples include instrumentation overhead; unpaired medians cannot establish phase savings or performance acceptance. The earlier caller failures, tooling execution failures and source versions remain preserved separately.
+
+The application/release engineer owns the next diagnostic and correction for the later discovery refusal. Full current runtime/native coverage, production process-ownership and lifecycle integration, reviewed public export, hosted application CI/App delivery, deployed safety prerequisites, signed distribution, preserved-state migration, installed update, minimum macOS qualification, physical UAT and the two-release/90-day retirement receipt remain open. Frozen requirements, decisions, specifications, plans and acceptance status are unchanged.
+
+Private evidence bindings:
+
+- authority-revalidation/source-v12.json: `80ca9bbf0587d52418169b6ddcc5e468776b984475931de5596d8c3dbee00f43`.
+- authority-revalidation/build-v13.json: `cff33ed110578cd08dfd5f9049db4f5ffdaae0f1c6e755bba6669be3e4503cc4`.
+- authority-revalidation/tooling-v13.json: `da483bf53f952a14b98f5e60bffd42d157c868a514e2cc4f858c617fa19a00f7`.
+- authority-revalidation/production-build-v1.json: `c7f0f4cac271f2abf0d566b14fd85040be06c7c7bed6c0c2eceb2acfe595a21a`.
+- authority-revalidation/production-exclusion-v2.json: `a9691304c36fc406fc58af9cefefebfec06fe70fb456d22fa1cabf0295b2aeac`.
+- authority-revalidation/identity-v12.json: `7a0c7c1d007b5007e142965f16d32b4873e0f44a505785799f3bfd49b49b4a2b`.
+- authority-revalidation/qualification-ledger-v5.json: `81970c0cd69ba89d6cc01fbff5994017602012583f3f6457f4be50e61d12ada9`.
+- authority-revalidation/batch-cost-observation-v1.json: `3949e2d05143e8f95bfbde39b7a89b98c1d150375c85535695c4c3ae1c147275`.
+- authority-revalidation/native-transport-v12.json: `df1e37fce16e26dec7a0c58dfd8bb1a760546dd4d65501609c9164f5a385a2b4`.
+- authority-revalidation/batch-caller-v2.json: `24339533ebfe5463819d1e1646a9d48c27e95412c380fdb655ac5c8d4977d476`.
+- authority-revalidation/batch-snapshot-v2.json: `04c92e674dd4db73d44def7cb059cae2e0bfaaf8464e5256a2b3807c72aa0e0e`.
+- authority-revalidation/batch-publisher-v2.json: `df274cd5c9c80b3d19124bfc6423e7b8ca2c8eb65e4ce588f4d318174fce6dab`.
+- authority-revalidation/batch-policy-v2.json: `3d1eaea12b0d0760ac9823d3ec1623225c7bc705645abae6babeb49c904f951a`.
+- authority-revalidation/batch-m6-v1.json: `5de6f49918f446cab0ba608b4cd5924b3c85a390eb7f5a1136b05e387ec77439`.
+- authority-revalidation/authority-batch-review--result-v1.json: `46254e47b66b9640e64ecacc3e9a03260e885ea954ab7d6154dfa836d3e42901`.
+- authority-revalidation/authority-batch-review--roster-addendum.json: `4c7f29eb3ae99d8d200c13868607690bab1544a40e1af882764828e9a9428dd3`.
+- authority-revalidation/authority-batch-review--production-symbol-addendum.json: `d8dd8fbc1fa3077870eae5e757bc9822e60ce39ccb6d8bd7473a2e1d50b560e0`.
+- authority-revalidation/authority-batch-review--m6-launcher-addendum.json: `8ecb7e40f88debcb067deb9554cdf894d68316e2fea7ef5385262cf31a104b41`.
+- authority-revalidation/evidence-replay-correction-v1.json: `6fcd4f4ced653d3bcda3d12a36d568fe1b193109d076ca7f9255cf43111c9818`.
+- authority-revalidation/caller-diagnostic-scope-v1.json: `92cee240f9ef9fa3cc1f8c0551443b358873241e50917bc8016fa9690b3d8bc1`.
