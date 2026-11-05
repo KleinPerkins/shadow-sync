@@ -12,7 +12,7 @@ This is a navigation projection of accepted records, not a new design or approva
 - [Foreground and Quit specification v1](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-30461ba9-e873-558e-aa12-309e569f06c7-v1.md)
 - [Publisher-resource specification v1](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-433a822e-fa57-5141-a016-224d57d843b5-v1.md)
 - [Native-fixture specification v2](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-28765c29-8077-56a0-83c1-ae6898efd395-v2.md)
-- [Command-custody specification v2](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-32c6197d-8b18-5c72-afb9-c01c0e64edc0-v2.md)
+- [Command-custody specification v3](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-3e33d85e-9b58-53cd-abd0-38e0fb7b697b-v3.md)
 - [Architectural decisions](../docs/adr/README.md)
 - [Requirement and execution traceability](TRACEABILITY.md)
 - [Current execution evidence and open gates](STATE.md)

@@ -1,12 +1,12 @@
 # Requirement and execution traceability
 
-Derived navigation and coverage projection at source revision `ced4dfaf3d31088287910ae7ac20243598f89401`. This document introduces no requirement, design, approval or completion evidence. Accepted records below remain authoritative; [STATE.md](STATE.md) records observed execution and open gates. All 37 product requirement rows are represented once.
+Derived navigation and coverage projection at source revision `f4b9b5f5395167043d37f4dc799cfa4bd48817b5` plus this reviewed successor transaction. This document introduces no requirement, design, approval or completion evidence. Accepted records below remain authoritative; [STATE.md](STATE.md) records observed execution and open gates. All 37 product requirement rows are represented once.
 
 Inputs: [PRD v3](artifacts/PRD-29e9090a-7b77-443d-b953-9b1deef3bc60-23e6a95a-ea67-5cb7-a281-5b95115b0ac7-v3.md) (`7a044302d30a14a7d62aafef5e8fc44d819eb31e650954087949b0a18d826886`) and [PLAN v3](artifacts/PLAN-29e9090a-7b77-443d-b953-9b1deef3bc60-25769985-feb8-5809-8833-b30f202730f7-v3.md) (`b4deda4a7ee0947866d2c74f06da23119f6a9c49e702cd55ea6537408ae7de24`).
 
 ## Active design and planning records
 
-This roster contains all 17 approved, unsuperseded records observed in this repository. Superseded records remain immutable historical authority; the current successor governs the affected scope. A component specification supplements the parent plan and does not supersede unrelated requirements.
+This roster contains all 18 approved, unsuperseded records observed in this repository. Superseded records remain immutable historical authority; the current successor governs the affected scope. A component specification supplements the parent plan and does not supersede unrelated requirements.
 
 | Record | Version | SHA-256 |
 |---|---|---|
@@ -17,7 +17,8 @@ This roster contains all 17 approved, unsuperseded records observed in this repo
 | [Project v2](artifacts/PROJECT-29e9090a-7b77-443d-b953-9b1deef3bc60-b4572339-da84-5f60-b95e-fd4a085a0a8f-v2.md) | 2 | `48b8b0ad2046af618a248bced3ce88c1dda80436e9c7a59502fd591a918b2ca8` |
 | [Native-fixture specification v2](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-28765c29-8077-56a0-83c1-ae6898efd395-v2.md) | 2 | `33562c95e78c4c20f5fb0b00f9ce417dbd8d8b1d434924d218ce81e2b88f7bb5` |
 | [Foreground and Quit specification v1](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-30461ba9-e873-558e-aa12-309e569f06c7-v1.md) | 1 | `87e0ea96a3869f515efcbc7072045532978bfc1aa2a9cf63f1469b5faa64db9a` |
-| [Command-custody specification v2](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-32c6197d-8b18-5c72-afb9-c01c0e64edc0-v2.md) | 2 | `02d5795fe906c2aaa62a2d778380602e292ddab9b0d3fcc92d16003b1ebed182` |
+| [Command-custody specification v3](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-3e33d85e-9b58-53cd-abd0-38e0fb7b697b-v3.md) | 3 | `cf97b7d9038f44e39e7c6f31dd595198534a3f954f18567b8cc08a13b62604b0` |
+| [Runtime fixture custody specification v1](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-37618186-09f2-595f-bb4b-2908c75ad137-v1.md) | 1 | `4f43e454ddfc5dd05a58f4a7e94b2cc36815008edb1cd487f31ae353c616d5ed` |
 | [Publisher-resource specification v1](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-433a822e-fa57-5141-a016-224d57d843b5-v1.md) | 1 | `e4c503daada44377dc09690ebbc6d3fb7f7d4a682add6b0167d1fa053d7e1084` |
 | [Foreground and Quit UX requirements v1](artifacts/UXR-29e9090a-7b77-443d-b953-9b1deef3bc60-5320adc6-1299-5a88-8b8c-652102616a2c-v1.md) | 1 | `ecafe1f789873ee5ab1b8053ebede5ddd15ca3542d9e5ed8306d9c7384cd96f0` |
 | [ADR 0001](../docs/adr/0001-standalone-extraction-and-provenance.md) | 1 | `1476166cad13df791874f6383a39c2a1210c9753009dc90b4645b0a6e23006d8` |
@@ -64,7 +65,7 @@ Owner, dependency and gate cells below are derived from the accepted parent plan
 
 ### Safety and policy
 
-**Existing authorities:** [ADR 0005](../docs/adr/0005-governed-safety-release-without-controller-rebinding.md), [ADR 0006](../docs/adr/0006-bounded-policy-classification-before-repository-selection.md), [Publisher-resource specification v1](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-433a822e-fa57-5141-a016-224d57d843b5-v1.md), [Command-custody specification v2](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-32c6197d-8b18-5c72-afb9-c01c0e64edc0-v2.md).
+**Existing authorities:** [ADR 0005](../docs/adr/0005-governed-safety-release-without-controller-rebinding.md), [ADR 0006](../docs/adr/0006-bounded-policy-classification-before-repository-selection.md), [Publisher-resource specification v1](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-433a822e-fa57-5141-a016-224d57d843b5-v1.md), [Command-custody specification v3](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-3e33d85e-9b58-53cd-abd0-38e0fb7b697b-v3.md).
 
 | Requirement | Implementation owner | Work package and prerequisites | Required verification | Completion gate |
 |---|---|---|---|---|
@@ -79,7 +80,7 @@ Owner, dependency and gate cells below are derived from the accepted parent plan
 
 ### Installation, migration and updates
 
-**Existing authorities:** [ADR 0002](../docs/adr/0002-permanent-shadowsync-technical-identity.md), [ADR 0003](../docs/adr/0003-installation-lifecycle-and-update-authority.md), [Command-custody specification v2](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-32c6197d-8b18-5c72-afb9-c01c0e64edc0-v2.md).
+**Existing authorities:** [ADR 0002](../docs/adr/0002-permanent-shadowsync-technical-identity.md), [ADR 0003](../docs/adr/0003-installation-lifecycle-and-update-authority.md), [Command-custody specification v3](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-3e33d85e-9b58-53cd-abd0-38e0fb7b697b-v3.md).
 
 | Requirement | Implementation owner | Work package and prerequisites | Required verification | Completion gate |
 |---|---|---|---|---|
@@ -109,7 +110,7 @@ Owner, dependency and gate cells below are derived from the accepted parent plan
 
 The bounded foreground/Quit correction remains under [NC-01–04](artifacts/PLAN-29e9090a-7b77-443d-b953-9b1deef3bc60-60f913b2-b91d-5ca1-8c95-cb0c8312d433-v1.md), with [UXR-NC-01–04](artifacts/UXR-29e9090a-7b77-443d-b953-9b1deef3bc60-5320adc6-1299-5a88-8b8c-652102616a2c-v1.md), [the approved design](artifacts/DESIGN-29e9090a-7b77-443d-b953-9b1deef3bc60-70bb4954-ecc8-53ec-9db3-25d2905fcde1-v1.md), and [its technical specification](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-30461ba9-e873-558e-aa12-309e569f06c7-v1.md). The application engineer owns product corrections; the release engineer owns case registration and native evidence; the operator owns physical acceptance. Native fixture lifetime and process-limit constraints remain under [the fixture specification v2](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-28765c29-8077-56a0-83c1-ae6898efd395-v2.md). These records preserve their existing prerequisites, recovery rules and open qualification.
 
-[CUST-00–04 and C01–C20](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-32c6197d-8b18-5c72-afb9-c01c0e64edc0-v2.md) bind command custody to REQ-SF-05, the existing safety/migration requirements and registered CI. A protocol, lease, catalog, resource or registry component result is not proof of production helper admission, automatic parent-loss drainage, all-caller conversion or complete runtime qualification.
+[CUST-00–04 and C01–C20](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-3e33d85e-9b58-53cd-abd0-38e0fb7b697b-v3.md) bind command custody to REQ-SF-05, the existing safety/migration requirements and registered CI. A protocol, lease, catalog, resource or registry component result is not proof of production helper admission, automatic parent-loss drainage, all-caller conversion or complete runtime qualification.
 
 ## Execution and change rules
 
