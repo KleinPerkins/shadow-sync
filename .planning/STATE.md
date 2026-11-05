@@ -1044,3 +1044,42 @@ Python documents [ZIP source/bytecode import and its native-module restriction](
 - runtime-zip/zip-evidence-review.json: `0957068e97c88e868d1a9034fb3cf8ec83f9246fb6de3e1988e26b53db869f7b`.
 - runtime-zip/zip-decision.json: `9717fe74c855c36353cf304120a5121f6e94b1e88293cca70cc36aff732ff692`.
 - runtime-zip/runner-qualification.json: `4d252638bfc26005fa5400f7ec7ab29055e5249de250a208b8c0a2ddb58640a6`.
+
+## Integrated runtime packaging and bounded-diagnostic qualification
+
+The application/release engineer implemented the reviewed source-plus-checked-hash-bytecode runtime recipe in a private candidate. Its actual fixture contains 158 filesystem entries, 85 arm64 native objects and 13 internal links; the sealed ZIP binds 554 source members and 554 checked-hash bytecode members. Exact compiler, package, archive and member provenance, native/data/license preservation, negative integrity checks and independent source review are retained. This is ad-hoc fixture evidence, not Developer ID release qualification.
+
+A subsequent lexical batching correction requests fixed Git metadata for exact direct children of authenticated shelves. Each later access still requires its exact policy decision and fresh authority/resource validation. Required-slot priority, 64-request/4096-cache bounds and the aggregate 750 ms deadline remain unchanged. No alternate classifier or policy authority was introduced.
+
+The initial integration retained a discovery refusal. The next integration stopped after 28 of 60 policy cases when unconditional testing diagnostics exceeded the existing 262,144-byte stderr cap; all 211 children were reaped. The reviewed correction makes detailed fixture traces opt-in, limits them to 64 records plus one suppression notice, 16,384 UTF-8 bytes including that notice, and 512 bytes per admitted record. Assertion/failure reporting and executor caps are unchanged. A new mandatory case tests disabled formatting/output, concurrent limits, byte exhaustion and oversized ASCII/UTF-8 records. It is registered but has not yet executed successfully.
+
+At the current source/build binding, all 334 tooling tests pass. Complete native-suite evidence covers 22 of 840 registered cases across 3 of 41 suites: guardian 7, publisher resources 14, and bootstrap 1. The 61-case policy suite stops at T23 with policy-unavailable after 22 passes; its 145 children are reaped. Independent execution of the remaining resource/bootstrap/caller suites preserves that failure. The actual caller still reports catalog policy-unavailable; two helper classifications completed at approximately 288.0 ms and 284.9 ms. These timings are diagnostic components, not a whole-caller performance claim, and do not identify the remaining refusal boundary.
+
+Both failed attempts remain failures. They have complete original-handle and scoped cleanup evidence; partial passes cannot satisfy a suite or aggregate gate. Detailed caller diagnostics remain within the new cap; the earlier overflow prefix and observed total byte count remain preserved. No accepted deadline, trust requirement, mandatory coverage or frozen authority changed.
+
+Next owned work is to localize the T23 and actual-caller refusal boundaries with bounded observations, correct the demonstrated cause, execute the complete affected suites including the new regression, and then establish full current-source runtime/native/production verification. Public source export, hosted application CI and ordinary reviewer-App delivery, deployed safety dependencies, signed distribution, installed migration/update, minimum-OS qualification, UAT and the two-release/90-day retirement gate remain open. This update records implementation and evidence; it promotes no candidate to installation or release.
+
+Private evidence bindings:
+
+- runtime-integration/source-v1.json: `0e1dca7d1a1d1579bd1ef5682b4fa4a708ba9fdc3bb07a64f27d6e4d7ebb9f9a`.
+- runtime-integration/source-v3.json: `4b89d16b28db15b498a3cb4acedf256f12df0b0740adc9c85fe65400030b739b`.
+- runtime-integration/source-v4.json: `c1730c2482145b7fed12006a09d4b2806593b2c0b0e8ba851120a93e1f7cabf7`.
+- runtime-integration/policy-runtime-fixture-v1--runtime-build.json: `7e93b3d4d25c5f1326d6687347e109d9d68abfe2dd85457aa78d897dfde8b1f3`.
+- runtime-integration/build-v5.json: `ef246cb0a6e532dd1fa6e683776ef3a524a1609ae3b4f800da05875dee458840`.
+- runtime-integration/tooling-v5.json: `0c46912732246384bec9a0b93e2c518db844544a990be8b210a41577da686c7e`.
+- runtime-integration/native-transport-v4.json: `f7047faf28f26439f2d9e2a8eab33079ed9985f3ae6108d7a474735f6fbadde6`.
+- runtime-integration/native-integration-v1.json: `718ae790f92d67b088af32fc0e295cab386027468d3ec0fff963193540d5fb8f`.
+- runtime-integration/native-integration-v3.json: `b8f1b7d41b298eea139a9b0d80fcb7cf3e809df46ca48302bbe3724736f422df`.
+- runtime-integration/native-integration-v4.json: `b5f0798381ef6b2e14b988fedcb95ae41e3ba93228bc362fa61c2b030043c2f2`.
+- runtime-integration/native-independent-v1.json: `8b5731ab2df359ce8e9899e99f5e6b080eed452f63f419572faf8788ea39a589`.
+- runtime-integration/native-cleanup-v3.json: `5408e52bf1929ac490334f77820b0e405418a6afe249ee560d2c0b8e22bb0b2a`.
+- runtime-integration/native-cleanup-v4.json: `79a06a95694af88b001b90c1342e5b803e5e5d51f7dd53b475115fb7c94e9283`.
+- runtime-integration/native-independent-cleanup-v1.json: `8621bbff7c4abab35ded82284456ce1577ee331bfa9ad8250564425487982d21`.
+- runtime-integration/diagnostic-overflow-v1.json: `28ae2d15e97d9a9af60e84ffe7fdf129f1a6373af055d91b0df6a4e4bbfe2779`.
+- runtime-integration/qualification-ledger-v1.json: `54af6d4794773ac4011a00a3b7e2e2751db60b72803edebd3ae01fcb125a1e7f`.
+- runtime-integration/review--result-v1.json: `f3b5775423896dbcf866129bef3a99e48d40da1fe1c5727723046ed49613984c`.
+- runtime-integration/prefetch-review--result-v1.json: `820e75d0658b5626675980d344a2f77723b7495e07dc90015a01e52343e8f456`.
+- runtime-integration/prefetch-review--result-v2.json: `f865f6ce8afdac05ab683f238ef6b10b2185b27ec482efeaabf385242f3a23a6`.
+- runtime-integration/prefetch-review--result-v3.json: `e8b7f772e04ff1c3d8f0a701d5064a9a1d1bd0bad75e536318e1b6b1f0846533`.
+- runtime-integration/diagnostic-review--result-v1.json: `5073c428b4f02f7cb7de894bba4ec131e9588462fbf8d9ef097888b0b805c006`.
+- runtime-integration/diagnostic-review--result-v2.json: `88b6c9cefd145432a1c7564a65b2885ec8c11e4dff3771df6d4c282eb5d9f500`.
