@@ -1017,3 +1017,30 @@ Frozen requirements and designs are unchanged. Private evidence bindings:
 - real-caller/runtime-cost-probe-v1--inputs.json: `7256680956dc7a96bdf6ca2ea22fbedf54a3a12db467b92b78c2007259700160`.
 - real-caller/runtime-cost-probe-v1--compile.json: `7b137763d6f6a374c91f5d362bbca738aacd3009436b34982746d579dbb8a3cb`.
 - real-caller/runtime-cost-probe-v1--receipt.json: `8f93e41e3cb5a9507e4cba5b585a41d8e179789144fddfb9741c9cb700751d51`.
+
+## Isolated runtime ZIP packaging observation
+
+An independently reviewed private experiment compared the current runtime with source-only and source-plus-checked-hash-bytecode ZIP copies. Product source is unchanged at the v14 binding above; current runtime qualification remains 8 of 838 cases across 2 of 41 suites. The actual discovery caller still fails its unchanged 750 ms deadline.
+
+Each variant completed 21 rotated-order adapter-import trials and 21 warm resource trials. Median elapsed milliseconds:
+
+| Variant | Adapter imports | Filesystem entries | Capture | Layout decode | Revalidation |
+|---|---:|---:|---:|---:|---:|
+| Existing runtime | 174.714 | 795 | 23.875 | 6.687 | 4.873 |
+| Source ZIP | 275.907 | 157 | 4.755 | 1.407 | 1.179 |
+| Source and checked-hash bytecode ZIP | 90.412 | 157 | 4.751 | 1.368 | 1.180 |
+
+The result supports pursuing the bytecode ZIP packaging recipe within the accepted publisher-resource contract; source-only ZIP increased import cost. These component medians cannot be summed into an application-startup claim. The experiment does not execute policy classification, full discovery, cold publisher verification, native UI, installation or updates. No deadline, trust check, mandatory coverage or frozen authority changed.
+
+All 73 preparation/measurement subprocesses completed with terminal-child and absent-group evidence. Independent review reproduced the raw medians and hashes, verified the unchanged original runtime and product source, checked all 554 bytecode source hashes and 17,808 synthetic code filenames, and confirmed independently reproduced ZIP bytes. All 13 reviewed links and native bytes remain preserved apart from the framework signature region. The failed initial copy with incorrect symlink modes and earlier runner failures remain preserved privately; corrected copies retained the strict permission checks.
+
+The application/release engineer owns the next change: a versioned deterministic packaging recipe, exact interpreter/compiler and archive-member provenance, preserved native/data/license resources, negative integrity tests, then a new source-bound build and the actual discovery test. Independent review and the existing production, export, hosted CI, signed release, installed migration/update, minimum-OS, UAT and compatibility gates remain required. This observation does not promote an experimental runtime to a production resource.
+
+Python documents [ZIP source/bytecode import and its native-module restriction](https://docs.python.org/3.14/library/zipimport.html), [default archive lookup](https://docs.python.org/3.14/library/sys_path_init.html), and [checked-hash bytecode generation](https://docs.python.org/3.14/library/py_compile.html). Private evidence bindings:
+
+- runtime-zip/zip-prepare.json: `38c7cf9cf6bf5b8fd9a7c44cc9c5a587de2e9c5c88c20394406355b5313218c3`.
+- runtime-zip/zip-measure.json: `0ba5acd38f18412f2dce90cd4d227e2493a8bf1c9a339a757c22e6911ec60feb`.
+- runtime-zip/zip-compile.json: `ebeb7699a78976c5cba8e76f47332569ff446a2f79f93f9ff352d872d1b0d682`.
+- runtime-zip/zip-evidence-review.json: `0957068e97c88e868d1a9034fb3cf8ec83f9246fb6de3e1988e26b53db869f7b`.
+- runtime-zip/zip-decision.json: `9717fe74c855c36353cf304120a5121f6e94b1e88293cca70cc36aff732ff692`.
+- runtime-zip/runner-qualification.json: `4d252638bfc26005fa5400f7ec7ab29055e5249de250a208b8c0a2ddb58640a6`.
