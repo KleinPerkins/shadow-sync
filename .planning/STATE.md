@@ -1158,3 +1158,32 @@ Private evidence bindings:
 - authority-revalidation/authority-batch-review--m6-launcher-addendum.json: `8ecb7e40f88debcb067deb9554cdf894d68316e2fea7ef5385262cf31a104b41`.
 - authority-revalidation/evidence-replay-correction-v1.json: `6fcd4f4ced653d3bcda3d12a36d568fe1b193109d076ca7f9255cf43111c9818`.
 - authority-revalidation/caller-diagnostic-scope-v1.json: `92cee240f9ef9fa3cc1f8c0551443b358873241e50917bc8016fa9690b3d8bc1`.
+
+
+## Metadata admission verification
+
+The private candidate now prepares the existing, policy-derived metadata path roster before the first selected-directory access. This batches lexical decisions without moving repository access ahead of policy classification. Later access checks, the 750 ms stage deadline, the 64-candidate transport limit, and the 4096-decision cache limit remain unchanged. Earlier lexical-entry validation also avoids a redundant resource scan while retaining mandatory classification pre/post checks and full final access validation. Malformed-input failure paths preserve cleanup-pending precedence.
+
+On the exact 252-file source and testing-binary identities below, all 64 policy-session cases and seven guardian cases passed: **71 of 845 mandatory cases across two complete suites**. The 64-case suite includes causal resource revocation before/during/after classification, malformed-input cleanup precedence, and a positive assertion that known metadata paths use exactly one classifier invocation. All 334 tooling tests passed. Testing and production builds succeeded; 226 testing-positive literals and the testing-positive callback field were absent from all three production products. Source-contract and technical-identity checks passed. Independent review covered the source, fixtures, launchers and production-exclusion changes.
+
+Actual discovery remains unqualified. The ordinary caller attempt failed during unchanged selection rebinding at 756,647,875 ns, before reaching the new metadata batching path. Both caller cases therefore remain unqualified. A separate bounded diagnostic measured its first three helper transports at 235,225,542–237,205,333 ns, with 205,817,542–208,455,166 ns spent in the recorded custody wait. Its 64-record cap suppressed later phase observations; that diagnostic does not establish the final failing phase or performance acceptance. All six fixture children were reaped in each failed caller attempt. The passing policy run reaped all 818 children. Original guardians were reaped and no owned fixture roots remained.
+
+Earlier failures remain retained: the preceding candidate's metadata deadline failure and the new drift fixture's premature directory-identity change are not passes. The fixture now creates its marker before scope binding and changes existing marker bytes for the intended resource fault. No historical-source results are added to current coverage. The remaining 774 mandatory cases, full native UI, and end-to-end discovery/performance still need qualification on the final source.
+
+Next: use a compact closed phase/transport diagnostic within the existing output and deadline bounds to identify the remaining cost before another production optimization. Continue independent suite qualification without treating the caller gate as passed. Reviewed public application export, hosted application sharding and ordinary reviewer-App delivery, production process/lifecycle integration, deployed safety prerequisites, signed distribution, installed migration/update, minimum-OS qualification, physical UAT, and the two-release/90-day retirement receipt remain open. Frozen requirements and specifications are unchanged.
+
+Private evidence digests (sanitized bindings only):
+
+- runtime-zip-integration/qualification-ledger-v6.json: `a854df287b3a4e38668f501646a908dc8762655949191e61af6d65046c08d813`.
+- runtime-zip-integration/source-v15.json: `2bd4150f7da09787ffa83e82be5666a7dab0be0d6277ab1c3104341000e361bb`.
+- runtime-zip-integration/build-v16.json: `60972e8991a45b226d52e145a96e3f89901157a2c33f91b28ddd0a2d9ca07848`.
+- runtime-zip-integration/production-build-v3.json: `df4c2428f7a0c2afff52f76d09406a29e9e6d36245c67994e9c9ead303c9861a`.
+- runtime-zip-integration/tooling-v16.json: `23d8636f51022fa350319080f67366889cd705f86cea8e9a2766138a4d481bd1`.
+- runtime-zip-integration/production-exclusion-v4.json: `260dca66160c5d86b67fad977ddf49d042a67c50b4d3e54621f83fcab3b1e55d`.
+- runtime-zip-integration/source-contract-v15.json: `0f325652fd2a1e86dde526fc0de8f5dcbaf4728932148f38637a3fc6ff96d4c9`.
+- runtime-zip-integration/identity-v15.json: `f6acbbabacc16eedeebc77a74da93216647c39b841f498e9255c0ac4b9189773`.
+- runtime-zip-integration/prefetch-policy-v1.json: `7f33fe89ce74e398fbf50e4c5ea2c3de7def45e4ea1158bae01aa42ac6e219b8`.
+- runtime-zip-integration/prefetch-caller-v1.json: `4c6825f87bd08de56ba3c836032bc824727b6aaa0c105928d8a2fe52388d0a8b`.
+- runtime-zip-integration/helper-cost-observation-v1.json: `2a3189e247a239b600228ccd2084e07882d1d2e4381918c1941252c74217a3bf`.
+- runtime-zip-integration/metadata-failure-diagnosis-v2.json: `c3fd546baf0b47de59ef82c82415fbbb9d5902f70ad98905f22231d4920a1f5c`.
+- runtime-zip-integration/metadata-prefetch-review/result-v1.json: `791e8f952375a7ab7492a3684784d7a2441cfcc59dea661ed4711c3ea1a8c19a`.
