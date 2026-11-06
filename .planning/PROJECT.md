@@ -4,8 +4,8 @@ Canonical project: [Project v2](artifacts/PROJECT-29e9090a-7b77-443d-b953-9b1dee
 
 This is a navigation projection of accepted records, not a new design or approval. Frozen predecessors remain in the artifact history.
 
-- [Requirements v3](artifacts/PRD-29e9090a-7b77-443d-b953-9b1deef3bc60-23e6a95a-ea67-5cb7-a281-5b95115b0ac7-v3.md)
-- [Parent phase plan v3](artifacts/PLAN-29e9090a-7b77-443d-b953-9b1deef3bc60-25769985-feb8-5809-8833-b30f202730f7-v3.md)
+- [Requirements v4](artifacts/PRD-29e9090a-7b77-443d-b953-9b1deef3bc60-709ee996-81ec-58de-af78-56fee62e2fe7-v4.md)
+- [Parent phase plan v4](artifacts/PLAN-29e9090a-7b77-443d-b953-9b1deef3bc60-850bda92-2da6-563e-9e74-bf7db32fdd82-v4.md)
 - [Native correction component plan v1](artifacts/PLAN-29e9090a-7b77-443d-b953-9b1deef3bc60-60f913b2-b91d-5ca1-8c95-cb0c8312d433-v1.md)
 - [Foreground and Quit UX requirements v1](artifacts/UXR-29e9090a-7b77-443d-b953-9b1deef3bc60-5320adc6-1299-5a88-8b8c-652102616a2c-v1.md)
 - [Foreground and Quit design v1](artifacts/DESIGN-29e9090a-7b77-443d-b953-9b1deef3bc60-70bb4954-ecc8-53ec-9db3-25d2905fcde1-v1.md)
@@ -17,4 +17,6 @@ This is a navigation projection of accepted records, not a new design or approva
 - [Requirement and execution traceability](TRACEABILITY.md)
 - [Current execution evidence and open gates](STATE.md)
 
-- [Runtime fixture custody specification](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-37618186-09f2-595f-bb4b-2908c75ad137-v1.md).
+- [Runtime fixture custody specification](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-b513e4db-ec8b-5d24-b856-0d2969f0d0d9-v2.md).
+
+- [MVP-first delivery boundary and deferred work](../docs/adr/0008-mvp-first-standalone-delivery.md).

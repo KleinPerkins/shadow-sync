@@ -2,23 +2,23 @@
 
 Derived navigation and coverage projection at source revision `f4b9b5f5395167043d37f4dc799cfa4bd48817b5` plus this reviewed successor transaction. This document introduces no requirement, design, approval or completion evidence. Accepted records below remain authoritative; [STATE.md](STATE.md) records observed execution and open gates. All 37 product requirement rows are represented once.
 
-Inputs: [PRD v3](artifacts/PRD-29e9090a-7b77-443d-b953-9b1deef3bc60-23e6a95a-ea67-5cb7-a281-5b95115b0ac7-v3.md) (`7a044302d30a14a7d62aafef5e8fc44d819eb31e650954087949b0a18d826886`) and [PLAN v3](artifacts/PLAN-29e9090a-7b77-443d-b953-9b1deef3bc60-25769985-feb8-5809-8833-b30f202730f7-v3.md) (`b4deda4a7ee0947866d2c74f06da23119f6a9c49e702cd55ea6537408ae7de24`).
+Inputs: [PRD v4](artifacts/PRD-29e9090a-7b77-443d-b953-9b1deef3bc60-709ee996-81ec-58de-af78-56fee62e2fe7-v4.md) (`08c29e8f8c423c80b65aef4deecc1882a14e1eea4fe4a1ad0e34aced045d4d83`) and [PLAN v4](artifacts/PLAN-29e9090a-7b77-443d-b953-9b1deef3bc60-850bda92-2da6-563e-9e74-bf7db32fdd82-v4.md) (`d4917d1b974e6a8ce11effec87f9bb600e54efafec1e86ad8238b204b7683c10`).
 
 ## Active design and planning records
 
-This roster contains all 18 approved, unsuperseded records observed in this repository. Superseded records remain immutable historical authority; the current successor governs the affected scope. A component specification supplements the parent plan and does not supersede unrelated requirements.
+This roster contains all 19 approved, unsuperseded records observed in this repository. Superseded records remain immutable historical authority; the current successor governs the affected scope. A component specification supplements the parent plan and does not supersede unrelated requirements.
 
 | Record | Version | SHA-256 |
 |---|---|---|
 | [Foreground and Quit design v1](artifacts/DESIGN-29e9090a-7b77-443d-b953-9b1deef3bc60-70bb4954-ecc8-53ec-9db3-25d2905fcde1-v1.md) | 1 | `1313757360d7414737b7b9cc4227fdbf0f034f763a6dadb2dd317e4f8cfa2230` |
-| [Parent phase plan v3](artifacts/PLAN-29e9090a-7b77-443d-b953-9b1deef3bc60-25769985-feb8-5809-8833-b30f202730f7-v3.md) | 3 | `b4deda4a7ee0947866d2c74f06da23119f6a9c49e702cd55ea6537408ae7de24` |
+| [Parent phase plan v4](artifacts/PLAN-29e9090a-7b77-443d-b953-9b1deef3bc60-850bda92-2da6-563e-9e74-bf7db32fdd82-v4.md) | 4 | `d4917d1b974e6a8ce11effec87f9bb600e54efafec1e86ad8238b204b7683c10` |
 | [Native correction component plan v1](artifacts/PLAN-29e9090a-7b77-443d-b953-9b1deef3bc60-60f913b2-b91d-5ca1-8c95-cb0c8312d433-v1.md) | 1 | `c4e380acfef781040e4b2bf09ff09d2e5b46e9102704ab3c6fd3644756abc250` |
-| [Requirements v3](artifacts/PRD-29e9090a-7b77-443d-b953-9b1deef3bc60-23e6a95a-ea67-5cb7-a281-5b95115b0ac7-v3.md) | 3 | `7a044302d30a14a7d62aafef5e8fc44d819eb31e650954087949b0a18d826886` |
+| [Requirements v4](artifacts/PRD-29e9090a-7b77-443d-b953-9b1deef3bc60-709ee996-81ec-58de-af78-56fee62e2fe7-v4.md) | 4 | `08c29e8f8c423c80b65aef4deecc1882a14e1eea4fe4a1ad0e34aced045d4d83` |
 | [Project v2](artifacts/PROJECT-29e9090a-7b77-443d-b953-9b1deef3bc60-b4572339-da84-5f60-b95e-fd4a085a0a8f-v2.md) | 2 | `48b8b0ad2046af618a248bced3ce88c1dda80436e9c7a59502fd591a918b2ca8` |
 | [Native-fixture specification v2](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-28765c29-8077-56a0-83c1-ae6898efd395-v2.md) | 2 | `33562c95e78c4c20f5fb0b00f9ce417dbd8d8b1d434924d218ce81e2b88f7bb5` |
 | [Foreground and Quit specification v1](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-30461ba9-e873-558e-aa12-309e569f06c7-v1.md) | 1 | `87e0ea96a3869f515efcbc7072045532978bfc1aa2a9cf63f1469b5faa64db9a` |
 | [Command-custody specification v3](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-3e33d85e-9b58-53cd-abd0-38e0fb7b697b-v3.md) | 3 | `cf97b7d9038f44e39e7c6f31dd595198534a3f954f18567b8cc08a13b62604b0` |
-| [Runtime fixture custody specification v1](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-37618186-09f2-595f-bb4b-2908c75ad137-v1.md) | 1 | `4f43e454ddfc5dd05a58f4a7e94b2cc36815008edb1cd487f31ae353c616d5ed` |
+| [Runtime fixture custody specification v2](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-b513e4db-ec8b-5d24-b856-0d2969f0d0d9-v2.md) | 2 | `b90efafee6ff727fd8de807922a043eb1f71f05ff8485e2eaf4bc4209b85b14d` |
 | [Publisher-resource specification v1](artifacts/SPEC-29e9090a-7b77-443d-b953-9b1deef3bc60-433a822e-fa57-5141-a016-224d57d843b5-v1.md) | 1 | `e4c503daada44377dc09690ebbc6d3fb7f7d4a682add6b0167d1fa053d7e1084` |
 | [Foreground and Quit UX requirements v1](artifacts/UXR-29e9090a-7b77-443d-b953-9b1deef3bc60-5320adc6-1299-5a88-8b8c-652102616a2c-v1.md) | 1 | `ecafe1f789873ee5ab1b8053ebede5ddd15ca3542d9e5ed8306d9c7384cd96f0` |
 | [ADR 0001](../docs/adr/0001-standalone-extraction-and-provenance.md) | 1 | `1476166cad13df791874f6383a39c2a1210c9753009dc90b4645b0a6e23006d8` |
@@ -28,8 +28,11 @@ This roster contains all 18 approved, unsuperseded records observed in this repo
 | [ADR 0005](../docs/adr/0005-governed-safety-release-without-controller-rebinding.md) | 1 | `86dd7599c0eece3fae089874f5e15d9275cc8686013b115c6ca87e20b7915f37` |
 | [ADR 0006](../docs/adr/0006-bounded-policy-classification-before-repository-selection.md) | 1 | `b0c47b733ac0451a8560a4ecbcdada87644520cf03ef5176c9a12a614e9b67c6` |
 | [ADR 0007](../docs/adr/0007-deterministic-mandatory-ci-sharding.md) | 1 | `f0216b75d6928931a87475eb408e35b47070f9ce2c212dfcbf0195b7edd6a3a6` |
+| [ADR 0008](../docs/adr/0008-mvp-first-standalone-delivery.md) | 1 | `22c12a474920f33f2e714cf1d951841a3186179b24b861985c213087aad87eed` |
 
 ## Requirement execution matrix
+
+The [MVP-first decision](../docs/adr/0008-mvp-first-standalone-delivery.md) and PLAN v4 govern stage applicability. The detailed legacy package references below remain technical traceability, not a requirement to finish post-MVP work before first installation. MVP-01 separates source publication from activation; MVP-02 retains full mandatory CI; MVP-03/04 retain signing, safety and migration. MG-05/RL-04, update portions of MG-01/RL-02, formal performance optimization, unqualified OS-version claims and final MG-08 retirement remain explicitly open under POST-01/02. No requirement is marked complete.
 
 Owner, dependency and gate cells below are derived from the accepted parent plan and PRD ownership sections. The verification column reproduces each PRD criterion; it is required evidence, not a passing result. Where a group spans multiple phases, the requirement-specific criterion determines which evidence applies. No requirement is marked complete by this audit.
 
