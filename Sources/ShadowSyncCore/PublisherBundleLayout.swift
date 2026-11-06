@@ -5,6 +5,9 @@ import Foundation
 /// runtime keeps its existing sealed topology; this is not a second manifest or
 /// an authority to accept arbitrary links, code, or application resources.
 final class PublisherBundleLayout {
+    // Apple stores the stapled ticket here (distinct from the signature seal).
+    // It is bounded data only; it never grants publisher or installation authority.
+    static let ticketRelative = "Contents/CodeResources"
     static let frameworkRelative = "Contents/Frameworks/Python.framework"
     private static let directories: Set<String> = [
         "", "Contents", "Contents/MacOS", "Contents/Helpers", "Contents/Resources",
@@ -27,6 +30,7 @@ final class PublisherBundleLayout {
     private let files: [PolicyAuthorityFile]
     private let publisher: PublisherCodeVerifier.Identity?
     private let owner: uid_t
+    private var ticket: PolicyAuthorityFile?
     private var outerNodes: [String: PolicyRuntimeTree.Node] = [:]
 
     private init(bundlePath: String, layout: PolicyRuntimeLayout, files: [PolicyAuthorityFile],
@@ -36,6 +40,11 @@ final class PublisherBundleLayout {
         tree = try PolicyRuntimeTree.capture(root: bundlePath + "/" + Self.frameworkRelative,
                                             owner: owner, layout: layout)
         outerNodes = try captureOuterNodes()
+        if outerNodes[Self.ticketRelative] != nil {
+            ticket = try PolicyAuthorityFile.read(path: bundlePath + "/" + Self.ticketRelative,
+                owner: owner, maximumBytes: 1_048_576)
+        }
+        guard try captureOuterNodes() == outerNodes else { throw PublisherPolicyError.unavailable }
     }
 
     static func captureIfPresent(_ bundlePath: String) throws -> PublisherBundleLayout? {
@@ -90,7 +99,7 @@ final class PublisherBundleLayout {
     private func entry(_ relative: String) throws -> PolicyRuntimeLayout.Entry {
         if Self.directories.contains(relative) { return .init(kind: .directory, mode: 0o755, target: nil) }
         if Self.executables.contains(relative) { return .init(kind: .file, mode: 0o755, target: nil) }
-        if Self.resources.contains(relative) { return .init(kind: .file, mode: 0o644, target: nil) }
+        if Self.resources.contains(relative) || relative == Self.ticketRelative { return .init(kind: .file, mode: 0o644, target: nil) }
         let prefix = Self.frameworkRelative + "/"
         guard relative.hasPrefix(prefix), let entry = layout.entries[String(relative.dropFirst(prefix.count))] else {
             throw PublisherPolicyError.unavailable
@@ -108,6 +117,9 @@ final class PublisherBundleLayout {
               info.st_mode & S_IFMT == type, info.st_mode & 0o7777 == mode_t(expected.mode),
               expected.kind != .file || info.st_nlink == 1,
               BundleArtifactIdentity.hasOnlyPermittedXattrs(path) else { throw PublisherPolicyError.unavailable }
+        if relative == Self.ticketRelative {
+            guard info.st_size > 0, info.st_size <= 1_048_576 else { throw PublisherPolicyError.unavailable }
+        }
         if let target = expected.target {
             var bytes = [UInt8](repeating: 0, count: 1025)
             let count = readlink(path, &bytes, bytes.count)
@@ -119,7 +131,7 @@ final class PublisherBundleLayout {
     }
 
     func requireComplete(_ observed: Set<String>) throws {
-        let expected = Self.directories.union(Self.executables).union(Self.resources)
+        let expected = Set(outerNodes.keys)
             .union(layout.entries.keys.map { Self.frameworkRelative + "/" + $0 })
         guard observed == expected else { throw PublisherPolicyError.unavailable }
     }
@@ -156,7 +168,7 @@ final class PublisherBundleLayout {
                     if name == "." || name == ".." { continue }
                     let child = relative.isEmpty ? name : relative + "/" + name
                     guard Self.directories.contains(child) || Self.executables.contains(child)
-                        || Self.resources.contains(child) else { throw PublisherPolicyError.unavailable }
+                        || Self.resources.contains(child) || child == Self.ticketRelative else { throw PublisherPolicyError.unavailable }
                     let fd = openat(descriptor, name, flags)
                     guard fd >= 0 else { throw PublisherPolicyError.unavailable }
                     defer { close(fd) }
@@ -170,7 +182,8 @@ final class PublisherBundleLayout {
             nodes[relative] = initial
         }
         try visit("", root)
-        guard Set(nodes.keys) == Self.directories.union(Self.executables).union(Self.resources) else {
+        let required = Self.directories.union(Self.executables).union(Self.resources)
+        guard Set(nodes.keys) == required || Set(nodes.keys) == required.union([Self.ticketRelative]) else {
             throw PublisherPolicyError.unavailable
         }
         return nodes
@@ -179,6 +192,7 @@ final class PublisherBundleLayout {
     func revalidate() throws {
         guard try captureOuterNodes() == outerNodes else { throw PublisherPolicyError.unavailable }
         for file in files { try file.revalidate() }
+        try ticket?.revalidate()
         try tree.revalidate(root: bundlePath + "/" + Self.frameworkRelative, owner: owner, layout: layout)
         if let publisher {
             let (_, current) = try PublisherCodeVerifier.verifiedStatic(path: bundlePath,

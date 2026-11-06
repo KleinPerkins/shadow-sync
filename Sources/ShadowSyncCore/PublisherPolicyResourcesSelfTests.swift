@@ -604,6 +604,37 @@ public enum PublisherPolicyResourcesSelfTestRunner {
             }
         }
         onPass("PUBLISHER-POLICY-T18-install-layout-does-not-grant-publisher-authority")
+
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T19-install-stapled-ticket-preservation-and-refusals") {
+            try withBundleFixture { fixture, app, layout in
+                let unstapled = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)
+                let path = app + "/" + PublisherBundleLayout.ticketRelative
+                let bytes = Data("synthetic notarization ticket; no publisher authority".utf8)
+                try bytes.write(to: URL(fileURLWithPath: path), options: .withoutOverwriting)
+                try require(chmod(path, 0o644) == 0, "ticket mode")
+                try refused { try unstapled.revalidate() }
+                let original = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout)
+                let retained = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)
+                try retained.revalidate()
+                let copy = fixture.path + "/stapled.app"
+                try FileManager.default.copyItem(atPath: app, toPath: copy)
+                try InstallationLifecycle.testingSyncPublisherBundle(copy, layout: layout)
+                try require(try BundleArtifactIdentity.testingInspect(bundlePath: copy, layout: layout) == original,
+                            "staging changed the ticket or signed layout")
+                try refused { _ = try PublisherBundleLayout.captureIfPresent(app) }
+                try Data("changed".utf8).write(to: URL(fileURLWithPath: path))
+                try refused { try retained.revalidate() }
+                try bytes.write(to: URL(fileURLWithPath: path))
+                try require(chmod(path, 0o755) == 0, "executable ticket setup")
+                try refused { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
+                try require(chmod(path, 0o644) == 0, "ticket mode restore")
+                try Data().write(to: URL(fileURLWithPath: path))
+                try refused { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
+                try require(unlink(path) == 0 && symlink("Info.plist", path) == 0, "ticket alias setup")
+                try refused { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
+            }
+        }
+        onPass("PUBLISHER-POLICY-T19-install-stapled-ticket-preservation-and-refusals")
     }
 
 

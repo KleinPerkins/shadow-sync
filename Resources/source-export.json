@@ -9,6 +9,7 @@
     "Sources/ShadowSyncCore/DM2Body4SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/DM4PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/PublisherBundleLayout.swift": "Retain the closed publisher and framework layout; accept only the exact bounded non-executable Apple ticket location and preserve/revalidate ticket bytes without treating it as publisher authority.",
     "Sources/ShadowSyncCore/RemovalTransaction.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
     "Sources/ShadowSyncCore/RepositoryLifecycle.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
@@ -17,8 +18,10 @@
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Tests/Tooling/test_release_notarization.py": "Disposable synthetic signing/notary adapters exercise packaging, retry, tamper and refusal paths; no credentials or product submission.",
     "scripts/build-app.sh": "Build all three executable products in one package invocation with shared compilation; verify every product architecture and minimum OS. Preserve real fixture paths only in nondistributed testing builds; production retains source-path sanitization and separate native qualification.",
     "scripts/ci-shards.py": "All mandatory jobs use macOS 26 arm64 because tooling includes native fixtures; deterministic complete-suite partition and fail-closed aggregate remain unchanged.",
+    "scripts/notarize-release-bundle.py": "Source-bound MVP app and DMG notarization, stapling and Gatekeeper gates; preserve submission IDs and input bytes; no publication, installation, or acceptance claim.",
     "scripts/run-native-appkit.py": "Stage and verify only the exact AppDelegate and native-acceptance contract files inside the owned fixture; preserve all native assertions, source bindings, isolation and cleanup.",
     "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
@@ -672,7 +675,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/PublisherBundleLayout.swift",
-      "sha256": "2340b6b71812acc7a9deb4b6dfc88b28fc647e68f52a0c25d727a7d1e8b0ad92"
+      "sha256": "3ddee5a252003bd5a09649b994eb5271fb5799de8172bbbc30d28093d85a3919"
     },
     {
       "mode": "100644",
@@ -682,7 +685,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/PublisherPolicyResourcesSelfTests.swift",
-      "sha256": "33f88738e67c87053ac750b56e88a77fd43dc287145784a5e4fe3a910eb01c9b"
+      "sha256": "02d27dcb660104c6bf051a17c666d3dce4bc402936366c6667a363f482218171"
     },
     {
       "mode": "100644",
@@ -867,7 +870,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "41227865b3d548c66d56719beeb496263e6453759beef1dfb4d34fa956099119"
+      "sha256": "24b2ed3a7cdd0c0cc24dcbd2b291bdf27afcd0ac7576f89b9f7940d698d18528"
     },
     {
       "mode": "100644",
@@ -898,6 +901,11 @@
       "mode": "100644",
       "path": "Tests/Tooling/test_app_workflow.py",
       "sha256": "f2bef84a706b3c3e49a96994cc52eff1d51effadf4415622d25c6cb5b9019473"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_application_ci.py",
+      "sha256": "32ebebac84318ea2e0ae3028d365b36dc3593a8924db763899ec278d97440c48"
     },
     {
       "mode": "100644",
@@ -1001,8 +1009,13 @@
     },
     {
       "mode": "100644",
+      "path": "Tests/Tooling/test_release_notarization.py",
+      "sha256": "fb8cbc4003d22f18603c6c54017a39a22902b047a4115ea180813bbf91edcf42"
+    },
+    {
+      "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "9c0ecd15d67905d6140040e9cb58422a90e680e79e9d1705d9f206bab8ade82d"
+      "sha256": "c5515173a7a1cc5df2cb43d7e87f9ae9b80060de577414ff81f149cd764d950c"
     },
     {
       "mode": "100644",
@@ -1013,6 +1026,11 @@
       "mode": "100644",
       "path": "Tests/Tooling/test_technical_identity.py",
       "sha256": "fd79b2282a70a3c9234b773503c4c75c6b162d809437772d4f54128f0330cca4"
+    },
+    {
+      "mode": "100644",
+      "path": "config/ci-suites.json",
+      "sha256": "df6c58dab742bab9fc43c1faadf2f54b5c7015f9db234580e76b71805d87cfc4"
     },
     {
       "mode": "100644",
@@ -1133,6 +1151,11 @@
       "mode": "100644",
       "path": "scripts/native-ui-suites.py",
       "sha256": "4d0e5b84846d11e39e24a0e52cbfc128e0046413f944c50bfd371a63b7f328bb"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/notarize-release-bundle.py",
+      "sha256": "cec5bc094e5faa04a105214cb73cc79b1494d9c5eabead910696333b153ab774"
     },
     {
       "mode": "100644",
