@@ -461,6 +461,11 @@ public enum M6SelfTestRunner {
         try run("m6-system-config-pending-after-fallback-return") { try SystemConfigCommandSelfTests.pendingCompletion(throwAfter: false) }
         try run("m6-system-config-pending-after-fallback-throw") { try SystemConfigCommandSelfTests.pendingCompletion(throwAfter: true) }
         try run("m6-system-config-unrelated-error-preserved") { try SystemConfigCommandSelfTests.unrelatedCompletion() }
+        try run("m6-inspection-completion-cancelled-evidence") { try SystemConfigCommandSelfTests.retainedCompletion("cancelled") }
+        try run("m6-inspection-completion-closed-phase") { try SystemConfigCommandSelfTests.retainedCompletion("closed") }
+        try run("m6-inspection-completion-pending-wins") { try SystemConfigCommandSelfTests.retainedCompletion("pending") }
+        try run("m6-inspection-completion-failure-wins") { try SystemConfigCommandSelfTests.retainedCompletion("failure") }
+        try run("m6-inspection-completion-account-refusal") { try SystemConfigCommandSelfTests.retainedCompletion("account") }
         try run("m6-config-caller-capture-postflight") { try SystemConfigCommandSelfTests.configurationCapture("roundtrip") }
         try run("m6-config-caller-absent-system") { try SystemConfigCommandSelfTests.configurationCapture("absent") }
         try run("m6-config-caller-changed-origin-refusal") { try SystemConfigCommandSelfTests.configurationCapture("origin") }
@@ -4908,6 +4913,45 @@ private enum SystemConfigCommandSelfTests {
             catch SystemGitConfigurationError.cleanupPending {}
             try check(calls == 1 && registry.testingCount == 0,
                       "completion regression started an unqualified command")
+        }
+    }
+    static func retainedCompletion(_ scenario: String) throws {
+        try CustodyRegistrySelfTests.fixture { location, registry in
+            let context = try CustodyContextSelfTests.read(location)
+            defer { context.close() }
+            let account = try EffectiveAccount.isolated(homeDirectory: location.anchorPath + "/home")
+            let token = CancellationToken()
+            var calls = 0
+            let probe = SystemGitConfigurationProbe(testingContext: context, cancellation: token) {
+                calls += 1
+                if scenario == "pending" { throw SystemGitConfigurationError.cleanupPending }
+                if scenario == "failure" { throw SystemGitConfigurationError.unavailable }
+                return nil
+            }
+            do { _ = try probe.activePath() }
+            catch SystemGitConfigurationError.cleanupPending { try check(scenario == "pending", "unexpected pending") }
+            catch SystemGitConfigurationError.unavailable { try check(scenario == "failure", "unexpected failure") }
+            token.cancel()
+            if scenario == "closed" { context.close() }
+            if scenario == "account" {
+                try FileManager.default.createDirectory(atPath: location.anchorPath + "/other-home",
+                    withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            }
+            let expected = scenario == "account"
+                ? try EffectiveAccount.isolated(homeDirectory: location.anchorPath + "/other-home") : account
+            if scenario == "cancelled" {
+                try probe.validateRetainedEvidence(account: expected)
+                do { try probe.validate(account: account); throw Failure(message: "cancelled completion reopened command admission") }
+                catch SystemGitConfigurationError.unavailable {}
+            } else {
+                do {
+                    try probe.validateRetainedEvidence(account: expected)
+                    throw Failure(message: "cancelled completion erased authority failure")
+                } catch SystemGitConfigurationError.cleanupPending { try check(scenario == "pending", "pending precedence changed") }
+                catch SystemGitConfigurationError.unavailable { try check(scenario != "pending", "pending became unavailable") }
+            }
+            try check(calls == 1 && token.areFutureChildAdmissionsClosed && registry.testingCount == 0,
+                "retained completion started another configuration command")
         }
     }
     static func unrelatedCompletion() throws {

@@ -240,6 +240,17 @@
     "POLICY-SESSION-T66-rebind-post-catalog-revocation-refuses-body",
     "POLICY-SESSION-T67-rebind-post-catalog-directory-replacement-refuses",
     "POLICY-SESSION-T68-public-bind-refreshes-advisory-eligibility",
-    "testingAfterRebindCatalog"
+    "testingAfterRebindCatalog",
+    "m4-lifecycle-plist-bound-contract",
+    "m4-lifecycle-plist-unsafe-input",
+    "m4-lifecycle-plist-read-replacement",
+    "m4-lifecycle-plist-parent-replacement",
+    "launch plist post-read replacement was not exercised",
+    "m6-inspection-completion-cancelled-evidence",
+    "m6-inspection-completion-closed-phase",
+    "m6-inspection-completion-pending-wins",
+    "m6-inspection-completion-failure-wins",
+    "m6-inspection-completion-account-refusal",
+    "BETA-V09-CANCEL-AFTER-BRANCH-ASSEMBLY"
   ]
 }

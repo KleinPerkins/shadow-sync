@@ -176,6 +176,15 @@ final class SystemGitConfigurationProbe {
         do { try context.validatePhaseAdmission() }
         catch { throw SystemGitConfigurationError.unavailable }
     }
+    /// Only validates already collected evidence. This neither resolves a new
+    /// configuration source nor reopens command admission after cancellation.
+    func validateRetainedEvidence(account: EffectiveAccount) throws {
+        try throwIfFailed()
+        guard let context else { throw SystemGitConfigurationError.unavailable }
+        do { try context.validatePhaseAdmission(account: account) }
+        catch { throw SystemGitConfigurationError.unavailable }
+        try throwIfFailed()
+    }
     func activePath(account: EffectiveAccount) throws -> String? {
         try validate(account: account)
         let path = try activePath()

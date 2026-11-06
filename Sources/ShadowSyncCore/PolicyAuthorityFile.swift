@@ -31,6 +31,10 @@ struct PolicyAuthorityFile: Equatable, Sendable {
     private let identity: Node
     private let ancestors: [DirectoryNode]
 
+    /// The mode belongs to the captured no-follow file, not a later pathname
+    /// observation. Revalidation still binds its bytes, identity and ancestors.
+    var hasOwnerPrivateMode: Bool { identity.directory.mode & 0o077 == 0 }
+
     private struct DirectoryNode: Codable, Equatable, Sendable {
         let device: Int32
         let inode: UInt64

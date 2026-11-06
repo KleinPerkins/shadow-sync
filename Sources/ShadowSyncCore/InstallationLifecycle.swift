@@ -2386,13 +2386,22 @@ public final class InstallationLifecycle: @unchecked Sendable {
         executable: String,
         programArguments: [String]
     ) throws {
-        var info = stat()
-        guard lstat(path, &info) == 0,
-              (info.st_mode & S_IFMT) == S_IFREG,
-              info.st_uid == geteuid(),
-              info.st_nlink == 1,
-              (info.st_mode & 0o077) == 0,
-              let dictionary = NSDictionary(contentsOfFile: path) as? [String: Any],
+        _ = try captureLaunchAgent(path, programArguments: programArguments)
+    }
+
+    /// A retained integrity snapshot for the fixed launch configuration. It is
+    /// not launch authority; callers still need their actual lifecycle leases.
+    private static func captureLaunchAgent(
+        _ path: String,
+        programArguments: [String],
+        afterRead: () throws -> Void = {}
+    ) throws -> PolicyAuthorityFile {
+        let file: PolicyAuthorityFile
+        do { file = try PolicyAuthorityFile.read(path: path, owner: geteuid(), maximumBytes: 65_536) }
+        catch { throw InstallationLifecycleError.invalidLaunchAgent }
+        try afterRead()
+        guard file.hasOwnerPrivateMode,
+              let dictionary = try? PropertyListSerialization.propertyList(from: file.bytes, format: nil) as? [String: Any],
               Set(dictionary.keys) == Set([
                 "Label", "ProgramArguments", "RunAtLoad", "KeepAlive",
                 "ProcessType", "LimitLoadToSessionType",
@@ -2405,7 +2414,18 @@ public final class InstallationLifecycle: @unchecked Sendable {
               dictionary["LimitLoadToSessionType"] as? String == "Aqua" else {
             throw InstallationLifecycleError.invalidLaunchAgent
         }
+        do { try file.revalidate() }
+        catch { throw InstallationLifecycleError.invalidLaunchAgent }
+        return file
     }
+
+    #if SHADOW_SYNC_TESTING
+    static func testingCaptureLaunchAgent(_ path: String, executable: String,
+                                         afterRead: () throws -> Void = {}) throws -> PolicyAuthorityFile {
+        try captureLaunchAgent(path, programArguments: [executable, InstallationPaths.managedHostArgument],
+                               afterRead: afterRead)
+    }
+    #endif
 
     private static func isKnownPredecessorRelease(
         _ release: ReleaseIdentity
