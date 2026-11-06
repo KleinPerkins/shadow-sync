@@ -522,7 +522,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
-      "sha256": "2e7ccaf4f68af3e4e2d9a26390322753a62feafca2c98dda75d2d9e534d90dfa"
+      "sha256": "af48faaa72825876a569211bb6d807edf8f585c3bfd52897392a16007965103d"
     },
     {
       "mode": "100644",
@@ -671,13 +671,18 @@
     },
     {
       "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PublisherBundleLayout.swift",
+      "sha256": "2340b6b71812acc7a9deb4b6dfc88b28fc647e68f52a0c25d727a7d1e8b0ad92"
+    },
+    {
+      "mode": "100644",
       "path": "Sources/ShadowSyncCore/PublisherPolicyResources.swift",
       "sha256": "9f186366e8d3800a85e61d62796a3bdf1e6914b8e0b92a506d96268d815b8f7d"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/PublisherPolicyResourcesSelfTests.swift",
-      "sha256": "e60a645b8d4041e62963771c1b606fab4dd0c0052bf019a6f29b6a21be25bef5"
+      "sha256": "33f88738e67c87053ac750b56e88a77fd43dc287145784a5e4fe3a910eb01c9b"
     },
     {
       "mode": "100644",
@@ -692,7 +697,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/ReleaseIdentity.swift",
-      "sha256": "3704744e0df11ebd85079647ec9e72c0212a3bb3d5f33a410b80d0f588c55b51"
+      "sha256": "348d0c125319c00a3ce0f63906733c5c0cba60508a17e549254f2d1524ec758a"
     },
     {
       "mode": "100644",
@@ -862,7 +867,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "4d74ab65ac3078c092fa7d6d0144fc0c58482b1bd9f6657b924ef6d80b235852"
+      "sha256": "41227865b3d548c66d56719beeb496263e6453759beef1dfb4d34fa956099119"
     },
     {
       "mode": "100644",
@@ -997,7 +1002,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "2039eb99b23f6d08c12aa5d31ded5683e912f72421f98ff16c0b9b6195121291"
+      "sha256": "9c0ecd15d67905d6140040e9cb58422a90e680e79e9d1705d9f206bab8ade82d"
     },
     {
       "mode": "100644",

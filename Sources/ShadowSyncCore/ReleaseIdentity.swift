@@ -193,6 +193,11 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
         bundlePath: String,
         requireProduction: Bool = false
     ) throws -> BundleArtifactIdentity {
+        try inspect(bundlePath: bundlePath, requireProduction: requireProduction, layoutOverride: nil)
+    }
+
+    private static func inspect(bundlePath: String, requireProduction: Bool,
+                                layoutOverride: PublisherBundleLayout?) throws -> BundleArtifactIdentity {
         var rootInfo = stat()
         guard lstat(bundlePath, &rootInfo) == 0,
               (rootInfo.st_mode & S_IFMT) == S_IFDIR,
@@ -203,6 +208,12 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
         }
         let release = try ReleaseIdentity.load(bundlePath: bundlePath)
         try release.validate(requireProduction: requireProduction)
+        let publisherLayout = try layoutOverride ?? PublisherBundleLayout.captureIfPresent(bundlePath)
+        #if !SHADOW_SYNC_TESTING
+        guard !requireProduction || publisherLayout != nil else { throw ReleaseIdentityError.unsafeBundle(bundlePath) }
+        #endif
+        _ = try publisherLayout?.validateNode("")
+        var observed: Set<String> = [""]
 
         guard let enumerator = FileManager.default.enumerator(
             at: URL(fileURLWithPath: bundlePath),
@@ -231,6 +242,8 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
                   hasOnlyPermittedXattrs(path) else {
                 throw ReleaseIdentityError.unsafeBundle(relative)
             }
+            let target = try publisherLayout?.validateNode(relative)
+            guard observed.insert(relative).inserted else { throw ReleaseIdentityError.unsafeBundle(relative) }
             let type = info.st_mode & S_IFMT
             let mode = info.st_mode & 0o7777
             if type == S_IFDIR {
@@ -239,10 +252,15 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
                 let data = try Data(contentsOf: url, options: [.mappedIfSafe])
                 let digest = SHA256.hash(data: data).hex
                 records.append("f\u{0}\(relative)\u{0}\(mode)\u{0}\(info.st_size)\u{0}\(digest)")
+            } else if type == S_IFLNK, let target {
+                let bytes = Data(target.utf8)
+                records.append("l\u{0}\(relative)\u{0}\(mode)\u{0}\(bytes.count)\u{0}\(SHA256.hash(data: bytes).hex)")
             } else {
                 throw ReleaseIdentityError.unsafeBundle(relative)
             }
         }
+        try publisherLayout?.requireComplete(observed)
+        try publisherLayout?.revalidate()
         records.sort()
         let bytes = Data((records.joined(separator: "\u{0}") + "\u{0}").utf8)
         return BundleArtifactIdentity(
@@ -251,6 +269,13 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
             inventory: records
         )
     }
+
+    #if SHADOW_SYNC_TESTING
+    static func testingInspect(bundlePath: String, layout: PolicyRuntimeLayout) throws -> BundleArtifactIdentity {
+        try inspect(bundlePath: bundlePath, requireProduction: true,
+                    layoutOverride: PublisherBundleLayout.testing(bundlePath: bundlePath, layout: layout))
+    }
+    #endif
 
     static func hasOnlyPermittedXattrs(_ path: String) -> Bool {
         let size = listxattr(path, nil, 0, XATTR_NOFOLLOW)
@@ -264,7 +289,7 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
         let names = bytes.split(separator: 0).map {
             String(decoding: $0.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         }
-        return !names.isEmpty && Set(names).isSubset(of: ["com.apple.provenance"])
+        return !names.isEmpty && Set(names).isSubset(of: ["com.apple.provenance", "com.apple.quarantine"])
     }
 }
 

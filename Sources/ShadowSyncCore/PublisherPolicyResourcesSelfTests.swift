@@ -531,6 +531,120 @@ public enum PublisherPolicyResourcesSelfTestRunner {
             try fixture.remove()
         }
         onPass("PUBLISHER-POLICY-T14-bulk-revalidation-drift-refusals")
+
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T15-install-inventory-preserves-sealed-links-and-modes") {
+            try withBundleFixture { fixture, app, layout in
+                let original = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout)
+                try require(original.inventory.filter { $0.hasPrefix("l\u{0}") }.count == PolicyRuntimeLayout.links.count,
+                            "reviewed links missing from canonical inventory")
+                let copy = fixture.path + "/staged.app"
+                try FileManager.default.copyItem(atPath: app, toPath: copy)
+                try InstallationLifecycle.testingSyncPublisherBundle(copy, layout: layout)
+                let copied = try BundleArtifactIdentity.testingInspect(bundlePath: copy, layout: layout)
+                try require(original == copied, "signed layout changed during bundle copy")
+                var info = stat()
+                try require(lstat(copy + "/Contents/Helpers/ShadowSyncLifecycleCoordinator", &info) == 0
+                    && info.st_mode & 0o7777 == 0o755, "coordinator executable mode changed")
+            }
+        }
+        onPass("PUBLISHER-POLICY-T15-install-inventory-preserves-sealed-links-and-modes")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T16-install-extra-links-and-permission-drift-refuse") {
+            try withBundleFixture { _, app, layout in
+                func inspect() throws { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
+                let extra = app + "/Contents/Resources/unexpected"
+                try Data("extra".utf8).write(to: URL(fileURLWithPath: extra))
+                try refused { try inspect() }; try require(unlink(extra) == 0, "extra cleanup")
+                try require(symlink("ShadowSync.icns", extra) == 0, "unknown link setup")
+                try refused { try inspect() }; try require(unlink(extra) == 0, "link cleanup")
+                let helper = app + "/Contents/Helpers/ShadowSyncLifecycleCoordinator"
+                try require(chmod(helper, 0o700) == 0, "mode drift setup")
+                try refused { try inspect() }; try require(chmod(helper, 0o755) == 0, "mode restore")
+                // Revalidation must catch drift after the initial inventory,
+                // including modes that are outside the code-signature seal.
+                for relative in ["Contents/Helpers/ShadowSyncLifecycleCoordinator", "Contents/Helpers"] {
+                    let retained = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)
+                    try retained.revalidate()
+                    try require(chmod(app + "/" + relative, 0o777) == 0, "late mode drift")
+                    try refused { try retained.revalidate() }
+                    try require(chmod(app + "/" + relative, 0o755) == 0, "late mode restore")
+                }
+                let retained = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)
+                try Data("late extra".utf8).write(to: URL(fileURLWithPath: extra))
+                try refused { try retained.revalidate() }
+                try require(unlink(extra) == 0, "late extra cleanup")
+                let link = app + "/" + PublisherBundleLayout.frameworkRelative + "/Python"
+                try require(unlink(link) == 0 && symlink("/outside", link) == 0 && lchmod(link, 0o755) == 0, "escaped link setup")
+                try refused { try inspect() }
+            }
+        }
+        onPass("PUBLISHER-POLICY-T16-install-extra-links-and-permission-drift-refuse")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T17-install-required-resources-and-quarantine") {
+            try withBundleFixture { _, app, layout in
+                let original = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout)
+                let quarantine = Data("0081;00000000;Fixture;".utf8)
+                try quarantine.withUnsafeBytes { bytes in
+                    try require(setxattr(app, "com.apple.quarantine", bytes.baseAddress, bytes.count, 0, XATTR_NOFOLLOW) == 0,
+                                "quarantine setup")
+                }
+                try require(try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) == original,
+                            "quarantine changed sealed inventory")
+                try require(getxattr(app, "com.apple.quarantine", nil, 0, 0, XATTR_NOFOLLOW) == quarantine.count,
+                            "quarantine removed")
+                let helper = app + "/Contents/Helpers/ShadowSyncLifecycleCoordinator"
+                try require(unlink(helper) == 0, "missing helper setup")
+                try refused { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
+            }
+        }
+        onPass("PUBLISHER-POLICY-T17-install-required-resources-and-quarantine")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T18-install-layout-does-not-grant-publisher-authority") {
+            try withBundleFixture { _, app, layout in
+                _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout)
+                try refused { _ = try BundleArtifactIdentity.inspect(bundlePath: app, requireProduction: true) }
+                try refused { _ = try PublisherBundleLayout.captureIfPresent(app) }
+            }
+        }
+        onPass("PUBLISHER-POLICY-T18-install-layout-does-not-grant-publisher-authority")
+    }
+
+
+    private static func withBundleFixture(_ body: (Fixture, String, PolicyRuntimeLayout) throws -> Void) throws {
+        guard let framework = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_FRAMEWORK"],
+              let source = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_SOURCE"],
+              framework.hasPrefix("/private/tmp/"), source.hasPrefix("/private/tmp/") else {
+            throw Failure.assertion("explicit test resources missing")
+        }
+        let layout = try PolicyRuntimeLayout.decode(
+            Data(contentsOf: URL(fileURLWithPath: framework + "/" + PolicyRuntimeLayout.manifest)),
+            source: Data(contentsOf: URL(fileURLWithPath: source)))
+        let fixture = try Fixture(layout: layout); defer { try? fixture.remove() }
+        let app = fixture.path + "/ShadowSync.app"
+        for relative in PublisherBundleLayout.testingDirectories.sorted() where relative != PublisherBundleLayout.frameworkRelative {
+            let path = relative.isEmpty ? app : app + "/" + relative
+            try require(mkdir(path, 0o755) == 0 && chmod(path, 0o755) == 0, "bundle fixture directory")
+        }
+        try require(rename(fixture.framework, app + "/" + PublisherBundleLayout.frameworkRelative) == 0, "embed fixture framework")
+        for relative in PublisherBundleLayout.testingExecutables.union(PublisherBundleLayout.testingResources) {
+            let path = app + "/" + relative
+            try Data("fixture".utf8).write(to: URL(fileURLWithPath: path), options: .withoutOverwriting)
+            try require(chmod(path, PublisherBundleLayout.testingExecutables.contains(relative) ? 0o755 : 0o644) == 0,
+                        "bundle fixture file mode")
+        }
+        let info: [String: String] = [
+            "CFBundleIdentifier": ReleaseIdentity.bundleIdentifier, "CFBundleExecutable": "ShadowSync",
+            "CFBundleShortVersionString": "0.10.0", "CFBundleVersion": "15", "LSMinimumSystemVersion": "26.0",
+            "ShadowSyncReleaseSchema": ReleaseIdentity.schemaName, "ShadowSyncArchitecture": "arm64",
+            "ShadowSyncBuildMode": "production", "ShadowSyncSourceRevision": String(repeating: "a", count: 40),
+            "ShadowSyncSourceInputSHA256": String(repeating: "b", count: 64),
+            "ShadowSyncReleaseContractSHA256": String(repeating: "c", count: 64),
+        ]
+        try Data(contentsOf: URL(fileURLWithPath: framework + "/" + PolicyRuntimeLayout.manifest))
+            .write(to: URL(fileURLWithPath: app + "/" + PublisherBundleLayout.frameworkRelative + "/" + PolicyRuntimeLayout.manifest))
+        try Data(contentsOf: URL(fileURLWithPath: source))
+            .write(to: URL(fileURLWithPath: app + "/Contents/Resources/policy-runtime-source.json"))
+        let bytes = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+        try bytes.write(to: URL(fileURLWithPath: app + "/Contents/Info.plist"))
+        try body(fixture, app, layout)
+        try fixture.remove()
     }
 
     private static func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
