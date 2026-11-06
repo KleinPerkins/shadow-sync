@@ -24,6 +24,7 @@ class ReleaseNotarizationTests(unittest.TestCase):
         self.source = self.root / 'assembly'; self.source.mkdir(mode=0o700)
         self.app = self.source / 'ShadowSync.app'
         (self.app / 'Contents').mkdir(parents=True)
+        self.app.chmod(0o755)  # Match the producer regardless of the test process umask.
         (self.app / 'Contents/binary').write_bytes(b'signed fixture')
         self.before = {'output_entries': module.assembly.tree(self.app), 'publisher_team': 'A' * 10,
                        'version': '0.10.0', 'build': '15'}
@@ -142,7 +143,7 @@ class ReleaseNotarizationTests(unittest.TestCase):
                       'verify-disk-image-signature', 'staple-disk-image', 'validate-disk-image-ticket',
                       'gatekeeper-disk-image', 'verify-final-image'):
             self.args.output = str(self.root / stage); self.fail_stage = stage
-            with self.assertRaises(module.Refusal): module.package(self.args)
+            with self.assertRaisesRegex(module.Refusal, '^' + stage + '$'): module.package(self.args)
             self.assertFalse((Path(self.args.output) / 'release-package.json').exists())
 
     def test_post_staple_failures_resume_without_resubmission(self):

@@ -3580,6 +3580,12 @@ private enum CustodyHelperSelfTests {
     static func bare() throws {
         try check(CommandCustodian.dispatch(["fixture","--shadow-sync-command-custodian"]) == 70,"bare unsigned helper admitted")
         try check(CommandCustodian.dispatch(["fixture","--shadow-sync-command-custodian","extra"]) == 64,"extra helper argument admitted")
+        try check(LifecycleCoordinatorMain.run(arguments: ["fixture","--shadow-sync-command-custodian"]) == 70,
+                  "testing coordinator acquired publisher authority")
+        try check(CommandCustodian.dispatchLifecycle(["fixture","--shadow-sync-command-custodian","extra"]) == 64,
+                  "extra coordinator helper argument admitted")
+        try check(CommandCustodian.dispatchLifecycle(["fixture","--help"]) == nil,
+                  "ordinary coordinator invocation entered custody")
     }
     static func policyResourceBoundary(output oversized: Bool) throws {
         try CustodyRegistrySelfTests.fixture { location, registry in

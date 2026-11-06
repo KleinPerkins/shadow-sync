@@ -104,6 +104,15 @@ final class CommandCustodyContext: @unchecked Sendable {
         return try Self(leases: authority.retainObservationLeases(), helper: helper,
                         account: EffectiveAccount.current(), location: StateLocation.production(), admissionSource: .observation(WeakObservation(authority)))
     }
+    /// Uses the caller's actual retained admission locks, never metadata or
+    /// reopened lock paths. Closing that authority closes future admission.
+    static func observing(_ authority: LifecycleAdmissionAuthority,
+                          publisher: LifecyclePublisher) throws -> CommandCustodyContext {
+        let helper = try CustodyHelperExecutable.lifecycle(publisher)
+        return try Self(leases: authority.retainObservationLeases(), helper: helper,
+            account: publisher.account, location: StateLocation.production(),
+            admissionSource: .observation(WeakObservation(authority)))
+    }
     static func observation() throws -> CommandCustodyContext {
         let helper = try CustodyHelperExecutable.production()
         let account = try EffectiveAccount.current(), location = try StateLocation.production()

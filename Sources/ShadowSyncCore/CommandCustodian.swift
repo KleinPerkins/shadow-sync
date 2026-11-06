@@ -12,6 +12,19 @@ public enum CommandCustodian {
         do { return try CustodianLoop(inherited: CustodyInheritedCommand.production()).run() }
         catch { return 70 }
     }
+    /// Invoked only by the bundled coordinator before normal CLI dispatch. The
+    /// same signed executable is both caller and custodian, retaining exact
+    /// parent path/CDHash checks without broadening application bootstrap.
+    static func dispatchLifecycle(_ arguments: [String]) -> Int32? {
+        guard arguments.dropFirst().contains("--shadow-sync-command-custodian") else { return nil }
+        guard arguments.count == 2, arguments[1] == "--shadow-sync-command-custodian" else { return 64 }
+        #if SHADOW_SYNC_TESTING
+        return 70
+        #else
+        do { return try CustodianLoop(inherited: CustodyInheritedCommand.lifecycle()).run() }
+        catch { return 70 }
+        #endif
+    }
     #if SHADOW_SYNC_TESTING
     public static func testingDispatch(_ arguments: [String]) -> Int32? {
         if arguments.count == 2 && arguments[1] == "--shadow-sync-discovery-custodian-fixture" {

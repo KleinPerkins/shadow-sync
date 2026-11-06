@@ -320,12 +320,12 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CommandCustodian.swift",
-      "sha256": "5ace0aa96a6af34869acabb56dd1c99d593e6b7c4f64744aa906823d8fd4c15c"
+      "sha256": "9ef5eb9c121c4668ad28b25e3989ee0961310c532b3b2eb39c19eb2c1064020f"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CommandCustodyContext.swift",
-      "sha256": "48f12fe269a3efe49e89c7ecd3d798dd6507f09eaf58cb5b514610ba6d72ff2b"
+      "sha256": "63f97dc12a3fdc486ddd41193b614e169b651273d22e12d3d23b551478b1c4ec"
     },
     {
       "mode": "100644",
@@ -350,7 +350,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CustodyInheritedCommand.swift",
-      "sha256": "e5fe39c1767aad74350fb4588fef93006c6389ef558f09ce7e134b1c46081efe"
+      "sha256": "9a2990a245be6b675c6a60346c26f733438ffb4b8f08d115e8df7559d66966dd"
     },
     {
       "mode": "100644",
@@ -540,12 +540,12 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/LifecycleCoordinatorMain.swift",
-      "sha256": "7eedcb21670a04b17f7234fd1a031153834187d2dc2ced22e8fb5cde1dd1d814"
+      "sha256": "bfaaf1b101ffd4593dad09f0079b75046a9debd1a1b27c2d63c5f33c5ddc9891"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/LifecyclePublisher.swift",
-      "sha256": "5d96e136512567afe697176dc9cb3a3cf474e33dc20355b3d733d141d9ee5529"
+      "sha256": "fd08a75f209289fc819e5239808acd48348932ac8f89b9cdab0b15ad0c25ed0a"
     },
     {
       "mode": "100644",
@@ -585,7 +585,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "46329405ae4ddaa682bc33ac7de0e280185e13fd213ad2477788db5cd289ad6b"
+      "sha256": "de941e8bae8ce9c00ec5198d99238410f09727626a7940d6b2771c6c6887aa1e"
     },
     {
       "mode": "100644",
@@ -765,7 +765,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RetainedCleanupRegistry.swift",
-      "sha256": "1c8b90dc1055412a4815af30775437a20404c606a671fe6d9c96f516a95c245e"
+      "sha256": "df0ee3b92216207a0a7be5394d15fb104e573f2388ae2e50cb8c9b51d9986f2d"
     },
     {
       "mode": "100644",
@@ -1005,7 +1005,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_release_credential_readiness.py",
-      "sha256": "22356192f37d3c2a5ffaf324c26c0757d05fa4710f6031d54e880165babfe526"
+      "sha256": "4a27ccf185172c809c63e2b3c7a04e94f7c13a5d75f22ddf8847f77b0ed3dd9a"
     },
     {
       "mode": "100644",
@@ -1015,7 +1015,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_release_notarization.py",
-      "sha256": "fb8cbc4003d22f18603c6c54017a39a22902b047a4115ea180813bbf91edcf42"
+      "sha256": "593e9dfbc56037029f95b424ec6dbfcb3a5941c5d84891b77bd96219b00b528f"
     },
     {
       "mode": "100644",
@@ -1285,7 +1285,7 @@
     {
       "mode": "100755",
       "path": "scripts/verify-coordinator-entry.py",
-      "sha256": "17468c66306d36340044495902d706b33098a596dfcdff7d6a083c5235e1a86d"
+      "sha256": "6d62d47bc6d8541f965d6b941c75d268a500137a4289cc4d6bc4b9493a59d1dd"
     },
     {
       "mode": "100644",

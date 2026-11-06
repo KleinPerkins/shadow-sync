@@ -17,13 +17,14 @@ final class LifecyclePublisher {
     private let appSnapshot: PublisherExecutableSnapshot
     private let helperSnapshot: PublisherExecutableSnapshot
     private let resources: [PolicyAuthorityFile]
+    private let graphResource: PolicyAuthorityFile
 
     private init(app: String, executable: String, owner: uid_t, account: EffectiveAccount,
                  appIdentity: PublisherCodeVerifier.Identity, helperIdentity: PublisherCodeVerifier.Identity,
-                 resources: [PolicyAuthorityFile], release: String) throws {
+                 resources: [PolicyAuthorityFile], graphs: PolicyAuthorityFile, release: String) throws {
         self.app = app; self.executable = executable; self.owner = owner; self.account = account
         self.appIdentity = appIdentity; self.helperIdentity = helperIdentity
-        self.resources = resources; releaseSHA256 = release
+        self.resources = resources; graphResource = graphs; releaseSHA256 = release
         appSnapshot = try PublisherExecutableSnapshot.capture(path: app + "/Contents/MacOS/ShadowSync", owner: owner)
         helperSnapshot = try PublisherExecutableSnapshot.capture(path: executable, owner: owner)
     }
@@ -45,16 +46,30 @@ final class LifecyclePublisher {
             identifier: identifier, team: publisher.team)
         let info = try PolicyAuthorityFile.read(path: app + "/Contents/Info.plist", owner: owner, maximumBytes: 65_536)
         let contract = try PolicyAuthorityFile.read(path: app + "/Contents/Resources/release-contract.json", owner: owner, maximumBytes: 65_536)
+        let graphs = try PolicyAuthorityFile.read(path: app + "/Contents/Resources/command-graphs.json", owner: owner, maximumBytes: 65_536)
         let seal = try PolicyAuthorityFile.read(path: app + "/Contents/_CodeSignature/CodeResources", owner: owner, maximumBytes: 1_048_576)
         guard let dictionary = try PropertyListSerialization.propertyList(from: info.bytes, format: nil) as? [String: Any] else {
             throw PublisherPolicyError.unavailable
         }
         let release = try ReleaseIdentity(infoDictionary: dictionary); try release.validate(requireProduction: true)
         guard release.releaseContractSHA256 == contract.sha256 else { throw PublisherPolicyError.unavailable }
+        var parser = try PolicyWireParser(contract.bytes, profile: .configuration)
+        guard case let .object(fields) = try parser.parse(),
+              fields["command_graphs_sha256"] == .string(graphs.sha256) else { throw PublisherPolicyError.unavailable }
+        _ = try CommandGraphCatalog.decode(graphs.bytes)
         try PublisherCodeVerifier.sealed(contract, relativePath: "Resources/release-contract.json", code: code)
+        try PublisherCodeVerifier.sealed(graphs, relativePath: "Resources/command-graphs.json", code: code)
         let result = try Self(app: app, executable: executable, owner: owner, account: account,
-            appIdentity: publisher, helperIdentity: helper, resources: [info, contract, seal], release: contract.sha256)
+            appIdentity: publisher, helperIdentity: helper, resources: [info, contract, seal, graphs], graphs: graphs, release: contract.sha256)
         try result.revalidate(); return result
+    }
+    /// Values come only from this verified running coordinator. Keeping the
+    /// publisher in the helper retains its complete distribution binding.
+    func custodianBootstrap() throws -> (path: String, owner: uid_t,
+        identity: PublisherCodeVerifier.Identity, snapshot: PublisherExecutableSnapshot,
+        graphs: PolicyAuthorityFile) {
+        try revalidate()
+        return (executable, owner, helperIdentity, helperSnapshot, graphResource)
     }
     func revalidate() throws {
         guard account == (try EffectiveAccount.current()), getuid() == account.uid,

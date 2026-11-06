@@ -7,6 +7,8 @@ final class CustodyHelperExecutable: @unchecked Sendable {
     let path: String
     let releaseSHA256: String
     private let account: EffectiveAccount
+    private let owner: uid_t
+    private let lifecyclePublisher: LifecyclePublisher?
     private let snapshot: PublisherExecutableSnapshot
     private let publisher: PublisherCodeVerifier.Identity?
     private let files: [PolicyAuthorityFile]
@@ -20,10 +22,12 @@ final class CustodyHelperExecutable: @unchecked Sendable {
 
     private init(path: String, release: String, account: EffectiveAccount,
                  snapshot: PublisherExecutableSnapshot, publisher: PublisherCodeVerifier.Identity?,
-                 files: [PolicyAuthorityFile], graphResource: PolicyAuthorityFile? = nil) {
+                 files: [PolicyAuthorityFile], graphResource: PolicyAuthorityFile? = nil,
+                 owner: uid_t? = nil, lifecyclePublisher: LifecyclePublisher? = nil) {
         self.path = path; releaseSHA256 = release; self.account = account
         self.snapshot = snapshot; self.publisher = publisher; self.files = files
         self.graphResource = graphResource
+        self.owner = owner ?? account.uid; self.lifecyclePublisher = lifecyclePublisher
         #if SHADOW_SYNC_TESTING
         fixture = publisher == nil
         #endif
@@ -51,6 +55,16 @@ final class CustodyHelperExecutable: @unchecked Sendable {
             publisher: publisher, files: [info, contract, seal, graphs], graphResource: graphs)
         try result.revalidate(); return result
     }
+    /// A separate source-free coordinator role; installed application bootstrap
+    /// keeps its canonical-location requirement. No decoded path grants this role.
+    static func lifecycle(_ publisher: LifecyclePublisher) throws -> CustodyHelperExecutable {
+        let value = try publisher.custodianBootstrap()
+        let result = Self(path: value.path, release: publisher.releaseSHA256, account: publisher.account,
+            snapshot: value.snapshot, publisher: value.identity, files: [], graphResource: value.graphs,
+            owner: value.owner, lifecyclePublisher: publisher)
+        try result.revalidate(); return result
+    }
+    var isLifecycleCoordinator: Bool { lifecyclePublisher != nil }
     func productionGraphResource() throws -> PolicyAuthorityFile {
         guard publisher != nil, let graphResource else { throw PublisherPolicyError.unavailable }
         try revalidate()
@@ -58,12 +72,14 @@ final class CustodyHelperExecutable: @unchecked Sendable {
     }
     func revalidate() throws {
         guard account == (try EffectiveAccount.current()),
-              snapshot == (try PublisherExecutableSnapshot.capture(path: path, owner: account.uid)) else { throw PublisherPolicyError.unavailable }
+              snapshot == (try PublisherExecutableSnapshot.capture(path: path, owner: owner)) else { throw PublisherPolicyError.unavailable }
         for file in files { try file.revalidate() }
         #if SHADOW_SYNC_TESTING
         try discoveryFixtureGraphs?.revalidate()
         #endif
-        if let publisher {
+        if let lifecyclePublisher {
+            try lifecyclePublisher.revalidate()
+        } else if let publisher {
             let app = account.homeDirectory + "/Applications/ShadowSync.app"
             let (_, current) = try PublisherCodeVerifier.verifiedStatic(path: app, identifier: ReleaseIdentity.bundleIdentifier, team: publisher.team)
             guard current == publisher else { throw PublisherPolicyError.unavailable }

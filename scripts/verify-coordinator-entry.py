@@ -38,14 +38,17 @@ def verify(root, testing, bundle):
             and b'Identifier=com.kleinperkins.shadow-sync.lifecycle-coordinator' in metadata.stderr.splitlines(),
             'negative fixture must be the ad-hoc coordinator')
     cases = [([], 64), (['--unknown'], 64), (['--verify-distribution', '--extra'], 64),
-             (['--help', '--extra'], 64), (['--initialize-fresh-state'], 64), (['--help'], 0)]
+             (['--help', '--extra'], 64), (['--initialize-fresh-state'], 64), (['--help'], 0),
+             (['--shadow-sync-command-custodian'], 70), (['--shadow-sync-command-custodian', '--extra'], 64)]
     passed = []
     env = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'C', 'HOME': str(root)}
     for label, binary, verify_status in [('testing', testing, 78), ('adhoc', production, 1)]:
         for index, (args, expected) in enumerate(cases + [(['--verify-distribution'], verify_status)], 1):
             result = subprocess.run([str(binary), *args], cwd=root, env=env, capture_output=True, timeout=10)
             require(result.returncode == expected, 'coordinator route returned wrong status')
-            if expected == 64:
+            if '--shadow-sync-command-custodian' in args:
+                require(result.stdout == b'' and result.stderr == b'', 'custodian refusal leaked detail')
+            elif expected == 64:
                 require(result.stdout == b'' and result.stderr == b'ShadowSync lifecycle coordinator arguments are invalid.\n', 'argument error leaked detail')
             elif expected == 78:
                 require(result.stdout == b'' and result.stderr == b'Testing coordinators cannot verify production distributions.\n', 'testing authority boundary changed')

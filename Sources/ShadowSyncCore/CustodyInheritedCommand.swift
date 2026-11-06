@@ -105,6 +105,14 @@ final class CustodyInheritedCommand {
         let request = try UnvalidatedCustodyRequest.decode(raw, expected: binding,
             permittedWorkSeconds: kind == .discoveryGit ? DiscoveryGitCommand.maximumWorkSeconds : min(10, kind.maximumWorkSeconds))
         let hasFrozenConfiguration = request.descriptors.contains { $0.role == .gitFile }
+        // Coordinator bootstrap currently admits observation only. It cannot
+        // borrow discovery authority or infer mutation permission from a label.
+        if helper.isLifecycleCoordinator {
+            guard request.authority == .observation,
+                  request.kind == .launchctlRead || request.kind == .signatureCheck else {
+                throw CustodyResourceError.invalidResource
+            }
+        }
         if discoveryFixture {
             guard fixture, !hasFrozenConfiguration,
                   request.kind == .policyClassify || request.kind == .discoveryGit else {
@@ -266,6 +274,9 @@ final class CustodyInheritedCommand {
         try revalidateParent()
     }
     static func production() throws -> CustodyInheritedCommand { try Self(helper: CustodyHelperExecutable.production(), fixture: false) }
+    static func lifecycle() throws -> CustodyInheritedCommand {
+        try Self(helper: CustodyHelperExecutable.lifecycle(LifecyclePublisher.current()), fixture: false)
+    }
     #if SHADOW_SYNC_TESTING
     static func testing() throws -> CustodyInheritedCommand {
         try Self(helper: CustodyHelperExecutable.testing(releaseSHA256: String(repeating: "c", count: 64)), fixture: true)
