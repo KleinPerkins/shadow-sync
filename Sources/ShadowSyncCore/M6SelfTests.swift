@@ -3490,8 +3490,11 @@ private enum CustodyHelperSelfTests {
             else if mode.hasPrefix("serial-policy-") || timeout || cancelAt == 1 { expectedStages = 2 }
             else { expectedStages = 1 }
             try check(resumed.count == expectedStages, "serial refusal admitted another stage")
-            try check(journal.target?.pid == UInt32(resumed.last![3])
-                && journal.custodian?.pid != journal.target?.pid, "durable target lost its exact owner")
+            guard let target = journal.target, let custodian = journal.custodian else {
+                throw Failure(message: "durable target lost its exact owner")
+            }
+            try check(target.pid == UInt32(resumed.last![3])
+                && custodian.pid != target.pid, "durable target lost its exact owner")
             if !mode.hasPrefix("serial-postflight-"), timeout || cancelAt != nil && mode != "serial-between-cancel" {
                 try check(journal.waitStatus == UInt32(SIGKILL), "resistant serial child was not KILL-drained")
             }
@@ -3904,8 +3907,9 @@ private enum CustodyHelperSelfTests {
         guard let bytes = try? CustodyCatalogSelfTests.bytes(location, ready.id + ".json"),
               let journal = try? CustodyJournal.decode(bytes), journal.phase == .terminal,
               journal.binding.requestID == ready.id,
-              journal.custodian?.pid == UInt32(ready.helper), journal.custodian?.startSeconds == ready.helperStart,
-              journal.target?.pid == UInt32(ready.target), journal.target?.startSeconds == ready.targetStart,
+              let custodian = journal.custodian, let target = journal.target,
+              custodian.pid == UInt32(ready.helper), custodian.startSeconds == ready.helperStart,
+              target.pid == UInt32(ready.target), target.startSeconds == ready.targetStart,
               absent(ready.helper, ready.helperStart), absent(ready.target, ready.targetStart) else { return false }
         // No adoption or signaling of recorded descendants. Their own custodian
         // supplies the terminal journal and releases the original operation lock.
