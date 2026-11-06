@@ -2174,7 +2174,7 @@ private enum FreshStateSelfTests {
                     let flags = Int16(POSIX_SPAWN_START_SUSPENDED | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETPGROUP)
                     try H.check(posix_spawnattr_setflags(&attr, flags) == 0 && posix_spawnattr_setpgroup(&attr, 0) == 0, "initializer crash flags")
                     let executable = try ProcessIdentity.capture(processID: getpid(), generation: RunIdentity.make()).executablePath
-                    let strings = [executable, "--shadow-sync-initialization-crash-fixture", root, target, partial].map { strdup($0) }
+                    let strings = ([executable, "--shadow-sync-initialization-crash-fixture", root, target, partial] as [String]).map { strdup($0) }
                     defer { strings.forEach { free($0) } }
                     try H.check(strings.allSatisfy { $0 != nil }, "crash fixture argv")
                     var argv = strings + [nil], env: [UnsafeMutablePointer<CChar>?] = [nil]
@@ -2454,7 +2454,7 @@ private enum CustodyResourcesSelfTests {
             try check(posix_spawnattr_setflags(&attr, flags) == 0 && posix_spawnattr_setpgroup(&attr, 0) == 0, "native fixture flags")
             let executable = try ProcessIdentity.capture(processID: getpid(), generation: UUID().uuidString.lowercased()).executablePath
             let absent = mapping.testingSourceDescriptors.map(String.init).joined(separator: ",")
-            let strings = ([executable, "--shadow-sync-custody-resource-fixture", absent]).map { strdup($0) }; defer { strings.forEach { free($0) } }
+            let strings = ([executable, "--shadow-sync-custody-resource-fixture", absent] as [String]).map { strdup($0) }; defer { strings.forEach { free($0) } }
             try check(strings.allSatisfy { $0 != nil }, "native fixture allocation")
             var argv = strings + [nil], env: [UnsafeMutablePointer<CChar>?] = [nil]
             let drained = NativeStreamDrain()
@@ -3845,7 +3845,7 @@ private enum CustodyHelperSelfTests {
         try check(posix_spawnattr_setflags(&attr, flags) == 0 && posix_spawnattr_setpgroup(&attr, 0) == 0
             && posix_spawnattr_setsigdefault(&attr, &defaults) == 0 && posix_spawnattr_setsigmask(&attr, &empty) == 0, "parent flags")
         let executable = try ProcessIdentity.capture(processID: getpid(), generation: RunIdentity.make()).executablePath
-        let args = [executable, "--shadow-sync-custodian-parent-fixture", root, mode].map { strdup($0) }
+        let args = ([executable, "--shadow-sync-custodian-parent-fixture", root, mode] as [String]).map { strdup($0) }
         let environment: [String] = ["PATH=/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR=/private/tmp"]
         let environmentPointers = environment.map { strdup($0) }
         defer { (args + environmentPointers).forEach { free($0) } }
