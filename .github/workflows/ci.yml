@@ -34,6 +34,10 @@ jobs:
           ref: ${{ env.CI_REVISION }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Record the runtime fixture's default Git selection
+        run: |
+          /usr/bin/xcode-select -p
+          env -u DEVELOPER_DIR /usr/bin/xcrun --find git
       - id: plan
         name: Discover and plan every mandatory case
         run: python3 -I -B scripts/ci-host.py plan

@@ -99,7 +99,7 @@ def run_suite(suite, root, build_root, record, context):
         info = path.lstat()
         require(path.resolve(strict=True) == path and stat.S_ISREG(info.st_mode)
                 and info.st_uid == 0 and not info.st_mode & 0o022, 'Untrusted Apple Git fixture')
-        build.run(['/usr/bin/codesign', '--verify', '--strict', '-R', 'anchor apple', str(path)])
+        build.run(['/usr/bin/codesign', '--verify', '--strict', '-R', '=anchor apple', str(path)])
         git_identity[str(path)] = build.sha(path)
     nonce = uuid.uuid4().hex
     root.mkdir(mode=0o700)
