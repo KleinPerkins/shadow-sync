@@ -359,13 +359,12 @@ public enum V2Body3SelfTestRunner {
             malformedWriter = nil
             malformedAuthority?.release()
             malformedAuthority = nil
-            try malformed.write(
+            try malformed.writeFixtureAtomically(
                 to: URL(
                     fileURLWithPath:
                         malformedLocation.path
                         + "/latest.log"
-                ),
-                options: .atomic
+                )
             )
             let malformedHome =
                 malformedState.path + "/home"

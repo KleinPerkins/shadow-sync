@@ -122,6 +122,34 @@ def verify(root):
     return ['source-layout', 'swift-package-boundary', 'release-template', 'manual-launch-agent', 'core-ui-boundary']
 
 
+
+def verify_export(root):
+    """Check every imported payload byte and Git executable mode."""
+    root = Path(root)
+    manifest = json.loads(read(root, 'Resources/source-export.json'), object_pairs_hook=pairs)
+    require(type(manifest) is dict and manifest.get('schema') == 'shadow-sync-source-export/v1'
+            and manifest.get('repository') == 'KleinPerkins/shadow-sync')
+    entries = manifest.get('files')
+    require(type(entries) is list and 0 < len(entries) <= 8192)
+    observed = set()
+    for entry in entries:
+        require(type(entry) is dict and set(entry) == {'path', 'mode', 'sha256'})
+        name = entry['path']
+        require(type(name) is str and 0 < len(name) <= 4096 and name not in observed
+                and not name.startswith('/') and '\\' not in name
+                and all(part not in ('', '.', '..') for part in name.split('/'))
+                and not any(ord(c) < 32 or ord(c) == 127 for c in name)
+                and name != 'Resources/source-export.json')
+        require(entry['mode'] in ('100644', '100755')
+                and type(entry['sha256']) is str
+                and re.fullmatch(r'[a-f0-9]{64}', entry['sha256']) is not None)
+        data = read(root, name)
+        require(hashlib.sha256(data).hexdigest() == entry['sha256']
+                and bool((root / name).stat().st_mode & 0o111) == (entry['mode'] == '100755'))
+        observed.add(name)
+    return len(observed)
+
+
 def main():
     if not sys.flags.isolated or len(sys.argv) != 1:
         sys.stderr.write('Run verify-source-contract.py with isolated Python and no arguments.\n')
@@ -129,6 +157,8 @@ def main():
     try:
         for case in verify(Path(__file__).resolve().parent.parent):
             print('PASS source-contract/' + case)
+        verify_export(Path(__file__).resolve().parent.parent)
+        print('PASS source-contract/export-payload')
         print('Development source check only; no installation, native runtime, signing or release qualification.')
         return 0
     except (ValueError, OSError, UnicodeError, TypeError, KeyError, OverflowError, plistlib.InvalidFileException):

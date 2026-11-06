@@ -2718,10 +2718,12 @@ public enum V3PreflightSelfTestRunner {
         defer { large.remove() }
         let a = small.catalog()
         let b = large.catalog()
+        // Each checkout opens its origin config and remote-default HEAD.
+        // Both reads count toward the same aggregate metadata budget.
         try require(
             a.isComplete && b.isComplete
-                && a.catalog.counters.filesOpened == 3
-                && b.catalog.counters.filesOpened == 51,
+                && a.catalog.counters.filesOpened == 3 * 2
+                && b.catalog.counters.filesOpened == 51 * 2,
             "catalog aggregate accounting is not linear"
         )
         let inventory = try readSource(

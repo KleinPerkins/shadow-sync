@@ -2595,7 +2595,8 @@ public enum V2Body2SelfTestRunner {
             throw Body2SelfTestError.message("unsupported fixture compiler")
         }
         let result = try ClosedProcessRunner(outputLimit: DescriptorProcessRunner.completeRepositoryOutputLimit).run(
-            command: ClosedProcessCommand(executable: "/Library/Developer/CommandLineTools/usr/bin/clang", arguments: arguments),
+            command: ClosedProcessCommand(executable: "/Library/Developer/CommandLineTools/usr/bin/clang",
+                arguments: ["-save-temps=obj", "-isysroot", "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"] + arguments),
             environment: ClosedProcessRunner.environment(account: account),
             workingDirectoryDescriptor: directory, account: account, timeout: 20,
             cancellation: CancellationToken())

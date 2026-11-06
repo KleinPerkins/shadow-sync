@@ -1584,9 +1584,8 @@ public enum V2Body4SelfTestRunner {
         let authorityBytes = try Data(
             contentsOf: URL(fileURLWithPath: authority)
         )
-        try Data("{}\n".utf8).write(
-            to: URL(fileURLWithPath: authority),
-            options: .atomic
+        try Data("{}\n".utf8).writeFixtureAtomically(
+            to: URL(fileURLWithPath: authority)
         )
         guard chmod(authority, 0o600) == 0 else {
             throw Body4SelfTestError(
@@ -1601,9 +1600,8 @@ public enum V2Body4SelfTestRunner {
                     at: location
                 )
         }
-        try authorityBytes.write(
-            to: URL(fileURLWithPath: authority),
-            options: .atomic
+        try authorityBytes.writeFixtureAtomically(
+            to: URL(fileURLWithPath: authority)
         )
         guard chmod(authority, 0o600) == 0 else {
             throw Body4SelfTestError(
@@ -1618,9 +1616,8 @@ public enum V2Body4SelfTestRunner {
         try JSONSerialization.data(
             withJSONObject: futureAuthority,
             options: [.sortedKeys]
-        ).write(
-            to: URL(fileURLWithPath: authority),
-            options: .atomic
+        ).writeFixtureAtomically(
+            to: URL(fileURLWithPath: authority)
         )
         guard chmod(authority, 0o600) == 0 else {
             throw Body4SelfTestError(
@@ -1635,9 +1632,8 @@ public enum V2Body4SelfTestRunner {
                     at: location
                 )
         }
-        try authorityBytes.write(
-            to: URL(fileURLWithPath: authority),
-            options: .atomic
+        try authorityBytes.writeFixtureAtomically(
+            to: URL(fileURLWithPath: authority)
         )
         guard chmod(authority, 0o600) == 0 else {
             throw Body4SelfTestError(
@@ -1692,9 +1688,8 @@ public enum V2Body4SelfTestRunner {
         try JSONSerialization.data(
             withJSONObject: futureManifest,
             options: [.sortedKeys]
-        ).write(
-            to: URL(fileURLWithPath: manifest),
-            options: .atomic
+        ).writeFixtureAtomically(
+            to: URL(fileURLWithPath: manifest)
         )
         guard chmod(manifest, 0o400) == 0 else {
             throw Body4SelfTestError(
@@ -1709,9 +1704,8 @@ public enum V2Body4SelfTestRunner {
                     at: location
                 )
         }
-        try manifestBytes.write(
-            to: URL(fileURLWithPath: manifest),
-            options: .atomic
+        try manifestBytes.writeFixtureAtomically(
+            to: URL(fileURLWithPath: manifest)
         )
         guard chmod(manifest, 0o400) == 0 else {
             throw Body4SelfTestError(
@@ -1902,9 +1896,8 @@ public enum V2Body4SelfTestRunner {
         let authorityPath =
             state.path + "/"
             + RepositoryAuthorityStore.filename
-        try encoder.encode(authority).write(
-            to: URL(fileURLWithPath: authorityPath),
-            options: .atomic
+        try encoder.encode(authority).writeFixtureAtomically(
+            to: URL(fileURLWithPath: authorityPath)
         )
         guard chmod(authorityPath, 0o600) == 0 else {
             throw Body4SelfTestError(
@@ -1938,9 +1931,8 @@ public enum V2Body4SelfTestRunner {
             "Body 4 protected branch bundle fixture\n".utf8
         )
         let bundlePath = artifact + "/branch.bundle"
-        try bundleBytes.write(
-            to: URL(fileURLWithPath: bundlePath),
-            options: .atomic
+        try bundleBytes.writeFixtureAtomically(
+            to: URL(fileURLWithPath: bundlePath)
         )
         guard chmod(bundlePath, 0o400) == 0 else {
             throw Body4SelfTestError(
@@ -1988,9 +1980,8 @@ public enum V2Body4SelfTestRunner {
             ]
         )
         let manifestPath = artifact + "/manifest.json"
-        try encoder.encode(manifest).write(
-            to: URL(fileURLWithPath: manifestPath),
-            options: .atomic
+        try encoder.encode(manifest).writeFixtureAtomically(
+            to: URL(fileURLWithPath: manifestPath)
         )
         guard chmod(manifestPath, 0o400) == 0 else {
             throw Body4SelfTestError(
@@ -2244,9 +2235,8 @@ public enum V2Body4SelfTestRunner {
         state: SecureStateDirectory
     ) throws {
         let path = state.path + "/latest.log"
-        try Data(bytes).write(
-            to: URL(fileURLWithPath: path),
-            options: .atomic
+        try Data(bytes).writeFixtureAtomically(
+            to: URL(fileURLWithPath: path)
         )
         guard chmod(path, 0o600) == 0 else {
             throw Body4SelfTestError(

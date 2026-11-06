@@ -363,27 +363,27 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body1SelfTests.swift",
-      "sha256": "85a293724d01b61c95ab2ab34e5e11d771082426b28c88b4328193e4cff70bcc"
+      "sha256": "42105bcafe9aecf3372576c0760ea28d7784e034769f622e0fa7181e46a771d1"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body2SelfTests.swift",
-      "sha256": "6097d276140f646e896a021d5fa9f2517ffeb24fdcc615927abaf7b9201d7a39"
+      "sha256": "960a937b00d068e494e581b2dffedb16b04595095b9e16320d9711a7239d3b6b"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body3SelfTests.swift",
-      "sha256": "caf46e14a37f128c89eea040c73cf06fcb711394399607c92201387fade1ea67"
+      "sha256": "393633cce54dfa382bd93807d57cbf3cfe6a1ec49a397546dc9323070748ef67"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body4SelfTests.swift",
-      "sha256": "b5b24230fd74a3ebe8eff8df29cad87437584a134ea0381b62a4d5be73c8c249"
+      "sha256": "b3bfc45a7925b38174022ab64b3db8dbac52b7c0b2a19edfe434743f78f910b4"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift",
-      "sha256": "a25a981826beb25e73ec3e21d2bc6dfcbc509228c07a0b78bd9b883eb945a97c"
+      "sha256": "138fb12d63bae1c2d14d0b2aab7b5e7c989721f34bb897fdda0e63891b386315"
     },
     {
       "mode": "100644",
@@ -788,7 +788,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RuntimeFixtureSession.swift",
-      "sha256": "a03f7361c41677e14f88f441053316c66f61be2a343a4f6ed221e93ed26d5ba8"
+      "sha256": "88e4c09359ec4de3d420384daaf88fbc114343340e3d78951668f161fd539773"
     },
     {
       "mode": "100644",
@@ -1008,7 +1008,7 @@
     {
       "mode": "100644",
       "path": "config/identity-exceptions.json",
-      "sha256": "5215e2bf626f88f1dfc61a3829f65a18b5d51e039fbe6b6bbd630a2abeea0cd3"
+      "sha256": "6a97c53902fc6e44d1e09ef7f249132757ef81537157376aa2bef4b7c38da1b0"
     },
     {
       "mode": "100644",
@@ -1263,7 +1263,7 @@
     {
       "mode": "100644",
       "path": "scripts/verify-source-contract.py",
-      "sha256": "126b6cfc6260324aad07a801b93430701c237628a3e7f69d2ca7fbffa6ff1400"
+      "sha256": "d3d8bdb1dfbe77348eb39e0e00a2e00ea1ed8b1f6fc765d7ae6b64bfa7a4abfc"
     },
     {
       "mode": "100755",

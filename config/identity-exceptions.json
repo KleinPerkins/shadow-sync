@@ -121,6 +121,17 @@
       "owner": "ShadowSync application architect",
       "reason": "Fixture-only inspection recognizes historical installed and transaction inputs and refuses them; it does not launch, install, repair or create legacy paths.",
       "retirement": "After at least two verified standalone releases and 90 days, known-installation migration and a reviewed retirement receipt. Historical preimages remain recoverable; this exception never authorizes legacy execution or new legacy-format active state."
+    },
+    {
+      "path": "docs/adr/0002-permanent-shadowsync-technical-identity.md",
+      "scope": "content",
+      "token": "dev-main-sync",
+      "count": 2,
+      "sha256": "1e527ef6ba84e540e83d1fc4836ab1048d1f1d6b9f37078c06d0821a144f44ea",
+      "class": "historical-record",
+      "owner": "ShadowSync application architect",
+      "reason": "Frozen approved naming ADR records the exact predecessor identity and bounded compatibility rules. This historical decision grants no active legacy writes or launch authority.",
+      "retirement": "Preserve the immutable decision and its exact-byte exception; active implementation has no exemption from the permanent technical identity."
     }
   ]
 }

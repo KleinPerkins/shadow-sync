@@ -365,9 +365,8 @@ public enum V2Body1SelfTestRunner {
                 bytes.append(0x0A)
                 let path = prepared.fixture.stateLocation.path
                     + "/" + RepositoryAuthorityStore.filename
-                try bytes.write(
-                    to: URL(fileURLWithPath: path),
-                    options: .atomic
+                try bytes.writeFixtureAtomically(
+                    to: URL(fileURLWithPath: path)
                 )
                 _ = chmod(path, 0o600)
             }
