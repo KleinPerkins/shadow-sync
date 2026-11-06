@@ -498,80 +498,96 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     }
     private func consume(_ entry: Entry, budget: inout Int) {
         guard entry.resumed else { return }
-        #if SHADOW_SYNC_TESTING
-        let deferStatus = entry.deferredRead == .statusAfterAdmission && entry.state.admitted
-        let deferOutput = entry.deferredRead == .outputUntilReleased
-        #else
-        let deferStatus = false, deferOutput = false
-        #endif
-        // A poisoned status stream cannot starve output drainage or be repaired
-        // by a later valid frame. Continue bounded raw drainage to its real EOF.
-        if !deferStatus, !entry.statusEnded, budget > 0 {
-            do {
-                switch try entry.resources.readStatus() {
-                case .wouldBlock: break
-                case .end:
-                    entry.statusEnded = true
-                    if !entry.statusPoisoned { try entry.decoder.finish() }
-                case .bytes(let bytes):
-                    budget -= bytes.count
-                    if !entry.statusPoisoned {
-                        for frame in try entry.decoder.append(bytes) {
-                            let message = try CustodyMessage.decode(frame, expected: entry.resources.request.binding, channel: .status)
-                            try entry.state.accept(message, now: DispatchTime.now().uptimeNanoseconds)
-                            switch message.event {
-                            case .ready:
-                                #if SHADOW_SYNC_TESTING
-                                entry.diagnostic(.ready)
-                                #endif
-                                if !entry.cancelled && entry.phase != .cleanupPending { entry.phase = .ready; admitIfPrepared(entry) }
-                            case .pending: pending(entry, reason: entry.reason ?? .timeout)
-                            case .terminal:
-                                entry.terminal = message
-                                #if SHADOW_SYNC_TESTING
-                                entry.diagnostic(.terminal)
-                                #endif
-                            default: throw CustodyProtocolError.invalidSequence
+        // Preserve each entry's prior maximum byte entitlement and the shared
+        // tick budget. A second nonblocking sweep observes already-readable EOF
+        // after small terminal/output frames without waiting another timer tick.
+        // At most eight reads prevents a short-byte producer from monopolizing
+        // this queue. EAGAIN, EOF and read errors end that stream's turn.
+        var quantum = 4 * 16_388
+        var statusReadable = true, outputReadable = true, errorReadable = true, traceReadable = true
+        for _ in 0..<2 where budget > 0 && quantum > 0 {
+            #if SHADOW_SYNC_TESTING
+            let deferStatus = entry.deferredRead == .statusAfterAdmission && entry.state.admitted
+            let deferOutput = entry.deferredRead == .outputUntilReleased
+            #else
+            let deferStatus = false, deferOutput = false
+            #endif
+            // A poisoned status stream cannot starve output drainage or be repaired
+            // by a later valid frame. Continue bounded raw drainage to its real EOF.
+            if !deferStatus, statusReadable, !entry.statusEnded, budget > 0, quantum > 0 {
+                do {
+                    switch try entry.resources.readStatus(maximum: min(16_388, budget, quantum)) {
+                    case .wouldBlock: statusReadable = false
+                    case .end:
+                        statusReadable = false; entry.statusEnded = true
+                        if !entry.statusPoisoned { try entry.decoder.finish() }
+                    case .bytes(let bytes):
+                        budget -= bytes.count; quantum -= bytes.count
+                        if !entry.statusPoisoned {
+                            for frame in try entry.decoder.append(bytes) {
+                                let message = try CustodyMessage.decode(frame, expected: entry.resources.request.binding, channel: .status)
+                                try entry.state.accept(message, now: DispatchTime.now().uptimeNanoseconds)
+                                switch message.event {
+                                case .ready:
+                                    #if SHADOW_SYNC_TESTING
+                                    entry.diagnostic(.ready)
+                                    #endif
+                                    if !entry.cancelled && entry.phase != .cleanupPending { entry.phase = .ready; admitIfPrepared(entry) }
+                                case .pending: pending(entry, reason: entry.reason ?? .timeout)
+                                case .terminal:
+                                    entry.terminal = message
+                                    #if SHADOW_SYNC_TESTING
+                                    entry.diagnostic(.terminal)
+                                    #endif
+                                default: throw CustodyProtocolError.invalidSequence
+                                }
                             }
                         }
                     }
+                } catch {
+                    statusReadable = false
+                    entry.statusPoisoned = true; cancel(entry, reason: .protocolFault); pending(entry, reason: .protocolFault)
                 }
-            } catch {
-                entry.statusPoisoned = true; cancel(entry, reason: .protocolFault); pending(entry, reason: .protocolFault)
             }
-        }
-        for isError in [false, true] where budget > 0 && !deferOutput {
-            if isError ? entry.stderrEnded : entry.stdoutEnded { continue }
-            do {
-                switch try entry.resources.readOutput(error: isError) {
-                case .wouldBlock: break
-                case .end: if isError { entry.stderrEnded = true } else { entry.stdoutEnded = true }
-                case .bytes(let bytes):
-                    budget -= bytes.count
-                    let limit = Int(isError ? entry.resources.request.stderrLimit : entry.resources.request.stdoutLimit)
-                    let count = isError ? entry.stderr.count : entry.stdout.count
-                    if count + bytes.count > limit {
-                        entry.outputPoisoned = true; cancel(entry, reason: .outputLimit); pending(entry, reason: .outputLimit)
+            for isError in [false, true] where budget > 0 && quantum > 0 && !deferOutput {
+                if isError ? (entry.stderrEnded || !errorReadable) : (entry.stdoutEnded || !outputReadable) { continue }
+                do {
+                    switch try entry.resources.readOutput(error: isError, maximum: min(16_388, budget, quantum)) {
+                    case .wouldBlock: if isError { errorReadable = false } else { outputReadable = false }
+                    case .end: if isError { errorReadable = false; entry.stderrEnded = true } else { outputReadable = false; entry.stdoutEnded = true }
+                    case .bytes(let bytes):
+                        budget -= bytes.count; quantum -= bytes.count
+                        let limit = Int(isError ? entry.resources.request.stderrLimit : entry.resources.request.stdoutLimit)
+                        let count = isError ? entry.stderr.count : entry.stdout.count
+                        if count + bytes.count > limit {
+                            entry.outputPoisoned = true; cancel(entry, reason: .outputLimit); pending(entry, reason: .outputLimit)
+                        }
+                        let retained = bytes.prefix(max(0, limit - count))
+                        if isError { entry.stderr.append(contentsOf: retained) } else { entry.stdout.append(contentsOf: retained) }
                     }
-                    let retained = bytes.prefix(max(0, limit - count))
-                    if isError { entry.stderr.append(contentsOf: retained) } else { entry.stdout.append(contentsOf: retained) }
+                } catch {
+                    if isError { errorReadable = false } else { outputReadable = false }
+                    entry.outputPoisoned = true; cancel(entry, reason: .ioFailure); pending(entry, reason: .ioFailure)
                 }
-            } catch { entry.outputPoisoned = true; cancel(entry, reason: .ioFailure); pending(entry, reason: .ioFailure) }
-        }
-        if !deferOutput, !entry.traceEnded, budget > 0 {
-            do {
-                switch try entry.resources.readTrace() {
-                case .wouldBlock: break
-                case .end: entry.traceEnded = true
-                case .bytes(let bytes):
-                    budget -= bytes.count
-                    let limit = Int(entry.resources.request.traceLimit)
-                    if entry.trace.count + bytes.count > limit {
-                        entry.outputPoisoned = true; cancel(entry, reason: .outputLimit); pending(entry, reason: .outputLimit)
+            }
+            if !deferOutput, traceReadable, !entry.traceEnded, budget > 0, quantum > 0 {
+                do {
+                    switch try entry.resources.readTrace(maximum: min(16_388, budget, quantum)) {
+                    case .wouldBlock: traceReadable = false
+                    case .end: traceReadable = false; entry.traceEnded = true
+                    case .bytes(let bytes):
+                        budget -= bytes.count; quantum -= bytes.count
+                        let limit = Int(entry.resources.request.traceLimit)
+                        if entry.trace.count + bytes.count > limit {
+                            entry.outputPoisoned = true; cancel(entry, reason: .outputLimit); pending(entry, reason: .outputLimit)
+                        }
+                        entry.trace.append(contentsOf: bytes.prefix(max(0, limit - entry.trace.count)))
                     }
-                    entry.trace.append(contentsOf: bytes.prefix(max(0, limit - entry.trace.count)))
+                } catch {
+                    traceReadable = false
+                    entry.outputPoisoned = true; cancel(entry, reason: .ioFailure); pending(entry, reason: .ioFailure)
                 }
-            } catch { entry.outputPoisoned = true; cancel(entry, reason: .ioFailure); pending(entry, reason: .ioFailure) }
+            }
         }
     }
     private func finish(_ entry: Entry, proof: CustodyRetirementProof) {
@@ -670,6 +686,16 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     }
     func testingReleaseDeferredRead(_ handle: Handle) {
         queue.sync { entries[handle.key]?.deferredRead = nil }
+    }
+    /// One serialized observation after bytes and EOF are already available.
+    /// No timer race or elapsed-time threshold can satisfy this fixture proof.
+    func testingReleaseDeferredReadAndTick(_ handle: Handle) -> Bool {
+        queue.sync {
+            guard let entry = entries[handle.key] else { return false }
+            entry.deferredRead = nil
+            tick()
+            return entries[handle.key] == nil && handle.snapshot().phase == .finished
+        }
     }
     func testingDelayQueue() {
         let entered = DispatchSemaphore(value: 0)

@@ -3559,8 +3559,9 @@ private enum CustodyHelperSelfTests {
                       "unconsumed evidence retired durable custody")
             do { _ = try RunAuthority.acquireRun(at:location); throw Failure(message:"unconsumed evidence released operation exclusion") }
             catch is SecureStateError {}
-            registry.testingReleaseDeferredRead(handle)
-            try until { handle.snapshot().phase == .finished && registry.testingCount == 0 }
+            try check(registry.testingReleaseDeferredReadAndTick(handle),
+                      "already-reaped helper needed another tick for available terminal/output EOF")
+            try check(registry.testingCount == 0, "single-tick drainage retained its reservation")
             let result = handle.snapshot()
             try check(result.reason == nil && result.journal?.outcome == .completed
                 && result.journal?.reason == CustodyReason.none && result.journal?.waitStatus == 0,
@@ -4440,34 +4441,33 @@ private enum SystemConfigCommandSelfTests {
                         var commands = 0
                         do {
                             PlannerCheckpoint.beforeObserver.record()
-                            let draft = try RepositoryMaintenanceTesting.$registrationObserver.withValue({
-                                PlannerCheckpoint.observerCalled.record(); observed.record($0)
-                            }) {
-                                PlannerCheckpoint.beforeInspect.record()
-                                return try RepositoryMaintenancePlanner.inspect(clone: maintenanceClone, remote: remote,
-                                    account: account, handle: handle, frozen: frozen, admission: admission,
-                                    capturedNow: Date(), validateAdmission: session.validatePhaseCompletion) {
-                                        arguments, _, _, _, _ in
-                                        commands += 1
-                                        if commands == 1 {
-                                            PlannerCheckpoint.dryRun.record()
-                                            try check(arguments.contains("--dry-run"), "planner did not begin with dry-run")
-                                            return ProcessResult(status: 0,
-                                                stdout: Data("Removing worktrees/first: fixture\nRemoving worktrees/second: fixture\n".utf8),
-                                                stderr: Data(), stdoutTruncated: false, stderrTruncated: false,
-                                                outputByteLimit: 4096, timedOut: false, cancelled: false,
-                                                terminationRequested: false, processID: -1)
-                                        }
-                                        PlannerCheckpoint.referenceProof.record()
-                                        try check(arguments.contains("rev-parse"), "unexpected planner command")
-                                        if scenario == "inspection-planner-pending" {
-                                            PlannerCheckpoint.beforePending.record()
-                                            _ = try probe.activePath(account: account)
-                                        }
-                                        return ProcessResult(status: 1, stdout: Data(), stderr: Data(),
-                                            stdoutTruncated: false, stderrTruncated: false, outputByteLimit: 4096,
-                                            timedOut: false, cancelled: false, terminationRequested: false, processID: -1)
-                                    }
+                            PlannerCheckpoint.beforeInspect.record()
+                            let draft = try RepositoryMaintenancePlanner.testingInspectRegistrations(clone: maintenanceClone, remote: remote,
+                                account: account, handle: handle, frozen: frozen, admission: admission,
+                                capturedNow: Date(), validateAdmission: session.validatePhaseCompletion,
+                                observeRegistration: {
+                                    PlannerCheckpoint.observerCalled.record(); observed.record($0)
+                                }) {
+                                arguments, _, _, _, _ in
+                                commands += 1
+                                if commands == 1 {
+                                    PlannerCheckpoint.dryRun.record()
+                                    try check(arguments.contains("--dry-run"), "planner did not begin with dry-run")
+                                    return ProcessResult(status: 0,
+                                        stdout: Data("Removing worktrees/first: fixture\nRemoving worktrees/second: fixture\n".utf8),
+                                        stderr: Data(), stdoutTruncated: false, stderrTruncated: false,
+                                        outputByteLimit: 4096, timedOut: false, cancelled: false,
+                                        terminationRequested: false, processID: -1)
+                                }
+                                PlannerCheckpoint.referenceProof.record()
+                                try check(arguments.contains("rev-parse"), "unexpected planner command")
+                                if scenario == "inspection-planner-pending" {
+                                    PlannerCheckpoint.beforePending.record()
+                                    _ = try probe.activePath(account: account)
+                                }
+                                return ProcessResult(status: 1, stdout: Data(), stderr: Data(),
+                                    stdoutTruncated: false, stderrTruncated: false, outputByteLimit: 4096,
+                                    timedOut: false, cancelled: false, terminationRequested: false, processID: -1)
                             }
                             PlannerCheckpoint.returned.record()
                             try check(scenario == "inspection-planner-ordinary", "planner swallowed pending cleanup")

@@ -12,6 +12,8 @@
     "Sources/ShadowSyncCore/PublisherBundleLayout.swift": "Retain the closed publisher and framework layout; accept only the exact bounded non-executable Apple ticket location and preserve/revalidate ticket bytes without treating it as publisher authority.",
     "Sources/ShadowSyncCore/RemovalTransaction.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
     "Sources/ShadowSyncCore/RepositoryLifecycle.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/RepositoryMaintenance.swift": "Keep the production planner entry and shared inspection logic; provide testing-only synchronous call-scoped registration observation at the original pre-access boundary.",
+    "Sources/ShadowSyncCore/RetainedCleanupRegistry.swift": "Drain already-readable terminal/output EOF in a bounded second nonblocking sweep while preserving per-entry/global byte limits, retained ownership, poison semantics and absolute deadlines.",
     "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeFixtureSession.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeSuiteGuardian.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
@@ -365,7 +367,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CustodyResources.swift",
-      "sha256": "9d63b0486827cc28b8233ed9c68e37955d4c4ce9c40872f9f55dfd06676656e5"
+      "sha256": "9c2846603dfef0d906d4826edc7a762b9ba1e31419bc3b7a519c4146df44f533"
     },
     {
       "mode": "100644",
@@ -585,7 +587,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "de941e8bae8ce9c00ec5198d99238410f09727626a7940d6b2771c6c6887aa1e"
+      "sha256": "27f58f6f70b547343b296a33dc8716c918fc0f45fe8ace0cb3016d49f33ed079"
     },
     {
       "mode": "100644",
@@ -740,7 +742,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RepositoryMaintenance.swift",
-      "sha256": "0fa40fdd0f284944248b813fb5ab633fd842de73bd6e6f177a5d15bdfb7ec84c"
+      "sha256": "6cf5570351d5019f69122bef2c0529fe559b47801d8ae65192b939fc6d75aa5a"
     },
     {
       "mode": "100644",
@@ -765,7 +767,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RetainedCleanupRegistry.swift",
-      "sha256": "df0ee3b92216207a0a7be5394d15fb104e573f2388ae2e50cb8c9b51d9986f2d"
+      "sha256": "793de23a6b49ec95044ccdaae65e402e9df1fa68080dffb0ae8afe72afb67b40"
     },
     {
       "mode": "100644",

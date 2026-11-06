@@ -119,7 +119,7 @@
     "m6-inspection-worktree-pending",
     "m6-inspection-planner-stops-next-registration",
     "m6-inspection-planner-ordinary-refusal",
-    "RepositoryMaintenanceTesting",
+    "planner accessed a later registration after pending cleanup",
     "POLICY-SESSION-T20-discovery-uses-bound-policy-coordinates",
     "POLICY-SESSION-T21-discovery-service-cannot-escape-callback",
     "POLICY-SESSION-T22-discovery-cancel-and-closed-phase-before-access",
