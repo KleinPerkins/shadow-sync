@@ -2419,6 +2419,10 @@ public final class InstallationLifecycle: @unchecked Sendable {
         return file
     }
 
+    static func captureCurrentLaunchAgent(_ path: String, executable: String) throws -> PolicyAuthorityFile {
+        try captureLaunchAgent(path, programArguments: [executable, InstallationPaths.managedHostArgument])
+    }
+
     #if SHADOW_SYNC_TESTING
     static func testingCaptureLaunchAgent(_ path: String, executable: String,
                                          afterRead: () throws -> Void = {}) throws -> PolicyAuthorityFile {

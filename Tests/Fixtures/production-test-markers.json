@@ -251,6 +251,25 @@
     "m6-inspection-completion-pending-wins",
     "m6-inspection-completion-failure-wins",
     "m6-inspection-completion-account-refusal",
-    "BETA-V09-CANCEL-AFTER-BRANCH-ASSEMBLY"
+    "BETA-V09-CANCEL-AFTER-BRANCH-ASSEMBLY",
+    "m4-lifecycle-closed-forms",
+    "m4-lifecycle-status-refusals",
+    "m4-lifecycle-status-valid",
+    "m6-helper-lifecycle-between-cancel",
+    "m6-helper-lifecycle-bootout",
+    "m6-helper-lifecycle-bootstrap",
+    "m6-helper-lifecycle-kickstart",
+    "m6-helper-lifecycle-mutation-cancel",
+    "m6-helper-lifecycle-mutation-failure",
+    "m6-helper-lifecycle-next-after-spawn",
+    "m6-helper-lifecycle-next-before-record",
+    "m6-helper-lifecycle-next-before-spawn",
+    "m6-helper-lifecycle-postflight-absent",
+    "m6-helper-lifecycle-postflight-cancel",
+    "m6-helper-lifecycle-postflight-overflow",
+    "m6-helper-lifecycle-postflight-timeout",
+    "m6-helper-lifecycle-preflight-cancel",
+    "m6-helper-lifecycle-preflight-foreign",
+    "m6-helper-lifecycle-preflight-overflow"
   ]
 }

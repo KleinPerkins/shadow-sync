@@ -34,6 +34,9 @@ public enum M4SelfTestRunner {
             ("m4-custody-held-concurrent-finalizers", CustodyAnchorSelfTests.concurrentFinalizers),
             ("m4-custody-held-ownership-failure", CustodyAnchorSelfTests.ownershipFailure),
             ("m4-custody-held-signal-reap-ordering", CustodyAnchorSelfTests.signalReapOrdering),
+            ("m4-lifecycle-closed-forms", { try testLifecycleLaunchContract("forms") }),
+            ("m4-lifecycle-status-valid", { try testLifecycleLaunchContract("valid") }),
+            ("m4-lifecycle-status-refusals", { try testLifecycleLaunchContract("refusals") }),
             ("m4-lifecycle-command-output", testLifecycleCommandOutput),
             ("m4-lifecycle-command-admission", testLifecycleCommandAdmission),
             ("m4-lifecycle-command-timeout", testLifecycleCommandTimeout),
@@ -69,6 +72,59 @@ public enum M4SelfTestRunner {
         return completed
     }
 
+
+    private static func testLifecycleLaunchContract(_ mode: String) throws {
+        try withLifecycleAccount { account, _ in
+            func check(_ value: Bool) throws { if !value { throw M4SelfTestError.message("lifecycle closed contract") } }
+            func refuses(_ body: () throws -> Void) throws {
+                do { try body() } catch { return }
+                throw M4SelfTestError.message("unsafe lifecycle input admitted")
+            }
+            let command = LifecycleLaunchCommand(operation: .bootstrap, account: account)
+            if mode == "forms" {
+                for operation in LifecycleLaunchCommand.Operation.allCases {
+                    let value = LifecycleLaunchCommand(operation: operation, account: account)
+                    try check(try LifecycleLaunchCommand(arguments: value.arguments, account: account).operation == operation)
+                    for arguments in [value.arguments + ["-k"], ["sudo"] + value.arguments,
+                        [operation.rawValue, "system/" + InstallationPaths.label],
+                        [operation.rawValue, "gui/0/" + InstallationPaths.label],
+                        [operation.rawValue, "gui/\(account.uid)/com.example.foreign"]] {
+                        try refuses { _ = try LifecycleLaunchCommand(arguments: arguments, account: account) }
+                    }
+                }
+                try refuses { _ = try LifecycleLaunchCommand(arguments: [], account: account) }
+                try refuses { _ = try LifecycleLaunchCommand(arguments: ["enable", command.service], account: account) }
+            } else if mode == "valid" {
+                try check(try command.state(waitStatus: 0, stdout: command.fixtureLoadedOutput, stderr: Data())
+                    == .loaded(program: command.executable, processID: nil))
+                try check(try command.state(waitStatus: 113 << 8, stdout: Data(), stderr: command.fixtureAbsentError) == .absent)
+                try command.validatePreflight(.absent)
+                try command.validatePostflight(.loaded(program: command.executable, processID: nil))
+                try refuses { try command.validatePreflight(.loaded(program: command.executable, processID: nil)) }
+                try refuses { try command.validatePostflight(.absent) }
+            } else {
+                let valid = String(decoding: command.fixtureLoadedOutput, as: UTF8.self)
+                let invalid = [valid + "extra\n", String(valid.dropLast(2)), valid.replacingOccurrences(of: "program = ", with: "program = /foreign\n\tprogram = "),
+                    valid.replacingOccurrences(of: "program = ", with: "program = /foreign"),
+                    valid.replacingOccurrences(of: "LaunchAgent", with: "LaunchDaemon"),
+                    valid.replacingOccurrences(of: "--managed-host", with: "--unsafe"),
+                    valid.replacingOccurrences(of: "arguments = {", with: "arguments = {\nextra"),
+                    valid.replacingOccurrences(of: "type = LaunchAgent", with: "pid = 01\n\ttype = LaunchAgent"),
+                    valid.replacingOccurrences(of: "type = LaunchAgent", with: "pid = 0\n\ttype = LaunchAgent"),
+                    valid.replacingOccurrences(of: "type = LaunchAgent", with: "pid = 22\n\tpid = 23\n\ttype = LaunchAgent"),
+                    valid.replacingOccurrences(of: command.service, with: "gui/0/com.example.foreign"),
+                    valid.replacingOccurrences(of: "path = ", with: "path = /foreign"), valid + "\0"]
+                for value in invalid { try refuses { _ = try command.state(waitStatus: 0, stdout: Data(value.utf8), stderr: Data()) } }
+                for error in [command.fixtureAbsentError + Data("permission denied\n".utf8), Data("service not found".utf8), Data([255]), Data(repeating: 32, count: 65_537)] {
+                    try refuses { _ = try command.state(waitStatus: 113 << 8, stdout: Data(), stderr: error) }
+                }
+                for status: Int32 in [0, 1 << 8, SIGKILL, 113] {
+                    try refuses { _ = try command.state(waitStatus: status, stdout: Data(), stderr: command.fixtureAbsentError) }
+                }
+                try refuses { _ = try command.state(waitStatus: 0, stdout: command.fixtureLoadedOutput, stderr: command.fixtureAbsentError) }
+            }
+        }
+    }
 
     private static func withLifecycleAccount(_ body: (EffectiveAccount, String) throws -> Void) throws {
         let root = try M4TemporaryDirectory()

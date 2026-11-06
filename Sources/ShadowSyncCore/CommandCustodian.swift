@@ -44,8 +44,19 @@ public enum CommandCustodian {
         guard ["complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay",
                "trace-complete","trace-overflow","trace-resist","policy-echo","policy-resist",
                     "system-complete","system-missing","system-faildata","system-resist","system-overflow",
-               "config-complete","config-resist", "system-multiple-policy-batches", "classification-allow", "classification-protected", "classification-malformed", "classification-nonce", "classification-binding", "classification-code-allow"].contains(mode) else { return 64 }
+               "config-complete","config-resist", "system-multiple-policy-batches", "classification-allow", "classification-protected", "classification-malformed", "classification-nonce", "classification-binding", "classification-code-allow", "lifecycle-absent", "lifecycle-loaded", "lifecycle-empty", "lifecycle-foreign"].contains(mode) else { return 64 }
         if mode == "resist" || mode == "trace-resist" || mode == "policy-resist" || mode == "system-resist" || mode == "config-resist" { signal(SIGTERM, SIG_IGN) }
+        if mode.hasPrefix("lifecycle-") {
+            guard let home = ProcessInfo.processInfo.environment["HOME"],
+                  let account = try? EffectiveAccount.isolated(homeDirectory: home), fcntl(198, F_GETFD) >= 0 else { return 75 }
+            let command = LifecycleLaunchCommand(operation: .bootstrap, account: account)
+            if mode == "lifecycle-empty" { return 0 }
+            let data = mode == "lifecycle-loaded" ? command.fixtureLoadedOutput : mode == "lifecycle-foreign"
+                ? Data("Bad request.\nCould not find service \"com.example.foreign\" in domain for user gui: \(account.uid)\n".utf8)
+                : command.fixtureAbsentError
+            guard data.withUnsafeBytes({ Darwin.write(mode == "lifecycle-loaded" ? 1 : 2, $0.baseAddress, $0.count) }) == data.count else { return 74 }
+            return mode == "lifecycle-loaded" ? 0 : 113
+        }
         if mode.hasPrefix("config-") {
             var info = stat()
             guard fstat(196, &info) == 0, info.st_mode == S_IFREG | 0o600,
@@ -189,11 +200,13 @@ public enum CommandCustodian {
 /// supplies authenticated publisher, resource and lease authority.
 private enum CustodianStage: Equatable {
     case systemConfiguration, policyClassification, command
+    case lifecyclePreflight, lifecycleMutation, lifecyclePostflight
+    var isIntermediate: Bool { self != .command && self != .lifecyclePostflight }
     var preflight: DiscoveryGitCommand.Preflight? {
         switch self {
         case .systemConfiguration: .systemConfiguration
         case .policyClassification: .policyClassification
-        case .command: nil
+        case .command, .lifecyclePreflight, .lifecycleMutation, .lifecyclePostflight: nil
         }
     }
 }
@@ -208,7 +221,19 @@ private final class CustodianTarget {
         if let mode = inherited.fixtureMode {
             path = inherited.helper.path
             let targetMode: String
-            if mode.hasPrefix("serial-") {
+            if let command = inherited.lifecycleCommand {
+                switch stage {
+                case .lifecyclePreflight:
+                    targetMode = mode == "lifecycle-preflight-overflow" ? "overflow" : mode == "lifecycle-preflight-cancel" ? "resist" : mode == "lifecycle-preflight-foreign" ? "lifecycle-foreign"
+                        : command.operation == .bootstrap ? "lifecycle-absent" : "lifecycle-loaded"
+                case .lifecycleMutation:
+                    targetMode = mode == "lifecycle-mutation-cancel" ? "resist" : mode == "lifecycle-mutation-failure" ? "fail" : "lifecycle-empty"
+                case .lifecyclePostflight:
+                    targetMode = mode == "lifecycle-postflight-overflow" ? "overflow" : ["lifecycle-postflight-cancel", "lifecycle-postflight-timeout"].contains(mode) ? "resist"
+                        : command.operation == .bootout || mode == "lifecycle-postflight-absent" ? "lifecycle-absent" : "lifecycle-loaded"
+                default: throw CustodyResourceError.invalidResource
+                }
+            } else if mode.hasPrefix("serial-") {
                 switch stage {
                 case .systemConfiguration:
                     targetMode = ["serial-policy-multiple-batches", "serial-policy-code-batches"].contains(mode) ? "system-multiple-policy-batches" : mode.hasPrefix("serial-system-missing") ? "system-missing" : mode == "serial-system-overflow" ? "system-overflow" : (mode == "serial-system-failure" ? "system-faildata"
@@ -225,6 +250,8 @@ private final class CustodianTarget {
                     case "serial-policy-code-batches": targetMode = "classification-code-allow"
                     default: targetMode = "classification-allow"
                     }
+                case .lifecyclePreflight, .lifecycleMutation, .lifecyclePostflight:
+                    throw CustodyResourceError.invalidResource
                 case .command:
                     targetMode = mode == "serial-command-cancel" ? "resist" : "complete"
                 }
@@ -236,9 +263,21 @@ private final class CustodianTarget {
         #endif
         let qualified: QualifiedCommandGraph
         let args: [String]
-        if let discovery = inherited.discovery {
+        if let lifecycle = inherited.lifecycle {
+            try lifecycle.revalidate()
+            switch stage {
+            case .lifecyclePreflight, .lifecyclePostflight:
+                qualified = lifecycle.readGraph; args = lifecycle.command.printArguments
+            case .lifecycleMutation:
+                qualified = lifecycle.mutationGraph; args = lifecycle.command.arguments
+            default: throw CustodyResourceError.invalidResource
+            }
+            environment = inherited.request.environment
+        } else if let discovery = inherited.discovery {
             try discovery.revalidate()
             switch stage {
+            case .lifecyclePreflight, .lifecycleMutation, .lifecyclePostflight:
+                throw CustodyResourceError.invalidResource
             case .systemConfiguration:
                 qualified = discovery.systemGraph; args = SystemGitConfigurationCommand.arguments
                 var values = SystemGitConfigurationCommand.environment(account: inherited.account)
@@ -322,6 +361,8 @@ private final class CustodianLoop {
     private var traceCount: UInt64 = 0
     private var terminalPublished = false, terminalTime: UInt64?
     private var discoveryPostflightComplete = false
+    private var lifecyclePostflightComplete = false
+    private var lifecyclePreflightState: LaunchAgentState?
 
     init(inherited: CustodyInheritedCommand) throws {
         self.inherited = inherited
@@ -330,7 +371,8 @@ private final class CustodianLoop {
         #if SHADOW_SYNC_TESTING
         serial = serial || inherited.fixtureMode?.hasPrefix("serial-") == true
         #endif
-        stages = serial ? [.systemConfiguration, .policyClassification, .command] : [.command]
+        stages = inherited.lifecycleCommand != nil ? [.lifecyclePreflight, .lifecycleMutation, .lifecyclePostflight]
+            : (serial ? [.systemConfiguration, .policyClassification, .command] : [.command])
         discoveryCommand = try inherited.discovery?.command ?? (serial ? DiscoveryGitCommand(
             arguments: ["--no-replace-objects", "--no-lazy-fetch", "symbolic-ref", "--quiet", "--short", "HEAD"],
             captureTransportConfiguration: false, timeoutSeconds: DiscoveryGitCommand.maximumWorkSeconds) : nil)
@@ -428,7 +470,7 @@ private final class CustodianLoop {
         guard try state.permitsResume(now: now), controlQuiescent() else { consumeControl(); throw CustodyRecordError.fenced }
         guard now < stageBudget.work else { throw CustodyProtocolError.invalidBudget }
         #if SHADOW_SYNC_TESTING
-        if stageIndex == 1, ["serial-next-before-spawn", "serial-system-missing-next-before-spawn"].contains(inherited.fixtureMode ?? "") { throw CustodyResourceError.invalidResource }
+        if stageIndex == 1, ["serial-next-before-spawn", "serial-system-missing-next-before-spawn", "lifecycle-next-before-spawn"].contains(inherited.fixtureMode ?? "") { throw CustodyResourceError.invalidResource }
         #endif
         if journal.current.phase == .prepared { try journal.admit() }
         #if SHADOW_SYNC_TESTING
@@ -504,14 +546,18 @@ private final class CustodianLoop {
         spawned = true
         guard let anchor else { throw CustodyRecordError.fenced }
         #if SHADOW_SYNC_TESTING
-        if stageIndex == 1, ["serial-next-after-spawn", "serial-system-missing-next-after-spawn"].contains(inherited.fixtureMode ?? "") { throw CustodyResourceError.invalidResource }
+        if stageIndex == 1, ["serial-next-after-spawn", "serial-system-missing-next-after-spawn", "lifecycle-next-after-spawn"].contains(inherited.fixtureMode ?? "") { throw CustodyResourceError.invalidResource }
         #endif
         try target.validate(anchor)
         owner = try anchor.transfer(expectedExecutable:target.path,generation:inherited.request.binding.callerGeneration,reapPolicy:.afterGroupDrain,qualifiedGraph:target.graph)
         #if SHADOW_SYNC_TESTING
-        if stageIndex == 1, ["serial-next-before-record", "serial-system-missing-next-before-record"].contains(inherited.fixtureMode ?? "") { throw CustodyResourceError.invalidResource }
+        if stageIndex == 1, ["serial-next-before-record", "serial-system-missing-next-before-record", "lifecycle-next-before-record"].contains(inherited.fixtureMode ?? "") { throw CustodyResourceError.invalidResource }
         #endif
         try journal.executing(owner!)
+        if stage == .lifecycleMutation {
+            guard let command = inherited.lifecycleCommand, let preflight = lifecyclePreflightState else { throw CustodyRecordError.fenced }
+            try command.validatePreflight(preflight)
+        }
         try inherited.revalidateResources(); try inherited.revalidateParent(); try target.validate(anchor)
         guard owner!.prepareGraphSignal() == .ready else { throw CustodyRecordError.fenced }
         #if SHADOW_SYNC_TESTING
@@ -526,7 +572,7 @@ private final class CustodianLoop {
               owner!.resume(before: MonotonicDeadline(uptimeNanoseconds: min(state.budget.work, stageBudget.work))) else { throw CustodyRecordError.fenced }
         resumed = true
         #if SHADOW_SYNC_TESTING
-        if inherited.fixtureMode?.hasPrefix("serial-") == true {
+        if inherited.fixtureMode?.hasPrefix("serial-") == true || inherited.lifecycleCommand != nil {
             try testingSerialMarker("resumed", targetPID: owner!.identity.processID)
         }
         #endif
@@ -606,7 +652,7 @@ private final class CustodianLoop {
             }
         }
         #if SHADOW_SYNC_TESTING
-        if !isError, inherited.fixtureMode?.hasPrefix("serial-") == true,
+        if !isError, inherited.fixtureMode?.hasPrefix("serial-") == true || inherited.lifecycleCommand != nil,
            !serialReadyPublished, let owner,
            stdoutBuffer.starts(with: Data("target-started:".utf8)), stdoutBuffer.contains(10) {
             // The actual target wrote this after installing its TERM handler.
@@ -617,7 +663,7 @@ private final class CustodianLoop {
         #endif
         // Preflight output is consumed inside this custodian and never mixed
         // with the final command's public streams. Counts still enforce bounds.
-        guard stage == .command else { return }
+        guard stage == .command || (stage == .lifecyclePostflight && lifecyclePostflightComplete) else { return }
         let data = isError ? stderrBuffer : stdoutBuffer
         guard !data.isEmpty else { return }
         let fd = isError ? inherited.error.value : inherited.output.value
@@ -667,10 +713,41 @@ private final class CustodianLoop {
         return !spawned && stdoutEnded && stderrEnded && traceEnded
     }
     private func advanceStage() throws -> Bool {
-        guard stage != .command, reason == .none, targetDrained,
+        guard stage.isIntermediate, reason == .none, targetDrained,
               let owner, owner.graphRetirementPermitted,
               case .reaped(let raw) = owner.observation else { return false }
         guard now < stageBudget.work else { beginDrain(.timeout); return false }
+        if let command = inherited.lifecycleCommand {
+            if stage == .lifecyclePreflight {
+                lifecyclePreflightState = try journal.retireLifecyclePreflightChild(owner,
+                    stdout: stdoutBuffer, stderr: stderrBuffer, streamsDrained: targetDrained)
+            } else {
+                guard stage == .lifecycleMutation, raw == 0, stdoutBuffer.isEmpty, stderrBuffer.isEmpty else {
+                    throw CustodyResourceError.invalidResource
+                }
+                try journal.retireSerialChild(owner, streamsDrained: targetDrained)
+            }
+            #if SHADOW_SYNC_TESTING
+            if inherited.fixtureMode != nil {
+                try testingSerialMarker("retired", targetPID: owner.identity.processID)
+                if inherited.fixtureMode == "lifecycle-between-cancel", stageIndex == 0 {
+                    guard let control = inherited.descriptors[.control] else { throw CustodyResourceError.invalidResource }
+                    while now < state.budget.work {
+                        var ready = pollfd(fd: control.value, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)
+                        if poll(&ready, 1, 2) > 0 { break }
+                    }
+                }
+            }
+            #endif
+            consumeControl()
+            guard reason == .none, try state.permitsResume(now: now), controlQuiescent(),
+                  stageIndex + 1 < stages.count else { throw CustodyRecordError.fenced }
+            try inherited.request.budget.validate(kind: .launchctlMutation, permittedWorkSeconds: 10, now: now)
+            if stage == .lifecyclePreflight { try command.validatePreflight(lifecyclePreflightState!) }
+            let next = try CustodianTarget(inherited, stage: stages[stageIndex + 1])
+            replaceRetiredTarget(next, budget: inherited.request.budget)
+            return true
+        }
         if stage == .systemConfiguration {
             let preflight = try journal.retireSystemConfigurationChild(owner,
                 stdout: stdoutBuffer, stderr: stderrBuffer,
@@ -700,7 +777,7 @@ private final class CustodianLoop {
         // Both paths retain the actual retired owner and exact wait status;
         // an observed PID or decoded journal cannot authorize replacement.
         #if SHADOW_SYNC_TESTING
-        if inherited.fixtureMode?.hasPrefix("serial-") == true {
+        if inherited.fixtureMode?.hasPrefix("serial-") == true || inherited.lifecycleCommand != nil {
             try testingSerialMarker("retired", targetPID: owner.identity.processID)
             if inherited.fixtureMode == "serial-between-cancel", stageIndex == 0 {
                 // Pause only this fixture before the next spawn. The production
@@ -779,6 +856,14 @@ private final class CustodianLoop {
             }
         }
         let nextTarget = try CustodianTarget(inherited, stage: next)
+        replaceRetiredTarget(nextTarget, budget: nextBudget)
+        configurationPolicyBatch = nextPolicyBatch; configurationPolicyInput = nextPolicyInput; configurationPolicyCode = nextPolicyCode
+        #if SHADOW_SYNC_TESTING
+        serialReadyPublished = false
+        #endif
+        return true
+    }
+    private func replaceRetiredTarget(_ nextTarget: CustodianTarget, budget: CustodyBudget) {
         // No predecessor resources are dropped until its graph, pipes and exact
         // wait have converged. Existing leases and original timeline stay held.
         stdoutRead?.closeNow(); stderrRead?.closeNow(); traceRead?.closeNow()
@@ -788,12 +873,27 @@ private final class CustodianLoop {
         stdoutEnded = true; stderrEnded = true; traceEnded = true
         stdoutBroken = false; stderrBroken = false; traceBroken = false
         spawned = false; resumed = false; sentTerm = false; sentKill = false
-        stageIndex += 1; stageBudget = nextBudget; target = nextTarget
-        configurationPolicyBatch = nextPolicyBatch; configurationPolicyInput = nextPolicyInput; configurationPolicyCode = nextPolicyCode
+        stageIndex += 1; stageBudget = budget; target = nextTarget
         #if SHADOW_SYNC_TESTING
         serialReadyPublished = false
         #endif
-        return true
+    }
+    private func completeLifecyclePostflight() throws {
+        guard stage == .lifecyclePostflight, !lifecyclePostflightComplete,
+              let command = inherited.lifecycleCommand, let owner,
+              targetDrained, owner.graphRetirementPermitted, case .reaped(let raw) = owner.observation else {
+            throw CustodyRecordError.fenced
+        }
+        let observed = try command.state(waitStatus: raw, stdout: stdoutBuffer, stderr: stderrBuffer)
+        try command.validatePostflight(observed)
+        if command.operation == .bootout, case .loaded(_, let pid) = lifecyclePreflightState, let pid {
+            // A successful service removal alone is not proof the prior host
+            // exited. Never signal this observed (non-child) process here.
+            guard SystemLaunchAgentController().processDisposition(processID: pid,
+                expectedProgram: command.executable) == .absent else { throw CustodyRecordError.fenced }
+        }
+        try inherited.revalidateResources(); try inherited.revalidateParent(); try journal.leases.validate()
+        lifecyclePostflightComplete = true
     }
     func run() throws -> Int32 {
         try status(.ready)
@@ -806,9 +906,13 @@ private final class CustodianLoop {
                     catch { beginDrain(reason == .none ? .invalidResource : reason) }
                 }
                 relay(false); relay(true); relayTrace(); drainTarget()
-                if targetDrained, stage != .command, reason == .none, spawned {
+                if targetDrained, stage.isIntermediate, reason == .none, spawned {
                     do { if try advanceStage() { continue } }
                     catch { beginDrain(reason == .none ? .invalidResource : reason) }
+                }
+                if stage == .lifecyclePostflight, targetDrained, reason == .none, spawned, !lifecyclePostflightComplete {
+                    do { try completeLifecyclePostflight() }
+                    catch { beginDrain(.invalidResource) }
                 }
                 if stage != .command && reason != .none && targetDrained {
                     // Refused preflight data is not final-command output.

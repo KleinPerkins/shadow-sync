@@ -12,6 +12,14 @@ final class CustodyInheritedCommand {
     let account: EffectiveAccount
     let policy: PolicyCommandAuthority?
     let discovery: InheritedDiscoveryResources?
+    private(set) var lifecycle: LifecycleLaunchAuthority?
+    var lifecycleCommand: LifecycleLaunchCommand? {
+        #if SHADOW_SYNC_TESTING
+        if let fixtureMode { return LifecycleLaunchCommand.fixture(mode: fixtureMode, account: account) }
+        #endif
+        return lifecycle?.command
+    }
+
     private(set) var frozenConfiguration: CustodyInheritedFrozenConfiguration?
     let statePath: String
     let descriptors: [CustodyDescriptorClaim.Role: OwnedFileDescriptor]
@@ -105,11 +113,11 @@ final class CustodyInheritedCommand {
         let request = try UnvalidatedCustodyRequest.decode(raw, expected: binding,
             permittedWorkSeconds: kind == .discoveryGit ? DiscoveryGitCommand.maximumWorkSeconds : min(10, kind.maximumWorkSeconds))
         let hasFrozenConfiguration = request.descriptors.contains { $0.role == .gitFile }
-        // Coordinator bootstrap currently admits observation only. It cannot
-        // borrow discovery authority or infer mutation permission from a label.
+        // Coordinator roles cannot borrow repository authority. Mutation needs
+        // actual lifecycle leases and the independently validated closed adapter.
         if helper.isLifecycleCoordinator {
-            guard request.authority == .observation,
-                  request.kind == .launchctlRead || request.kind == .signatureCheck else {
+            guard (request.authority == .observation && [.launchctlRead, .signatureCheck].contains(request.kind))
+                || (request.authority == .lifecycleMutation && [.launchctlRead, .signatureCheck, .launchctlMutation].contains(request.kind)) else {
                 throw CustodyResourceError.invalidResource
             }
         }
@@ -121,7 +129,7 @@ final class CustodyInheritedCommand {
         }
         // Production discovery v2 carries only sealed intent. Frozen resources
         // are created by this helper after policy; inherited 195/196 refuse.
-        var permittedKind = [.launchctlRead, .signatureCheck, .policyClassify, .systemGitConfig].contains(request.kind)
+        var permittedKind = [.launchctlRead, .launchctlMutation, .signatureCheck, .policyClassify, .systemGitConfig].contains(request.kind)
             || (request.kind == .discoveryGit && !hasFrozenConfiguration)
         #if SHADOW_SYNC_TESTING
         if fixture, !discoveryFixture, request.kind == .discoveryGit, request.traceLimit > 0 || hasFrozenConfiguration || request.arguments.first?.hasPrefix("serial-") == true { permittedKind = true }
@@ -194,7 +202,8 @@ final class CustodyInheritedCommand {
                     "serial-system-cancel", "serial-policy-cancel", "serial-command-cancel", "serial-between-cancel",
                     "serial-next-before-spawn", "serial-next-after-spawn", "serial-next-before-record",
                     "serial-system-missing-next-before-spawn", "serial-system-missing-next-after-spawn", "serial-system-missing-next-before-record",
-                    "serial-policy-timeout", "serial-system-overflow", "serial-policy-overflow", "serial-policy-protected", "serial-policy-malformed", "serial-policy-wrong-nonce", "serial-policy-wrong-binding", "serial-policy-multiple-batches", "serial-system-missing", "serial-policy-code-batches", "serial-postflight-cancel", "serial-postflight-eof", "serial-postflight-timeout"].contains(request.arguments[0]),
+                    "serial-policy-timeout", "serial-system-overflow", "serial-policy-overflow", "serial-policy-protected", "serial-policy-malformed", "serial-policy-wrong-nonce", "serial-policy-wrong-binding", "serial-policy-multiple-batches", "serial-system-missing", "serial-policy-code-batches", "serial-postflight-cancel", "serial-postflight-eof", "serial-postflight-timeout"].contains(request.arguments[0]) || LifecycleLaunchCommand.fixtureModes.contains(request.arguments[0]),
+                  request.arguments[0].hasPrefix("lifecycle-") == (request.kind == .launchctlMutation),
                   (request.arguments[0].hasPrefix("trace-") || request.arguments[0].hasPrefix("config-") || request.arguments[0].hasPrefix("serial-")) == (request.kind == .discoveryGit),
                   request.arguments[0].hasPrefix("policy-") == (request.kind == .policyClassify),
                    request.arguments[0].hasPrefix("system-") == (request.kind == .systemGitConfig),
@@ -247,6 +256,8 @@ final class CustodyInheritedCommand {
             policy = nil; discovery = nil
             if !fixture, request.kind == .systemGitConfig {
                 try SystemGitConfigurationCommand.validate(request, account: account)
+            } else if !fixture, request.kind == .launchctlMutation {
+                lifecycle = try LifecycleLaunchAuthority(request: request, helper: helper, account: account)
             } else if !fixture {
                 let expected = request.kind == .launchctlRead
                     ? ["print", "gui/\(account.uid)/\(InstallationPaths.label)"]
@@ -292,6 +303,7 @@ final class CustodyInheritedCommand {
     func revalidateResources() throws {
         try revalidatePersistenceResources()
         try discovery?.revalidate()
+        try lifecycle?.revalidate()
         try frozenConfiguration?.revalidate()
     }
     func revalidatePersistenceResources() throws {

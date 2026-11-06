@@ -430,6 +430,22 @@ public enum M6SelfTestRunner {
         try run("m6-helper-serial-postflight-cancel") { try CustodyHelperSelfTests.serial("serial-postflight-cancel", cancelAt: 2) }
         try run("m6-helper-serial-postflight-eof") { try CustodyHelperSelfTests.serial("serial-postflight-eof", cancelAt: 2, eof: true) }
         try run("m6-helper-serial-postflight-timeout") { try CustodyHelperSelfTests.serial("serial-postflight-timeout") }
+        try run("m6-helper-lifecycle-next-before-spawn") { try CustodyHelperSelfTests.lifecycle("lifecycle-next-before-spawn") }
+        try run("m6-helper-lifecycle-next-after-spawn") { try CustodyHelperSelfTests.lifecycle("lifecycle-next-after-spawn") }
+        try run("m6-helper-lifecycle-preflight-overflow") { try CustodyHelperSelfTests.lifecycle("lifecycle-preflight-overflow") }
+        try run("m6-helper-lifecycle-postflight-overflow") { try CustodyHelperSelfTests.lifecycle("lifecycle-postflight-overflow") }
+        try run("m6-helper-lifecycle-bootstrap") { try CustodyHelperSelfTests.lifecycle("lifecycle-bootstrap") }
+        try run("m6-helper-lifecycle-kickstart") { try CustodyHelperSelfTests.lifecycle("lifecycle-kickstart") }
+        try run("m6-helper-lifecycle-bootout") { try CustodyHelperSelfTests.lifecycle("lifecycle-bootout") }
+        try run("m6-helper-lifecycle-preflight-foreign") { try CustodyHelperSelfTests.lifecycle("lifecycle-preflight-foreign") }
+        try run("m6-helper-lifecycle-mutation-failure") { try CustodyHelperSelfTests.lifecycle("lifecycle-mutation-failure") }
+        try run("m6-helper-lifecycle-postflight-absent") { try CustodyHelperSelfTests.lifecycle("lifecycle-postflight-absent") }
+        try run("m6-helper-lifecycle-preflight-cancel") { try CustodyHelperSelfTests.lifecycle("lifecycle-preflight-cancel", cancelAt: 0) }
+        try run("m6-helper-lifecycle-mutation-cancel") { try CustodyHelperSelfTests.lifecycle("lifecycle-mutation-cancel", cancelAt: 1) }
+        try run("m6-helper-lifecycle-postflight-cancel") { try CustodyHelperSelfTests.lifecycle("lifecycle-postflight-cancel", cancelAt: 2) }
+        try run("m6-helper-lifecycle-between-cancel") { try CustodyHelperSelfTests.lifecycle("lifecycle-between-cancel", cancelAt: 0, eof: true) }
+        try run("m6-helper-lifecycle-next-before-record") { try CustodyHelperSelfTests.lifecycle("lifecycle-next-before-record") }
+        try run("m6-helper-lifecycle-postflight-timeout") { try CustodyHelperSelfTests.lifecycle("lifecycle-postflight-timeout") }
         try run("m6-helper-serial-complete") { try CustodyHelperSelfTests.serial("serial-complete") }
         try run("m6-helper-serial-system-failure") { try CustodyHelperSelfTests.serial("serial-system-failure") }
         try run("m6-helper-serial-policy-failure") { try CustodyHelperSelfTests.serial("serial-policy-failure") }
@@ -3237,11 +3253,12 @@ private enum CustodyHelperSelfTests {
     static let policyInput = Data(Array(repeating: Array((0..<256).map(UInt8.init)), count: 1024).joined())
     static let policyCode = Data(Array(repeating: Array((0..<256).reversed().map(UInt8.init)), count: 256).joined())
     static func resources(_ location: StateLocation, mode: String, work: TimeInterval = 2,
-                          output: UInt64 = 65_536, term: TimeInterval = 0.1) throws -> CustodyRequestResources {
+                          output: UInt64 = 65_536, term: TimeInterval = 0.1, lifecycleOwner: RunAuthority? = nil) throws -> CustodyRequestResources {
         let home = location.anchorPath + "/home"
         try FileManager.default.createDirectory(atPath:home,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
         let account = try EffectiveAccount.isolated(homeDirectory:home)
-        let scope = try CustodyMetadataScope(leases:CustodyAuthorityLeaseSet.retainReadLeases(at:location),
+        let leases = try lifecycleOwner?.retainCommandLeases() ?? CustodyAuthorityLeaseSet.retainReadLeases(at: location)
+        let scope = try CustodyMetadataScope(leases: leases,
             releaseSHA256:String(repeating:"c",count:64),generation:RunIdentity.make())
         let fd = open("/",O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw Failure(message:"fixture cwd") }
@@ -3249,7 +3266,8 @@ private enum CustodyHelperSelfTests {
         let serial = mode.hasPrefix("serial-")
         let policy = mode.hasPrefix("policy-")
         let system = mode.hasPrefix("system-")
-        let kind: CustodyCommandKind = system ? .systemGitConfig : (policy ? .policyClassify : (tracing || serial ? .discoveryGit : .launchctlRead))
+        let kind: CustodyCommandKind = mode.hasPrefix("lifecycle-") ? .launchctlMutation
+            : system ? .systemGitConfig : (policy ? .policyClassify : (tracing || serial ? .discoveryGit : .launchctlRead))
         return try CustodyRequestResources(scope:scope,kind:kind,arguments:[mode],
             environment:system ? SystemGitConfigurationCommand.environment(account:account) : ClosedProcessRunner.environment(account:account),
             budget:CustodyBudget.make(kind:kind,workSeconds:work,termSeconds:term,killSeconds:0.2,receiptSeconds:0.2),
@@ -3402,6 +3420,71 @@ private enum CustodyHelperSelfTests {
                 }
                 throw error
             }
+        }
+    }
+    static func lifecycle(_ mode: String, cancelAt: Int? = nil, eof: Bool = false) throws {
+        try CustodyRegistrySelfTests.fixture { location, registry in
+            let authority = try RunAuthority.acquireLifecycleMutation(at: location)
+            defer { authority.release() }
+            var retained: CustodyRequestResources? = try resources(location, mode: mode,
+                work: mode == "lifecycle-postflight-timeout" ? 1 : 5, lifecycleOwner: authority)
+            let request = retained!.request
+            let handle = try registry.start(resources: retained!, helper: CustodyHelperExecutable.testingCustodian())
+            // Only registry/helper ownership survives. Keeping the original
+            // authority here would conceal a gap in inherited lock custody.
+            authority.release(); retained = nil
+            if let cancelAt {
+                let event = mode == "lifecycle-between-cancel" ? "retired" : "ready"
+                try until { String(decoding: handle.snapshot().stderr, as: UTF8.self)
+                    .contains("shadow-sync-fixture-serial:\(cancelAt):\(event):") }
+                do { _ = try RunAuthority.acquireLifecycleMutation(at: location); throw Failure(message: "lifecycle lease gap") }
+                catch is SecureStateError {}
+                if eof { registry.testingCloseControl(handle) } else { handle.cancel() }
+            }
+            try until(seconds: mode == "lifecycle-postflight-timeout" ? ChildProcessBudget.seconds(3) : 8) {
+                handle.snapshot().phase == .finished
+            }
+            let result = handle.snapshot()
+            guard let journal = result.journal else { throw Failure(message: "lifecycle terminal missing") }
+            let lines = String(decoding: result.stderr, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+            let markers = lines.filter { $0.hasPrefix("shadow-sync-fixture-serial:") }.map { $0.split(separator: ":").map(String.init) }
+            try check(markers.allSatisfy { $0.count == 4 && Int($0[1]) != nil && UInt32($0[3]) != nil }, "invalid lifecycle markers")
+            let resumed = markers.filter { $0[2] == "resumed" }, retired = markers.filter { $0[2] == "retired" }
+            let complete = ["lifecycle-bootstrap", "lifecycle-kickstart", "lifecycle-bootout"].contains(mode)
+            let timeout = mode == "lifecycle-postflight-timeout"
+            let expectedStages = cancelAt.map { $0 + 1 } ?? (mode.hasPrefix("lifecycle-preflight-") || mode.hasPrefix("lifecycle-next-") ? 1 : mode == "lifecycle-mutation-failure" ? 2 : 3)
+            try check(resumed.count == expectedStages && resumed.map { Int($0[1])! } == Array(0..<expectedStages), "lifecycle stage admission changed")
+            for index in 1..<resumed.count {
+                let previous = markers.firstIndex { $0[1] == String(index - 1) && $0[2] == "retired" }
+                let next = markers.firstIndex { $0[1] == String(index) && $0[2] == "resumed" }
+                try check(previous != nil && next != nil && previous! < next!, "lifecycle predecessor not retired")
+            }
+            try check(journal.budget == request.budget && journal.authority == .lifecycleMutation,
+                      "lifecycle lost its original budget or authority")
+            let expectedReason: CustodyReason = cancelAt != nil ? .cancelled : timeout ? .timeout
+                : mode.hasSuffix("overflow") ? .outputLimit : complete ? .none : .invalidResource
+            try check(journal.reason == expectedReason, "lifecycle refusal reason changed: \(journal.reason)")
+            if complete {
+                let account = try EffectiveAccount.isolated(homeDirectory: location.anchorPath + "/home")
+                let command = LifecycleLaunchCommand.fixture(mode: mode, account: account)!
+                let cleanError = Data(lines.filter { !$0.hasPrefix("shadow-sync-fixture-serial:") }.joined(separator: "\n").utf8)
+                let clean = CustodyRegistryResult(phase: result.phase, reason: result.reason, journal: journal,
+                    stdout: result.stdout, stderr: cleanError)
+                try command.validateCompletion(clean)
+                try check(retired.count == 2 && journal.waitStatus == (mode == "lifecycle-bootout" ? 113 << 8 : 0), "lifecycle fabricated child status")
+            } else {
+                try check(journal.outcome != .completed, "lifecycle failure was successful")
+                if mode.hasPrefix("lifecycle-next-") {
+                    try check(journal.waitStatus == 113 << 8, "failed next spawn lost the actual retired preflight status")
+                }
+                if mode.hasSuffix("overflow") { try check(result.stdout.isEmpty, "refused lifecycle output escaped") }
+                if cancelAt != nil && mode != "lifecycle-between-cancel" || timeout {
+                    try check(journal.waitStatus == UInt32(SIGKILL), "lifecycle resistant child was not drained")
+                }
+            }
+            try until { registry.testingCount == 0 }
+            let next = try RunAuthority.acquireLifecycleMutation(at: location)
+            next.release()
         }
     }
     static func configurationPlan(refusals: Bool) throws {

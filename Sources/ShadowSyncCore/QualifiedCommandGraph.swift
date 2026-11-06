@@ -8,6 +8,7 @@ import Security
 struct CommandGraphCatalog {
     enum Adapter: String {
         case launchctlRead = "launchctl-read/v1"
+        case launchctlMutation = "launchctl-mutation/v1"
         case signatureCheck = "signature-check/v1"
         case discoveryGit = "discovery-git/v1"
         case systemGitConfig = "system-git-config/v1"
@@ -15,6 +16,7 @@ struct CommandGraphCatalog {
         var kind: CustodyCommandKind {
             switch self {
             case .launchctlRead: .launchctlRead
+            case .launchctlMutation: .launchctlMutation
             case .signatureCheck: .signatureCheck
             case .discoveryGit: .discoveryGit
             case .systemGitConfig: .systemGitConfig
@@ -25,7 +27,7 @@ struct CommandGraphCatalog {
         // tool selection, path, command form or graph needs its own review.
         var paths: [String] {
             switch self {
-            case .launchctlRead: ["/bin/launchctl"]
+            case .launchctlRead, .launchctlMutation: ["/bin/launchctl"]
             case .signatureCheck: ["/usr/bin/codesign"]
             case .discoveryGit, .systemGitConfig: ["/usr/bin/git", "/Library/Developer/CommandLineTools/usr/bin/git"]
             // This one fixed relative path is resolved only through verified

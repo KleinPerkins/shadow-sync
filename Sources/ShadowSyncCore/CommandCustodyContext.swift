@@ -94,6 +94,12 @@ final class CommandCustodyContext: @unchecked Sendable {
         return try Self(leases: authority.retainCommandLeases(), helper: helper,
                         account: EffectiveAccount.current(), location: StateLocation.production(), admissionSource: .run(WeakRun(authority)))
     }
+    static func borrowing(_ authority: RunAuthority, publisher: LifecyclePublisher) throws -> CommandCustodyContext {
+        let leases = try authority.retainCommandLeases()
+        guard leases.mode == .lifecycleMutation else { throw CustodyRecordError.fenced }
+        return try Self(leases: leases, helper: CustodyHelperExecutable.lifecycle(publisher),
+            account: publisher.account, location: StateLocation.production(), admissionSource: .run(WeakRun(authority)))
+    }
     static func observing(_ authority: RunAuthority) throws -> CommandCustodyContext {
         let helper = try CustodyHelperExecutable.production()
         return try Self(leases: authority.retainObservationLeases(), helper: helper,
@@ -194,6 +200,26 @@ final class CommandCustodyContext: @unchecked Sendable {
             workingDirectory: directory)
         try revalidate()
         try budget.validate(kind: kind, permittedWorkSeconds: 10, now: DispatchTime.now().uptimeNanoseconds)
+        return PreparedCustodyCommand(context: self, helper: helper, resources: resources, cancellation: cancellation)
+    }
+
+    func prepareLifecycle(_ operation: LifecycleLaunchCommand.Operation,
+                          cancellation: CancellationToken? = nil) throws -> PreparedCustodyCommand {
+        guard mode == .lifecycleMutation, helper.isLifecycleCoordinator else { throw CustodyRecordError.fenced }
+        let budget = try CustodyBudget.make(kind: .launchctlMutation, workSeconds: 10)
+        try revalidate()
+        let command = LifecycleLaunchCommand(operation: operation, account: account)
+        let raw = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard raw >= 0 else { throw CustodyResourceError.systemCall(errno) }
+        let resources = try CustodyRequestResources(scope: scope, kind: .launchctlMutation,
+            arguments: command.arguments, environment: ClosedProcessRunner.environment(account: account),
+            budget: budget, stdoutLimit: UInt64(LifecycleCommandRunner.outputLimit),
+            stderrLimit: UInt64(LifecycleCommandRunner.outputLimit), workingDirectory: OwnedFileDescriptor(raw))
+        // Refuse unqualified tools or installed input before registry reservation;
+        // the helper reconstructs the same authority independently.
+        _ = try LifecycleLaunchAuthority(request: resources.request, helper: helper, account: account)
+        try revalidate(); try budget.validate(kind: .launchctlMutation, permittedWorkSeconds: 10,
+                                             now: DispatchTime.now().uptimeNanoseconds)
         return PreparedCustodyCommand(context: self, helper: helper, resources: resources, cancellation: cancellation)
     }
 
@@ -325,7 +351,7 @@ final class PreparedCustodyCommand: @unchecked Sendable {
         guard !admissionClosed else { throw CustodyRecordError.fenced }
         try context.revalidate()
         guard context.owns(resources.scope), resources.request.binding.releaseSHA256 == helper.releaseSHA256,
-              [.launchctlRead, .signatureCheck, .policyClassify, .systemGitConfig, .discoveryGit].contains(resources.request.kind),
+              [.launchctlRead, .launchctlMutation, .signatureCheck, .policyClassify, .systemGitConfig, .discoveryGit].contains(resources.request.kind),
               (resources.request.kind == .policyClassify) == (policy != nil),
               (resources.request.kind == .systemGitConfig) == (graph != nil),
               (resources.request.kind == .discoveryGit) == (discovery != nil) else { throw CustodyRecordError.fenced }

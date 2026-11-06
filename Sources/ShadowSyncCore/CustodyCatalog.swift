@@ -803,7 +803,7 @@ final class CustodyHelperJournal {
         try replace(current.advancing(to: .admitted, custodian: helperObservation))
     }
     private func recordSerialRetirement(_ owner: OwnedDirectChild, streamsDrained: Bool) throws -> Int32 {
-        guard inherited.request.kind == .discoveryGit, current.phase == .executing,
+        guard [.discoveryGit, .launchctlMutation].contains(inherited.request.kind), current.phase == .executing,
               serialRetirement == nil, recordedOwner === owner,
               owner.graphRetirementPermitted, streamsDrained,
               case .reaped(let raw) = owner.observation, raw >= 0,
@@ -821,6 +821,15 @@ final class CustodyHelperJournal {
             stdout: stdout, stderr: stderr, account: inherited.account)
         guard try recordSerialRetirement(owner, streamsDrained: streamsDrained) == raw else { throw CustodyRecordError.fenced }
         return preflight
+    }
+    func retireLifecyclePreflightChild(_ owner: OwnedDirectChild, stdout: Data,
+                                      stderr: Data, streamsDrained: Bool) throws -> LaunchAgentState {
+        guard current.ordinal == 2, inherited.request.kind == .launchctlMutation,
+              let command = inherited.lifecycleCommand, case .reaped(let raw) = owner.observation else { throw CustodyRecordError.fenced }
+        let state = try command.state(waitStatus: raw, stdout: stdout, stderr: stderr)
+        try command.validatePreflight(state)
+        guard try recordSerialRetirement(owner, streamsDrained: streamsDrained) == raw else { throw CustodyRecordError.fenced }
+        return state
     }
     func retireSerialChild(_ owner: OwnedDirectChild, streamsDrained: Bool) throws {
         guard current.ordinal > 2, case .reaped(0) = owner.observation else { throw CustodyRecordError.fenced }
