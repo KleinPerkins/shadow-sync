@@ -978,6 +978,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-ci-crash-diagnostic": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_ci_crash_diagnostic"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-ci-executor": {
       "argv": [
         "python3",
@@ -1365,6 +1377,7 @@
         "tooling-test-app-credential-readiness",
         "tooling-test-app-workflow",
         "tooling-test-application-ci",
+        "tooling-test-ci-crash-diagnostic",
         "tooling-test-ci-executor",
         "tooling-test-ci-git-source",
         "tooling-test-ci-results",
@@ -2928,6 +2941,18 @@
           "test_application_ci.TrustedBaseRegistrationTests.test_malformed_base_never_falls_back_to_routine_or_initial",
           "test_application_ci.TrustedBaseRegistrationTests.test_symlink_base_refused_without_following_target",
           "test_application_ci.TrustedBaseRegistrationTests.test_zero_or_noncommit_base_refuses"
+        ],
+        "kind": "static"
+      },
+      "tooling-test-ci-crash-diagnostic": {
+        "cases": [
+          "test_ci_crash_diagnostic.CrashDiagnosticTests.test_capture_reads_only_matching_fixture_report_and_keeps_failure",
+          "test_ci_crash_diagnostic.CrashDiagnosticTests.test_diagnostic_write_failure_preserves_original_failure",
+          "test_ci_crash_diagnostic.CrashDiagnosticTests.test_foreign_pid_path_name_or_uuid_refuses",
+          "test_ci_crash_diagnostic.CrashDiagnosticTests.test_invalid_frame_and_empty_trace_refuse",
+          "test_ci_crash_diagnostic.CrashDiagnosticTests.test_local_execution_and_noncrashes_never_read_host_reports",
+          "test_ci_crash_diagnostic.CrashDiagnosticTests.test_projection_retains_frames_without_paths_or_machine_fields",
+          "test_ci_crash_diagnostic.CrashDiagnosticTests.test_stale_future_and_unzoned_capture_times_refuse"
         ],
         "kind": "static"
       },

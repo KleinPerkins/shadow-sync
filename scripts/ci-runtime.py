@@ -7,11 +7,13 @@ from pathlib import Path
 import pwd
 import stat
 import sys
+import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from runtime_guardian_executor import execute
+from ci_crash_diagnostic import capture as capture_crash
 
 
 def load(name):
@@ -195,10 +197,13 @@ def run_suite(suite, root, build_root, record, context):
     try:
         for behavior in ('cancel-before-run', 'lost-before-run', 'run'):
             evidence = root / behavior
+            started = time.time()
             result = execute(executable=executable, app=app, suite=suite, cases=cases, nonce=nonce,
                 source_sha256=context['source_sha256'], executable_sha256=build.sha(executable),
                 app_sha256=build.sha(app), profile=isolation, environment=env, evidence=evidence,
                 seconds=900, behavior=behavior, source_root=ROOT)
+            capture_crash(result, executable=executable, evidence=evidence, started=started,
+                          source_sha256=context['source_sha256'])
             attempts.append(result)
             terminal = result.get('terminal', {})
             require(result['original_reaped'] and result['protocol_complete']

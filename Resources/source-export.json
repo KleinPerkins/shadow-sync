@@ -909,6 +909,11 @@
     },
     {
       "mode": "100644",
+      "path": "Tests/Tooling/test_ci_crash_diagnostic.py",
+      "sha256": "2fe3be1c67e0e2b9a6cf2dc0244a56081d911c1ea4615ace41e4da5c7983aa2f"
+    },
+    {
+      "mode": "100644",
       "path": "Tests/Tooling/test_ci_git_source.py",
       "sha256": "6f52665ea58be3adfcada1fcbcfe2397c1c505043d39f128f02f06d4821d2b16"
     },
@@ -1030,7 +1035,7 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "df6c58dab742bab9fc43c1faadf2f54b5c7015f9db234580e76b71805d87cfc4"
+      "sha256": "23d1e825e884a57d9f020be94dd38df4ae5e2225dd8b9cffddf086fe20f98138"
     },
     {
       "mode": "100644",
@@ -1089,8 +1094,18 @@
     },
     {
       "mode": "100644",
+      "path": "scripts/ci-runtime.py",
+      "sha256": "73edb32e58a87ae97fd4037d6eb232343391c646c17b29fe84e6e81a35ad450a"
+    },
+    {
+      "mode": "100644",
       "path": "scripts/ci-shards.py",
       "sha256": "e3ca28ce24d518ec26a2008fc2c1a27e1289e10b4f8c54d044828da772f5ecea"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/ci_crash_diagnostic.py",
+      "sha256": "383190d146fac2fca5448ee3482b2e3bcfc26f70a3304835c356c88bf97bbc35"
     },
     {
       "mode": "100644",
