@@ -1,5 +1,6 @@
 """Regression checks for hosted runtime resource, IPC and coverage boundaries."""
 import importlib.util
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -73,6 +74,35 @@ class CIRuntimeTests(unittest.TestCase):
             '(deny file-read* file-write* (regex #"^/private/var/tmp/shadow-sync-m2[.]"))',
             '(allow file-read* file-write* (regex #"^/private/var/tmp/shadow-sync-m2[.]' + nonce
                 + '[.][A-Za-z0-9-]+(/.*)?$"))'])
+
+    def test_unsafe_mode_fixture_grant_cannot_reach_other_files(self):
+        nonce = 'c' * 32
+        profile = runtime.profile(Path('/private/tmp/shadow-sync-ci.fixture'), nonce,
+                                  '/fixture/tests', '/fixture/app', '/fixture/python')
+        grants = [line for line in profile.splitlines() if line.startswith('(allow file-write-setugid')]
+        self.assertEqual(len(grants), 1)
+        pattern = re.search(r'regex #"([^"\n]+)"', grants[0]).group(1)
+        own = '/private/tmp/shadow-sync-state-admission.' + nonce + '.case/state/shadow-sync'
+        for suffix in ('', '/latest.log', '/preserved.log', '/lifecycle.lock', '/operation.lock', '/run.lock', '/launcher.lock'):
+            self.assertIsNotNone(re.fullmatch(pattern, own + suffix))
+        for path in (own + '/helper', own + '/nested/latest.log', own + '/operation.lock.extra',
+                     own.replace(nonce, 'd' * 32), own.replace('state-admission', 'self-tests')):
+            self.assertIsNone(re.fullmatch(pattern, path))
+
+    def test_fsmonitor_execution_grant_is_exact_and_nonce_bound(self):
+        nonce = 'c' * 32
+        profile = runtime.profile(Path('/private/tmp/shadow-sync-ci.fixture'), nonce,
+                                  '/fixture/tests', '/fixture/app', '/fixture/python')
+        grants = [line for line in profile.splitlines() if '-fsmonitor' in line]
+        self.assertEqual(len(grants), 1)
+        pattern = re.search(r'regex #"([^"\n]+)"', grants[0]).group(1)
+        own = '/private/tmp/shadow-sync-self-tests.' + nonce + '.case/'
+        self.assertIsNotNone(re.fullmatch(pattern, own + 'hostile-fsmonitor.sh'))
+        self.assertIsNotNone(re.fullmatch(pattern, own + 'blocking-fsmonitor.sh'))
+        for path in (own + 'unlisted.sh', own + 'nested/hostile-fsmonitor.sh',
+                     own.replace(nonce, 'd' * 32) + 'hostile-fsmonitor.sh',
+                     own + 'hostile-fsmonitor.sh.extra'):
+            self.assertIsNone(re.fullmatch(pattern, path))
 
     def test_local_ipc_permission_is_namespace_and_socket_name_bound(self):
         nonce = 'a' * 32

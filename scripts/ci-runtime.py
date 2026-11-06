@@ -57,10 +57,15 @@ def profile(root, nonce, executable, app, python):
         escaped = prefix.replace('.', '[.]')
         result += '(deny file-read* file-write* (regex #"^' + parent + '/' + escaped + '"))\n'
         result += '(allow file-read* file-write* (regex #"^' + parent + '/' + escaped + nonce + '[.][A-Za-z0-9-]+(/.*)?$"))\n'
+    # Exact non-executable state fixtures must retain intentionally unsafe mode
+    # bits so strict admission tests exercise refusal, not a normalized fixture.
+    # The same scoped operation permits the preserved.log hardlink input.
+    result += '(allow file-write-setugid (regex #"^/private/tmp/shadow-sync-state-admission[.]' + nonce + '[.][A-Za-z0-9-]+/state/shadow-sync(/(latest[.]log|preserved[.]log|lifecycle[.]lock|operation[.]lock|run[.]lock|launcher[.]lock))?$"))\n'
     suffixes = (r'/[^/]+(/[A-Za-z0-9-]+)*/[.]git/hooks/(post-merge|pre-merge-commit|pre-commit|reference-transaction)',
         r'/[^/]+(/[A-Za-z0-9-]+)*/[.]githooks/reference-transaction',
         r'/home/dev/_ops/bin/(dev-worktree[.]sh|install-identity-guard[.]sh)',
-        r'/(fake-gh|sleep-gh|large-gh|failure-gh)')
+        r'/(fake-gh|sleep-gh|large-gh|failure-gh)',
+        r'/(hostile|blocking)-fsmonitor[.]sh')
     for suffix in suffixes:
         result += '(allow process-exec (regex #"^/private/tmp/shadow-sync-self-tests[.]' + nonce + '[.][A-Za-z0-9-]+' + suffix + '$"))\n'
     # Local test IPC only; Internet and unrelated local sockets remain denied.
@@ -146,6 +151,10 @@ def run_suite(suite, root, build_root, record, context):
         SHADOW_SYNC_TEST_PUBLISHER_EXECUTABLE=str(build_root / 'publisher-executable'),
         SHADOW_SYNC_TEST_POLICY_FRAMEWORK=str(framework),
         SHADOW_SYNC_TEST_POLICY_SOURCE=str(policy_source))
+    if suite == 'discovery-caller':
+        # Existing bounded, typed fixture observations expose startup failures
+        # without recording candidate paths, request contents or child output.
+        env['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'] = '1'
     native = load('run-native-appkit')
     def plain(name, binary, args):
         value = native.child(['/usr/bin/sandbox-exec', '-f', str(isolation), str(binary), *args],
