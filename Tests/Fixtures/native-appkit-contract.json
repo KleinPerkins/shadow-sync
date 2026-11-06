@@ -28,7 +28,9 @@
         "focusAndAlertSafety": "Bool",
         "accessibilitySemantics": "Bool",
         "adaptiveSemanticLayout": "Bool",
-        "mixedAndCancelledReports": "Bool"
+        "mixedAndCancelledReports": "Bool",
+        "workerOwnerSignalReapOrdering": "Bool",
+        "workerOwnerFailedCustodyRefusal": "Bool"
       },
       "diagnostic_only": [
         "accessibilitySemantics"
@@ -76,7 +78,10 @@
         "visibleBeforePresentationCancelsGuidance": "Bool",
         "repeatedOrderingNoDuplicate": "Bool",
         "visibleNoImpact": "Bool",
-        "exactCopy": "Bool"
+        "exactCopy": "Bool",
+        "dismissPreservesOtherForegroundOwner": "Bool",
+        "dismissPreservesNewForegroundOwner": "Bool",
+        "dismissRestoresShortcutUnavailableHelp": "Bool"
       },
       "diagnostic_only": [],
       "owner": "application-engineer"
@@ -99,7 +104,10 @@
         "discoveryActivationShowsProgress": "Bool",
         "discoveryActivationPresentsOnce": "Bool",
         "onboardingFailurePreservesOnboarding": "Bool",
-        "dismissedFailureReportsAndReconciles": "Bool"
+        "dismissedFailureReportsAndReconciles": "Bool",
+        "quitRejectsAuthorityAdmission": "Bool",
+        "quitCompletionGenerationIsolated": "Bool",
+        "quitCompletionExactlyOnce": "Bool"
       },
       "diagnostic_only": [],
       "owner": "application-engineer"

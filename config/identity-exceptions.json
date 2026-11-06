@@ -1,0 +1,126 @@
+{
+  "schema": "shadow-sync-identity-exceptions/v1",
+  "exceptions": [
+    {
+      "path": "Sources/ShadowSyncCore/HistoricalLogIdentity.swift",
+      "scope": "content",
+      "token": "dev-main-sync",
+      "count": 6,
+      "sha256": "426883631fc03b1f6c32d74513cc61b2c9f5bd4326ed562bc1ab6694931806e9",
+      "class": "migration-reader",
+      "owner": "ShadowSync application architect",
+      "reason": "Exact historical log schemas are read only; writers and operation admission require the current identity.",
+      "retirement": "Read compatibility may remain while preserved user evidence uses this format; it confers no launch or write authority. Remove only with a reviewed data-format retirement decision."
+    },
+    {
+      "path": "Tests/ShadowSyncSelfTests/Fixtures/legacy-v1-latest.log",
+      "scope": "content",
+      "token": "dev-main-sync",
+      "count": 8,
+      "sha256": "51fc82e088fcd2d9342bdf847503a3411718a74731ddb03f489750b1054a58f7",
+      "class": "compatibility-fixture",
+      "owner": "ShadowSync application architect",
+      "reason": "Pinned historical log bytes prove unchanged read compatibility.",
+      "retirement": "Read compatibility may remain while preserved user evidence uses this format; it confers no launch or write authority. Remove only with a reviewed data-format retirement decision."
+    },
+    {
+      "path": "Tests/ShadowSyncSelfTests/Fixtures/legacy-v1-report.json",
+      "scope": "content",
+      "token": "dev-main-sync",
+      "count": 1,
+      "sha256": "d3030cc8a53fbb0f9ef85974d0b0fdf04496f7f50bdcc2744f5f41230ec995af",
+      "class": "compatibility-fixture",
+      "owner": "ShadowSync application architect",
+      "reason": "Pinned historical report bytes prove unchanged read compatibility.",
+      "retirement": "Read compatibility may remain while preserved user evidence uses this format; it confers no launch or write authority. Remove only with a reviewed data-format retirement decision."
+    },
+    {
+      "path": "Tests/ShadowSyncSelfTests/Fixtures/pre-v06-v2-latest.log",
+      "scope": "content",
+      "token": "dev-main-sync",
+      "count": 6,
+      "sha256": "127c4530f3d071f66b283363eaf81f9fdef9c51a8dff6389128d9b04e0815f0a",
+      "class": "compatibility-fixture",
+      "owner": "ShadowSync application architect",
+      "reason": "Pinned historical batch bytes prove unchanged read compatibility.",
+      "retirement": "Read compatibility may remain while preserved user evidence uses this format; it confers no launch or write authority. Remove only with a reviewed data-format retirement decision."
+    },
+    {
+      "path": "Sources/ShadowSyncCore/LegacyInstallationRelease.swift",
+      "scope": "content",
+      "token": "dev-main-sync",
+      "count": 2,
+      "sha256": "993112a20e9c9ed9859c49081f120cddcf308f1e577e00f217ec2110e237113f",
+      "class": "migration-reader",
+      "owner": "ShadowSync application architect",
+      "reason": "Explicit build-14 read-only metadata compatibility; never current release or launch authority.",
+      "retirement": "After at least two verified standalone releases and 90 days, known-installation migration and reviewed retirement receipt."
+    },
+    {
+      "path": "Sources/ShadowSyncCore/LegacyInstallationRelease.swift",
+      "scope": "content",
+      "token": "DevMainSync",
+      "count": 14,
+      "sha256": "993112a20e9c9ed9859c49081f120cddcf308f1e577e00f217ec2110e237113f",
+      "class": "migration-reader",
+      "owner": "ShadowSync application architect",
+      "reason": "Explicit build-14 read-only metadata compatibility; never current release or launch authority.",
+      "retirement": "After at least two verified standalone releases and 90 days, known-installation migration and reviewed retirement receipt."
+    },
+    {
+      "path": "Sources/ShadowSyncCore/ReleaseIdentitySelfTests.swift",
+      "scope": "content",
+      "token": "DevMainSync",
+      "count": 11,
+      "sha256": "dc600224f82e05dfd21252a6c0388a6d3b5c426e46f2284f33e14aec1cd939ad",
+      "class": "compatibility-fixture",
+      "owner": "ShadowSync application architect",
+      "reason": "Explicit build-14 read-only metadata compatibility; never current release or launch authority.",
+      "retirement": "After at least two verified standalone releases and 90 days, known-installation migration and reviewed retirement receipt."
+    },
+    {
+      "path": "Sources/ShadowSyncApp/M6Harness.swift",
+      "scope": "content",
+      "token": "Dev Main Sync",
+      "count": 3,
+      "sha256": "6fa1921e1bc33833ea0feb53f15b8d16f070c57c7d917cf8fcba649e60867a0f",
+      "class": "compatibility-fixture",
+      "owner": "ShadowSync application architect",
+      "reason": "Creates exact historical predecessor and backup inputs solely in isolated testing builds; tests stopped rollback, new backup names, historical recovery and collision refusal.",
+      "retirement": "After at least two verified standalone releases and 90 days, known-installation migration and a reviewed retirement receipt. Historical preimages remain recoverable; this exception never authorizes legacy execution or new legacy-format active state."
+    },
+    {
+      "path": "Sources/ShadowSyncCore/DM4PreflightSelfTests.swift",
+      "scope": "content",
+      "token": "Dev Main Sync",
+      "count": 2,
+      "sha256": "71ef878d4462cc38411becd4ec7e17acbdb28e02e876e11b9768eaa63e0fdd83",
+      "class": "compatibility-fixture",
+      "owner": "ShadowSync application architect",
+      "reason": "Checks the exact historical predecessor input path in isolated fixtures; grants no production launch or install authority.",
+      "retirement": "After at least two verified standalone releases and 90 days, known-installation migration and a reviewed retirement receipt. Historical preimages remain recoverable; this exception never authorizes legacy execution or new legacy-format active state."
+    },
+    {
+      "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
+      "scope": "content",
+      "token": "Dev Main Sync",
+      "count": 12,
+      "sha256": "2e7ccaf4f68af3e4e2d9a26390322753a62feafca2c98dda75d2d9e534d90dfa",
+      "class": "migration-reader",
+      "owner": "ShadowSync application architect",
+      "reason": "Recognizes historical app, backup and quarantine inputs. Rollback may restore the preserved predecessor bytes to their original path only while stopped and unregistered. Newly created backup and quarantine slots use the permanent product namespace.",
+      "retirement": "After at least two verified standalone releases and 90 days, known-installation migration and a reviewed retirement receipt. Historical preimages remain recoverable; this exception never authorizes legacy execution or new legacy-format active state."
+    },
+    {
+      "path": "scripts/source-doctor.sh",
+      "scope": "content",
+      "token": "Dev Main Sync",
+      "count": 5,
+      "sha256": "f70707c157b40c8d7cc1a6001e028b940b2d7479793258a8ccfcb8d5f9181dae",
+      "class": "migration-reader",
+      "owner": "ShadowSync application architect",
+      "reason": "Fixture-only inspection recognizes historical installed and transaction inputs and refuses them; it does not launch, install, repair or create legacy paths.",
+      "retirement": "After at least two verified standalone releases and 90 days, known-installation migration and a reviewed retirement receipt. Historical preimages remain recoverable; this exception never authorizes legacy execution or new legacy-format active state."
+    }
+  ]
+}

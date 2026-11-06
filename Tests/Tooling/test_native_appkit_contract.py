@@ -35,15 +35,15 @@ class NativeAppKitContractTests(unittest.TestCase):
         return value
 
     def test_all_existing_boolean_and_core_assertions_have_distinct_ids(self):
-        counts = {'m5-ui': 25, 'm5-practical-ui': 16, 'm5-status-item-guidance': 12,
-                  'm5-confirmation-close': 14, 'm5-foreground': 56, 'm5-operation-contention': 1}
+        counts = {'m5-ui': 27, 'm5-practical-ui': 16, 'm5-status-item-guidance': 15,
+                  'm5-confirmation-close': 17, 'm5-foreground': 56, 'm5-operation-contention': 1}
         actual = []
         for name, count in counts.items():
             result = native.validate_report(self.value, name, encoded(self.report(name)))
             self.assertEqual(len(result), count)
             actual += result
         self.assertEqual(len(actual), len(set(actual)))
-        self.assertEqual(len(actual), 124)
+        self.assertEqual(len(actual), 132)
 
     def test_each_required_boolean_rejects_false_integer_null_or_string(self):
         for p in self.value['probes']:

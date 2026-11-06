@@ -1,0 +1,45 @@
+import ShadowSyncCore
+
+func cannotConstructOperation(
+    target: DefaultBranchUpdateTarget
+) throws {
+    _ = PlannedOperation(target: target)
+}
+
+func cannotConstructCard(
+    repository: RemoteRepository,
+    authority: CanonicalAuthorityState,
+    clones: [LocalClone],
+    relation: DefaultBranchRelation
+) throws {
+    _ = try RepositoryCard(
+        repository: repository,
+        authority: authority,
+        clones: clones,
+        relation: relation,
+        fastForward: nil,
+        fastForwardRefusal: nil
+    )
+}
+
+func cannotConstructRemovalCandidates(
+    inventory: RepositoryInventory
+) {
+    _ = RepositoryInventoryRemovalCandidates.make(
+        from: inventory
+    )
+}
+
+func cannotAuthorizeOperation(
+    operation: PlannedOperation
+) throws {
+    _ = try AuthorizedOperationEnvelope(
+        operation: operation
+    )
+}
+
+func cannotAuthorizeBody3(
+    plan: Body3BatchPlan
+) throws {
+    _ = try AuthorizedBody3Plan(plan: plan)
+}

@@ -1,0 +1,1271 @@
+{
+  "adaptations": {
+    ".github/workflows/app-auto-merge.yml": "Both privileged jobs statically disabled before checkout/token mint; CI provenance and dependency-content activation blockers remain open.",
+    "Sources/ShadowSyncCore/Body3Coordinator.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
+    "Sources/ShadowSyncCore/RemovalTransaction.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration."
+  },
+  "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
+  "files": [
+    {
+      "mode": "100644",
+      "path": ".github/dependabot.yml",
+      "sha256": "2e95457a7700a2bbe01da87d592d319b821f8bd01eab0331fdb7c3a4404c95cb"
+    },
+    {
+      "mode": "100644",
+      "path": ".github/workflows/app-auto-merge.yml",
+      "sha256": "105183730aae20e075248b76678e7cb7f1fed354a63f99901f0ffb8aed5d7056"
+    },
+    {
+      "mode": "100644",
+      "path": "Package.swift",
+      "sha256": "cee8d0cd980c5c830ac8d8a413ab7409a277807bed0d082c86998c922b51f68f"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/Info.plist",
+      "sha256": "62efc4e3c2be4b988c6a3b5ed0778f359fb2f42ace5afd6904b9e94633603abb"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyAdapter.py",
+      "sha256": "614c5f738705fbdbbb4566c6e60c38fef2959087b8c5f80be16252ecca4bc239"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/CPython-3.14.10-LICENSE.txt",
+      "sha256": "b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/CPython-3.14.10-Package-License.rtf",
+      "sha256": "aa0f49dc73ca33e0e54211117c3733c27bb5613500470a3595c47972f006f084"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/CPython-3.14.10-license.html",
+      "sha256": "6c3f39606ef052bc05c1d19a5d5595a7e4895a9bacda83dcca14f001e05bbf3a"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/CPython-Incorporated-Licenses.rst",
+      "sha256": "8a7329b25131f64b2bea284155f0824876b1af9f4a2f970e6335751d97dfa6dd"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/CPython-Native-Source-Notices.txt",
+      "sha256": "7c27bceff4915a40f0e672a3ff3d790bd23aecf5e4d704510c2f926c2ba9b547"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/Expat-2.9.0-COPYING.txt",
+      "sha256": "31b15de82aa19a845156169a17a5488bf597e561b2c318d159ed583139b25e87"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/HACL-star-Apache-2.0-LICENSE.txt",
+      "sha256": "c5accbbd8546e94c34aed24afe689a617627d18eed5a6c48277e48db57c23851"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/Macholib-1.0-README.txt",
+      "sha256": "dc29d1da83b6a0a09a41647e4111eee878ed079c2d6b54a98fd6d8b88dd581f2"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/NCurses-6.5-LICENSE.txt",
+      "sha256": "b2feb54f39529abe226f709a292584fde48a2e5721559fee417d2cdd51cb7cc1"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/NOTICE.txt",
+      "sha256": "d90ff88f0ebe7ce4be15f0c716f91a36aebe7fe29c46e63c764f35a4918b45ac"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/OpenSSL-3.5.9-LICENSE.txt",
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/SQLite-3.50.4-PUBLIC-DOMAIN.txt",
+      "sha256": "411d0d5aced7a6c6f5b93ac94b2417a9fdefca089b8155975242fcf539274699"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/XZ-5.2.3-COPYING.txt",
+      "sha256": "c4f8e14fafe458d84808a4cd8b69f94673ebe2bf8fc992291629a69ac12218f8"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/Zstandard-1.5.7-LICENSE.txt",
+      "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/libmpdec-4.0.1-LICENSE.txt",
+      "sha256": "dba079e24a0286052f9f36a5e0b4f6cc95bc83ada657eb26bef8c0b6473f6512"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/PolicyRuntimeNotices/manifest.json",
+      "sha256": "cc56bb479d746e0775adac85e18552c1d8da978ed974a878bf9c2f5bea3e94aa"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/ShadowSync.icns",
+      "sha256": "e27b55fc793f25867793f1ca9000e2454d448329169ade1b89e4beb3950444cc"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/ShadowSyncIcon-1024.png",
+      "sha256": "bec4636abe7ada114c61897e6b7f66181b13ec93438d37b8213d5061ab13bd90"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/awa-contract.json",
+      "sha256": "f408b7819d458f3de9bd6521711255f352a62653ead955b9828409e316ef3648"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/com.kleinperkins.shadow-sync.plist.template",
+      "sha256": "124131987daca5ba01088091ccc6cb3dbff6d07c9732770ac66ce95cc093a7a1"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/command-graphs.json",
+      "sha256": "edfaf43c856b9111d8bc766660b1f71c83f6e4a70815c7cb08930902fddb2d23"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/policy-runtime-source.json",
+      "sha256": "4fb7025cedaaaec98da80b9823e4757a76dbee103e7e89570b0e046f6fb8f34e"
+    },
+    {
+      "mode": "100644",
+      "path": "Resources/release-contract.json",
+      "sha256": "f32a9e49f0ae8236df193c6c6188840d6beafc1c31bea9da331bd22c5ea0ce06"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/AppDelegate.swift",
+      "sha256": "e337467cd424d9975f39d3d99d7e4eb3ce4a8435f11cf1e9e12d4eec094e864b"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/AppLifecycleRouter.swift",
+      "sha256": "720662e3b70f25787b91180a1a410a60bd3e85cee8a0c68e1081b96b74e7a8d6"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/Body3RunWindow.swift",
+      "sha256": "0537b1520437756e61d09cae24e9ea3050025f89b214fa1bb0ab1906b550fdb5"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/LifecycleMain.swift",
+      "sha256": "729bba60a17ff02b4c5b73f72484a69e88f0d4416600702ecc145d86da6519fc"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/M1Harness.swift",
+      "sha256": "ab23537c78242cb0b2e791d6c4e8f1de69ceb5cb72da0ae76f6be7fa7badc165"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/M5Harness.swift",
+      "sha256": "90f9f167a2ca2025335ba83be3b5356bc0e178ab2ee4f044dd8432532f95b827"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/M6Harness.swift",
+      "sha256": "6fa1921e1bc33833ea0feb53f15b8d16f070c57c7d917cf8fcba649e60867a0f"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/NativeFixtureProcess.swift",
+      "sha256": "428dd48f3c0b0f9e5dffa1978a48013f04adaab5b8667bb20fcb81bea9409a9e"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/OperationContention.swift",
+      "sha256": "91c39ab4399f682bf8ab0771ae37017dc52c41ae8d53cecefd608d385709142c"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/RepositoryCardsWindow.swift",
+      "sha256": "7aaf8d61ce87bd25a1743651272910436b9e61eb65401e293f0ba63d12a00e70"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/RepositoryChooserWindow.swift",
+      "sha256": "81f853f3b73ac3048ee2cc2a2e0d43f950b0c818785ee8825588a43fb97d3c6e"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/RunPresentation.swift",
+      "sha256": "51beb4db28a6994021bf5af5c0c8a059c83f9aeb028856f6d4e8ba59e142dce7"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/RunRowView.swift",
+      "sha256": "38be77dfe41a4ceb5534f256112e558680e98aebe9a38d1e9b6ee67aa6d95728"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/SafeAlerts.swift",
+      "sha256": "1d9725d57db07b1b822683bec253f04ab784e9bffc98e2153a3976ee6c0555e7"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/StatusItemGuidance.swift",
+      "sha256": "dd9fff3436405a25d85fed36c4da52ba685b91afbfe4f69afef9ae1eb511a01d"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/StatusItemIcon.swift",
+      "sha256": "51e7ff53457d659be593c88b466c486b5866dd4256b62cfba194f60aa18011af"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/WindowFrameContinuity.swift",
+      "sha256": "60250be00813312ce86ccaa8c5fbe63663119d9ec5a2b557ecd53f4df85d1fef"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/Worker.swift",
+      "sha256": "527c9e7011fba6a7e3ed536a6b8c90b926eca9597dd34ddc81f5f4a2bd47d9c1"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncApp/main.swift",
+      "sha256": "62050a42110ca217133021d58bb53589a93031c9b305756e7decdcc483e2c068"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCatalog/RepositorySelectionCatalog.swift",
+      "sha256": "2ada92612e35721b23018c201562b0925415f2a05bd76a0ea8f68675424b5986"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCatalog/RepositorySelectionPathAdmission.swift",
+      "sha256": "31b309a07178e6b65afce546938361bb1e6043b6cb279d496752b469b02c76b9"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCatalog/RepositorySelectionPolicy.swift",
+      "sha256": "b1c457d2258809d8dbcda3c6d383270d185bb0f44ab206a0c7711e49538d96c8"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCatalog/RepositorySelectionPreferences.swift",
+      "sha256": "f1e06a20f1770ce2b60baf653b7f26ad86b2b1f07d606bec6df2b42c03a5ca36"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/Body3Batch.swift",
+      "sha256": "5c41b8acf93ebc544c64abd753fb094cb369dccd4e9e93ac5b9d4a876c5e706d"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/Body3Coordinator.swift",
+      "sha256": "3f2df9ae5982eb4c24c0cb7aa45e0e5bf8062c66b3ca517445c9b78ba4dfa83d"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/Body3RunLog.swift",
+      "sha256": "f9b8c2b9f93b7fd835b27a4eab6cd5f67e64bad6139d2c9e6ead97d3083d3e15"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/ClosedProcessInput.swift",
+      "sha256": "83252b988da8aff64d028a5869343faa89cdfeac009f0bc4d62eec6e19488efc"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/ClosedProcessOwnershipSelfTests.swift",
+      "sha256": "0ec3772fcb4cecdacfa2dbc36603ee8075d39cbdc815b6d63eb74336a87e0006"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/ClosedProcessRunner.swift",
+      "sha256": "eacb048c98f7cae29c89431d0e9e547fa3d6bddb2dd0b5b01b9e3a14413d9cd0"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/ClosedProcessRunnerTesting.swift",
+      "sha256": "b2b99d08b62fc97b7d83b20da69b691f0a490b6f661e1e89ae8dc89e18641502"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/CommandCustodian.swift",
+      "sha256": "5ace0aa96a6af34869acabb56dd1c99d593e6b7c4f64744aa906823d8fd4c15c"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/CommandCustodyContext.swift",
+      "sha256": "48f12fe269a3efe49e89c7ecd3d798dd6507f09eaf58cb5b514610ba6d72ff2b"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/CommandGraphFixtureCases.swift",
+      "sha256": "86477e297d118ac3c27795a2ac5587d93aab171e016ed778e715f914fd28b8de"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/ConfigurationPolicyPlan.swift",
+      "sha256": "a54c84cda29ab9899b856b442e1306559f2f376f47d25d3e5ca4402b690e56fe"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/Coordinator.swift",
+      "sha256": "fc459cc73e19568315579feea6999c3451b93a1f937f40ed3a0b93aeaf941f9b"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/CustodyCatalog.swift",
+      "sha256": "fe376d09f934f028c98cfe2b100f629427f697f847822d7b3addd139ffd59804"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/CustodyInheritedCommand.swift",
+      "sha256": "e5fe39c1767aad74350fb4588fef93006c6389ef558f09ce7e134b1c46081efe"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/CustodyJournal.swift",
+      "sha256": "d6e552f62f77706c531a192f0a1ad95669f7ae4cc62971518eae5dd9cbe56dbf"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/CustodyProtocol.swift",
+      "sha256": "9a1b4f0b4ba05758768c630409b9d94315a3bdbb9d123af571682c3ca4411e01"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/CustodyResources.swift",
+      "sha256": "9d63b0486827cc28b8233ed9c68e37955d4c4ce9c40872f9f55dfd06676656e5"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DM2Body1SelfTests.swift",
+      "sha256": "9910ede1588d1e0c3715929b64ea527b9a20ea35259c73a87a32eed2e7308d01"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DM2Body2SelfTests.swift",
+      "sha256": "64d30e80a7b19a4a236bd78e988c23aa3933be9ed62b4de10ca5d7d9bfdf4dba"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DM2Body3SelfTests.swift",
+      "sha256": "7f82d7fd63d1ce3c6940753c6364fe895431f7de5fc6b6a2bd8ccd73ab1482af"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DM2Body4SelfTests.swift",
+      "sha256": "d1af1d4b27182412e8e873924796097387aecdb942c12bd40f7dc07b3ba5a385"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift",
+      "sha256": "343b14a950cadbcf941453af4b1d70660350e9bf88a6e00e67457f3651ce3915"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DM4PreflightSelfTests.swift",
+      "sha256": "71ef878d4462cc38411becd4ec7e17acbdb28e02e876e11b9768eaa63e0fdd83"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DiscoveryCallerSelfTests.swift",
+      "sha256": "4d9946e4bd1d5ce990faae62a118278ae5576f8304f776b60e9c0be9064bcda7"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DiscoveryCommandTransport.swift",
+      "sha256": "5c70b462908723225637382b202b94c37d8fd82c512f115b378a769c01159c49"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DiscoveryCustodyIntent.swift",
+      "sha256": "d129c612ed0660ad3c851d7c3d86d9e72f835f4c5a7fe23bb464475f8d067171"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DiscoveryCustodyResources.swift",
+      "sha256": "0124c3c85ee9e0853aa7f77d7eaa2c4bf90db10d48c8dd31588207b0d9e62bca"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DiscoveryFrozenResource.swift",
+      "sha256": "83f5422001a1ecf9acbf2c7830a258adb68cfea92d2d2084a4f16457bc020501"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DiscoveryGitCommand.swift",
+      "sha256": "1dc75b40d984ab1d25df09587a7aa095d14621a6db7e12f4390690726913d105"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DiscoveryGitProbe.swift",
+      "sha256": "2c448f23264abb83d2ab010faf1a24a7e986aabecdf69c56317d087ce93a3457"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DiscoveryMetadataAccess.swift",
+      "sha256": "a49f46a6ecd375e99f764aa95f59b181b5e5171a44a79e6974079c5255d9c87f"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DiscoveryResourceReceipt.swift",
+      "sha256": "86cef541aae50b5e47eced0a8eb1f08432ec7a3554a5c90d3582cdb3535a8a68"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DiscoverySpawnSelfTests.swift",
+      "sha256": "1c010762103b3ad6ec3fe7a13020c0fef2974ee9148cd11fce9b6a6ff4e71781"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/DiscoveryTestingSupport.swift",
+      "sha256": "3627890bedb36dff93e016a5247edc1dfd6d182c5916784377bc09268dcdc264"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/FastForwardTransactionV2.swift",
+      "sha256": "46249ef1edffa0d8286f69c017448ad9d4d6b6c4c26d4d9d32089cbf8be0629b"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/FreshStateInitialization.swift",
+      "sha256": "3c6ad0b56088893296814b32409d737179ffcc137e5cbde7097baf70548880da"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/GitSafety.swift",
+      "sha256": "3de77c7be3c38d1dea6a6bbcc942c4a536193aefab58d6b103cc68d89e3cdc5b"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/GitTransaction.swift",
+      "sha256": "bf51882d5d9c926b32d2509549c5f9bddb299983e1555f2cf8d1544d4d962d65"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/GovernedRootRole.swift",
+      "sha256": "9052bd2f48089f157b12ef44f7ec5b95756ae24a1117fbec56955bf2f53e4943"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/HistoricalLogIdentity.swift",
+      "sha256": "426883631fc03b1f6c32d74513cc61b2c9f5bd4326ed562bc1ab6694931806e9"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/HistoricalLogSelfTests.swift",
+      "sha256": "4439510a765503c486d8201e3bf888c9e0f09acd2fd549ce045a8dba74d98a73"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/HostControl.swift",
+      "sha256": "1c64b462b34e75dedd3504aed6c5722afe675ac2f24102f72fc311690661f40c"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/HostPolicyBinding.swift",
+      "sha256": "c4645e150d9693c18b57ea1cf6f4c05a160678b15df96c0591b6de4b34a911ce"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/HostPolicyBindingSelfTests.swift",
+      "sha256": "9e1e7cb14f302dc83fa117fc4042cd11a287bc3e8f3e85b435d32c8ebc159a82"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/HostPolicyProjection.swift",
+      "sha256": "08e761b2890529f3de8dca7e692eabe1f1563020c24ccb3de3cb3f2f6e2832b0"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/HostPolicyProjectionSelfTests.swift",
+      "sha256": "315466a761fb6bf02fe4f464f81eb66d841fcc186393c010e03b5074c3e9d4d8"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/HostPolicySnapshot.swift",
+      "sha256": "17fd317a75e50a28f9fa7853b20fbb2afa70f6251a005aba686ff0cf1872790f"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/HostPolicySnapshotSelfTests.swift",
+      "sha256": "bcafe69261f5713a2d9df0c98e3d673b00a4c8ba9626f3689115482108f0e13c"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
+      "sha256": "2e7ccaf4f68af3e4e2d9a26390322753a62feafca2c98dda75d2d9e534d90dfa"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/LegacyInstallationRelease.swift",
+      "sha256": "993112a20e9c9ed9859c49081f120cddcf308f1e577e00f217ec2110e237113f"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/LifecycleCommandRunner.swift",
+      "sha256": "9c95679b7df509abd56ba351e8dffa5dfbbee6179e4b4d3db908c3fc9da44d5b"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/LifecycleCoordinatorMain.swift",
+      "sha256": "7eedcb21670a04b17f7234fd1a031153834187d2dc2ced22e8fb5cde1dd1d814"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/LifecyclePublisher.swift",
+      "sha256": "5d96e136512567afe697176dc9cb3a3cf474e33dc20355b3d733d141d9ee5529"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/LocalRepositoryInspection.swift",
+      "sha256": "b350fd7295061355577c1251370d0c0525e267d56b1f46ef4f804222dadc1477"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/M1RepositoryDiscovery.swift",
+      "sha256": "dec92b5f44cc150206f26a0f6d3fb2a30e5086f870ba86067ad27b2ef7550bf4"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/M1SelfTests.swift",
+      "sha256": "416e3533e02162ea5203c2395aba06c653802427838033125a1cd1e897e1405c"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/M2SelfTests.swift",
+      "sha256": "da188b8e797b2b76a935ae41861c88702d9c07421333a2968185deabe4c366c9"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/M3SelfTests.swift",
+      "sha256": "5c0b59dbeb47be489ab5fd84a0b346fb098a5e4d0e8d0426bf4c38fa466587b6"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/M4SelfTests.swift",
+      "sha256": "f3f3807a9c2badd270692b504b94cfba5bd7653ad34ea37195c8870a882bd4de"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/M5SelfTests.swift",
+      "sha256": "f548f2ecd743accc095813727e491e9e224d9ad87de7f99d811928ce85959b5d"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
+      "sha256": "d273d252f701401e95f7b639c2b77f7edb118efa164f3cd6fc19983e15111a9f"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/Models.swift",
+      "sha256": "fa7ba5cd2643f34713d00cad0c5bec902d779840db727080f2bbfe7d26b48acb"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/OwnedDirectChild.swift",
+      "sha256": "f016bdfa8d6e4f97e2b6b00113b58de1dd15680b3907bd8deff4bfd6818ac1ad"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/OwnedSpawnAnchor.swift",
+      "sha256": "ec338a11b4107592ade4d320812d6df97fc4652bd1ae09fc91c5fe47174758b2"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyAuthorityFile.swift",
+      "sha256": "57611fe00b7721885352c279c87f0d05842b48a2b812c9054bbe6bc2075900f7"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyAuthorityFileSelfTests.swift",
+      "sha256": "86f5bb39971bdf3e896e409f8e4e3a273e56d45dd1a04d738c4fba7ea5dbc7f8"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyCatalogSession.swift",
+      "sha256": "59b15be1bbff86d2e276e0eeb5ca96d26ab924a8c6ae7b78105f3c5c8b37e8f6"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyCommandAuthority.swift",
+      "sha256": "6ffa7a37b99545934b7142446858a82a890034ce31d3f8bea2af57642808401a"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyCommandWire.swift",
+      "sha256": "0d5bb1f3d00e75f453cf93ee87902921a240e26c4a70af1ca332b0bfe36ffb64"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyHelperTransport.swift",
+      "sha256": "3cea9f5882aefebe60c7539b2ed9b8027da29e6556f5932614c0cf1ee6a9e7e2"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyInputSelfTests.swift",
+      "sha256": "71a1d9692953cf533a40fa91b6ee6847d780d871da8258bfa97ae4a7dce8dbaa"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyProtocol.swift",
+      "sha256": "923bfa34d9282ad2e94270e7ad052295043d13b2b00f71abee089bd8d5062df5"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyRuntimeBulkDirectory.swift",
+      "sha256": "ec839a92f744606ef9cf840f94a0193e7565d6bfd9578066417ff0cd8331a1ba"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyRuntimeLayout.swift",
+      "sha256": "05423a47024a68ed55b000ee035af36f7105367573673119f208e92ddc730235"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyTransportSelfTests.swift",
+      "sha256": "3cf3c64a76615e742bec74f90544ece68ef6acc33d765b6932479ed9426d628f"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PolicyWireSelfTests.swift",
+      "sha256": "d35bd316a52c54bb1e70c387d8230d67ff7ba680602d9f72133beb85bae99041"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/ProcessOwnership.swift",
+      "sha256": "e6ca4905abe49cd658abc2fd42a9a22a306f870f9540e993ac45bdcbb2c614ef"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/ProcessRunner.swift",
+      "sha256": "d8561e29fa364fc21909bd1707f5262330f7c4653e2b1d13175537d182ed5ea0"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PublisherPolicyResources.swift",
+      "sha256": "9f186366e8d3800a85e61d62796a3bdf1e6914b8e0b92a506d96268d815b8f7d"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/PublisherPolicyResourcesSelfTests.swift",
+      "sha256": "e60a645b8d4041e62963771c1b606fab4dd0c0052bf019a6f29b6a21be25bef5"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/QualifiedCommandGraph.swift",
+      "sha256": "da80b5162c75e66a495aa9857a3d01dece77c734acd7ad3a40176d96e3d2a64f"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/ReadOnlyGitHubCLIAdapter.swift",
+      "sha256": "051c2f8cd24da07a57e01eb8e197932b506a800ee634fd151bdce484afacdf95"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/ReleaseIdentity.swift",
+      "sha256": "3704744e0df11ebd85079647ec9e72c0212a3bb3d5f33a410b80d0f588c55b51"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/ReleaseIdentitySelfTests.swift",
+      "sha256": "dc600224f82e05dfd21252a6c0388a6d3b5c426e46f2284f33e14aec1cd939ad"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RemovalPlan.swift",
+      "sha256": "f330be02e16fecac291fd6ea32de81de578e0572ad86199daf515ee07a46a286"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RemovalTransaction.swift",
+      "sha256": "380cda8c5fa0b88b01ea64f67ed31d64dbcf1fa92ff0d234d3bf8eb78d0f2a87"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RepositoryAuthorityStore.swift",
+      "sha256": "ea0493a9425a88a09a92d670b5b0144ddafa9be840373b2d46939a8df6b712d4"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RepositoryDiscovery.swift",
+      "sha256": "d842c288c3eb6131aee5cf8a0e83ba3ddbcdff2b1b7f3e231fad32f6f1dc38f5"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift",
+      "sha256": "09945809b2b580f06b11723a47076a8943ca5177f73efa210bf723c43c7f93ca"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RepositoryLifecycle.swift",
+      "sha256": "5badd380bd5d6dd8cd5dbc6e71020eceeaa8458f500fa51b4d35876f2912449f"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RepositoryMaintenance.swift",
+      "sha256": "0fa40fdd0f284944248b813fb5ab633fd842de73bd6e6f177a5d15bdfb7ec84c"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RepositoryModelV2.swift",
+      "sha256": "06a7b184d9167efaeacec20022e1809006f7883556bc91a889b68197b6a574ea"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RepositoryPolicy.swift",
+      "sha256": "dcc125188e876dbe17b6f34c95d561f7017a1d2bb2396044bdcbef4f95d65da0"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RepositorySelectionAdmissionSelfTests.swift",
+      "sha256": "79e0813ecffca62ee956bcb5fb593383dfd929bd5c7162cf1d3bf2ba0821cd7b"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RepositorySelectionPreferenceStore.swift",
+      "sha256": "91ad7a7334e4f2e3d05cac608e5d6b9b73ac0d7e8442bf21eae797a0740e34de"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RetainedCleanupRegistry.swift",
+      "sha256": "1c8b90dc1055412a4815af30775437a20404c606a671fe6d9c96f516a95c245e"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RetentionArtifact.swift",
+      "sha256": "d81b07ed8bb8e569e29d16881bf8a006bb8711d00113533e04ae557753952d88"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RunLog.swift",
+      "sha256": "d80d70b5b7a485a2bfd455f98d6fb6c5a625eed3ac754b4a0b60251142bc8cbb"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RunnerOwnerOrderingFixtures.swift",
+      "sha256": "1ca8be27a6324f888fca763c0571cf760293c5340639781793806cebf2e97065"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RuntimeFixtureCustody.swift",
+      "sha256": "8bb0b773deadcb0df56049a581c75bc006b10510fab4caa0347d98fc1192a89c"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift",
+      "sha256": "a6b51de864be97ffe1c5d028e6f5722da39863e915ed395fd0e4c1daddab4462"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RuntimeFixtureOwnershipSelfTests.swift",
+      "sha256": "507ca3cde33fa8177a79caf1d151a493636e8f71e8e710f01b5933cf5b7c529b"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RuntimeFixtureSession.swift",
+      "sha256": "af3c323da8502533c766dc5878c0fa327f8946e3b3d66307b8f6c4b87857298d"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RuntimeFixtureSpawn.swift",
+      "sha256": "69f9bd45221bb5ee9d4fbc1289f5eae6b25c9bad3a74ca42c1948c92847bea9c"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/RuntimeSuiteGuardian.swift",
+      "sha256": "e0bf7b5171e4499c29abbecc34ded5fa34d8114da54484bbb0a1077d1fd54ace"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/SecureState.swift",
+      "sha256": "c318244c0496f41564aa440b94b98c9e9496d436ae7ec22e9970aa857de62f6c"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/SelectedRepositoryHydration.swift",
+      "sha256": "4688d44dcda74bfbd9cb3942acae7414b42a5b657bb761b8d90ac7906b5eb378"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/SelectedRepositoryScope.swift",
+      "sha256": "ed616ac31006c149cbcff3a5cf3baff62da9814e38b661d8c037b87e288c24cf"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/SystemGitConfigurationProbe.swift",
+      "sha256": "ad22fec026b29256c4a54f4485c00c964640861fcdca9e6923f25580b35ed078"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncLifecycleCoordinator/main.swift",
+      "sha256": "57c9cd750aecf8241571d113451e783d33563aace0d3f4aae8804ac4a472c2a8"
+    },
+    {
+      "mode": "100644",
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "0aecc40e6acd041a89719ec68d4db33e2e292b5d1cd4b43358a081956a9a2442"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Fixtures/PublisherExecutionFixture.c",
+      "sha256": "ea44c9f99a1bf1bccf1abe1e6bce32cad8c3a3f3ee52a84803b8efb9437956f4"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Fixtures/V3Negative/NoCapability.swift.fixture",
+      "sha256": "9e5371751410dd1a2babcdc2d3ac11872fb276e980b66243751512bd5a818f1e"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Fixtures/native-appkit-contract.json",
+      "sha256": "ec7dfadf69409681e633b131c0b042aee61a0676866417f7d3642f2f25d8b83b"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Fixtures/native-ui-suites.json",
+      "sha256": "2a0063b7ecf416aead1eea5856cbe1e6998124df5b73d441061d60a1315accc9"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/ShadowSyncCompileTests/CompileGate.swift",
+      "sha256": "a07003b654a490049def6ad9902a44122fc3a5c6293f7a3c25fc9486ca5e7735"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
+      "sha256": "e3b2d2a2abf307b54f585b71a9f66cd070f33bd266a027c0e3e4eae508de63a6"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/ShadowSyncSelfTests/Fixtures/legacy-v1-latest.log",
+      "sha256": "51fc82e088fcd2d9342bdf847503a3411718a74731ddb03f489750b1054a58f7"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/ShadowSyncSelfTests/Fixtures/legacy-v1-report.json",
+      "sha256": "d3030cc8a53fbb0f9ef85974d0b0fdf04496f7f50bdcc2744f5f41230ec995af"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/ShadowSyncSelfTests/Fixtures/pre-v06-v2-latest.log",
+      "sha256": "127c4530f3d071f66b283363eaf81f9fdef9c51a8dff6389128d9b04e0815f0a"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/ShadowSyncSelfTests/main.swift",
+      "sha256": "609ea28c05ab944594047c0511022e07fc2b2a010c0963bcdb20ae0aee33891c"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_app_credential_readiness.py",
+      "sha256": "ff4c7422b8e42d07b8ca97d81e3073fcc1e737316c529c6f1947e9a92e610112"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_app_workflow.py",
+      "sha256": "f2bef84a706b3c3e49a96994cc52eff1d51effadf4415622d25c6cb5b9019473"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_ci_git_source.py",
+      "sha256": "6f52665ea58be3adfcada1fcbcfe2397c1c505043d39f128f02f06d4821d2b16"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_ci_results.py",
+      "sha256": "a6b961b63ff60175d90ca8c0329445f7abd5706e9cb86c6463bbb5aaba179774"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_ci_shards.py",
+      "sha256": "c2b9cb3c67f654dae1e3175a30bf7b88448573eb114fb06f869117d7256729e1"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_coordinator_entry.py",
+      "sha256": "484473f089a96067b3957ca69934c15cc137d0cb5ff5a74d2f310c49226da1fb"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_dependency_maintenance.py",
+      "sha256": "4fbbc4cbfd996560dbd8e6a40b81daaa8f8c059df7fad0e8c9be6614a6aaa79e"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_guardian_executor.py",
+      "sha256": "eecd5fa324e9edd57a0331e8215b1282421619aaa83cb9c33964e1c4154ec841"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_guardian_protocol.py",
+      "sha256": "0190088943588cef7694b1d1075af1742cb1c4292e186b2d686bab4cb4142485"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_guardian_registration.py",
+      "sha256": "258f61d993145aec52d70fbeab0a63915227cbbee8a2d2843783550c908aa227"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_host_projection.py",
+      "sha256": "c01da9d2f787b5f9540dec7b53dd65a4bb2e145204289f9dc85c45909839d086"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_native_appkit_contract.py",
+      "sha256": "095a0953658dfff7eb855d842b77c12411fbdd59c75cbac3ec230f5476327f38"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_native_appkit_runner.py",
+      "sha256": "73c8962c44b6d64b05e7ccdd284b6c77c939600ba167f4e7cfc7b06a801927e0"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_native_ui_suites.py",
+      "sha256": "7e6e0636bf2ecd3b45e50fad51b1eddf81083c33a4c3f6e6d0c100c2966d2b8b"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_ordinary_app_policy.py",
+      "sha256": "b30ba48463a6169c6e09f2de6ebb7954835aff6eddcc12a01f256b9711716d59"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_policy_adapter.py",
+      "sha256": "d5b12bde071e4cc5daab318311e514fe07d76decbc31071b7c9f385e9bf1187f"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_policy_batch.py",
+      "sha256": "b155965a9f39f55f87622e4253656ca5199b552c4be5d54456ce68bc5dfc8715"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_policy_entry.py",
+      "sha256": "b6ca44b6dce832d7fadc8d57b52603fa9834be2ea9c9054e26c1c09842c7c6d5"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_policy_runtime_build.py",
+      "sha256": "723d044570a6c6c2d03dc42cc4e8736157106482bda01d224d6213d4c475be9c"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_python_test_suites.py",
+      "sha256": "a2e8f5df2e3e01cff192bcfadba8715dcaf6b355d5ac50e57ea7f35b3137f2ad"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_release_credential_readiness.py",
+      "sha256": "22356192f37d3c2a5ffaf324c26c0757d05fa4710f6031d54e880165babfe526"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_release_metadata.py",
+      "sha256": "78775a6e302c4bf59b85a4edc4247c5454f928b2cfae032e2ed2ab24d425cb29"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_runtime_suite_inventory.py",
+      "sha256": "2039eb99b23f6d08c12aa5d31ded5683e912f72421f98ff16c0b9b6195121291"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_source_installation_boundary.py",
+      "sha256": "7ea765bc32e21ab5c903247b655d8aa53c599ef3865d618d3d760455f3a4199c"
+    },
+    {
+      "mode": "100644",
+      "path": "Tests/Tooling/test_technical_identity.py",
+      "sha256": "fd79b2282a70a3c9234b773503c4c75c6b162d809437772d4f54128f0330cca4"
+    },
+    {
+      "mode": "100644",
+      "path": "config/identity-exceptions.json",
+      "sha256": "5215e2bf626f88f1dfc61a3829f65a18b5d51e039fbe6b6bbd630a2abeea0cd3"
+    },
+    {
+      "mode": "100644",
+      "path": "docs/runbooks/native-acceptance.md",
+      "sha256": "120467e8447bdc6ec3b9cbdfb16eed6cff358b4c130dd5ae257ff4912c48fdeb"
+    },
+    {
+      "mode": "100755",
+      "path": "install.sh",
+      "sha256": "2a1251fa15267a5e737d56386217f5c2041d724671111708f4154e7d7601bea1"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/app-credential-readiness.py",
+      "sha256": "11b571be8b66e911cec92fce774677cc3075f1aeebb13ebc9cc716f5672d6ad9"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/auto-merge.py",
+      "sha256": "1172ae9bd51a8845707bb6b6beb960dd3ba3e3a272414b86bf1374ce17274b6d"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/beta-v0.1-native-smoke.sh",
+      "sha256": "61d74ccf93e9d889fa7da95a9f198ba5b5e672bc396faba4e19ba24152def260"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/beta-v0.2-native-smoke.sh",
+      "sha256": "ef7cdfc512faeee6701b6f8b4ef4e463369b46e2e982b7e325ddb20bc3ee79e8"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/beta-v0.3-save-smoke.sh",
+      "sha256": "1b36ef49d8938e12cb55424a6f6065a8629d9d0c4dc51c961627a532683b34d8"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/beta-v0.9-native-smoke.sh",
+      "sha256": "fc4bf0cc14c4df2130ec70993345e75e1a46d92224610d77897fb3f2895d8183"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/build-app.sh",
+      "sha256": "fdfca09a453f86cc18d230ced37f4187d2a9c5d749e218ebb448e98e8e9307f2"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/build-policy-runtime.py",
+      "sha256": "7e5adc80d0fb08d6f56eec99fb532c5d6013e76d97aef708c80be197f3a02be6"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/ci-shards.py",
+      "sha256": "af3fee917d7846a738ea06764f42eab23515c17de60b6cf6dda874e7cbeb2406"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/compile-runtime-bytecode.py",
+      "sha256": "42d5697c733c07419f6069ae9062598ca3bb4a3bcb865a1bfa81b0f31bce99d9"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/dependency-maintenance.py",
+      "sha256": "f7bab6994888a8f4bf283424d22dcb15d37ccb6300da12e4b711e6c953258f61"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/generate-icon.sh",
+      "sha256": "339b0f9bf022bc205d4eb81f37b56ce11e8b39570226b44723214cfc0a9251f7"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/github_automation.py",
+      "sha256": "d72b43dc94a1fec1f9258b451ba2b9e89f691032668ee72b46d3c31144787b14"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/guardian_protocol.py",
+      "sha256": "98ffbf9d082148471d16ceba711e82893ec8eba8c0df0f3d7c4552baf4957f2b"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/installer-scratch-cleanup-tests.sh",
+      "sha256": "9a53940de56755b63d5f2a5e8f70c8c1de158eb4948c118defbdd19fa62dee8d"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/m1-core-tests.sh",
+      "sha256": "baf2be1d14089f1ccf0d7a4b7928f6dfc0b03aab65ac92fda481486f911e4059"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/m1-native-e2e.sh",
+      "sha256": "fd4f4e6262734029b74138af2e2c3dae3f17f3e685c39ac0c1a8eeb86c6b955b"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/m6-lifecycle-e2e.sh",
+      "sha256": "9850a976c76c2f9eb1d317674d027fc5039d98bad4ee1130832d156f9c80edd9"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/native-appkit-contract.py",
+      "sha256": "5c9e8ad6cf77710561d16af5fa8bb067b26066a6e8e850432fe836f62be8afde"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/native-fixture-contract.py",
+      "sha256": "34da883f1a5c6fc100c0cfaf9d0f0b87da548644aef465cf101021e252df1f4d"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/native-ui-suites.py",
+      "sha256": "4d0e5b84846d11e39e24a0e52cbfc128e0046413f944c50bfd371a63b7f328bb"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/owned-cleanup.sh",
+      "sha256": "b07c287cf701237469620f62de9247d667b44ef66f0bc37685e045c60d5cc709"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/python-test-suites.py",
+      "sha256": "aa632f452743d131144fbe89ee24c39d60e58845587dc7ed785acc724b999ae1"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/release-credential-readiness.py",
+      "sha256": "ac08b3ab356b74433ab17d4072b7da008674aa3f1ab08894b5d9d1c5797ed17d"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/run-native-appkit.py",
+      "sha256": "b0cda49cf46e73db7435b5d9dfbf4c36edbd28af38f952b065d91c717cc25056"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/runtime-suite-inventory.py",
+      "sha256": "e8c2e41af9ea96fdf43d23da486a4fb432434ff95839256f786b493e8c717976"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/runtime_guardian_executor.py",
+      "sha256": "983de230bfc02794a278ebba8d113a24249b1e6a16c6da2bb2b95a9a6bf526ac"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/source-doctor.sh",
+      "sha256": "f70707c157b40c8d7cc1a6001e028b940b2d7479793258a8ccfcb8d5f9181dae"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/v2-body1-acceptance.sh",
+      "sha256": "4fb1340d055808528eab2a705cac68c9e3a4a80453cfae4b61828d9d49da1ff9"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/v2-body2-acceptance.sh",
+      "sha256": "7e4856246b8efc8c2b608de04dc499f43930309359f7069d221247f15a2c923f"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/v2-body4-acceptance.sh",
+      "sha256": "3e3b9f71157e214fbbbf89b118127a756e5bb5d807b884bd9d3dd7b43b97a5d7"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/v3-preflight-acceptance.sh",
+      "sha256": "93807f45a18f1788b2ab79cc9d7c1db1ebcdd5e752d81df611917bdec8bff788"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/v4-preflight-acceptance.sh",
+      "sha256": "62ad716017e6a5c7a15b10badddb47bbdd7361a7e4e72449b8144f0a87b31345"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-beta-v0.2.sh",
+      "sha256": "b535fc02933c74a50e871fc0a234a739e988d7d310e36384e1f6ea62cabc928b"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-beta-v0.3-build6.sh",
+      "sha256": "d40cdde45852d9757786b1fbac4152e7d018f8c4b101dc5d46c6d0d724f85ac8"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-beta-v0.3.sh",
+      "sha256": "51d4a74713d5d1d3c17b11db9912c8b1c44d30bf38f81401d4f3c305a941bad3"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-beta-v0.4.sh",
+      "sha256": "06a34cd01e9a6a0a17c7be11c4f922df0cdc41f755b4ddb009917cc73040c693"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-beta-v0.5.sh",
+      "sha256": "26e507037ec830cb638b37d5f67a55c1033d7e3621772871045f6731f2fd5fd2"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-beta-v0.6.sh",
+      "sha256": "debc563cc79a6c46bb2d3d51ddbbde6b72295b76b17849f408f80b9aef7487af"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-beta-v0.7.sh",
+      "sha256": "1db00711b646deb1868c6eea6eb0e63507866eeb10c1607b67ed605efae3676c"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-beta-v0.8.sh",
+      "sha256": "283a7fbf7e98afedd1b608e0920a82a3cbec36f28e55abb224bf0f9ba6dcc6a4"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-beta-v0.9.sh",
+      "sha256": "5fd134f531c447f41dc523c0487751ffa94c5188376ec37f5ccc7d6b884ea96b"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/verify-ci-results.py",
+      "sha256": "1ec553ef2ed3ef82ad20a3f3a2d2b45163f3ad52caa22330b38c47b2462b97fe"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-coordinator-entry.py",
+      "sha256": "17468c66306d36340044495902d706b33098a596dfcdff7d6a083c5235e1a86d"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/verify-fixture-root.py",
+      "sha256": "45ceeb22baa34ac947a464547ab2728e89eef861928ae6266199ee8d50161f00"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-m1.sh",
+      "sha256": "aef0520f505b0c2616dfc86f30ddad0bbd9b12b7903baf3df2b146b6699524e3"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-m5.sh",
+      "sha256": "0f054e80a4c2f0e822da474e3ab455ed9774b3ec6b895295170da4726828a072"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-m6.sh",
+      "sha256": "95e579b0e90b7a99a936d367af0de01e9aa2b154030cc0f1c0730cf81427a5b7"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/verify-source-contract.py",
+      "sha256": "126b6cfc6260324aad07a801b93430701c237628a3e7f69d2ca7fbffa6ff1400"
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify-technical-identity.py",
+      "sha256": "ceb26fb72c8f49b5d3c9237532638c1444bbca0aa9806915f83994da27b1d6a4"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/verify-update-signature.swift",
+      "sha256": "172befaa5325b368e9324af8bb95c6083a34726199fc837eea1b59eb979fc8de"
+    }
+  ],
+  "history": "reviewed snapshot; private history and deployment data excluded",
+  "mode_format": "Git regular-file modes: 100644 or 100755; local owner-private read/write permissions may be stricter.",
+  "repository": "KleinPerkins/shadow-sync",
+  "schema": "shadow-sync-source-export/v1",
+  "scope": "Imported application source, resources, fixtures and tooling only; target-owned governance and public documents are separate. This is not a release or runtime qualification receipt.",
+  "third_party_notices": "THIRD_PARTY_NOTICES.md"
+}
