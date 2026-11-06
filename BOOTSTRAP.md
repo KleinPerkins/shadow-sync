@@ -17,7 +17,7 @@ Stage 0 validation is document/configuration validation only. It must not invoke
 
 ## Stage 1 — product-source import
 
-The product-source import is ready for publication only when every item below is true at one exact target revision.
+The product-source import follows [ADR 0008](docs/adr/0008-mvp-first-standalone-delivery.md): reviewed source publication precedes full runtime and installation qualification. The publication checks below bind one exact target revision; runtime, signing and activation gates remain separate and incomplete until exercised.
 
 ### Import boundary
 
@@ -45,10 +45,11 @@ The product-source import is ready for publication only when every item below is
 - proprietary `LICENSE`, `SECURITY.md`, `AGENTS.md`, `.gitignore`, `.gitattributes`, and asset provenance are present;
 - Lucide notice and source pins are retained and bundled;
 - a bounded secret scan reports only reviewed synthetic fixtures;
-- package build and fixture-only tests pass from the standalone root;
+- standalone package compilation and applicable fixture-only source/tooling checks pass; the complete runtime roster remains mandatory before activation, with failures and incomplete coverage explicitly recorded;
 - source-attestation tests use the target repository and no private parent files;
 - live install remains disabled until its exact standalone lifecycle gates pass;
-- final target commit/tree and per-file output hashes are recorded in the public manifest.
+- the public manifest records imported target paths, regular/executable modes and SHA-256 hashes; external delivery evidence binds the final manifest-bearing commit/tree without a self-referential hash;
+- privileged automation imported with source is explicitly reviewed and staged disabled until its CI/protected-content/approval prerequisites pass; dormant code is not operational delivery evidence.
 
 A committed manifest cannot truthfully contain the hash of the same Git tree that contains it. Use either a follow-up provenance commit that names the preceding content commit/tree, or an external attestation that names the final manifest-bearing commit. Never insert a guessed or self-referential hash.
 

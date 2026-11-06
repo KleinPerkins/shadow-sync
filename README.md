@@ -2,41 +2,52 @@
 
 ShadowSync is a proprietary macOS application for inspecting local Git repositories and applying bounded, fast-forward-only updates to authorized worktrees.
 
-## Repository status
+## Current status
 
-This repository begins as a governed public foundation. It contains repository policy and planning scaffolding; application source, builds, installers, and releases are not yet available here.
+The standalone application source, resources, fixtures and verification tooling are present. **This source is under qualification and is not install-ready.** There is no qualified signed ShadowSync product release or verified standalone migration yet. The [MVP delivery decision](docs/adr/0008-mvp-first-standalone-delivery.md) prioritizes a signed, safely installed application and working repository CI.
 
-The product source will be imported from a reviewed snapshot with per-file provenance. Private Git history, host configuration, user state, and unrelated source are excluded. [BOOTSTRAP.md](BOOTSTRAP.md) defines the source-import and publication gates.
+The source uses the permanent identity `shadow-sync` / `com.kleinperkins.shadow-sync`; the product remains **ShadowSync.app**. The target is macOS 26 arm64, with a 26.0 deployment target. Runtime support is claimed only for versions actually qualified; compilation does not establish minimum-version support. Intel and macOS 27 support are not claimed.
 
-## Planned standalone delivery
+The snapshot has fresh public history and [per-file provenance](Resources/source-export.json). Private source history, deployment configuration and user state are excluded. [BOOTSTRAP.md](BOOTSTRAP.md) defines the publication boundary.
 
-- Product: **ShadowSync**, distributed as **ShadowSync.app**.
-- Technical identity: `shadow-sync` / `com.kleinperkins.shadow-sync`.
-- Initial support: **macOS 26, arm64**; minimum deployment target 26.0. Intel and macOS 27 support are not claimed.
-- Build baseline: Swift tools minimum 6.2, Xcode 26.6 and its bundled toolchain.
-- Distribution: Developer ID signed and notarized application, with verified Sparkle updates after installation and update qualification.
-- Startup: explicit opt-in through normal macOS Login Items behavior.
+## Development
 
-These are delivery requirements, not claims that a signed release or installed migration has already passed.
+The package requires Swift tools 6.2 or newer and a macOS 26 SDK. The intended hosted release toolchain remains Xcode 26.6; local compilation evidence records the toolchain actually used.
+
+Source and Python tooling checks use disposable fixtures:
+
+```sh
+python3 -I -B scripts/verify-source-contract.py
+python3 -I -B -m unittest discover -s Tests/Tooling -p 'test_*.py' -v
+```
+
+For a local, ad-hoc-signed development bundle, create private scratch and output directories outside the source tree:
+
+```sh
+work=$(mktemp -d /private/tmp/shadow-sync-build.XXXXXX)
+./scripts/build-app.sh --scratch-path "$work/build" --output-dir "$work/output"
+```
+
+This produces a development bundle, not a distribution or an installation. `install.sh` refuses production installation, repair and removal. Do not run historical lifecycle/native scripts against a real home or repository inventory. Runtime and native suites require the reviewed isolated runners; plain `swift test` is a compile/package check and does not execute the substantive runtime suite.
+
+## Verification and delivery gates
+
+The source inventory includes mandatory runtime cases and sharding/evidence validators. Full current-source runtime coverage and hosted application CI are still being qualified. The existing `CI tooling qualification` workflow tests Python tooling only. The privileged reviewer-App workflow is staged with both jobs disabled until full CI provenance, dependency-content policy and exact-head delivery tests pass.
+
+The next product milestone requires Developer ID signing, hardened runtime, notarization, stapling, downloaded-byte verification, deployed policy compatibility, source-free installation and preserved-state migration. Startup remains explicit opt-in through normal macOS Login Items.
+
+Sparkle is not integrated or available in the MVP. Its reserved normal-update authority in the release contract does not mean updates work. Installed-update proof, channel feeds, broader promotion, formal performance tuning and final compatibility retirement remain in the separate post-MVP backlog. Until qualified, no automatic update or source-build replacement path is supported.
 
 ## Safety and policy
 
-Repository selection does not grant canonical authority. Operations must revalidate repository identity, policy, configuration, refs, worktree claims, cleanliness, and process ownership before mutation. Git updates remain fast-forward-only; no reset, rebase, stash, clean, switch, push, force-update, or history rewrite is added.
+Repository selection never grants canonical authority. Operations revalidate identity, policy, configuration, refs, worktree claims, cleanliness and process ownership before mutation. Git updates remain fast-forward-only; the extraction introduces no reset, rebase, stash, clean, switch, push, force-update or history-rewrite path.
 
-Generic protection contracts remain owned by [AWA](https://github.com/KleinPerkins/awa). Concrete host-policy values remain outside this public repository. Required policy must be present, compatible, and verified before repository access; missing or invalid policy fails closed.
+Generic protection contracts remain owned by [AWA](https://github.com/KleinPerkins/awa). Concrete host-policy values remain outside this repository. Missing, stale or invalid policy fails closed before repository access. The optional external cleanup adapter has no implicit host-tool path; its policy-bound integration remains an activation gate.
 
-Public automation uses disposable repositories and state. Native desktop acceptance, installed migration, signed updates, and recovery are separate verification milestones. Foundation publication does not authorize running source-bound installation or live-inventory tools.
+Public automation uses disposable repositories and state. Physical desktop acceptance follows the [native acceptance runbook](docs/runbooks/native-acceptance.md). Cancellation, child cleanup, continuous operation locking, migration and recovery require their own execution evidence. Source publication is not product acceptance.
 
-## Development and reporting
-
-Build and test instructions will accompany the source import. No build command is available in this foundation.
-
-Do not post real repository inventories, credentials, local paths, screenshots, or unredacted logs in public issues. Report vulnerabilities through the private process in [SECURITY.md](SECURITY.md).
-
-## Native acceptance
-
-Physical desktop acceptance remains open and follows the [native acceptance runbook](docs/runbooks/native-acceptance.md). Its disposable-fixture scenario names the first selected clone `00-dirty-first`, makes it dirty after review, and requires execution-time revalidation to report it as `SKIPPED_DIRTY` without mutation. Cancellation, child cleanup, keyboard/VoiceOver behavior, installation and updates retain their separate evidence gates.
+Do not post real repository inventories, credentials, local paths, screenshots or unredacted logs in public issues. Report vulnerabilities through [SECURITY.md](SECURITY.md).
 
 ## License
 
-Repository contents are public and proprietary; application source is not yet present. See [LICENSE](LICENSE) for reserved rights; public visibility does not grant an open-source license. Third-party assets and libraries retain their own identified licenses when imported. Binary-use terms will accompany any qualified distribution.
+Source is public and proprietary. [LICENSE](LICENSE) reserves rights; public visibility does not grant an open-source license. Third-party assets retain the licenses identified in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Binary-use terms will accompany a qualified distribution.

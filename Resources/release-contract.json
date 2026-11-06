@@ -1,0 +1,19 @@
+{
+  "schema": "shadow-sync-release-contract/v1",
+  "metadata_schema": "shadow-sync-release/v2",
+  "repository": "KleinPerkins/shadow-sync",
+  "bundle_identifier": "com.kleinperkins.shadow-sync",
+  "executable": "ShadowSync",
+  "product": "ShadowSync",
+  "architectures": [
+    "arm64"
+  ],
+  "minimum_system_version": "26.0",
+  "version_format": "three-canonical-unsigned-integers",
+  "build_format": "canonical-integer-15-through-2147483647",
+  "normal_update_authority": "Sparkle",
+  "publisher_verification": "Developer-ID-Application-hardened-runtime-secure-timestamp-notarization",
+  "lifecycle_authority": "ShadowSyncLifecycleCoordinator",
+  "publisher_team_identifier": "J2V7GRV5CM",
+  "command_graphs_sha256": "edfaf43c856b9111d8bc766660b1f71c83f6e4a70815c7cb08930902fddb2d23"
+}

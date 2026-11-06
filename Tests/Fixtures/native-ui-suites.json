@@ -1,0 +1,351 @@
+{
+  "schema": "shadow-sync-native-ui-suites/v1",
+  "suites": [
+    {
+      "id": "secure-log-core",
+      "checks": [],
+      "diagnostic_only": [],
+      "core_tests": [
+        "m5-secure-log-open-success",
+        "m5-secure-log-open-refusals",
+        "m5-secure-log-open-identity-change",
+        "m5-secure-log-open-default-app-failure"
+      ]
+    },
+    {
+      "id": "exact-copy",
+      "checks": [
+        "exactCopySnapshots"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "taxonomy",
+      "checks": [
+        "resultTaxonomyAndTransitions"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "reducer-transactions",
+      "checks": [
+        "reducerReportTransactions"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "controller-transactions",
+      "checks": [
+        "controllerReportTransactions"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "stopping-overlay",
+      "checks": [
+        "stoppingOverlayRaces"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "stopping-controller",
+      "checks": [
+        "stoppingControllerRaces"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "sealed-presentation",
+      "checks": [
+        "sealedPresentationRaces"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "operation-contention",
+      "checks": [
+        "operationContentionLifecycle"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "historical-viewer",
+      "checks": [
+        "historicalViewerLifecycleIsolation"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "body3-session",
+      "checks": [
+        "body3CorrectiveSessionOwnership"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "origin-presentation",
+      "checks": [
+        "originIdentityPresentation"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "routing",
+      "checks": [
+        "deterministicRouting"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "foreground",
+      "checks": [
+        "foregroundTransactions"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "report-reopen",
+      "checks": [
+        "partialAndFinalReopen"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "secure-log-feedback",
+      "checks": [
+        "secureLogFeedback"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "report-summaries",
+      "checks": [
+        "mixedAndCancelledReports"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "m4-row-progress",
+      "checks": [
+        "m4ThreeRowProgress"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "m4-stop-lifecycle",
+      "checks": [
+        "m4StopLifecycle"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "m4-controller-stop",
+      "checks": [
+        "m4ControllerStopRaces"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "m4-worker-stop",
+      "checks": [
+        "m4WorkerStopSingleFlight"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "m4-takeover",
+      "checks": [
+        "m4TakeoverTransition"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "worker-owner-ordering",
+      "checks": [
+        "workerOwnerSignalReapOrdering"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "worker-owner-refusal",
+      "checks": [
+        "workerOwnerFailedCustodyRefusal"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    },
+    {
+      "id": "native-rows",
+      "checks": [
+        "orderedNativeRows",
+        "constantTimeRowMutation",
+        "nativeRowsFocus",
+        "nativeRowsAdaptive",
+        "nativeRowsAccessibility"
+      ],
+      "diagnostic_only": [
+        "nativeRowsAccessibility"
+      ],
+      "core_tests": []
+    },
+    {
+      "id": "selection",
+      "checks": [
+        "selectionStates",
+        "selectionFocus",
+        "selectionAdaptive",
+        "selectionAccessibility"
+      ],
+      "diagnostic_only": [
+        "selectionAccessibility"
+      ],
+      "core_tests": []
+    },
+    {
+      "id": "confirmation-close",
+      "checks": [
+        "closeClearsSession",
+        "retryStartsRun",
+        "hiddenCardRemainsOpen",
+        "reactivationReusesCard",
+        "hiddenOnboardingRemainsOpen",
+        "onboardingReactivationReuses",
+        "dismissedCanonicalRootCommitStaysClosed",
+        "savedCanonicalRootRefreshFailureRecovers",
+        "dismissedSavedCanonicalRootReconciles",
+        "concurrentCanonicalRootCommitIsRejected",
+        "discoveryActivationShowsProgress",
+        "discoveryActivationPresentsOnce",
+        "onboardingFailurePreservesOnboarding",
+        "dismissedFailureReportsAndReconciles"
+      ],
+      "diagnostic_only": [],
+      "core_tests": []
+    }
+  ],
+  "legacy_assertions": {
+    "exactCopySnapshots": [
+      "exactCopySnapshots"
+    ],
+    "resultTaxonomyAndTransitions": [
+      "resultTaxonomyAndTransitions"
+    ],
+    "reducerReportTransactions": [
+      "reducerReportTransactions"
+    ],
+    "workerOwnerSignalReapOrdering": [
+      "workerOwnerSignalReapOrdering"
+    ],
+    "workerOwnerFailedCustodyRefusal": [
+      "workerOwnerFailedCustodyRefusal"
+    ],
+    "controllerReportTransactions": [
+      "controllerReportTransactions"
+    ],
+    "stoppingOverlayRaces": [
+      "stoppingOverlayRaces"
+    ],
+    "stoppingControllerRaces": [
+      "stoppingControllerRaces"
+    ],
+    "sealedPresentationRaces": [
+      "sealedPresentationRaces"
+    ],
+    "operationContentionLifecycle": [
+      "operationContentionLifecycle"
+    ],
+    "historicalViewerLifecycleIsolation": [
+      "historicalViewerLifecycleIsolation"
+    ],
+    "body3CorrectiveSessionOwnership": [
+      "body3CorrectiveSessionOwnership"
+    ],
+    "originIdentityPresentation": [
+      "originIdentityPresentation"
+    ],
+    "orderedNativeRows": [
+      "orderedNativeRows"
+    ],
+    "constantTimeRowMutation": [
+      "constantTimeRowMutation"
+    ],
+    "selectionStates": [
+      "selectionStates"
+    ],
+    "routeStateMatrix": [
+      "deterministicRouting",
+      "closeClearsSession",
+      "retryStartsRun",
+      "hiddenCardRemainsOpen",
+      "reactivationReusesCard",
+      "hiddenOnboardingRemainsOpen",
+      "onboardingReactivationReuses",
+      "dismissedCanonicalRootCommitStaysClosed",
+      "savedCanonicalRootRefreshFailureRecovers",
+      "dismissedSavedCanonicalRootReconciles",
+      "concurrentCanonicalRootCommitIsRejected",
+      "discoveryActivationShowsProgress",
+      "discoveryActivationPresentsOnce",
+      "onboardingFailurePreservesOnboarding",
+      "dismissedFailureReportsAndReconciles",
+      "foregroundTransactions"
+    ],
+    "partialAndFinalReopen": [
+      "partialAndFinalReopen"
+    ],
+    "secureLogFeedback": [
+      "secureLogFeedback"
+    ],
+    "focusAndAlertSafety": [
+      "exactCopySnapshots",
+      "selectionFocus",
+      "nativeRowsFocus"
+    ],
+    "accessibilitySemantics": [
+      "selectionAccessibility",
+      "nativeRowsAccessibility"
+    ],
+    "adaptiveSemanticLayout": [
+      "selectionAdaptive",
+      "nativeRowsAdaptive"
+    ],
+    "mixedAndCancelledReports": [
+      "mixedAndCancelledReports"
+    ]
+  },
+  "lifecycle_checks": [
+    "m4ThreeRowProgress",
+    "m4StopLifecycle",
+    "m4ControllerStopRaces",
+    "m4WorkerStopSingleFlight",
+    "m4TakeoverTransition"
+  ],
+  "core_tests": [
+    "m5-secure-log-open-success",
+    "m5-secure-log-open-refusals",
+    "m5-secure-log-open-identity-change",
+    "m5-secure-log-open-default-app-failure"
+  ]
+}

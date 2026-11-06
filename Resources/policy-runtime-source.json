@@ -1,0 +1,13 @@
+{
+  "architecture": "arm64",
+  "framework_version": "3.14",
+  "notices_manifest_sha256": "cc56bb479d746e0775adac85e18552c1d8da978ed974a878bf9c2f5bea3e94aa",
+  "package_bytes": 76018440,
+  "package_license_sha256": "aa0f49dc73ca33e0e54211117c3733c27bb5613500470a3595c47972f006f084",
+  "package_sha256": "286c7018aa2730f6747ca433dccdc2b31be45f078a9ea0ffa44d5f06368fd2d7",
+  "package_url": "https://www.python.org/ftp/python/3.14.10/python-3.14.10-macos11.pkg",
+  "schema": "shadow-sync-policy-runtime-source/v1",
+  "selection_recipe": "stdlib-source-checked-bytecode-zip/v1",
+  "upstream_team": "BMM5U3QVKW",
+  "version": "3.14.10"
+}

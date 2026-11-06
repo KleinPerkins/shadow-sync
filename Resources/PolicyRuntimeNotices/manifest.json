@@ -1,0 +1,163 @@
+{
+  "components": [
+    {
+      "component": "CPython and retained standard library",
+      "notices": [
+        "CPython-3.14.10-LICENSE.txt",
+        "CPython-3.14.10-Package-License.rtf",
+        "CPython-3.14.10-license.html",
+        "CPython-Incorporated-Licenses.rst",
+        "CPython-Native-Source-Notices.txt"
+      ],
+      "version": "3.14.10"
+    },
+    {
+      "component": "Expat",
+      "notices": [
+        "Expat-2.9.0-COPYING.txt",
+        "CPython-Native-Source-Notices.txt"
+      ],
+      "version": "2.9.0"
+    },
+    {
+      "component": "HACL star and Karamel headers",
+      "notices": [
+        "CPython-Incorporated-Licenses.rst",
+        "CPython-Native-Source-Notices.txt",
+        "HACL-star-Apache-2.0-LICENSE.txt"
+      ],
+      "version": "8ba599b2f6c9701b3dc961db895b0856a2210f76"
+    },
+    {
+      "component": "Macholib",
+      "notices": [
+        "Macholib-1.0-README.txt",
+        "CPython-3.14.10-LICENSE.txt"
+      ],
+      "version": "1.0"
+    },
+    {
+      "component": "OpenSSL",
+      "notices": [
+        "OpenSSL-3.5.9-LICENSE.txt"
+      ],
+      "version": "3.5.9"
+    },
+    {
+      "component": "NCurses",
+      "notices": [
+        "NCurses-6.5-LICENSE.txt"
+      ],
+      "version": "6.5"
+    },
+    {
+      "component": "liblzma",
+      "notices": [
+        "XZ-5.2.3-COPYING.txt"
+      ],
+      "version": "5.2.3"
+    },
+    {
+      "component": "SQLite",
+      "notices": [
+        "SQLite-3.50.4-PUBLIC-DOMAIN.txt"
+      ],
+      "version": "3.50.4"
+    },
+    {
+      "component": "libmpdec",
+      "notices": [
+        "libmpdec-4.0.1-LICENSE.txt"
+      ],
+      "version": "4.0.1"
+    },
+    {
+      "component": "Zstandard",
+      "notices": [
+        "Zstandard-1.5.7-LICENSE.txt"
+      ],
+      "version": "1.5.7"
+    }
+  ],
+  "cpython_revision": "b703b2c5e704341d61e367b9b940b77ed11dded0",
+  "files": {
+    "CPython-3.14.10-LICENSE.txt": {
+      "bytes": 13804,
+      "sha256": "b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231",
+      "source": "Authenticated PSF package framework LICENSE.txt; package SHA-256 286c7018aa2730f6747ca433dccdc2b31be45f078a9ea0ffa44d5f06368fd2d7"
+    },
+    "CPython-3.14.10-Package-License.rtf": {
+      "bytes": 15389,
+      "sha256": "aa0f49dc73ca33e0e54211117c3733c27bb5613500470a3595c47972f006f084",
+      "source": "Authenticated PSF installer Resources/License.rtf; package SHA-256 286c7018aa2730f6747ca433dccdc2b31be45f078a9ea0ffa44d5f06368fd2d7"
+    },
+    "CPython-3.14.10-license.html": {
+      "bytes": 90337,
+      "sha256": "6c3f39606ef052bc05c1d19a5d5595a7e4895a9bacda83dcca14f001e05bbf3a",
+      "source": "Authenticated PSF documentation payload, complete History and License page; package SHA-256 286c7018aa2730f6747ca433dccdc2b31be45f078a9ea0ffa44d5f06368fd2d7"
+    },
+    "CPython-Incorporated-Licenses.rst": {
+      "bytes": 60039,
+      "sha256": "8a7329b25131f64b2bea284155f0824876b1af9f4a2f970e6335751d97dfa6dd",
+      "source": "https://github.com/python/cpython/blob/b703b2c5e704341d61e367b9b940b77ed11dded0/Doc/license.rst"
+    },
+    "CPython-Native-Source-Notices.txt": {
+      "bytes": 261954,
+      "sha256": "7c27bceff4915a40f0e672a3ff3d790bd23aecf5e4d704510c2f926c2ba9b547",
+      "source": "Exact copyright/license comment blocks from CPython b703b2c5e704341d61e367b9b940b77ed11dded0; per-file source digests included"
+    },
+    "Expat-2.9.0-COPYING.txt": {
+      "bytes": 1144,
+      "sha256": "31b15de82aa19a845156169a17a5488bf597e561b2c318d159ed583139b25e87",
+      "source": "https://github.com/python/cpython/blob/b703b2c5e704341d61e367b9b940b77ed11dded0/Modules/expat/COPYING"
+    },
+    "HACL-star-Apache-2.0-LICENSE.txt": {
+      "bytes": 11356,
+      "sha256": "c5accbbd8546e94c34aed24afe689a617627d18eed5a6c48277e48db57c23851",
+      "source": "https://github.com/hacl-star/hacl-star/blob/8ba599b2f6c9701b3dc961db895b0856a2210f76/LICENSE; Git blob 9c8f3ea0871e0bfe81da0fa6e7c1d7d156dc380e"
+    },
+    "Macholib-1.0-README.txt": {
+      "bytes": 296,
+      "sha256": "dc29d1da83b6a0a09a41647e4111eee878ed079c2d6b54a98fd6d8b88dd581f2",
+      "source": "https://github.com/python/cpython/blob/b703b2c5e704341d61e367b9b940b77ed11dded0/Lib/ctypes/macholib/README.ctypes"
+    },
+    "NCurses-6.5-LICENSE.txt": {
+      "bytes": 1447,
+      "sha256": "b2feb54f39529abe226f709a292584fde48a2e5721559fee417d2cdd51cb7cc1",
+      "source": "ncurses-6.5/COPYING; source archive SHA-256 136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6"
+    },
+    "NOTICE.txt": {
+      "bytes": 1526,
+      "sha256": "d90ff88f0ebe7ce4be15f0c716f91a36aebe7fe29c46e63c764f35a4918b45ac",
+      "source": "ShadowSync redistribution scope statement"
+    },
+    "OpenSSL-3.5.9-LICENSE.txt": {
+      "bytes": 10175,
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
+      "source": "https://github.com/openssl/openssl/blob/openssl-3.5.9/LICENSE.txt; Git blob 49cc83d2ee29d13453188217f0e4edd70c7f842f"
+    },
+    "SQLite-3.50.4-PUBLIC-DOMAIN.txt": {
+      "bytes": 1808,
+      "sha256": "411d0d5aced7a6c6f5b93ac94b2417a9fdefca089b8155975242fcf539274699",
+      "source": "sqlite-autoconf-3500400/sqlite3.c exact amalgamation introduction and first sqliteInt.h copyright disclaimer; source archive SHA-256 a3db587a1b92ee5ddac2f66b3edb41b26f9c867275782d46c3a088977d6a5b18"
+    },
+    "XZ-5.2.3-COPYING.txt": {
+      "bytes": 2774,
+      "sha256": "c4f8e14fafe458d84808a4cd8b69f94673ebe2bf8fc992291629a69ac12218f8",
+      "source": "https://github.com/tukaani-project/xz/blob/v5.2.3/COPYING; Git blob 43c90d0598c55ab9f4edeb1781cdf5c549ca567e"
+    },
+    "Zstandard-1.5.7-LICENSE.txt": {
+      "bytes": 1549,
+      "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
+      "source": "https://github.com/meta/zstd/blob/v1.5.7/LICENSE; Git blob 75800288cc243f164b9d130f125e2ffae28f8e39"
+    },
+    "libmpdec-4.0.1-LICENSE.txt": {
+      "bytes": 1285,
+      "sha256": "dba079e24a0286052f9f36a5e0b4f6cc95bc83ada657eb26bef8c0b6473f6512",
+      "source": "mpdecimal-4.0.1/COPYRIGHT.txt; source archive SHA-256 96d33abb4bb0070c7be0fed4246cd38416188325f820468214471938545b1ac8"
+    }
+  },
+  "package_sha256": "286c7018aa2730f6747ca433dccdc2b31be45f078a9ea0ffa44d5f06368fd2d7",
+  "schema": "shadow-sync-policy-runtime-notices/v1",
+  "selection_recipe": "stdlib-source-checked-bytecode-zip/v1"
+}

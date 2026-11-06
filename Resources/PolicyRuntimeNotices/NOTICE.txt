@@ -1,0 +1,25 @@
+ShadowSync bundled policy runtime notices
+
+These notices apply to the selected CPython 3.14.10 arm64 runtime and its
+incorporated libraries. They do not license ShadowSync itself. The Python
+package, source revision, selection recipe and notice digests are recorded in
+manifest.json. Runtime changes are listed in ../ShadowSyncRuntimeChanges.txt.
+
+The complete Python license page and source license document are retained,
+including their embedded component licenses (among others: mimalloc, Unicode,
+SipHash, dtoa, HACL*, Karamel, libffi, pyzstd, expat and Python wrappers).
+The source-comment collection additionally preserves individual copyright
+notices; it is a conservative superset, not a claim that every source file was
+compiled. The unmodified standard-library source files retain their original
+notices inside the framework. Macholib is redistributed under the PSF option
+documented in its included README.
+
+Additional library-specific notices cover the package's OpenSSL 3.5.9,
+NCurses 6.5, XZ/liblzma 5.2.3, SQLite 3.50.4, libmpdec 4.0.1 and Zstandard
+1.5.7. XZ's COPYING distinguishes its public-domain liblzma from command-line
+tools, scripts and build tools under other terms. This package selection does
+not redistribute those XZ executables/scripts. Tcl/Tk and their Python GUI
+wrappers are excluded by the runtime selection recipe. System libraries linked
+from /usr/lib or /System/Library are supplied by macOS and are not copied here.
+
+No upstream author or project is represented as endorsing ShadowSync.
