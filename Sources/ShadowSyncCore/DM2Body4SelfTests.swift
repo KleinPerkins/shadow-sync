@@ -36,58 +36,80 @@ public enum V2Body4SelfTestRunner {
             .replacingOccurrences(of: "dm2-", with: "")
         {
         case "t04":
-            try refOnlyCAS(executable: testExecutable)
+            try RuntimeFixtureSession.withCase("DM2-T04 ref-only-cas") {
+                try refOnlyCAS(executable: testExecutable)
+            }
             observer("DM2-T04 ref-only-cas")
         case "t04-success":
-            try refOnlyCAS(
-                executable: testExecutable,
-                sections: ["success"]
-            )
+            try RuntimeFixtureSession.withCase("DM2-T04 ref-only-cas · success") {
+                try refOnlyCAS(
+                    executable: testExecutable,
+                    sections: ["success"]
+                )
+            }
             observer("DM2-T04 ref-only-cas · success")
         case "t04-relations":
-            try refOnlyCAS(
-                executable: testExecutable,
-                sections: ["relations"]
-            )
+            try RuntimeFixtureSession.withCase("DM2-T04 ref-only-cas · relations") {
+                try refOnlyCAS(
+                    executable: testExecutable,
+                    sections: ["relations"]
+                )
+            }
             observer("DM2-T04 ref-only-cas · relations")
         case "t04-races-a":
-            try refOnlyCAS(
-                executable: testExecutable,
-                sections: ["races-a"]
-            )
+            try RuntimeFixtureSession.withCase("DM2-T04 ref-only-cas · claim races") {
+                try refOnlyCAS(
+                    executable: testExecutable,
+                    sections: ["races-a"]
+                )
+            }
             observer("DM2-T04 ref-only-cas · claim races")
         case "t04-races-b":
-            try refOnlyCAS(
-                executable: testExecutable,
-                sections: ["races-b"]
-            )
+            try RuntimeFixtureSession.withCase("DM2-T04 ref-only-cas · identity races") {
+                try refOnlyCAS(
+                    executable: testExecutable,
+                    sections: ["races-b"]
+                )
+            }
             observer("DM2-T04 ref-only-cas · identity races")
         case "t05":
-            try operationHooks(executable: testExecutable)
+            try RuntimeFixtureSession.withCase("DM2-T05 operation-hooks") {
+                try operationHooks(executable: testExecutable)
+            }
             observer("DM2-T05 operation-hooks")
         case "t05-basic":
-            try operationHooks(
-                executable: testExecutable,
-                sections: ["basic"]
-            )
+            try RuntimeFixtureSession.withCase("DM2-T05 operation-hooks · trace") {
+                try operationHooks(
+                    executable: testExecutable,
+                    sections: ["basic"]
+                )
+            }
             observer("DM2-T05 operation-hooks · trace")
         case "t05-veto":
-            try operationHooks(
-                executable: testExecutable,
-                sections: ["veto"]
-            )
+            try RuntimeFixtureSession.withCase("DM2-T05 operation-hooks · veto") {
+                try operationHooks(
+                    executable: testExecutable,
+                    sections: ["veto"]
+                )
+            }
             observer("DM2-T05 operation-hooks · veto")
         case "t05-custom":
-            try operationHooks(
-                executable: testExecutable,
-                sections: ["custom"]
-            )
+            try RuntimeFixtureSession.withCase("DM2-T05 operation-hooks · hooksPath") {
+                try operationHooks(
+                    executable: testExecutable,
+                    sections: ["custom"]
+                )
+            }
             observer("DM2-T05 operation-hooks · hooksPath")
         case "t05-policy":
-            try commandPolicyCut()
+            try RuntimeFixtureSession.withCase("DM2-T05 shared command policy") {
+                try commandPolicyCut()
+            }
             observer("DM2-T05 shared command policy")
         case "t13":
-            try compatibilityRelease(executable: testExecutable)
+            try RuntimeFixtureSession.withCase("DM2-T13 compatibility-release") {
+                try compatibilityRelease(executable: testExecutable)
+            }
             observer("DM2-T13 compatibility-release")
         default:
             throw Body4SelfTestError(
@@ -1057,7 +1079,9 @@ public enum V2Body4SelfTestRunner {
         }
     }
 
-    private static func compatibilityRelease(
+    // Shared assertion body: the public Body4 route owns its case, while the
+    // v3 wire-model case calls this inside its already-active custody scope.
+    static func compatibilityRelease(
         executable: String
     ) throws {
         let fixtures = fixtureDirectory

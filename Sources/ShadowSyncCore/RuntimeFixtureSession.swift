@@ -46,7 +46,7 @@ enum RuntimeFixtureSession {
                "shadow-sync-fresh-state.", "shadow-sync-registry.", "shadow-sync-state-admission.",
                "shadow-sync-policy-input-", "shadow-sync-policy-transport-",
                "shadow-sync-policy-authority-", "shadow-sync-catalog-admission-",
-               "shadow-sync-publisher-policy-", "shadow-sync-discovery-spawn.", "shadow-sync-fixture-config."].contains(name) else {
+               "shadow-sync-publisher-policy-", "shadow-sync-discovery-spawn.", "shadow-sync-fixture-config.", "shadow-sync-v3-preferences.", "shadow-sync-v3-preferences-pre-rename.", "shadow-sync-v3-preferences-post-rename.", "shadow-sync-v3-catalog.", "shadow-sync-dm4-preflight."].contains(name) else {
             throw RuntimeFixtureCustody.Failure.invalidContract
         }
         guard let namespace else { return "/private/tmp/" + name }

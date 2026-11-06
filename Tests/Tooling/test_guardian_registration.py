@@ -14,7 +14,7 @@ class GuardianRegistrationTests(unittest.TestCase):
         self.assertEqual(len(compiled), 1)
         names = re.findall(r'"([a-z0-9-]+)"', compiled[0])
         self.assertEqual(len(names), len(set(names)))
-        self.assertTrue(set(names) <= set(re.findall(r'Entry\(id: "([a-z0-9-]+)"', catalog)))
+        self.assertEqual(set(names), set(re.findall(r'Entry\(id: "([a-z0-9-]+)"', catalog)))
         guardian = (ROOT / 'Sources/ShadowSyncCore/RuntimeSuiteGuardian.swift').read_text()
         for target in ('suite', r'arguments\[2\]'):
             prefix = r'guard\s+' if target == 'suite' else ''

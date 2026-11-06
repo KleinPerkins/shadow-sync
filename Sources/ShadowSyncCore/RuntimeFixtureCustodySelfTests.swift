@@ -81,7 +81,7 @@ public enum RuntimeFixtureCustodySelfTestRunner {
                 let nonce = String(repeating: "a", count: 32)
                 for prefix in ["shadow-sync-m2.", "shadow-sync-m4.", "shadow-sync-self-tests.", "shadow-sync-custody-anchor-",
                                "shadow-sync-m6-self.", "shadow-sync-custody-leases.", "shadow-sync-custody-catalog.",
-                               "shadow-sync-fresh-state.", "shadow-sync-registry.", "shadow-sync-state-admission."] {
+                               "shadow-sync-fresh-state.", "shadow-sync-registry.", "shadow-sync-state-admission.", "shadow-sync-v3-preferences.", "shadow-sync-v3-preferences-pre-rename.", "shadow-sync-v3-preferences-post-rename.", "shadow-sync-v3-catalog.", "shadow-sync-dm4-preflight."] {
                     try check(try RuntimeFixtureSession.fixturePrefix(prefix, namespace: nonce)
                         == "/private/tmp/" + prefix + nonce + ".", "attempt namespace changed")
                     try check(try RuntimeFixtureSession.fixturePrefix(prefix, namespace: nil)

@@ -77,24 +77,32 @@ enum CurrentSessionWorktreeDetector {
     static func inspectOwnedChild(
         worktreePath: String,
         account: EffectiveAccount,
-        child: Process
+        child: OwnedDirectChild
     ) throws -> CurrentSessionWorktreeEvidence {
         let root = URL(fileURLWithPath: account.homeDirectory)
             .deletingLastPathComponent().path
         _ = try TestIsolation.validateRoot(root)
         try TestIsolation.validateContainedDirectory(worktreePath, root: root)
-        guard child.isRunning else { return .unknown }
+        func stillOwnedAndLive() -> Bool {
+            child.testingSuspendedSpawnHasResumed
+                && child.observation == .running
+                && child.terminalStatusHeld == nil
+                && child.identity.isCurrent(expectedGeneration: child.identity.generation)
+        }
+        guard stillOwnedAndLive() else { return .unknown }
         var info = proc_bsdinfo()
         guard proc_pidinfo(
-            child.processIdentifier, PROC_PIDTBSDINFO, 0, &info,
+            child.identity.processID, PROC_PIDTBSDINFO, 0, &info,
             Int32(MemoryLayout<proc_bsdinfo>.size)
         ) == MemoryLayout<proc_bsdinfo>.size,
               info.pbi_ppid == UInt32(getpid()),
               info.pbi_uid == account.uid,
+              UInt64(info.pbi_start_tvsec) == child.identity.startSeconds,
+              UInt64(info.pbi_start_tvusec) == child.identity.startMicroseconds,
               let directories = capture(
                 account: account,
-                processIDs: [child.processIdentifier]
-              ) else { return .unknown }
+                processIDs: [child.identity.processID]
+              ), stillOwnedAndLive() else { return .unknown }
         return directories.contains {
             $0 == worktreePath || $0.hasPrefix(worktreePath + "/")
         } ? .active : .inactive

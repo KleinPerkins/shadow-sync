@@ -94,7 +94,7 @@
       "scope": "content",
       "token": "Dev Main Sync",
       "count": 2,
-      "sha256": "71ef878d4462cc38411becd4ec7e17acbdb28e02e876e11b9768eaa63e0fdd83",
+      "sha256": "d7167283be09356ad2128aca50af688aed80bf25fe7a030b4a9ea47cc89e85cb",
       "class": "compatibility-fixture",
       "owner": "ShadowSync application architect",
       "reason": "Checks the exact historical predecessor input path in isolated fixtures; grants no production launch or install authority.",

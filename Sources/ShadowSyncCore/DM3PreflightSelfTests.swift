@@ -28,34 +28,36 @@ public enum V3PreflightSelfTestRunner {
         report: (String) -> Void
     ) throws {
         let id = rawID.uppercased()
-        switch id {
-        case "DM3-T01":
-            try preserveHeavyWireModel(
-                testExecutable: testExecutable
-            )
-        case "DM3-T02": try catalogBoundary()
-        case "DM3-T03": try catalogLimitsVisibility()
-        case "DM3-T04": try chooserDefaults()
-        case "DM3-T05": try preferenceTransitions()
-        case "DM3-T06": try locatorBindingSurface()
-        case "DM3-T07":
-            try authorityStages(testExecutable: testExecutable)
-        case "DM3-T08":
-            try capabilityConstruction(
-                testExecutable: testExecutable
-            )
-        case "DM3-T09":
-            try body3SelectedRefresh(
-                testExecutable: testExecutable
-            )
-        case "DM3-T10": try selectedWorkerPoison()
-        case "DM3-T11": try lifecycleOrdering()
-        case "DM3-T12": try drainBarrierSurface()
-        case "DM3-T13": try scaleLinearity()
-        case "DM3-T14": try physicalFirstScreen()
-        case "DM3-T15": try lifecycleMigration()
-        default:
-            throw Failure("unknown v3 preflight selector: \(rawID)")
+        try RuntimeFixtureSession.withCase(id) {
+            switch id {
+            case "DM3-T01":
+                try preserveHeavyWireModel(
+                    testExecutable: testExecutable
+                )
+            case "DM3-T02": try catalogBoundary()
+            case "DM3-T03": try catalogLimitsVisibility()
+            case "DM3-T04": try chooserDefaults()
+            case "DM3-T05": try preferenceTransitions()
+            case "DM3-T06": try locatorBindingSurface()
+            case "DM3-T07":
+                try authorityStages(testExecutable: testExecutable)
+            case "DM3-T08":
+                try capabilityConstruction(
+                    testExecutable: testExecutable
+                )
+            case "DM3-T09":
+                try body3SelectedRefresh(
+                    testExecutable: testExecutable
+                )
+            case "DM3-T10": try selectedWorkerPoison()
+            case "DM3-T11": try lifecycleOrdering()
+            case "DM3-T12": try drainBarrierSurface()
+            case "DM3-T13": try scaleLinearity()
+            case "DM3-T14": try physicalFirstScreen()
+            case "DM3-T15": try lifecycleMigration()
+            default:
+                throw Failure("unknown v3 preflight selector: \(rawID)")
+            }
         }
         report(id)
     }
@@ -63,364 +65,395 @@ public enum V3PreflightSelfTestRunner {
     public static func runBetaV02(
         report: (String) -> Void
     ) throws {
-        try betaV02OriginChooser()
+        try RuntimeFixtureSession.withCase("BETA-V02-ORIGIN-CHOOSER") {
+            try betaV02OriginChooser()
+        }
         report("BETA-V02-ORIGIN-CHOOSER")
     }
 
     public static func runBetaV03(
         report: (String) -> Void
     ) throws {
-        let chooser = try readSource(
-            "Sources/ShadowSyncApp/RepositoryChooserWindow.swift"
-        )
-        let delegate = try readSource(
-            "Sources/ShadowSyncApp/AppDelegate.swift"
-        )
-        let inventory = try readSource(
-            "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift"
-        )
-        let hydration = try readSource(
-            "Sources/ShadowSyncCore/SelectedRepositoryHydration.swift"
-        )
-        let worker = try readSource(
-            "Sources/ShadowSyncApp/Worker.swift"
-        )
-        let coordinator = try readSource(
-            "Sources/ShadowSyncCore/Coordinator.swift"
-        )
-        let release = try readSource(
-            "Sources/ShadowSyncCore/ReleaseIdentity.swift"
-        )
-        report("BETA-V04-SOURCES")
-        try require(
-            chooser.contains("buildReasonGroups")
-                && chooser.contains("showsDisabledReason: false"),
-            "unavailable reasons are not consolidated"
-        )
-        try require(
-            delegate.contains("didSave(snapshot)")
-                && delegate.contains(
-                    "controller.showSaveOutcome(\"Defaults saved.\")"
-                )
-                && !delegate.contains(
-                    "controller.showSaveOutcome(\"Defaults saved.\")\n                self.pendingChooserAcknowledgement"
-                ),
-            "Save still replaces the chooser"
-        )
-        try require(
-            hydration.contains("func hydrateOnce(")
-                && delegate.contains("hydrator.reconcileSession(")
-                && hydration.contains("return try hydrateOnce(scope: scope)")
-                && hydration.contains(".discoverSelectedHydration(scope: scope)")
-                && inventory.contains(
-                    "phase: \"Resolving default branch\""
-                )
-                && inventory.contains(
-                    "phase: \"Checking default branch\""
-                ),
-            "single-pass phased hydration is missing"
-        )
-        try require(
-            RepositoryReadSession.pullRequestStageBudget(candidateCount: 1_000) == 60
-                && inventory.contains("Date() >= deadline")
-                && inventory.contains("cancellation.areFutureChildAdmissionsClosed")
-                && chooser.contains(
-                    "Cancelled. Finishing safe cleanup"
-                )
-                && chooser.contains("closeCurrentRunWindow"),
-            "bounded hydration or cancellation UX is missing"
-        )
-        try require(
-            inventory.contains("git status timed out after")
-                || inventory.contains(
-                    "inspectionFailure(\n                        check: \"git status\""
-                ),
-            "exact eligibility diagnostics are missing"
-        )
-        try require(
-            !worker.contains(
-                "Set(operations.map {\n                $0.target.repository.id\n            }).count == operations.count"
+        let (chooser, delegate, inventory, hydration, worker, coordinator, release) = try RuntimeFixtureSession.withCaseValue("BETA-V04-SOURCES") {
+            let chooser = try readSource(
+                "Sources/ShadowSyncApp/RepositoryChooserWindow.swift"
             )
-                && coordinator.contains("stoppedRepositories"),
-            "ordered same-repository operations are not admitted safely"
-        )
-        try require(
-            currentReleaseSourceIsValid(release),
-            "current beta release identity is incorrect"
-        )
+            let delegate = try readSource(
+                "Sources/ShadowSyncApp/AppDelegate.swift"
+            )
+            let inventory = try readSource(
+                "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift"
+            )
+            let hydration = try readSource(
+                "Sources/ShadowSyncCore/SelectedRepositoryHydration.swift"
+            )
+            let worker = try readSource(
+                "Sources/ShadowSyncApp/Worker.swift"
+            )
+            let coordinator = try readSource(
+                "Sources/ShadowSyncCore/Coordinator.swift"
+            )
+            let release = try readSource(
+                "Sources/ShadowSyncCore/ReleaseIdentity.swift"
+            )
+            return (chooser, delegate, inventory, hydration, worker, coordinator, release)
+        }
+        report("BETA-V04-SOURCES")
+        try RuntimeFixtureSession.withCase("BETA-V03-FOCUSED") {
+            try require(
+                chooser.contains("buildReasonGroups")
+                    && chooser.contains("showsDisabledReason: false"),
+                "unavailable reasons are not consolidated"
+            )
+            try require(
+                delegate.contains("didSave(snapshot)")
+                    && delegate.contains(
+                        "controller.showSaveOutcome(\"Defaults saved.\")"
+                    )
+                    && !delegate.contains(
+                        "controller.showSaveOutcome(\"Defaults saved.\")\n                self.pendingChooserAcknowledgement"
+                    ),
+                "Save still replaces the chooser"
+            )
+            try require(
+                hydration.contains("func hydrateOnce(")
+                    && delegate.contains("hydrator.reconcileSession(")
+                    && hydration.contains("return try hydrateOnce(scope: scope)")
+                    && hydration.contains(".discoverSelectedHydration(scope: scope)")
+                    && inventory.contains(
+                        "phase: \"Resolving default branch\""
+                    )
+                    && inventory.contains(
+                        "phase: \"Checking default branch\""
+                    ),
+                "single-pass phased hydration is missing"
+            )
+            try require(
+                RepositoryReadSession.pullRequestStageBudget(candidateCount: 1_000) == 60
+                    && inventory.contains("Date() >= deadline")
+                    && inventory.contains("cancellation.areFutureChildAdmissionsClosed")
+                    && chooser.contains(
+                        "Cancelled. Finishing safe cleanup"
+                    )
+                    && chooser.contains("closeCurrentRunWindow"),
+                "bounded hydration or cancellation UX is missing"
+            )
+            try require(
+                inventory.contains("git status timed out after")
+                    || inventory.contains(
+                        "inspectionFailure(\n                        check: \"git status\""
+                    ),
+                "exact eligibility diagnostics are missing"
+            )
+            try require(
+                !worker.contains(
+                    "Set(operations.map {\n                $0.target.repository.id\n            }).count == operations.count"
+                )
+                    && coordinator.contains("stoppedRepositories"),
+                "ordered same-repository operations are not admitted safely"
+            )
+            try require(
+                currentReleaseSourceIsValid(release),
+                "current beta release identity is incorrect"
+            )
+        }
         report("BETA-V03-FOCUSED")
     }
 
     public static func runBetaV04(
         report: (String) -> Void
     ) throws {
-        let chooser = try readSource(
-            "Sources/ShadowSyncApp/RepositoryChooserWindow.swift"
-        )
-        let inventory = try readSource(
-            "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift"
-        )
-        let cards = try readSource(
-            "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
-        )
-        let delegate = try readSource(
-            "Sources/ShadowSyncApp/AppDelegate.swift"
-        )
-        let batch = try readSource(
-            "Sources/ShadowSyncApp/Body3RunWindow.swift"
-        )
-        let geometry = try readSource(
-            "Sources/ShadowSyncApp/WindowFrameContinuity.swift"
-        )
-        let release = try readSource(
-            "Sources/ShadowSyncCore/ReleaseIdentity.swift"
-        )
-        let recoveredBatchClose = delegate
-            .components(
-                separatedBy: "private func showLastBody3Report()"
+        let (inventory, cards, delegate, batch, geometry, release, recoveredBatchClose) = try RuntimeFixtureSession.withCaseValue("BETA-V04-SORTING") {
+            let chooser = try readSource(
+                "Sources/ShadowSyncApp/RepositoryChooserWindow.swift"
             )
-            .dropFirst()
-            .first?
-            .components(
-                separatedBy: "private func acknowledgeReviewedBody3("
+            let inventory = try readSource(
+                "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift"
             )
-            .first ?? ""
-        try require(
-            chooser.contains("sortedCandidates(")
-                && chooser.contains("leftOwner")
-                && chooser.contains("leftRepository"),
-            "chooser owner/repository sorting is missing"
-        )
+            let cards = try readSource(
+                "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
+            )
+            let delegate = try readSource(
+                "Sources/ShadowSyncApp/AppDelegate.swift"
+            )
+            let batch = try readSource(
+                "Sources/ShadowSyncApp/Body3RunWindow.swift"
+            )
+            let geometry = try readSource(
+                "Sources/ShadowSyncApp/WindowFrameContinuity.swift"
+            )
+            let release = try readSource(
+                "Sources/ShadowSyncCore/ReleaseIdentity.swift"
+            )
+            let recoveredBatchClose = delegate
+                .components(
+                    separatedBy: "private func showLastBody3Report()"
+                )
+                .dropFirst()
+                .first?
+                .components(
+                    separatedBy: "private func acknowledgeReviewedBody3("
+                )
+                .first ?? ""
+            try require(
+                chooser.contains("sortedCandidates(")
+                    && chooser.contains("leftOwner")
+                    && chooser.contains("leftRepository"),
+                "chooser owner/repository sorting is missing"
+            )
+            return (inventory, cards, delegate, batch, geometry, release, recoveredBatchClose)
+        }
         report("BETA-V04-SORTING")
-        try require(
-            inventory.contains("prepareTopLevel(")
-                && inventory.contains(
-                    "phase: \"Checking default branch\""
-                )
-                && inventory.contains(
-                    "public func inspectCleanup("
-                )
-                && inventory.contains(
-                    "inspectAllWorktreeState: Bool = false"
-                )
-                && !inventory.contains(
-                    "phase: \"Inspecting lifecycle\""
-                ),
-            "top-level readiness is still coupled to cleanup enrichment"
-        )
+        try RuntimeFixtureSession.withCase("BETA-V04-TOP-LEVEL") {
+            try require(
+                inventory.contains("prepareTopLevel(")
+                    && inventory.contains(
+                        "phase: \"Checking default branch\""
+                    )
+                    && inventory.contains(
+                        "public func inspectCleanup("
+                    )
+                    && inventory.contains(
+                        "inspectAllWorktreeState: Bool = false"
+                    )
+                    && !inventory.contains(
+                        "phase: \"Inspecting lifecycle\""
+                    ),
+                "top-level readiness is still coupled to cleanup enrichment"
+            )
+        }
         report("BETA-V04-TOP-LEVEL")
-        try require(
-            cards.contains(
-                "Inspect branches & worktrees"
+        try RuntimeFixtureSession.withCase("BETA-V04-CLEANUP") {
+            try require(
+                cards.contains(
+                    "Inspect branches & worktrees"
+                )
+                    && cards.contains(
+                        "Inspect for all repositories"
+                    )
+                    && cards.contains(
+                        "Protected — cannot remove"
+                    )
+                    && cards.contains("Keep recommended")
+                    && cards.contains(
+                        "AWA / recovery notes: \\(managed ? \"Managed\" : \"Unmanaged\")"
+                    )
+                    && cards.contains(
+                        "dependenciesSatisfied("
+                    ),
+                "optional cleanup information architecture is incomplete"
             )
-                && cards.contains(
-                    "Inspect for all repositories"
-                )
-                && cards.contains(
-                    "Protected — cannot remove"
-                )
-                && cards.contains("Keep recommended")
-                && cards.contains(
-                    "AWA / recovery notes: \\(managed ? \"Managed\" : \"Unmanaged\")"
-                )
-                && cards.contains(
-                    "dependenciesSatisfied("
-                ),
-            "optional cleanup information architecture is incomplete"
-        )
+        }
         report("BETA-V04-CLEANUP")
-        try require(
-            geometry.contains("WindowContinuitySnapshot")
-                && delegate.contains(
-                    "rememberWindowFrame("
-                )
-                && delegate.contains(
-                    "restoreWindowFrame("
-                )
-                && recoveredBatchClose.contains(
-                    "rememberWindowFrame(controller.window)"
-                ),
-            "window continuity is missing"
-        )
-        report("BETA-V04-WINDOWS")
-        try require(
-            delegate.contains(
-                "Review the ordered plan"
+        try RuntimeFixtureSession.withCase("BETA-V04-WINDOWS") {
+            try require(
+                geometry.contains("WindowContinuitySnapshot")
+                    && delegate.contains(
+                        "rememberWindowFrame("
+                    )
+                    && delegate.contains(
+                        "restoreWindowFrame("
+                    )
+                    && recoveredBatchClose.contains(
+                        "rememberWindowFrame(controller.window)"
+                    ),
+                "window continuity is missing"
             )
-                && delegate.contains(
-                    "Repositories run in the order shown"
+        }
+        report("BETA-V04-WINDOWS")
+        try RuntimeFixtureSession.withCase("BETA-V04-BATCH") {
+            try require(
+                delegate.contains(
+                    "Review the ordered plan"
                 )
-                && batch.contains(
-                    "Completed successfully"
-                )
-                && batch.contains(
-                    "Completed with issues"
-                )
-                && batch.contains(
-                    "immutable plan #1"
-                ),
-            "review or selected-batch hierarchy is incomplete"
-        )
+                    && delegate.contains(
+                        "Repositories run in the order shown"
+                    )
+                    && batch.contains(
+                        "Completed successfully"
+                    )
+                    && batch.contains(
+                        "Completed with issues"
+                    )
+                    && batch.contains(
+                        "immutable plan #1"
+                    ),
+                "review or selected-batch hierarchy is incomplete"
+            )
+        }
         report("BETA-V04-BATCH")
-        try require(
-            currentReleaseSourceIsValid(release),
-            "current release identity is incorrect"
-        )
+        try RuntimeFixtureSession.withCase("BETA-V04-FOCUSED") {
+            try require(
+                currentReleaseSourceIsValid(release),
+                "current release identity is incorrect"
+            )
+        }
         report("BETA-V04-FOCUSED")
     }
 
     public static func runBetaV05(
         report: (String) -> Void
     ) throws {
-        let main = try readSource(
-            "Sources/ShadowSyncApp/main.swift"
-        )
-        let delegate = try readSource(
-            "Sources/ShadowSyncApp/AppDelegate.swift"
-        )
-        let icon = try readSource(
-            "Sources/ShadowSyncApp/StatusItemIcon.swift"
-        )
-        let batch = try readSource(
-            "Sources/ShadowSyncApp/Body3RunWindow.swift"
-        )
-        let cards = try readSource(
-            "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
-        )
-        let inventory = try readSource(
-            "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift"
-        )
-        let discovery = try readSource(
-            "Sources/ShadowSyncCore/RepositoryDiscovery.swift"
-        )
-        let lifecycle = try readSource(
-            "Sources/ShadowSyncCore/InstallationLifecycle.swift"
-        )
-        let launchAgent = try readSource(
-            "Resources/com.kleinperkins.shadow-sync.plist.template"
-        )
-        let release = try readSource(
-            "Sources/ShadowSyncCore/ReleaseIdentity.swift"
-        )
-        let operationAdmission = discovery
-            .components(
-                separatedBy:
-                    "static func validateRuntimeEligibility(\n        _ operation"
+        let (batch, delegate, inventoryBudgetUses, operationAdmission, cards, release) = try RuntimeFixtureSession.withCaseValue("BETA-V05-MACOS") {
+            let main = try readSource(
+                "Sources/ShadowSyncApp/main.swift"
             )
-            .dropFirst()
-            .first?
-            .components(
-                separatedBy:
-                    "static func validateRemovalRuntimeEligibility("
+            let delegate = try readSource(
+                "Sources/ShadowSyncApp/AppDelegate.swift"
             )
-            .first ?? ""
-        let inventoryBudgetUses = inventory.components(
-            separatedBy:
-                "outputLimit: Self.inventoryOutputLimit"
-        ).count - 1
-        let freshLoginRegistrationCases = delegate.components(
-            separatedBy: "case .notRegistered, .notFound:"
-        ).count - 1
+            let icon = try readSource(
+                "Sources/ShadowSyncApp/StatusItemIcon.swift"
+            )
+            let batch = try readSource(
+                "Sources/ShadowSyncApp/Body3RunWindow.swift"
+            )
+            let cards = try readSource(
+                "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
+            )
+            let inventory = try readSource(
+                "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift"
+            )
+            let discovery = try readSource(
+                "Sources/ShadowSyncCore/RepositoryDiscovery.swift"
+            )
+            let lifecycle = try readSource(
+                "Sources/ShadowSyncCore/InstallationLifecycle.swift"
+            )
+            let launchAgent = try readSource(
+                "Resources/com.kleinperkins.shadow-sync.plist.template"
+            )
+            let release = try readSource(
+                "Sources/ShadowSyncCore/ReleaseIdentity.swift"
+            )
+            let operationAdmission = discovery
+                .components(
+                    separatedBy:
+                        "static func validateRuntimeEligibility(\n        _ operation"
+                )
+                .dropFirst()
+                .first?
+                .components(
+                    separatedBy:
+                        "static func validateRemovalRuntimeEligibility("
+                )
+                .first ?? ""
+            let inventoryBudgetUses = inventory.components(
+                separatedBy:
+                    "outputLimit: Self.inventoryOutputLimit"
+            ).count - 1
+            let freshLoginRegistrationCases = delegate.components(
+                separatedBy: "case .notRegistered, .notFound:"
+            ).count - 1
 
-        try require(
-            launchAgent.contains(
-                "<key>RunAtLoad</key>\n\t<false/>"
+            try require(
+                launchAgent.contains(
+                    "<key>RunAtLoad</key>\n\t<false/>"
+                )
+                    && lifecycle.contains(
+                        "\"RunAtLoad\": false"
+                    )
+                    && lifecycle.contains(
+                        "try launchAgent.kickstart("
+                    ),
+                "manual-by-default launch registration is incomplete"
             )
-                && lifecycle.contains(
-                    "\"RunAtLoad\": false"
+            try require(
+                main.contains(
+                    "info[\"LSUIElement\"] as? Bool == false"
                 )
-                && lifecycle.contains(
-                    "try launchAgent.kickstart("
-                ),
-            "manual-by-default launch registration is incomplete"
-        )
-        try require(
-            main.contains(
-                "info[\"LSUIElement\"] as? Bool == false"
+                    && main.contains(
+                        "application.setActivationPolicy(.regular)"
+                    )
+                    && delegate.contains(
+                        "NSApp.disableRelaunchOnLogin()"
+                    )
+                    && delegate.contains("installMainMenu()")
+                    && delegate.contains(
+                        "SMAppService.mainApp.register()"
+                    )
+                    && delegate.contains(
+                        "SMAppService.mainApp.unregister()"
+                    )
+                    && freshLoginRegistrationCases == 2
+                    && delegate.contains(
+                        "Open at Login could not be changed"
+                    ),
+                "standard macOS application presence is incomplete"
             )
-                && main.contains(
-                    "application.setActivationPolicy(.regular)"
+            try require(
+                delegate.contains(
+                    "ShadowSyncStatusItemIcon.make()"
                 )
-                && delegate.contains(
-                    "NSApp.disableRelaunchOnLogin()"
-                )
-                && delegate.contains("installMainMenu()")
-                && delegate.contains(
-                    "SMAppService.mainApp.register()"
-                )
-                && delegate.contains(
-                    "SMAppService.mainApp.unregister()"
-                )
-                && freshLoginRegistrationCases == 2
-                && delegate.contains(
-                    "Open at Login could not be changed"
-                ),
-            "standard macOS application presence is incomplete"
-        )
-        try require(
-            delegate.contains(
-                "ShadowSyncStatusItemIcon.make()"
+                    && icon.contains("image.isTemplate = true")
+                    && icon.contains(
+                        "appendCircle(x: 18, y: 18, radius: 3"
+                    )
+                    && icon.contains(
+                        "appendCircle(x: 6, y: 6, radius: 3"
+                    ),
+                "Lucide pull-request status glyph is incomplete"
             )
-                && icon.contains("image.isTemplate = true")
-                && icon.contains(
-                    "appendCircle(x: 18, y: 18, radius: 3"
-                )
-                && icon.contains(
-                    "appendCircle(x: 6, y: 6, radius: 3"
-                ),
-            "Lucide pull-request status glyph is incomplete"
-        )
+            return (batch, delegate, inventoryBudgetUses, operationAdmission, cards, release)
+        }
         report("BETA-V05-MACOS")
+        try RuntimeFixtureSession.withCase("BETA-V05-QUIT") {
 
-        try require(
-            batch.contains("terminal && report != nil")
-                && delegate.contains(
-                    "previousReportNeedsAttention"
-                )
-                && delegate.contains(
-                    "updateTerminalReportNotice("
-                ),
-            "terminal-report Quit or passive recovery notice is incomplete"
-        )
-        report("BETA-V05-QUIT")
-
-        try require(
-            RepositoryInventoryDiscovery.inventoryOutputLimit == 32 * 1024 * 1024
-                && RepositoryInventoryDiscovery.inventoryOutputLimit
-                    == DescriptorProcessRunner.completeRepositoryOutputLimit
-                && inventoryBudgetUses == 2,
-            "real-repository inspection output budget is incomplete"
-        )
-        try require(
-            !operationAdmission.isEmpty
-                && !operationAdmission.contains(
-                    "registeredLinkedWorktrees("
-                )
-                && operationAdmission.contains(
-                    "exact stale-registration Repair invalidate itself"
-                ),
-            "operation admission still self-invalidates stale-registration Repair"
-        )
-        report("BETA-V05-OPERATIONS")
-
-        try require(
-            cards.contains(
-                "Optional cleanup inspection"
+            try require(
+                batch.contains("terminal && report != nil")
+                    && delegate.contains(
+                        "previousReportNeedsAttention"
+                    )
+                    && delegate.contains(
+                        "updateTerminalReportNotice("
+                    ),
+                "terminal-report Quit or passive recovery notice is incomplete"
             )
-                && cards.contains(
-                    "section.alignment = .leading"
-                )
-                && cards.contains(
-                    "button.alignment = .left"
-                ),
-            "cleanup inspection is not an explicit leading-aligned group"
-        )
-        report("BETA-V05-CLEANUP")
+        }
+        report("BETA-V05-QUIT")
+        try RuntimeFixtureSession.withCase("BETA-V05-OPERATIONS") {
 
-        try require(
-            currentReleaseSourceIsValid(release),
-            "current release identity is incorrect"
-        )
+            try require(
+                RepositoryInventoryDiscovery.inventoryOutputLimit == 32 * 1024 * 1024
+                    && RepositoryInventoryDiscovery.inventoryOutputLimit
+                        == DescriptorProcessRunner.completeRepositoryOutputLimit
+                    && inventoryBudgetUses == 2,
+                "real-repository inspection output budget is incomplete"
+            )
+            try require(
+                !operationAdmission.isEmpty
+                    && !operationAdmission.contains(
+                        "registeredLinkedWorktrees("
+                    )
+                    && operationAdmission.contains(
+                        "exact stale-registration Repair invalidate itself"
+                    ),
+                "operation admission still self-invalidates stale-registration Repair"
+            )
+        }
+        report("BETA-V05-OPERATIONS")
+        try RuntimeFixtureSession.withCase("BETA-V05-CLEANUP") {
+
+            try require(
+                cards.contains(
+                    "Optional cleanup inspection"
+                )
+                    && cards.contains(
+                        "section.alignment = .leading"
+                    )
+                    && cards.contains(
+                        "button.alignment = .left"
+                    ),
+                "cleanup inspection is not an explicit leading-aligned group"
+            )
+        }
+        report("BETA-V05-CLEANUP")
+        try RuntimeFixtureSession.withCase("BETA-V05-FOCUSED") {
+
+            try require(
+                currentReleaseSourceIsValid(release),
+                "current release identity is incorrect"
+            )
+        }
         report("BETA-V05-FOCUSED")
     }
 
@@ -428,276 +461,278 @@ public enum V3PreflightSelfTestRunner {
         testExecutable: String,
         report: (String) -> Void
     ) throws {
-        func identity(_ inode: UInt64)
-            throws -> FileIdentity {
-            let data = try JSONSerialization.data(
-                withJSONObject: [
-                    "device": 1,
-                    "inode": inode,
-                    "owner": UInt32(geteuid()),
-                    "mode": UInt16(S_IFDIR | 0o700),
-                    "linkCount": 1,
-                ]
-            )
-            return try JSONDecoder().decode(
-                FileIdentity.self,
-                from: data
-            )
-        }
-        func binding(
-            _ id: String,
-            inode: UInt64
-        ) throws -> ValidatedSelectedRepository {
-            let value = try identity(inode)
-            return ValidatedSelectedRepository(
-                repositoryID: id,
-                locator: try RepositorySelectionLocator(
-                    governedRoot: "testing",
-                    components: [
-                        id.replacingOccurrences(
+        try RuntimeFixtureSession.withCase("BETA-V06-SESSION-DELTA") {
+            func identity(_ inode: UInt64)
+                throws -> FileIdentity {
+                let data = try JSONSerialization.data(
+                    withJSONObject: [
+                        "device": 1,
+                        "inode": inode,
+                        "owner": UInt32(geteuid()),
+                        "mode": UInt16(S_IFDIR | 0o700),
+                        "linkCount": 1,
+                    ]
+                )
+                return try JSONDecoder().decode(
+                    FileIdentity.self,
+                    from: data
+                )
+            }
+            func binding(
+                _ id: String,
+                inode: UInt64
+            ) throws -> ValidatedSelectedRepository {
+                let value = try identity(inode)
+                return ValidatedSelectedRepository(
+                    repositoryID: id,
+                    locator: try RepositorySelectionLocator(
+                        governedRoot: "testing",
+                        components: [
+                            id.replacingOccurrences(
+                                of: "/",
+                                with: "-"
+                            ),
+                        ]
+                    ),
+                    governedRootPath: "/private/tmp",
+                    policyRootPath: "/private/tmp",
+                    repositoryPath:
+                        "/private/tmp/"
+                        + id.replacingOccurrences(
                             of: "/",
                             with: "-"
                         ),
-                    ]
-                ),
-                governedRootPath: "/private/tmp",
-                policyRootPath: "/private/tmp",
-                repositoryPath:
-                    "/private/tmp/"
-                    + id.replacingOccurrences(
-                        of: "/",
-                        with: "-"
-                    ),
-                rootIdentity: value,
-                repositoryIdentity: value
-            )
-        }
-        func scope(
-            _ repositories:
-                [ValidatedSelectedRepository],
-            policy: String = String(
-                repeating: "a",
-                count: 64
-            )
-        ) -> ValidatedSelectedRepositoryScope {
-            ValidatedSelectedRepositoryScope(
-                selectionGeneration: 1,
-                policyDigest: policy,
-                catalogGeneration: 1,
-                repositories: repositories
-            )
-        }
-        func card(
-            _ id: String,
-            inode: UInt64,
-            marker: String
-        ) throws -> RepositoryCard {
-            let value = try identity(inode)
-            let directory =
-                RepositoryDirectoryIdentity(value)
-            let origin = "git@github.com:\(id).git"
-            let candidate = RepositoryCandidate(
-                id: id,
-                displayName: id,
-                path:
-                    "/private/tmp/"
-                    + id.replacingOccurrences(
-                        of: "/",
-                        with: "-"
-                    ),
-                rawOrigin: origin,
-                rootIdentity: directory,
-                gitDirectoryIdentity: directory,
-                commonDirectoryIdentity: directory
-            )
-            let clone = try LocalClone(
-                repositoryID: id,
-                sourceSnapshot: candidate,
-                effectiveOrigin: origin,
-                originParityVerified: true,
-                policyCategory: .writable,
-                kind: .primaryCheckout,
-                worktrees: [],
-                branches: [],
-                warnings: [marker]
-            )
-            return try RepositoryCard(
-                repository: try RemoteRepository(
+                    rootIdentity: value,
+                    repositoryIdentity: value
+                )
+            }
+            func scope(
+                _ repositories:
+                    [ValidatedSelectedRepository],
+                policy: String = String(
+                    repeating: "a",
+                    count: 64
+                )
+            ) -> ValidatedSelectedRepositoryScope {
+                ValidatedSelectedRepositoryScope(
+                    selectionGeneration: 1,
+                    policyDigest: policy,
+                    catalogGeneration: 1,
+                    repositories: repositories
+                )
+            }
+            func card(
+                _ id: String,
+                inode: UInt64,
+                marker: String
+            ) throws -> RepositoryCard {
+                let value = try identity(inode)
+                let directory =
+                    RepositoryDirectoryIdentity(value)
+                let origin = "git@github.com:\(id).git"
+                let candidate = RepositoryCandidate(
                     id: id,
-                    origins: [origin],
+                    displayName: id,
+                    path:
+                        "/private/tmp/"
+                        + id.replacingOccurrences(
+                            of: "/",
+                            with: "-"
+                        ),
+                    rawOrigin: origin,
+                    rootIdentity: directory,
+                    gitDirectoryIdentity: directory,
+                    commonDirectoryIdentity: directory
+                )
+                let clone = try LocalClone(
+                    repositoryID: id,
+                    sourceSnapshot: candidate,
+                    effectiveOrigin: origin,
+                    originParityVerified: true,
                     policyCategory: .writable,
-                    resolvedDefault: nil,
-                    defaultUnavailableReason:
-                        "Fixture default unavailable."
-                ),
-                authority: CanonicalAuthorityState(
-                    status: .missing,
-                    record: nil,
-                    explanation: marker
-                ),
-                clones: [clone],
-                relation: DefaultBranchRelation(
-                    kind: .unavailable,
-                    aheadCount: nil,
-                    behindCount: nil
-                ),
-                fastForward: nil,
-                fastForwardRefusal: marker
+                    kind: .primaryCheckout,
+                    worktrees: [],
+                    branches: [],
+                    warnings: [marker]
+                )
+                return try RepositoryCard(
+                    repository: try RemoteRepository(
+                        id: id,
+                        origins: [origin],
+                        policyCategory: .writable,
+                        resolvedDefault: nil,
+                        defaultUnavailableReason:
+                            "Fixture default unavailable."
+                    ),
+                    authority: CanonicalAuthorityState(
+                        status: .missing,
+                        record: nil,
+                        explanation: marker
+                    ),
+                    clones: [clone],
+                    relation: DefaultBranchRelation(
+                        kind: .unavailable,
+                        aheadCount: nil,
+                        behindCount: nil
+                    ),
+                    fastForward: nil,
+                    fastForwardRefusal: marker
+                )
+            }
+            let a = try binding("fixture/a", inode: 10)
+            let b = try binding("fixture/b", inode: 20)
+            let c = try binding("fixture/c", inode: 30)
+            let previous = scope([a, b])
+            let next = scope([b, c])
+            let delta =
+                SelectedRepositoryHydrator.sessionDelta(
+                    scope: next,
+                    retainedScope: previous,
+                    retainedRepositoryIDs: [
+                        "fixture/a", "fixture/b",
+                    ]
+                )
+            try require(
+                delta.reusableRepositoryIDs
+                    == ["fixture/b"]
+                    && delta.repositoryIDsToHydrate
+                        == ["fixture/c"]
+                    && delta.droppedRepositoryIDs
+                        == ["fixture/a"],
+                "A,B to B,C session delta changed"
+            )
+            let deltaPlan =
+                SelectedRepositoryHydrator.sessionPlan(
+                    scope: next,
+                    retainedScope: previous,
+                    retainedRepositoryIDs: [
+                        "fixture/a", "fixture/b",
+                    ]
+                )
+            try require(
+                deltaPlan.delta == delta
+                    && deltaPlan.hydrationScope?
+                        .repositoryIDs == ["fixture/c"],
+                "A,B to B,C onboarding scope did not hydrate only C"
+            )
+            let retainedA = try card(
+                "fixture/a",
+                inode: 110,
+                marker: "retained-a"
+            )
+            let retainedB = try card(
+                "fixture/b",
+                inode: 120,
+                marker: "retained-b-inspection"
+            )
+            let freshC = try card(
+                "fixture/c",
+                inode: 130,
+                marker: "fresh-c-hydration"
+            )
+            let retainedInventory = RepositoryInventory(
+                cards: [retainedA, retainedB],
+                onboardingProposals: [],
+                authorityFileIdentity: try identity(140)
+            )
+            let freshInventory = RepositoryInventory(
+                cards: [freshC],
+                onboardingProposals: [],
+                authorityFileIdentity: try identity(150)
+            )
+            let merged =
+                SelectedRepositoryHydrator.mergeSessionInventory(
+                    scope: next,
+                    reusableRepositoryIDs:
+                        delta.reusableRepositoryIDs,
+                    retainedInventory: retainedInventory,
+                    freshInventory: freshInventory
+                )
+            try require(
+                merged.cards.map(\.id)
+                    == ["fixture/b", "fixture/c"]
+                    && merged.cards[0] == retainedB
+                    && merged.cards[1] == freshC
+                    && merged.authorityFileIdentity
+                        == freshInventory.authorityFileIdentity
+                    && Set(["fixture/a", "fixture/b"])
+                        .intersection(
+                            delta.reusableRepositoryIDs
+                        ) == ["fixture/b"],
+                "A,B to B,C reconciliation did not retain exact B evidence, hydrate C, drop A, and retain only B cleanup state"
+            )
+            let noOp =
+                SelectedRepositoryHydrator.sessionDelta(
+                    scope: previous,
+                    retainedScope: previous,
+                    retainedRepositoryIDs:
+                        previous.repositoryIDs
+                )
+            try require(
+                noOp.reusableRepositoryIDs
+                    == previous.repositoryIDs
+                    && noOp.repositoryIDsToHydrate.isEmpty
+                    && noOp.droppedRepositoryIDs.isEmpty,
+                "same-session no-op delta rehydrated unchanged repositories"
+            )
+            let noOpPlan =
+                SelectedRepositoryHydrator.sessionPlan(
+                    scope: previous,
+                    retainedScope: previous,
+                    retainedRepositoryIDs:
+                        previous.repositoryIDs
+                )
+            try require(
+                noOpPlan.delta == noOp
+                    && noOpPlan.hydrationScope == nil,
+                "same-session no-op produced a hydration scope"
+            )
+            let noOpInventory =
+                SelectedRepositoryHydrator.mergeSessionInventory(
+                    scope: previous,
+                    reusableRepositoryIDs:
+                        noOp.reusableRepositoryIDs,
+                    retainedInventory: retainedInventory,
+                    freshInventory: nil
+                )
+            try require(
+                noOpInventory == retainedInventory,
+                "same-session no-op reconciliation changed retained evidence"
+            )
+            let changedB = try binding(
+                "fixture/b",
+                inode: 21
+            )
+            let identityChanged =
+                SelectedRepositoryHydrator.sessionDelta(
+                    scope: scope([changedB, c]),
+                    retainedScope: previous,
+                    retainedRepositoryIDs:
+                        previous.repositoryIDs
+                )
+            try require(
+                identityChanged.reusableRepositoryIDs.isEmpty
+                    && identityChanged
+                        .repositoryIDsToHydrate
+                        == ["fixture/b", "fixture/c"]
+                    && identityChanged
+                        .droppedRepositoryIDs
+                        == ["fixture/a"],
+                "changed repository binding reused stale session evidence"
+            )
+            let restarted =
+                SelectedRepositoryHydrator.sessionDelta(
+                    scope: next,
+                    retainedScope: nil,
+                    retainedRepositoryIDs: []
+                )
+            try require(
+                restarted.reusableRepositoryIDs.isEmpty
+                    && restarted.repositoryIDsToHydrate
+                        == next.repositoryIDs,
+                "new session reused prior-session evidence"
             )
         }
-        let a = try binding("fixture/a", inode: 10)
-        let b = try binding("fixture/b", inode: 20)
-        let c = try binding("fixture/c", inode: 30)
-        let previous = scope([a, b])
-        let next = scope([b, c])
-        let delta =
-            SelectedRepositoryHydrator.sessionDelta(
-                scope: next,
-                retainedScope: previous,
-                retainedRepositoryIDs: [
-                    "fixture/a", "fixture/b",
-                ]
-            )
-        try require(
-            delta.reusableRepositoryIDs
-                == ["fixture/b"]
-                && delta.repositoryIDsToHydrate
-                    == ["fixture/c"]
-                && delta.droppedRepositoryIDs
-                    == ["fixture/a"],
-            "A,B to B,C session delta changed"
-        )
-        let deltaPlan =
-            SelectedRepositoryHydrator.sessionPlan(
-                scope: next,
-                retainedScope: previous,
-                retainedRepositoryIDs: [
-                    "fixture/a", "fixture/b",
-                ]
-            )
-        try require(
-            deltaPlan.delta == delta
-                && deltaPlan.hydrationScope?
-                    .repositoryIDs == ["fixture/c"],
-            "A,B to B,C onboarding scope did not hydrate only C"
-        )
-        let retainedA = try card(
-            "fixture/a",
-            inode: 110,
-            marker: "retained-a"
-        )
-        let retainedB = try card(
-            "fixture/b",
-            inode: 120,
-            marker: "retained-b-inspection"
-        )
-        let freshC = try card(
-            "fixture/c",
-            inode: 130,
-            marker: "fresh-c-hydration"
-        )
-        let retainedInventory = RepositoryInventory(
-            cards: [retainedA, retainedB],
-            onboardingProposals: [],
-            authorityFileIdentity: try identity(140)
-        )
-        let freshInventory = RepositoryInventory(
-            cards: [freshC],
-            onboardingProposals: [],
-            authorityFileIdentity: try identity(150)
-        )
-        let merged =
-            SelectedRepositoryHydrator.mergeSessionInventory(
-                scope: next,
-                reusableRepositoryIDs:
-                    delta.reusableRepositoryIDs,
-                retainedInventory: retainedInventory,
-                freshInventory: freshInventory
-            )
-        try require(
-            merged.cards.map(\.id)
-                == ["fixture/b", "fixture/c"]
-                && merged.cards[0] == retainedB
-                && merged.cards[1] == freshC
-                && merged.authorityFileIdentity
-                    == freshInventory.authorityFileIdentity
-                && Set(["fixture/a", "fixture/b"])
-                    .intersection(
-                        delta.reusableRepositoryIDs
-                    ) == ["fixture/b"],
-            "A,B to B,C reconciliation did not retain exact B evidence, hydrate C, drop A, and retain only B cleanup state"
-        )
-        let noOp =
-            SelectedRepositoryHydrator.sessionDelta(
-                scope: previous,
-                retainedScope: previous,
-                retainedRepositoryIDs:
-                    previous.repositoryIDs
-            )
-        try require(
-            noOp.reusableRepositoryIDs
-                == previous.repositoryIDs
-                && noOp.repositoryIDsToHydrate.isEmpty
-                && noOp.droppedRepositoryIDs.isEmpty,
-            "same-session no-op delta rehydrated unchanged repositories"
-        )
-        let noOpPlan =
-            SelectedRepositoryHydrator.sessionPlan(
-                scope: previous,
-                retainedScope: previous,
-                retainedRepositoryIDs:
-                    previous.repositoryIDs
-            )
-        try require(
-            noOpPlan.delta == noOp
-                && noOpPlan.hydrationScope == nil,
-            "same-session no-op produced a hydration scope"
-        )
-        let noOpInventory =
-            SelectedRepositoryHydrator.mergeSessionInventory(
-                scope: previous,
-                reusableRepositoryIDs:
-                    noOp.reusableRepositoryIDs,
-                retainedInventory: retainedInventory,
-                freshInventory: nil
-            )
-        try require(
-            noOpInventory == retainedInventory,
-            "same-session no-op reconciliation changed retained evidence"
-        )
-        let changedB = try binding(
-            "fixture/b",
-            inode: 21
-        )
-        let identityChanged =
-            SelectedRepositoryHydrator.sessionDelta(
-                scope: scope([changedB, c]),
-                retainedScope: previous,
-                retainedRepositoryIDs:
-                    previous.repositoryIDs
-            )
-        try require(
-            identityChanged.reusableRepositoryIDs.isEmpty
-                && identityChanged
-                    .repositoryIDsToHydrate
-                    == ["fixture/b", "fixture/c"]
-                && identityChanged
-                    .droppedRepositoryIDs
-                    == ["fixture/a"],
-            "changed repository binding reused stale session evidence"
-        )
-        let restarted =
-            SelectedRepositoryHydrator.sessionDelta(
-                scope: next,
-                retainedScope: nil,
-                retainedRepositoryIDs: []
-            )
-        try require(
-            restarted.reusableRepositoryIDs.isEmpty
-                && restarted.repositoryIDsToHydrate
-                    == next.repositoryIDs,
-            "new session reused prior-session evidence"
-        )
         report("BETA-V06-SESSION-DELTA")
 
         try V2Body1SelfTestRunner.runBetaV06(
@@ -713,53 +748,55 @@ public enum V3PreflightSelfTestRunner {
             observer: report
         )
 
-        let delegate = try readSource(
-            "Sources/ShadowSyncApp/AppDelegate.swift"
-        )
-        let cards = try readSource(
-            "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
-        )
-        let results = try readSource(
-            "Sources/ShadowSyncApp/Body3RunWindow.swift"
-        )
-        let release = try readSource(
-            "Sources/ShadowSyncCore/ReleaseIdentity.swift"
-        )
-        try require(
-            delegate.contains("reconcileSession(")
-                && delegate.contains(
-                    "hydrateVerifiedSession("
-                )
-                && delegate.contains(
-                    "historicalBody3Viewer"
-                )
-                && delegate.contains(
-                    "retainedSuccessfulCleanupInspectionRepositoryIDs"
-                )
-                && delegate.contains(
-                    "pendingPlannedOperations = []"
-                )
-                && delegate.contains(
-                    "if confirmationInProgress"
-                )
-                && cards.contains(
-                    "successfulCleanupInspectionRepositoryIDs"
-                )
-                && cards.contains(
-                    "!cleanupStates.values.contains(.inspecting)"
-                )
-                && results.contains(
-                    "record.type != \"command\""
-                )
-                && results.contains(
-                    "testingActionRowIdentities"
-                ),
-            "v0.6 workflow or stable-result ownership is incomplete"
-        )
-        try require(
-            currentReleaseSourceIsValid(release),
-            "Beta v0.6 release identity is incorrect"
-        )
+        try RuntimeFixtureSession.withCase("BETA-V06-SOURCES") {
+            let delegate = try readSource(
+                "Sources/ShadowSyncApp/AppDelegate.swift"
+            )
+            let cards = try readSource(
+                "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
+            )
+            let results = try readSource(
+                "Sources/ShadowSyncApp/Body3RunWindow.swift"
+            )
+            let release = try readSource(
+                "Sources/ShadowSyncCore/ReleaseIdentity.swift"
+            )
+            try require(
+                delegate.contains("reconcileSession(")
+                    && delegate.contains(
+                        "hydrateVerifiedSession("
+                    )
+                    && delegate.contains(
+                        "historicalBody3Viewer"
+                    )
+                    && delegate.contains(
+                        "retainedSuccessfulCleanupInspectionRepositoryIDs"
+                    )
+                    && delegate.contains(
+                        "pendingPlannedOperations = []"
+                    )
+                    && delegate.contains(
+                        "if confirmationInProgress"
+                    )
+                    && cards.contains(
+                        "successfulCleanupInspectionRepositoryIDs"
+                    )
+                    && cards.contains(
+                        "!cleanupStates.values.contains(.inspecting)"
+                    )
+                    && results.contains(
+                        "record.type != \"command\""
+                    )
+                    && results.contains(
+                        "testingActionRowIdentities"
+                    ),
+                "v0.6 workflow or stable-result ownership is incomplete"
+            )
+            try require(
+                currentReleaseSourceIsValid(release),
+                "Beta v0.6 release identity is incorrect"
+            )
+        }
         report("BETA-V06-SOURCES")
     }
 
@@ -775,56 +812,58 @@ public enum V3PreflightSelfTestRunner {
         try V2Body3SelfTestRunner.runBetaV07(
             observer: report
         )
-        let appDelegate = try readSource(
-            "Sources/ShadowSyncApp/AppDelegate.swift"
-        )
-        let runWindow = try readSource(
-            "Sources/ShadowSyncApp/Body3RunWindow.swift"
-        )
-        let maintenance = try readSource(
-            "Sources/ShadowSyncCore/RepositoryMaintenance.swift"
-        )
-        let cards = try readSource(
-            "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
-        )
-        let release = try readSource(
-            "Sources/ShadowSyncCore/ReleaseIdentity.swift"
-        )
-        try require(
-            appDelegate.contains("Body3EventInbox")
-                && appDelegate.contains(
-                    "deliverBody3Events("
-                )
-                && runWindow.contains(
-                    "Body3RunLogProjection()"
-                )
-                && runWindow.contains(
-                    "if !logScroll.isHidden"
-                )
-                && runWindow.contains(
-                    "testingHierarchyMeetsApprovedGeometry"
-                ),
-            "v0.7 bounded/coalesced UI path is incomplete"
-        )
-        try require(
-            maintenance.contains(
-                "Nothing will be changed."
+        try RuntimeFixtureSession.withCase("BETA-V07-SOURCES") {
+            let appDelegate = try readSource(
+                "Sources/ShadowSyncApp/AppDelegate.swift"
             )
-                && maintenance.contains(
-                    "case detached"
+            let runWindow = try readSource(
+                "Sources/ShadowSyncApp/Body3RunWindow.swift"
+            )
+            let maintenance = try readSource(
+                "Sources/ShadowSyncCore/RepositoryMaintenance.swift"
+            )
+            let cards = try readSource(
+                "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
+            )
+            let release = try readSource(
+                "Sources/ShadowSyncCore/ReleaseIdentity.swift"
+            )
+            try require(
+                appDelegate.contains("Body3EventInbox")
+                    && appDelegate.contains(
+                        "deliverBody3Events("
+                    )
+                    && runWindow.contains(
+                        "Body3RunLogProjection()"
+                    )
+                    && runWindow.contains(
+                        "if !logScroll.isHidden"
+                    )
+                    && runWindow.contains(
+                        "testingHierarchyMeetsApprovedGeometry"
+                    ),
+                "v0.7 bounded/coalesced UI path is incomplete"
+            )
+            try require(
+                maintenance.contains(
+                    "Nothing will be changed."
                 )
-                && cards.contains(
-                    "maintenanceDiagnostics"
-                )
-                && cards.contains(
-                    ".secondaryLabelColor"
-                ),
-            "v0.7 Repair-unavailable presentation is incomplete"
-        )
-        try require(
-            currentReleaseSourceIsValid(release),
-            "Beta v0.7 release identity is incorrect"
-        )
+                    && maintenance.contains(
+                        "case detached"
+                    )
+                    && cards.contains(
+                        "maintenanceDiagnostics"
+                    )
+                    && cards.contains(
+                        ".secondaryLabelColor"
+                    ),
+                "v0.7 Repair-unavailable presentation is incomplete"
+            )
+            try require(
+                currentReleaseSourceIsValid(release),
+                "Beta v0.7 release identity is incorrect"
+            )
+        }
         report("BETA-V07-SOURCES")
     }
 
@@ -844,64 +883,66 @@ public enum V3PreflightSelfTestRunner {
         try V2Body3SelfTestRunner.runBetaV07(
             observer: report
         )
-        let runner = try readSource(
-            "Sources/ShadowSyncCore/ProcessRunner.swift"
-        )
-        let coordinator = try readSource(
-            "Sources/ShadowSyncCore/Body3Coordinator.swift"
-        )
-        let inventory = try readSource(
-            "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift"
-        )
-        let cards = try readSource(
-            "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
-        )
-        let presentation = try readSource(
-            "Sources/ShadowSyncApp/RunPresentation.swift"
-        )
-        let release = try readSource(
-            "Sources/ShadowSyncCore/ReleaseIdentity.swift"
-        )
-        try require(
-            runner.contains(
-                "completeRepositoryOutputLimit = 32 * 1024 * 1024"
+        try RuntimeFixtureSession.withCase("BETA-V08-SOURCES") {
+            let runner = try readSource(
+                "Sources/ShadowSyncCore/ProcessRunner.swift"
             )
-                && runner.contains(
-                    "captured output omitted"
-                )
-                && coordinator.contains(
-                    ".completeRepositoryOutputLimit"
-                )
-                && coordinator.contains(
-                    "outcome:\n                                            \"admitted\""
-                ),
-            "v0.8 bounded execution output or command diagnostics are incomplete"
-        )
-        try require(
-            inventory.contains(
-                "return .remoteChangedSinceLastFetch"
+            let coordinator = try readSource(
+                "Sources/ShadowSyncCore/Body3Coordinator.swift"
             )
-                && cards.contains(
-                    "ShadowSync.CleanupInspectionPanelFill"
-                )
-                && cards.contains(
-                    "withFraction: 0.08"
-                ),
-            "v0.8 relation or appearance presentation is incomplete"
-        )
-        try require(
-            presentation.contains(
-                "MMM d, yyyy 'at' h:mm:ss a zzz"
+            let inventory = try readSource(
+                "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift"
             )
-                && presentation.contains(
-                    "metadata.repositoryIDs.count"
+            let cards = try readSource(
+                "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
+            )
+            let presentation = try readSource(
+                "Sources/ShadowSyncApp/RunPresentation.swift"
+            )
+            let release = try readSource(
+                "Sources/ShadowSyncCore/ReleaseIdentity.swift"
+            )
+            try require(
+                runner.contains(
+                    "completeRepositoryOutputLimit = 32 * 1024 * 1024"
                 )
-                && !presentation.contains(
-                    "repositoryIDs.joined"
+                    && runner.contains(
+                        "captured output omitted"
+                    )
+                    && coordinator.contains(
+                        ".completeRepositoryOutputLimit"
+                    )
+                    && coordinator.contains(
+                        "outcome:\n                                            \"admitted\""
+                    ),
+                "v0.8 bounded execution output or command diagnostics are incomplete"
+            )
+            try require(
+                inventory.contains(
+                    "return .remoteChangedSinceLastFetch"
                 )
-                && currentReleaseSourceIsValid(release),
-            "v0.8 metadata or release identity is incorrect"
-        )
+                    && cards.contains(
+                        "ShadowSync.CleanupInspectionPanelFill"
+                    )
+                    && cards.contains(
+                        "withFraction: 0.08"
+                    ),
+                "v0.8 relation or appearance presentation is incomplete"
+            )
+            try require(
+                presentation.contains(
+                    "MMM d, yyyy 'at' h:mm:ss a zzz"
+                )
+                    && presentation.contains(
+                        "metadata.repositoryIDs.count"
+                    )
+                    && !presentation.contains(
+                        "repositoryIDs.joined"
+                    )
+                    && currentReleaseSourceIsValid(release),
+                "v0.8 metadata or release identity is incorrect"
+            )
+        }
         report("BETA-V08-SOURCES")
     }
 
@@ -909,165 +950,178 @@ public enum V3PreflightSelfTestRunner {
         testExecutable: String,
         report: (String) -> Void
     ) throws {
-        let first = try betaV09InspectionFixture(
-            testExecutable: testExecutable,
-            branchCount: 75,
-            worktreeCount: 21
-        )
-        try require(
-            first.callCount == 74
-                && first.maximumActive > 1
-                && first.maximumActive <= 4,
-            "75-branch inspection did not use bounded four-child PR admission"
-        )
+        try RuntimeFixtureSession.withCase("BETA-V09-SYNTHETIC-75-21") {
+            let first = try betaV09InspectionFixture(
+                testExecutable: testExecutable,
+                branchCount: 75,
+                worktreeCount: 21
+            )
+            try require(
+                first.callCount == 74
+                    && first.maximumActive > 1
+                    && first.maximumActive <= 4,
+                "75-branch inspection did not use bounded four-child PR admission"
+            )
+            print(
+                "METRIC BETA-V09-SYNTHETIC-75-21 duration_ms=\(first.durationMilliseconds) inspection_ms=\(first.inspectionMilliseconds) validation_ms=\(first.validationMilliseconds) removal_projection_ms=\(first.removalProjectionMilliseconds) topology_ms=\(first.topologyMilliseconds) worktree_ms=\(first.worktreeMilliseconds) relation_ms=\(first.relationMilliseconds) pr_ms=\(first.pullRequestMilliseconds) assembly_ms=\(first.assemblyMilliseconds) max_children=\(first.maximumActive)"
+            )
+        }
         report("BETA-V09-SYNTHETIC-75-21")
-        print(
-            "METRIC BETA-V09-SYNTHETIC-75-21 duration_ms=\(first.durationMilliseconds) inspection_ms=\(first.inspectionMilliseconds) validation_ms=\(first.validationMilliseconds) removal_projection_ms=\(first.removalProjectionMilliseconds) topology_ms=\(first.topologyMilliseconds) worktree_ms=\(first.worktreeMilliseconds) relation_ms=\(first.relationMilliseconds) pr_ms=\(first.pullRequestMilliseconds) assembly_ms=\(first.assemblyMilliseconds) max_children=\(first.maximumActive)"
-        )
-        let second = try betaV09InspectionFixture(
-            testExecutable: testExecutable,
-            branchCount: 84,
-            worktreeCount: 20
-        )
-        try require(
-            second.callCount == 83
-                && second.maximumActive > 1
-                && second.maximumActive <= 4,
-            "84-branch inspection did not use bounded four-child PR admission"
-        )
+        try RuntimeFixtureSession.withCase("BETA-V09-SYNTHETIC-84-20") {
+            let second = try betaV09InspectionFixture(
+                testExecutable: testExecutable,
+                branchCount: 84,
+                worktreeCount: 20
+            )
+            try require(
+                second.callCount == 83
+                    && second.maximumActive > 1
+                    && second.maximumActive <= 4,
+                "84-branch inspection did not use bounded four-child PR admission"
+            )
+            print(
+                "METRIC BETA-V09-SYNTHETIC-84-20 duration_ms=\(second.durationMilliseconds) inspection_ms=\(second.inspectionMilliseconds) validation_ms=\(second.validationMilliseconds) removal_projection_ms=\(second.removalProjectionMilliseconds) topology_ms=\(second.topologyMilliseconds) worktree_ms=\(second.worktreeMilliseconds) relation_ms=\(second.relationMilliseconds) pr_ms=\(second.pullRequestMilliseconds) assembly_ms=\(second.assemblyMilliseconds) max_children=\(second.maximumActive)"
+            )
+        }
         report("BETA-V09-SYNTHETIC-84-20")
-        print(
-            "METRIC BETA-V09-SYNTHETIC-84-20 duration_ms=\(second.durationMilliseconds) inspection_ms=\(second.inspectionMilliseconds) validation_ms=\(second.validationMilliseconds) removal_projection_ms=\(second.removalProjectionMilliseconds) topology_ms=\(second.topologyMilliseconds) worktree_ms=\(second.worktreeMilliseconds) relation_ms=\(second.relationMilliseconds) pr_ms=\(second.pullRequestMilliseconds) assembly_ms=\(second.assemblyMilliseconds) max_children=\(second.maximumActive)"
-        )
-        let partial = try betaV09InspectionFixture(
-            testExecutable: testExecutable,
-            branchCount: 12,
-            worktreeCount: 1,
-            failureEvery: 3
-        )
-        try require(
-            partial.unavailableCount == 3
-                && partial.unsafeSelectableCount == 0,
-            "incomplete PR evidence became selectable "
-                + "(unavailable=\(partial.unavailableCount), "
-                + "unsafe=\(partial.unsafeSelectableCount))"
-        )
-        report("BETA-V09-PARTIAL-SAFETY")
-        // Exercise both ordinary and delayed first completion. The lookup
-        // fixture holds its other initial calls until cancellation is issued;
-        // admission must not depend on which worker the scheduler wakes first.
-        for firstDelay: useconds_t in [20_000, 120_000] {
-            let cancelled = try betaV09InspectionFixture(
+        try RuntimeFixtureSession.withCase("BETA-V09-PARTIAL-SAFETY") {
+            let partial = try betaV09InspectionFixture(
                 testExecutable: testExecutable,
                 branchCount: 12,
                 worktreeCount: 1,
-                cancelOnFirst: true,
-                cancellationDelay: firstDelay
+                failureEvery: 3
             )
             try require(
-                cancelled.callCount <= 4
-                    && cancelled.activeAfterCompletion == 0
-                    && cancelled.availableCount >= 1
-                    && cancelled.unsafeSelectableCount == 0,
-                "inspection cancellation lost completed evidence, admitted future work, or did not drain "
-                    + "(calls=\(cancelled.callCount), active=\(cancelled.activeAfterCompletion), "
-                    + "available=\(cancelled.availableCount), unsafe=\(cancelled.unsafeSelectableCount))"
+                partial.unavailableCount == 3
+                    && partial.unsafeSelectableCount == 0,
+                "incomplete PR evidence became selectable "
+                    + "(unavailable=\(partial.unavailableCount), "
+                    + "unsafe=\(partial.unsafeSelectableCount))"
             )
         }
+        report("BETA-V09-PARTIAL-SAFETY")
+        try RuntimeFixtureSession.withCase("BETA-V09-CANCEL-DRAIN") {
+            // Exercise both ordinary and delayed first completion. The lookup
+            // fixture holds its other initial calls until cancellation is issued;
+            // admission must not depend on which worker the scheduler wakes first.
+            for firstDelay: useconds_t in [20_000, 120_000] {
+                let cancelled = try betaV09InspectionFixture(
+                    testExecutable: testExecutable,
+                    branchCount: 12,
+                    worktreeCount: 1,
+                    cancelOnFirst: true,
+                    cancellationDelay: firstDelay
+                )
+                try require(
+                    cancelled.callCount <= 4
+                        && cancelled.activeAfterCompletion == 0
+                        && cancelled.availableCount >= 1
+                        && cancelled.unsafeSelectableCount == 0,
+                    "inspection cancellation lost completed evidence, admitted future work, or did not drain "
+                        + "(calls=\(cancelled.callCount), active=\(cancelled.activeAfterCompletion), "
+                        + "available=\(cancelled.availableCount), unsafe=\(cancelled.unsafeSelectableCount))"
+                )
+            }
+        }
         report("BETA-V09-CANCEL-DRAIN")
-        try require(
-            RepositoryReadSession.pullRequestStageBudget(
-                candidateCount: 74
-            ) == 48
-                && RepositoryReadSession
-                    .pullRequestStageBudget(
-                        candidateCount: 83
-                    ) == 52
-                && RepositoryReadSession
-                    .pullRequestStageBudget(
-                        candidateCount: 1_000
-                    ) == 60,
-            "adaptive PR budget is not deterministic and bounded"
-        )
+        try RuntimeFixtureSession.withCase("BETA-V09-BOUNDS") {
+            try require(
+                RepositoryReadSession.pullRequestStageBudget(
+                    candidateCount: 74
+                ) == 48
+                    && RepositoryReadSession
+                        .pullRequestStageBudget(
+                            candidateCount: 83
+                        ) == 52
+                    && RepositoryReadSession
+                        .pullRequestStageBudget(
+                            candidateCount: 1_000
+                        ) == 60,
+                "adaptive PR budget is not deterministic and bounded"
+            )
+            let oid = String(repeating: "a", count: 40)
+            _ = try GitCommandPolicy.validate([
+                "--no-replace-objects",
+                "--no-lazy-fetch",
+                "for-each-ref",
+                "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(ahead-behind:\(oid))%00",
+                "refs/heads/",
+                "refs/remotes/",
+            ])
+        }
+        report("BETA-V09-BOUNDS")
+
         try runBetaV08(
             testExecutable: testExecutable,
             report: report
         )
-        let oid = String(repeating: "a", count: 40)
-        _ = try GitCommandPolicy.validate([
-            "--no-replace-objects",
-            "--no-lazy-fetch",
-            "for-each-ref",
-            "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(ahead-behind:\(oid))%00",
-            "refs/heads/",
-            "refs/remotes/",
-        ])
-        report("BETA-V09-BOUNDS")
+        try RuntimeFixtureSession.withCase("BETA-V09-SOURCES") {
 
-        let inventory = try readSource(
-            "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift"
-        )
-        let adapter = try readSource(
-            "Sources/ShadowSyncCore/ReadOnlyGitHubCLIAdapter.swift"
-        )
-        let cards = try readSource(
-            "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
-        )
-        let delegate = try readSource(
-            "Sources/ShadowSyncApp/AppDelegate.swift"
-        )
-        let release = try readSource(
-            "Sources/ShadowSyncCore/ReleaseIdentity.swift"
-        )
-        try require(
-            !inventory.contains(
-                "addingTimeInterval(20)"
+            let inventory = try readSource(
+                "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift"
             )
-                && inventory.contains(
-                    "bulkBranchEvidence("
-                )
-                && inventory.contains(
-                    "maximumConcurrentChildren: 4"
-                )
-                && inventory.contains(
-                    "closeAndCancelChildren()"
-                )
-                && adapter.contains(
-                    "min(4, max(1, maximumConcurrentChildren))"
-                )
-                && adapter.contains(
-                    "cacheCapacity = 512"
-                )
-                && adapter.contains(
-                    "result.availability == .available"
-                ),
-            "bounded bulk discovery or four-child admission is incomplete"
-        )
-        try require(
-            cards.contains(
-                "cleanupBatchProgressView()"
+            let adapter = try readSource(
+                "Sources/ShadowSyncCore/ReadOnlyGitHubCLIAdapter.swift"
             )
-                && cards.contains(
-                    "Reading worktree evidence"
+            let cards = try readSource(
+                "Sources/ShadowSyncApp/RepositoryCardsWindow.swift"
+            )
+            let delegate = try readSource(
+                "Sources/ShadowSyncApp/AppDelegate.swift"
+            )
+            let release = try readSource(
+                "Sources/ShadowSyncCore/ReleaseIdentity.swift"
+            )
+            try require(
+                !inventory.contains(
+                    "addingTimeInterval(20)"
                 )
-                && cards.contains(
-                    "candidateSubcard(containing:"
+                    && inventory.contains(
+                        "bulkBranchEvidence("
+                    )
+                    && inventory.contains(
+                        "maximumConcurrentChildren: 4"
+                    )
+                    && inventory.contains(
+                        "closeAndCancelChildren()"
+                    )
+                    && adapter.contains(
+                        "min(4, max(1, maximumConcurrentChildren))"
+                    )
+                    && adapter.contains(
+                        "cacheCapacity = 512"
+                    )
+                    && adapter.contains(
+                        "result.availability == .available"
+                    ),
+                "bounded bulk discovery or four-child admission is incomplete"
+            )
+            try require(
+                cards.contains(
+                    "cleanupBatchProgressView()"
                 )
-                && cards.contains(
-                    "constant: 18"
-                )
-                && !cards.contains(
-                    "indentation: String"
-                )
-                && delegate.contains(
-                    "cleanup_inspection stage="
-                ),
-            "retained progress or candidate hierarchy is incomplete"
-        )
-        try require(
-            currentReleaseSourceIsValid(release),
-            "Beta v0.9 release identity is incorrect"
-        )
+                    && cards.contains(
+                        "Reading worktree evidence"
+                    )
+                    && cards.contains(
+                        "candidateSubcard(containing:"
+                    )
+                    && cards.contains(
+                        "constant: 18"
+                    )
+                    && !cards.contains(
+                        "indentation: String"
+                    )
+                    && delegate.contains(
+                        "cleanup_inspection stage="
+                    ),
+                "retained progress or candidate hierarchy is incomplete"
+            )
+            try require(
+                currentReleaseSourceIsValid(release),
+                "Beta v0.9 release identity is incorrect"
+            )
+        }
         report("BETA-V09-SOURCES")
     }
 
@@ -1608,9 +1662,8 @@ public enum V3PreflightSelfTestRunner {
                 "preserved worker wire model is missing \(type)"
             )
         }
-        try V2Body4SelfTestRunner.runFocused(
-            "t13",
-            testExecutable: testExecutable
+        try V2Body4SelfTestRunner.compatibilityRelease(
+            executable: testExecutable
         )
     }
 
@@ -2889,7 +2942,7 @@ private final class PrivateFixtureRoot {
 
     init(prefix: String) throws {
         var template = Array(
-            "/private/tmp/shadow-sync-v3-\(prefix).XXXXXX".utf8CString
+            (try RuntimeFixtureSession.fixturePrefix("shadow-sync-v3-\(prefix).") + "XXXXXX").utf8CString
         )
         guard let result = mkdtemp(&template) else {
             throw NSError(
@@ -3364,36 +3417,24 @@ private final class CatalogFixture {
     }
 
     private static func git(_ arguments: [String]) throws {
-        let process = Process()
-        process.executableURL = URL(
-            fileURLWithPath: "/usr/bin/git"
-        )
-        process.arguments = arguments
-        process.environment = [
-            "HOME": "/private/tmp",
-            "USER": "fixture",
-            "LOGNAME": "fixture",
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "LANG": "C",
-            "LC_ALL": "C",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0",
-        ]
-        process.standardInput = FileHandle.nullDevice
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = output
-        try process.run()
-        guard OwnedProcessReaper.wait(
-            for: process,
-            timeout: 20
-        ), process.terminationStatus == 0 else {
-            throw NSError(
-                domain: "CatalogFixture.git",
-                code: Int(process.terminationStatus)
-            )
+        let temporary = try M1TemporaryDirectory()
+        defer { temporary.remove() }
+        let home = temporary.path + "/home"
+        try FileManager.default.createDirectory(atPath: home,
+            withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let account = try EffectiveAccount.isolated(homeDirectory: home)
+        let directory = Darwin.open(temporary.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else { throw GitSafetyError.unsafeRepository("fixture command directory unavailable") }
+        defer { close(directory) }
+        let result = try ClosedProcessRunner(outputLimit: DescriptorProcessRunner.completeRepositoryOutputLimit).run(
+            command: ClosedProcessCommand(executable: discoveryFixtureGitExecutable, arguments: arguments),
+            environment: ClosedProcessRunner.environment(account: account),
+            workingDirectoryDescriptor: directory, account: account, timeout: 20,
+            cancellation: CancellationToken())
+        guard result.status == 0 && !result.cancelled && !result.timedOut
+                && !result.stdoutTruncated && !result.stderrTruncated else {
+            throw GitSafetyError.unsafeRepository("fixture command failed: " + Redactor.subprocessBytes(result.output))
         }
-        _ = output.fileHandleForReading.readDataToEndOfFile()
     }
 }
 

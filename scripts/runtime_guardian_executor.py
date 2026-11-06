@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import stat
 import subprocess
 import time
 
@@ -18,19 +19,28 @@ from guardian_protocol import GuardianProtocol, InvalidGuardianReceipt
 
 
 def execute(*, executable, app, suite, cases, nonce, source_sha256, executable_sha256,
-            app_sha256, profile, environment, evidence, seconds, behavior='run', target_probe=None):
+            app_sha256, profile, environment, evidence, seconds, behavior='run', target_probe=None, source_root=None):
     """Testing behaviors are closed qualification cases, never shell commands."""
     if behavior not in {'run', 'cancel-before-run', 'lost-before-run', 'invalid-before-run',
                         'deadline-before-run', 'status-reader-lost', 'cancel-at-probe', 'lost-at-probe',
                         'status-reader-lost-at-probe'}:
         raise ValueError('unknown guardian qualification behavior')
-    if suite not in {'m1', 'm3', 'practical-m3', 'm2', 'practical-m2', 'policy-projection', 'closed-runner', 'runtime-custody', 'policy-wire', 'policy-binding', 'm4', 'policy-input', 'policy-transport', 'runtime-guardian', 'm6', 'release-identity', 'identity-history', 'policy-authority', 'policy-snapshot', 'policy-catalog', 'policy-catalog-session', 'publisher-policy', 'runtime-ownership', 'discovery-spawn', 'discovery-caller', 'discovery-bootstrap'} or not 0 < seconds <= 3600:
+    if suite not in {'m1', 'm3', 'practical-m3', 'm2', 'practical-m2', 'policy-projection', 'closed-runner', 'runtime-custody', 'policy-wire', 'policy-binding', 'm4', 'policy-input', 'policy-transport', 'runtime-guardian', 'm6', 'release-identity', 'identity-history', 'policy-authority', 'policy-snapshot', 'policy-catalog', 'policy-catalog-session', 'publisher-policy', 'runtime-ownership', 'discovery-spawn', 'discovery-caller', 'discovery-bootstrap', 'body1', 'body2', 'body3', 'body4', 'v3-preflight', 'v4-preflight', 'beta-v02-chooser', 'beta-v02-device-drift', 'beta-v03', 'beta-v04', 'beta-v05', 'beta-v06', 'beta-v07', 'beta-v08', 'beta-v09'} or not 0 < seconds <= 3600:
         raise ValueError('unsupported suite or deadline')
     at_probe = behavior.endswith('-at-probe')
     if at_probe != (target_probe is not None) or (at_probe and
             (suite not in {'runtime-guardian', 'closed-runner', 'runtime-ownership', 'discovery-spawn'} or target_probe not in cases)):
         raise ValueError('invalid qualification cut point')
     executable, app, profile, evidence = map(Path, (executable, app, profile, evidence))
+    working_directory = evidence
+    if source_root is not None:
+        source_root = Path(source_root)
+        if not source_root.is_absolute() or source_root.resolve(strict=True) != source_root:
+            raise ValueError('source working directory is not physical')
+        info = source_root.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise ValueError('source working directory is not owner-controlled')
+        working_directory = source_root
     for path, digest in [(executable, executable_sha256), (app, app_sha256)]:
         if path.resolve(strict=True) != path or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             raise ValueError('artifact binding mismatch')
@@ -53,7 +63,7 @@ def execute(*, executable, app, suite, cases, nonce, source_sha256, executable_s
                source_sha256, executable_sha256, app_sha256, target_probe or 'none']
     record = dict(schema='shadow-sync-runtime-guardian-execution/v1', command=command,
                   passed=False, errors=[], automatic_termination=False, original_reaped=False,
-                  behavior=behavior, streams={}, protocol_complete=False)
+                  behavior=behavior, working_directory=str(working_directory), streams={}, protocol_complete=False)
     process = None
     control = None
     descriptors = set()
@@ -135,7 +145,7 @@ def execute(*, executable, app, suite, cases, nonce, source_sha256, executable_s
         os.dup2(control_read, 207, inheritable=True); descriptors.add(207); child_ends.add(207)
         os.dup2(status_write, 208, inheritable=True); descriptors.add(208); child_ends.add(208)
         os.set_blocking(control, False)
-        process = subprocess.Popen(command, cwd=evidence, env=environment, stdin=subprocess.DEVNULL,
+        process = subprocess.Popen(command, cwd=working_directory, env=environment, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    pass_fds=(207, 208), start_new_session=True)
         record['pid'] = process.pid

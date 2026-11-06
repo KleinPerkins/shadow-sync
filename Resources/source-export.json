@@ -2,7 +2,21 @@
   "adaptations": {
     ".github/workflows/app-auto-merge.yml": "Both privileged jobs statically disabled before checkout/token mint; CI provenance and dependency-content activation blockers remain open.",
     "Sources/ShadowSyncCore/Body3Coordinator.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
-    "Sources/ShadowSyncCore/RemovalTransaction.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration."
+    "Sources/ShadowSyncCore/DM2Body1SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/DM2Body2SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/DM2Body3SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/DM2Body4SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/DM4PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/RemovalTransaction.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
+    "Sources/ShadowSyncCore/RepositoryLifecycle.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/RuntimeFixtureSession.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/RuntimeSuiteGuardian.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
   "files": [
@@ -349,32 +363,32 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body1SelfTests.swift",
-      "sha256": "9910ede1588d1e0c3715929b64ea527b9a20ea35259c73a87a32eed2e7308d01"
+      "sha256": "85a293724d01b61c95ab2ab34e5e11d771082426b28c88b4328193e4cff70bcc"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body2SelfTests.swift",
-      "sha256": "64d30e80a7b19a4a236bd78e988c23aa3933be9ed62b4de10ca5d7d9bfdf4dba"
+      "sha256": "6097d276140f646e896a021d5fa9f2517ffeb24fdcc615927abaf7b9201d7a39"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body3SelfTests.swift",
-      "sha256": "7f82d7fd63d1ce3c6940753c6364fe895431f7de5fc6b6a2bd8ccd73ab1482af"
+      "sha256": "caf46e14a37f128c89eea040c73cf06fcb711394399607c92201387fade1ea67"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body4SelfTests.swift",
-      "sha256": "d1af1d4b27182412e8e873924796097387aecdb942c12bd40f7dc07b3ba5a385"
+      "sha256": "b5b24230fd74a3ebe8eff8df29cad87437584a134ea0381b62a4d5be73c8c249"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift",
-      "sha256": "343b14a950cadbcf941453af4b1d70660350e9bf88a6e00e67457f3651ce3915"
+      "sha256": "a25a981826beb25e73ec3e21d2bc6dfcbc509228c07a0b78bd9b883eb945a97c"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM4PreflightSelfTests.swift",
-      "sha256": "71ef878d4462cc38411becd4ec7e17acbdb28e02e876e11b9768eaa63e0fdd83"
+      "sha256": "d7167283be09356ad2128aca50af688aed80bf25fe7a030b4a9ea47cc89e85cb"
     },
     {
       "mode": "100644",
@@ -709,7 +723,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RepositoryLifecycle.swift",
-      "sha256": "5badd380bd5d6dd8cd5dbc6e71020eceeaa8458f500fa51b4d35876f2912449f"
+      "sha256": "753f867608f1d4c205b7cf56432b44dc2f740efb0e68977a13bd8f92a8d7170f"
     },
     {
       "mode": "100644",
@@ -764,7 +778,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift",
-      "sha256": "a6b51de864be97ffe1c5d028e6f5722da39863e915ed395fd0e4c1daddab4462"
+      "sha256": "62ab6ab7f2de8a81aa700a602799aa93b3230728beb8ec2b238b734050f44624"
     },
     {
       "mode": "100644",
@@ -774,7 +788,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RuntimeFixtureSession.swift",
-      "sha256": "af3c323da8502533c766dc5878c0fa327f8946e3b3d66307b8f6c4b87857298d"
+      "sha256": "a03f7361c41677e14f88f441053316c66f61be2a343a4f6ed221e93ed26d5ba8"
     },
     {
       "mode": "100644",
@@ -784,7 +798,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RuntimeSuiteGuardian.swift",
-      "sha256": "e0bf7b5171e4499c29abbecc34ded5fa34d8114da54484bbb0a1077d1fd54ace"
+      "sha256": "ec1fb4764e7c9a4bcb5cdebd36debf412685fce89ba448d46e74c89e5f377530"
     },
     {
       "mode": "100644",
@@ -844,7 +858,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "e3b2d2a2abf307b54f585b71a9f66cd070f33bd266a027c0e3e4eae508de63a6"
+      "sha256": "4d74ab65ac3078c092fa7d6d0144fc0c58482b1bd9f6657b924ef6d80b235852"
     },
     {
       "mode": "100644",
@@ -904,7 +918,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_guardian_executor.py",
-      "sha256": "eecd5fa324e9edd57a0331e8215b1282421619aaa83cb9c33964e1c4154ec841"
+      "sha256": "6b713cf313c00f1f19106a08eb03f7439498e78b10c03c5b218fe39eb6d07123"
     },
     {
       "mode": "100644",
@@ -914,7 +928,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_guardian_registration.py",
-      "sha256": "258f61d993145aec52d70fbeab0a63915227cbbee8a2d2843783550c908aa227"
+      "sha256": "2743807cc7c3a1bbbed94a4f9416cb4bc94d6d5771346a85da3d7d91ac34cfb8"
     },
     {
       "mode": "100644",
@@ -1139,7 +1153,7 @@
     {
       "mode": "100644",
       "path": "scripts/runtime_guardian_executor.py",
-      "sha256": "983de230bfc02794a278ebba8d113a24249b1e6a16c6da2bb2b95a9a6bf526ac"
+      "sha256": "eebd24672c3091961071b1b098f7b4de6b5dd41ccb4a75384983ba9870479e5e"
     },
     {
       "mode": "100755",

@@ -30,7 +30,7 @@ final class RuntimeSuiteGuardian: @unchecked Sendable {
     init(suite: String, cases: [String], nonce: String, deadline: UInt64,
          source: String, executable: String, app: String, probeTarget: String?) throws {
         let now = Self.now
-        guard ["m1", "m3", "practical-m3", "m2", "practical-m2", "m4", "m6", "runtime-guardian", "runtime-custody", "policy-wire", "policy-binding", "policy-projection", "release-identity", "policy-input", "policy-transport", "closed-runner", "identity-history", "policy-authority", "policy-snapshot", "policy-catalog", "policy-catalog-session", "publisher-policy", "runtime-ownership", "discovery-spawn", "discovery-caller", "discovery-bootstrap"].contains(suite), !cases.isEmpty, cases.count <= 2048,
+        guard ["m1", "m3", "practical-m3", "m2", "practical-m2", "m4", "m6", "runtime-guardian", "runtime-custody", "policy-wire", "policy-binding", "policy-projection", "release-identity", "policy-input", "policy-transport", "closed-runner", "identity-history", "policy-authority", "policy-snapshot", "policy-catalog", "policy-catalog-session", "publisher-policy", "runtime-ownership", "discovery-spawn", "discovery-caller", "discovery-bootstrap", "body1", "body2", "body3", "body4", "v3-preflight", "v4-preflight", "beta-v02-chooser", "beta-v02-device-drift", "beta-v03", "beta-v04", "beta-v05", "beta-v06", "beta-v07", "beta-v08", "beta-v09"].contains(suite), !cases.isEmpty, cases.count <= 2048,
               Set(cases).count == cases.count,
               cases.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256
                   && !$0.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) }),
@@ -293,7 +293,7 @@ public enum RuntimeSuiteGuardianEntrypoint {
         guard arguments.dropFirst().contains("--shadow-sync-runtime-guardian") else { return nil }
         do {
             guard arguments.count == 10, arguments[1] == "--shadow-sync-runtime-guardian",
-                  ["m1", "m3", "practical-m3", "m2", "practical-m2", "m4", "m6", "runtime-guardian", "runtime-custody", "policy-wire", "policy-binding", "policy-projection", "release-identity", "policy-input", "policy-transport", "closed-runner", "identity-history", "policy-authority", "policy-snapshot", "policy-catalog", "policy-catalog-session", "publisher-policy", "runtime-ownership", "discovery-spawn", "discovery-caller", "discovery-bootstrap"].contains(arguments[2]), let cases = catalog[arguments[2]],
+                  ["m1", "m3", "practical-m3", "m2", "practical-m2", "m4", "m6", "runtime-guardian", "runtime-custody", "policy-wire", "policy-binding", "policy-projection", "release-identity", "policy-input", "policy-transport", "closed-runner", "identity-history", "policy-authority", "policy-snapshot", "policy-catalog", "policy-catalog-session", "publisher-policy", "runtime-ownership", "discovery-spawn", "discovery-caller", "discovery-bootstrap", "body1", "body2", "body3", "body4", "v3-preflight", "v4-preflight", "beta-v02-chooser", "beta-v02-device-drift", "beta-v03", "beta-v04", "beta-v05", "beta-v06", "beta-v07", "beta-v08", "beta-v09"].contains(arguments[2]), let cases = catalog[arguments[2]],
                   let deadline = UInt64(arguments[5]), String(deadline) == arguments[5],
                   ProcessInfo.processInfo.environment["SHADOW_SYNC_RUNTIME_FIXTURE_NAMESPACE"] == arguments[4] else {
                 throw RuntimeSuiteGuardian.Failure.invalidContract

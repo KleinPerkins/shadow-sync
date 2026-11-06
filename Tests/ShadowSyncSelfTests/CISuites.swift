@@ -107,10 +107,10 @@ enum SelfTestCISuites {
 
     static var identifiers: [String] { entries.map(\.id) }
 
-    // Transport adoption is explicit. Unintegrated suites remain mandatory in
-    // discovery but cannot claim guardian qualification by using this entry.
+    // Every registered suite uses explicit assertion-case custody. Admission
+    // is not execution evidence; exact-source guardian receipts qualify each run.
     static var guardianCatalog: [String: [String]] {
-        caseIDs.filter { ["m1", "m3", "practical-m3", "m2", "practical-m2", "discovery-bootstrap", "discovery-caller", "m4", "m6", "runtime-guardian", "runtime-custody", "policy-wire", "policy-binding", "policy-projection", "release-identity", "policy-input", "policy-transport", "closed-runner", "identity-history", "policy-authority", "policy-snapshot", "policy-catalog", "policy-catalog-session", "publisher-policy", "runtime-ownership", "discovery-spawn"].contains($0.key) }
+        caseIDs.filter { ["m1", "m3", "practical-m3", "m2", "practical-m2", "discovery-bootstrap", "discovery-caller", "m4", "m6", "runtime-guardian", "runtime-custody", "policy-wire", "policy-binding", "policy-projection", "release-identity", "policy-input", "policy-transport", "closed-runner", "identity-history", "policy-authority", "policy-snapshot", "policy-catalog", "policy-catalog-session", "publisher-policy", "runtime-ownership", "discovery-spawn", "body1", "body2", "body3", "body4", "v3-preflight", "v4-preflight", "beta-v02-chooser", "beta-v02-device-drift", "beta-v03", "beta-v04", "beta-v05", "beta-v06", "beta-v07", "beta-v08", "beta-v09"].contains($0.key) }
     }
 
     static func discovery() throws -> [[String: Any]] {
