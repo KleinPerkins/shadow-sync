@@ -1,5 +1,6 @@
 #if SHADOW_SYNC_TESTING
 import Foundation
+import Darwin
 
 /// Serial assertion-case binding. A suite guardian can close admission while
 /// these registries retain registered original children through actual cleanup.
@@ -46,7 +47,7 @@ enum RuntimeFixtureSession {
                "shadow-sync-fresh-state.", "shadow-sync-registry.", "shadow-sync-state-admission.",
                "shadow-sync-policy-input-", "shadow-sync-policy-transport-",
                "shadow-sync-policy-authority-", "shadow-sync-catalog-admission-",
-               "shadow-sync-publisher-policy-", "shadow-sync-discovery-spawn.", "shadow-sync-fixture-config."].contains(name) else {
+               "shadow-sync-publisher-policy-", "shadow-sync-discovery-spawn.", "shadow-sync-fixture-config.", "shadow-sync-v3-preferences.", "shadow-sync-v3-preferences-pre-rename.", "shadow-sync-v3-preferences-post-rename.", "shadow-sync-v3-catalog.", "shadow-sync-dm4-preflight."].contains(name) else {
             throw RuntimeFixtureCustody.Failure.invalidContract
         }
         guard let namespace else { return "/private/tmp/" + name }
@@ -119,7 +120,9 @@ enum RuntimeFixtureSession {
         try guardian?.requireAdmission()
         let start = now
         let registry = try RuntimeFixtureCustody(cases: [id], now: now,
-            deadline: min(start + 60_000_000_000, guardian?.deadline ?? UInt64.max),
+            // A registered suite already has one bounded work deadline. Do not
+            // truncate a substantive multi-fixture case to an unrelated minute.
+            deadline: guardian?.deadline ?? (start + 60_000_000_000),
             graceNanoseconds: 1_000_000_000)
         try registry.beginCase(id, now: now)
         binding.lock.lock()
@@ -169,6 +172,33 @@ enum RuntimeFixtureSession {
         if let failure { throw failure }
         guard let output else { throw RuntimeFixtureCustody.Failure.invalidContract }
         return output
+    }
+}
+// Foundation's atomic writer may choose an ambient temporary directory. Test
+// corruption/replacement cuts must stay inside their existing disposable root.
+extension Data {
+    func writeFixtureAtomically(to destination: URL) throws {
+        _ = try RuntimeFixtureSession.current()
+        let prefix = try RuntimeFixtureSession.fixturePrefix("shadow-sync-self-tests.")
+        let parent = destination.deletingLastPathComponent()
+        guard let physicalParent = realpath(parent.path, nil) else {
+            throw RuntimeFixtureCustody.Failure.invalidContract
+        }
+        defer { free(physicalParent) }
+        var info = stat()
+        guard destination.isFileURL, destination.path.hasPrefix(prefix),
+              String(cString: physicalParent) == parent.path,
+              lstat(parent.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
+              info.st_uid == geteuid(), (info.st_mode & 0o077) == 0 else {
+            throw RuntimeFixtureCustody.Failure.invalidContract
+        }
+        let staging = parent.appendingPathComponent(".shadow-sync-fixture-atomic-" + RunIdentity.make())
+        try write(to: staging, options: .withoutOverwriting)
+        defer { _ = unlink(staging.path) }
+        guard chmod(staging.path, 0o600) == 0,
+              rename(staging.path, destination.path) == 0 else {
+            throw SecureStateError.systemCall("fixture atomic replacement", errno)
+        }
     }
 }
 #endif

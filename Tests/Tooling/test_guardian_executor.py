@@ -24,7 +24,7 @@ with patch.dict(sys.modules, {'guardian_protocol': protocol}): spec.loader.exec_
 
 
 class GuardianExecutorTests(unittest.TestCase):
-    def exercise(self, stage=None, ordinal=1):
+    def exercise(self, stage=None, ordinal=1, source_directory=False):
         real_pipe, real_dup, real_close = os.pipe, os.dup, os.close
         real_dup2, real_block, real_fsync = os.dup2, os.set_blocking, os.fsync
         real_select, real_read = runner.select.select, os.read
@@ -48,9 +48,12 @@ class GuardianExecutorTests(unittest.TestCase):
         def read(*args): fail('read'); return real_read(*args)
         def opened(path, *args, **kw):
             stream = real_open(path, *args, **kw); streams.append(stream); return stream
+        self_outer = self
         class Handle:
             def __init__(self, command, **kw):
                 fail('spawn')
+                expected_cwd = root if source_directory else root / 'evidence'
+                self_outer.assertEqual(kw['cwd'], expected_cwd)
                 self.pid = 999_999; self.exit = None
                 cr, sw = real_dup(207), real_dup(208)
                 out_r, out_w = real_pipe(); err_r, err_w = real_pipe()
@@ -92,7 +95,8 @@ class GuardianExecutorTests(unittest.TestCase):
                     suite='runtime-guardian', cases=['one'], nonce='a' * 32, source_sha256='b' * 64,
                     executable_sha256=digest, app_sha256=digest, profile=profile,
                     environment={'SHADOW_SYNC_RUNTIME_FIXTURE_NAMESPACE': 'a' * 32},
-                    evidence=root / 'evidence', seconds=2, behavior='lost-before-run')
+                    evidence=root / 'evidence', seconds=2, behavior='lost-before-run',
+                    source_root=root if source_directory else None)
             for handle in handles:
                 handle.thread.join(1); self.assertFalse(handle.thread.is_alive())
             self.assertTrue(all(stream.closed for stream in streams))
@@ -109,6 +113,29 @@ class GuardianExecutorTests(unittest.TestCase):
         record = self.exercise()
         self.assertTrue(record['protocol_complete']); self.assertFalse(record['errors'])
         self.assertEqual(record['terminal']['reason'], 'callerLost')
+
+    def test_verified_source_directory_survives_caller_loss(self):
+        record = self.exercise(source_directory=True)
+        self.assertTrue(record['protocol_complete'])
+        self.assertFalse(record['errors'])
+        self.assertTrue(record['original_reaped'])
+
+    def test_untrusted_source_directory_refused_before_evidence_or_spawn(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root).resolve()
+            physical = root / 'source'; physical.mkdir(mode=0o700)
+            alias = root / 'alias'; alias.symlink_to(physical, target_is_directory=True)
+            writable = root / 'writable'; writable.mkdir(mode=0o700); writable.chmod(0o777)
+            for candidate in [Path('relative'), alias, root / 'absent', writable]:
+                with self.subTest(candidate=candidate), patch.object(runner.subprocess, 'Popen') as spawn:
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        runner.execute(executable=root / 'missing', app=root / 'missing',
+                            suite='runtime-guardian', cases=['one'], nonce='a' * 32,
+                            source_sha256='b' * 64, executable_sha256='c' * 64, app_sha256='c' * 64,
+                            profile=root / 'profile', environment={}, evidence=root / 'evidence',
+                            seconds=2, source_root=candidate)
+                    spawn.assert_not_called()
+                    self.assertFalse((root / 'evidence').exists())
 
     def test_each_pipe_allocation_failure_closes_prior_pair(self):
         for ordinal in [1, 2]:

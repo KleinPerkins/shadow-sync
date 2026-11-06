@@ -63,7 +63,7 @@ public enum V2Body2SelfTestRunner {
         var passed = 0
         for (name, test) in tests {
             do {
-                try test()
+                try RuntimeFixtureSession.withCase(name) { try test() }
                 passed += 1
                 progress(name)
             } catch {
@@ -126,7 +126,9 @@ public enum V2Body2SelfTestRunner {
             )
         }
         do {
-            try test()
+            let caseID = identifier == "t05"
+                ? "DM2-T05 maintenance hook and command audit" : "DM2-T06 \(identifier)"
+            try RuntimeFixtureSession.withCase(caseID) { try test() }
             progress(
                 identifier == "t05"
                     ? "DM2-T05 maintenance hook and command audit"
@@ -2580,38 +2582,29 @@ public enum V2Body2SelfTestRunner {
         arguments: [String],
         allowFailure: Bool = false
     ) throws -> Data {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.environment = [
-            "HOME": "/private/tmp",
-            "USER": "fixture",
-            "LOGNAME": "fixture",
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "LANG": "C",
-            "LC_ALL": "C",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0",
-        ]
-        process.standardInput = FileHandle.nullDevice
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        guard OwnedProcessReaper.wait(for: process, timeout: 20) else {
-            process.terminate()
-            throw Body2SelfTestError.message(
-                "fixture process timed out"
-            )
+        let temporary = try M1TemporaryDirectory()
+        defer { temporary.remove() }
+        let home = temporary.path + "/home"
+        try FileManager.default.createDirectory(atPath: home,
+            withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let account = try EffectiveAccount.isolated(homeDirectory: home)
+        let directory = Darwin.open(temporary.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else { throw Body2SelfTestError.message("fixture command directory unavailable") }
+        defer { close(directory) }
+        guard executable == "/usr/bin/clang" else {
+            throw Body2SelfTestError.message("unsupported fixture compiler")
         }
-        let output = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard allowFailure || process.terminationStatus == 0 else {
-            throw Body2SelfTestError.message(
-                "fixture process failed: "
-                    + Redactor.subprocessBytes(output)
-            )
+        let result = try ClosedProcessRunner(outputLimit: DescriptorProcessRunner.completeRepositoryOutputLimit).run(
+            command: ClosedProcessCommand(executable: "/Library/Developer/CommandLineTools/usr/bin/clang",
+                arguments: ["-save-temps=obj", "-isysroot", "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"] + arguments),
+            environment: ClosedProcessRunner.environment(account: account),
+            workingDirectoryDescriptor: directory, account: account, timeout: 20,
+            cancellation: CancellationToken())
+        guard (allowFailure || result.status == 0) && !result.cancelled && !result.timedOut
+                && !result.stdoutTruncated && !result.stderrTruncated else {
+            throw Body2SelfTestError.message("fixture command failed: " + Redactor.subprocessBytes(result.output))
         }
-        return output
+        return result.output
     }
 
     private static func requirePruneID(
@@ -3122,44 +3115,25 @@ final class Body2Fixture: @unchecked Sendable {
         _ arguments: [String],
         allowFailure: Bool = false
     ) throws -> Data {
-        let process = Process()
-        process.executableURL = URL(
-            fileURLWithPath: DescriptorProcessRunner.gitPath
-        )
-        process.arguments = arguments
-        process.environment = [
-            "HOME": "/private/tmp",
-            "USER": "fixture",
-            "LOGNAME": "fixture",
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "LANG": "C",
-            "LC_ALL": "C",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0",
-        ]
-        process.standardInput = FileHandle.nullDevice
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        guard OwnedProcessReaper.wait(
-            for: process,
-            timeout: 20
-        ) else {
-            process.terminate()
-            throw Body2SelfTestError.message(
-                "fixture git timed out"
-            )
+        let temporary = try M1TemporaryDirectory()
+        defer { temporary.remove() }
+        let home = temporary.path + "/home"
+        try FileManager.default.createDirectory(atPath: home,
+            withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let account = try EffectiveAccount.isolated(homeDirectory: home)
+        let directory = Darwin.open(temporary.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else { throw Body2SelfTestError.message("fixture command directory unavailable") }
+        defer { close(directory) }
+        let result = try ClosedProcessRunner(outputLimit: DescriptorProcessRunner.completeRepositoryOutputLimit).run(
+            command: ClosedProcessCommand(executable: discoveryFixtureGitExecutable, arguments: arguments),
+            environment: ClosedProcessRunner.environment(account: account),
+            workingDirectoryDescriptor: directory, account: account, timeout: 20,
+            cancellation: CancellationToken())
+        guard (allowFailure || result.status == 0) && !result.cancelled && !result.timedOut
+                && !result.stdoutTruncated && !result.stderrTruncated else {
+            throw Body2SelfTestError.message("fixture command failed: " + Redactor.subprocessBytes(result.output))
         }
-        let output = pipe.fileHandleForReading
-            .readDataToEndOfFile()
-        guard allowFailure || process.terminationStatus == 0 else {
-            throw Body2SelfTestError.message(
-                "fixture git failed: "
-                    + Redactor.subprocessBytes(output)
-            )
-        }
-        return output
+        return result.output
     }
 }
 

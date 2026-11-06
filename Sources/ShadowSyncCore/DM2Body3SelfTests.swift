@@ -36,46 +36,62 @@ public enum V2Body3SelfTestRunner {
             .replacingOccurrences(of: "dm2-", with: "")
         switch id {
         case "t08":
-            try recommendationPermission(
-                executable: testExecutable
-            )
+            try RuntimeFixtureSession.withCase("DM2-T08 recommendation-permission") {
+                try recommendationPermission(
+                    executable: testExecutable
+                )
+            }
             observer("DM2-T08 recommendation-permission")
         case "t09":
-            try recoveryArtifact(
-                executable: testExecutable
-            )
+            try RuntimeFixtureSession.withCase("DM2-T09 recovery-artifact") {
+                try recoveryArtifact(
+                    executable: testExecutable
+                )
+            }
             observer("DM2-T09 recovery-artifact")
         case "t10":
-            try awaAdvisoryOverride(
-                executable: testExecutable
-            )
+            try RuntimeFixtureSession.withCase("DM2-T10 AWA-advisory-override") {
+                try awaAdvisoryOverride(
+                    executable: testExecutable
+                )
+            }
             observer("DM2-T10 AWA-advisory-override")
         case "t11":
-            try batchCancelPolicy(
-                executable: testExecutable
-            )
+            try RuntimeFixtureSession.withCase("DM2-T11 batch-cancel-policy") {
+                try batchCancelPolicy(
+                    executable: testExecutable
+                )
+            }
             observer("DM2-T11 batch-cancel-policy")
         case "t12":
-            try cardEventsRecovery(
-                executable: testExecutable
-            )
+            try RuntimeFixtureSession.withCase("DM2-T12 card-events-recovery") {
+                try cardEventsRecovery(
+                    executable: testExecutable
+                )
+            }
             observer("DM2-T12 card-events-recovery")
         case "t15":
-            try nativeRemovalOverride(
-                executable: testExecutable
-            )
+            try RuntimeFixtureSession.withCase("DM2-T15 native-removal-override") {
+                try nativeRemovalOverride(
+                    executable: testExecutable
+                )
+            }
             observer("DM2-T15 native-removal-override")
         case "t15-branch":
-            try branchCASAndClaimGate(
-                executable: testExecutable
-            )
+            try RuntimeFixtureSession.withCase("DM2-T15 branch-removal focused cut") {
+                try branchCASAndClaimGate(
+                    executable: testExecutable
+                )
+            }
             observer(
                 "DM2-T15 branch-removal focused cut"
             )
         case "t16":
-            try directHumanRuntime(
-                executable: testExecutable
-            )
+            try RuntimeFixtureSession.withCase("DM2-T16 direct-human-runtime") {
+                try directHumanRuntime(
+                    executable: testExecutable
+                )
+            }
             observer("DM2-T16 direct-human-runtime")
         default:
             throw Body3SelfTestError(
@@ -87,432 +103,481 @@ public enum V2Body3SelfTestRunner {
     public static func runBetaV06(
         observer: Observer = { _ in }
     ) throws {
-        let run = RunIdentity.make()
-        let node = try Body3BatchNode(
-            id:
-                "body3-node:policyInvalidation:"
-                + String(run.prefix(12)),
-            repositoryID: "fixture/v06",
-            commonDirectoryKey: "clone:v06",
-            kind: .policyInvalidation,
-            dependencies: [],
-            payload: .policyInvalidation(
-                repositoryID: "fixture/v06"
-            ),
-            requiresExclusiveWorkerPool: true
-        )
-        let start =
-            "2027-01-15T08:00:00.000Z"
-        let end =
-            "2027-01-15T08:00:02.000Z"
-        let plan = try Body3BatchPlan(
-            run: run,
-            createdAt: start,
-            policyEvidenceDigest:
-                String(repeating: "a", count: 64),
-            nodes: [node]
-        )
-        let secret = String(repeating: "x", count: 3_000)
-        let result = Body3BatchNodeResult(
-            node: node,
-            status: .succeeded,
-            worker: 1,
-            startedAt: start,
-            endedAt: end,
-            durationMilliseconds: 2_000,
-            detail: "Public completion.",
-            technicalDetail:
-                "token=private-value "
-                + "https://user:pass@example.test/private "
-                + "/" + "Users/operator/private HOME="
-                + "/" + "Users/operator "
-                + secret
-        )
-        guard let technical = result.technicalDetail else {
-            throw Body3SelfTestError(
-                "v0.6 technical detail was dropped"
+        try RuntimeFixtureSession.withCase("BETA-V06-BODY3-COMPATIBILITY") {
+            let run = RunIdentity.make()
+            let node = try Body3BatchNode(
+                id:
+                    "body3-node:policyInvalidation:"
+                    + String(run.prefix(12)),
+                repositoryID: "fixture/v06",
+                commonDirectoryKey: "clone:v06",
+                kind: .policyInvalidation,
+                dependencies: [],
+                payload: .policyInvalidation(
+                    repositoryID: "fixture/v06"
+                ),
+                requiresExclusiveWorkerPool: true
             )
-        }
-        try expect(
-            technical.utf8.count
-                <= Body3TechnicalDetail.maximumUTF8Bytes
-                && !technical.contains("private-value")
-                && !technical.contains("example.test")
-                && !technical.contains("/Users/operator")
-                && technical.contains("[REDACTED"),
-            "v0.6 technical detail was not bounded and redacted"
-        )
-        let report = try Body3BatchReport(
-            run: run,
-            startedAt: start,
-            endedAt: end,
-            cancelled: false,
-            results: [result]
-        )
-        let metadata = try Body3BatchMetadata.derive(
-            plan: plan,
-            report: report
-        )
-        try expect(
-            metadata.durationMilliseconds == 2_000
-                && metadata.repositoryIDs
-                    == ["fixture/v06"]
-                && metadata.attemptedActionCount == 1
-                && metadata.outcomeCounts[.succeeded]
-                    == 1,
-            "v0.6 historical metadata derivation changed"
-        )
-        let contradictory = try Body3BatchReport(
-            run: run,
-            startedAt: end,
-            endedAt: start,
-            cancelled: false,
-            results: [result]
-        )
-        do {
-            _ = try Body3BatchMetadata.derive(
-                plan: plan,
-                report: contradictory
+            let start =
+                "2027-01-15T08:00:00.000Z"
+            let end =
+                "2027-01-15T08:00:02.000Z"
+            let plan = try Body3BatchPlan(
+                run: run,
+                createdAt: start,
+                policyEvidenceDigest:
+                    String(repeating: "a", count: 64),
+                nodes: [node]
             )
-            throw Body3SelfTestError(
-                "contradictory v0.6 metadata was accepted"
-            )
-        } catch is GitSafetyError {
-            // Expected.
-        }
-
-        let oldResult = Body3BatchNodeResult(
-            node: node,
-            status: .succeeded,
-            worker: 1,
-            startedAt: start,
-            endedAt: end,
-            durationMilliseconds: 2_000,
-            detail: "Public completion."
-        )
-        let oldReport = try Body3BatchReport(
-            run: run,
-            startedAt: start,
-            endedAt: end,
-            cancelled: false,
-            results: [oldResult]
-        )
-        let records = [
-            Body3LogRecord(
-                run: run,
-                sequence: 1,
-                type: "plan",
-                phase: "Queued",
-                detail:
-                    "Immutable selected operation plan recorded.",
-                plan: plan
-            ),
-            Body3LogRecord(
-                run: run,
-                sequence: 2,
-                type: "node_started",
-                repository: node.repositoryID,
-                operation: node.id,
-                kind: node.kind.rawValue,
-                phase: node.kind.phase,
-                worker: 1,
-                status: .running,
-                detail: "Node admitted."
-            ),
-            Body3LogRecord(
-                run: run,
-                sequence: 3,
-                type: "node_terminal",
-                repository: node.repositoryID,
-                operation: node.id,
-                kind: node.kind.rawValue,
-                phase: node.kind.phase,
-                worker: 1,
+            let secret = String(repeating: "x", count: 3_000)
+            let result = Body3BatchNodeResult(
+                node: node,
                 status: .succeeded,
-                detail: oldResult.detail,
-                durationMilliseconds: 2_000
-            ),
-            Body3LogRecord(
-                run: run,
-                sequence: 4,
-                type: "run_finished",
-                phase: "Complete",
-                status: .succeeded,
-                detail: "One node reached terminal state.",
-                report: oldReport
-            ),
-        ]
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [
-            .sortedKeys,
-            .withoutEscapingSlashes,
-        ]
-        var oldV2 = Data()
-        for record in records {
-            let encoded = try encoder.encode(record)
+                worker: 1,
+                startedAt: start,
+                endedAt: end,
+                durationMilliseconds: 2_000,
+                detail: "Public completion.",
+                technicalDetail:
+                    "token=private-value "
+                    + "https://user:pass@example.test/private "
+                    + "/" + "Users/operator/private HOME="
+                    + "/" + "Users/operator "
+                    + secret
+            )
+            guard let technical = result.technicalDetail else {
+                throw Body3SelfTestError(
+                    "v0.6 technical detail was dropped"
+                )
+            }
             try expect(
-                !String(decoding: encoded, as: UTF8.self)
-                    .contains("\"technicalDetail\""),
-                "nil additive field changed old v2 bytes"
+                technical.utf8.count
+                    <= Body3TechnicalDetail.maximumUTF8Bytes
+                    && !technical.contains("private-value")
+                    && !technical.contains("example.test")
+                    && !technical.contains("/Users/operator")
+                    && technical.contains("[REDACTED"),
+                "v0.6 technical detail was not bounded and redacted"
             )
-            oldV2.append(encoded)
-            oldV2.append(0x0A)
-        }
-        let decoded = Body3RunLogReader.decode(oldV2)
-        try expect(
-            decoded == records
-                && decoded.allSatisfy {
-                    $0.technicalDetail == nil
-                },
-            "pre-v0.6 v2 log no longer decodes"
-        )
-        let pinnedPath = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent(
-                "Tests/ShadowSyncSelfTests/Fixtures/"
-                    + "pre-v06-v2-latest.log"
+            let report = try Body3BatchReport(
+                run: run,
+                startedAt: start,
+                endedAt: end,
+                cancelled: false,
+                results: [result]
             )
-        let pinnedOldV2 = try Data(
-            contentsOf: pinnedPath
-        )
-        let pinnedDigest = SHA256.hash(
-            data: pinnedOldV2
-        ).map {
-            String(format: "%02x", $0)
-        }.joined()
-        let pinnedRecords =
-            Body3RunLogReader.decode(pinnedOldV2)
-        try expect(
-            pinnedDigest
-                == "127c4530f3d071f66b283363eaf81f9fdef9c51a8dff6389128d9b04e0815f0a"
-                && pinnedRecords.count == 4
-                && pinnedRecords.first?.plan != nil
-                && pinnedRecords.last?.report != nil
-                && pinnedRecords.allSatisfy {
-                    $0.technicalDetail == nil
-                        && (
-                            $0.report?.results.allSatisfy {
-                                $0.technicalDetail == nil
-                            } ?? true
-                        )
-                },
-            "pinned pre-v0.6 v2 fixture drifted or stopped decoding"
-        )
+            let metadata = try Body3BatchMetadata.derive(
+                plan: plan,
+                report: report
+            )
+            try expect(
+                metadata.durationMilliseconds == 2_000
+                    && metadata.repositoryIDs
+                        == ["fixture/v06"]
+                    && metadata.attemptedActionCount == 1
+                    && metadata.outcomeCounts[.succeeded]
+                        == 1,
+                "v0.6 historical metadata derivation changed"
+            )
+            let contradictory = try Body3BatchReport(
+                run: run,
+                startedAt: end,
+                endedAt: start,
+                cancelled: false,
+                results: [result]
+            )
+            do {
+                _ = try Body3BatchMetadata.derive(
+                    plan: plan,
+                    report: contradictory
+                )
+                throw Body3SelfTestError(
+                    "contradictory v0.6 metadata was accepted"
+                )
+            } catch is GitSafetyError {
+                // Expected.
+            }
 
-        var malformedLines = oldV2.split(
-            separator: 0x0A
-        ).map(Data.init)
-        var malformedObject =
-            try JSONSerialization.jsonObject(
-                with: malformedLines[2]
-            ) as! [String: Any]
-        malformedObject["technicalDetail"] =
-            "/" + "Users/operator/unredacted/token=private"
-        malformedLines[2] = try JSONSerialization.data(
-            withJSONObject: malformedObject,
-            options: [.sortedKeys]
-        )
-        var malformed = Data()
-        for line in malformedLines {
-            malformed.append(line)
-            malformed.append(0x0A)
+            let oldResult = Body3BatchNodeResult(
+                node: node,
+                status: .succeeded,
+                worker: 1,
+                startedAt: start,
+                endedAt: end,
+                durationMilliseconds: 2_000,
+                detail: "Public completion."
+            )
+            let oldReport = try Body3BatchReport(
+                run: run,
+                startedAt: start,
+                endedAt: end,
+                cancelled: false,
+                results: [oldResult]
+            )
+            let records = [
+                Body3LogRecord(
+                    run: run,
+                    sequence: 1,
+                    type: "plan",
+                    phase: "Queued",
+                    detail:
+                        "Immutable selected operation plan recorded.",
+                    plan: plan
+                ),
+                Body3LogRecord(
+                    run: run,
+                    sequence: 2,
+                    type: "node_started",
+                    repository: node.repositoryID,
+                    operation: node.id,
+                    kind: node.kind.rawValue,
+                    phase: node.kind.phase,
+                    worker: 1,
+                    status: .running,
+                    detail: "Node admitted."
+                ),
+                Body3LogRecord(
+                    run: run,
+                    sequence: 3,
+                    type: "node_terminal",
+                    repository: node.repositoryID,
+                    operation: node.id,
+                    kind: node.kind.rawValue,
+                    phase: node.kind.phase,
+                    worker: 1,
+                    status: .succeeded,
+                    detail: oldResult.detail,
+                    durationMilliseconds: 2_000
+                ),
+                Body3LogRecord(
+                    run: run,
+                    sequence: 4,
+                    type: "run_finished",
+                    phase: "Complete",
+                    status: .succeeded,
+                    detail: "One node reached terminal state.",
+                    report: oldReport
+                ),
+            ]
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [
+                .sortedKeys,
+                .withoutEscapingSlashes,
+            ]
+            var oldV2 = Data()
+            for record in records {
+                let encoded = try encoder.encode(record)
+                try expect(
+                    !String(decoding: encoded, as: UTF8.self)
+                        .contains("\"technicalDetail\""),
+                    "nil additive field changed old v2 bytes"
+                )
+                oldV2.append(encoded)
+                oldV2.append(0x0A)
+            }
+            let decoded = Body3RunLogReader.decode(oldV2)
+            try expect(
+                decoded == records
+                    && decoded.allSatisfy {
+                        $0.technicalDetail == nil
+                    },
+                "pre-v0.6 v2 log no longer decodes"
+            )
+            let pinnedPath = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent(
+                    "Tests/ShadowSyncSelfTests/Fixtures/"
+                        + "pre-v06-v2-latest.log"
+                )
+            let pinnedOldV2 = try Data(
+                contentsOf: pinnedPath
+            )
+            let pinnedDigest = SHA256.hash(
+                data: pinnedOldV2
+            ).map {
+                String(format: "%02x", $0)
+            }.joined()
+            let pinnedRecords =
+                Body3RunLogReader.decode(pinnedOldV2)
+            try expect(
+                pinnedDigest
+                    == "127c4530f3d071f66b283363eaf81f9fdef9c51a8dff6389128d9b04e0815f0a"
+                    && pinnedRecords.count == 4
+                    && pinnedRecords.first?.plan != nil
+                    && pinnedRecords.last?.report != nil
+                    && pinnedRecords.allSatisfy {
+                        $0.technicalDetail == nil
+                            && (
+                                $0.report?.results.allSatisfy {
+                                    $0.technicalDetail == nil
+                                } ?? true
+                            )
+                    },
+                "pinned pre-v0.6 v2 fixture drifted or stopped decoding"
+            )
+
+            var malformedLines = oldV2.split(
+                separator: 0x0A
+            ).map(Data.init)
+            var malformedObject =
+                try JSONSerialization.jsonObject(
+                    with: malformedLines[2]
+                ) as! [String: Any]
+            malformedObject["technicalDetail"] =
+                "/" + "Users/operator/unredacted/token=private"
+            malformedLines[2] = try JSONSerialization.data(
+                withJSONObject: malformedObject,
+                options: [.sortedKeys]
+            )
+            var malformed = Data()
+            for line in malformedLines {
+                malformed.append(line)
+                malformed.append(0x0A)
+            }
+            try expect(
+                Body3RunLogReader.decode(malformed).isEmpty,
+                "unredacted v0.6 detail did not fail closed"
+            )
+            let malformedState = try M1TemporaryDirectory()
+            defer { malformedState.remove() }
+            let malformedLocation = try StateLocation.isolated(
+                root: malformedState.path
+            )
+            try TestIsolation.initializeState(at: malformedLocation)
+            var malformedAuthority: RunAuthority? =
+                try RunAuthority.acquireRun(
+                    at: malformedLocation
+                )
+            var malformedWriter: Body3RunLogWriter? =
+                try Body3RunLogWriter(
+                    authority: malformedAuthority!,
+                    plan: plan
+                )
+            try malformedWriter?.flush()
+            malformedWriter = nil
+            malformedAuthority?.release()
+            malformedAuthority = nil
+            try malformed.writeFixtureAtomically(
+                to: URL(
+                    fileURLWithPath:
+                        malformedLocation.path
+                        + "/latest.log"
+                )
+            )
+            let malformedHome =
+                malformedState.path + "/home"
+            try FileManager.default.createDirectory(
+                atPath: malformedHome,
+                withIntermediateDirectories: true
+            )
+            let malformedRecovery =
+                Body3RunRecoveryInspector.inspect(
+                    at: malformedLocation,
+                    account:
+                        try EffectiveAccount.isolated(
+                            homeDirectory: malformedHome
+                        )
+                )
+            try expect(
+                malformedRecovery == .needsAttention,
+                "complete malformed v0.6 log allowed a new run"
+            )
         }
-        try expect(
-            Body3RunLogReader.decode(malformed).isEmpty,
-            "unredacted v0.6 detail did not fail closed"
-        )
-        let malformedState = try M1TemporaryDirectory()
-        defer { malformedState.remove() }
-        let malformedLocation = try StateLocation.isolated(
-            root: malformedState.path
-        )
-        try TestIsolation.initializeState(at: malformedLocation)
-        var malformedAuthority: RunAuthority? =
-            try RunAuthority.acquireRun(
-                at: malformedLocation
-            )
-        var malformedWriter: Body3RunLogWriter? =
-            try Body3RunLogWriter(
-                authority: malformedAuthority!,
-                plan: plan
-            )
-        try malformedWriter?.flush()
-        malformedWriter = nil
-        malformedAuthority?.release()
-        malformedAuthority = nil
-        try malformed.write(
-            to: URL(
-                fileURLWithPath:
-                    malformedLocation.path
-                    + "/latest.log"
-            ),
-            options: .atomic
-        )
-        let malformedHome =
-            malformedState.path + "/home"
-        try FileManager.default.createDirectory(
-            atPath: malformedHome,
-            withIntermediateDirectories: true
-        )
-        let malformedRecovery =
-            Body3RunRecoveryInspector.inspect(
-                at: malformedLocation,
-                account:
-                    try EffectiveAccount.isolated(
-                        homeDirectory: malformedHome
-                    )
-            )
-        try expect(
-            malformedRecovery == .needsAttention,
-            "complete malformed v0.6 log allowed a new run"
-        )
         observer("BETA-V06-BODY3-COMPATIBILITY")
     }
 
     public static func runBetaV07(
         observer: Observer = { _ in }
     ) throws {
-        let compiledBefore =
-            Redactor.testingCompiledExpressionIdentifiers
-        try expect(
-            compiledBefore.count == 8,
-            "v0.7 redaction expression set changed"
-        )
-        let records = (1...1_632).map { sequence in
-            Body3LogRecord(
-                run: "v07-high-volume",
-                sequence: sequence,
-                type: "command",
-                repository:
-                    "fixture/repository-\(sequence % 5)",
-                operation:
-                    "operation-\(sequence % 20)",
-                phase: "High-volume fixture",
-                worker: sequence % 2 + 1,
-                executable: "/usr/bin/git",
-                arguments: [
-                    "status",
-                    "token=ghp_abcdefghijklmnopqrstuvwxyz",
-                    String(repeating: "x", count: 96),
-                ],
-                outcome: "exit 0",
-                detail:
-                    "record \(sequence) authorization=Bearer secret-value"
+        try RuntimeFixtureSession.withCase("BETA-V07-BODY3-LINEAR-LOG") {
+            let compiledBefore =
+                Redactor.testingCompiledExpressionIdentifiers
+            try expect(
+                compiledBefore.count == 8,
+                "v0.7 redaction expression set changed"
             )
-        }
-        let maximumCharacters = 8_192
-        let projection = Body3RunLogProjection(
-            maximumCharacters: maximumCharacters
-        )
-        for record in records.prefix(816) {
-            projection.append(record)
-        }
-        try expect(
-            projection.metrics.recordVisits == 816,
-            "v0.7 projection revisited a prior prefix"
-        )
-        for record in records.dropFirst(816) {
-            projection.append(record)
-        }
-        let canonical = Body3RunLogReader.render(
-            records,
-            maximumCharacters:
-                maximumCharacters
-        )
-        let metrics = projection.metrics
-        try expect(
-            projection.text == canonical,
-            "v0.7 incremental projection changed bounded rendering"
-        )
-        try expect(
-            metrics.recordVisits == records.count
-                && metrics.retainedCharacterCount
-                    <= maximumCharacters
-                && metrics.omittedEarlierEvents,
-            "v0.7 projection work or retained bound is invalid"
-        )
-        let expectedCharacters = records.map(
-            Body3RunLogReader.renderLine
-        ).joined(separator: "\n").count
-        try expect(
-            metrics.renderedCharacterCount
-                == expectedCharacters,
-            "v0.7 projection did not account once per rendered character"
-        )
-        try expect(
-            !projection.text.contains("secret-value")
-                && !projection.text.contains("ghp_"),
-            "v0.7 incremental projection leaked redacted data"
-        )
-        let compiledAfter =
-            Redactor.testingCompiledExpressionIdentifiers
-        try expect(
-            compiledAfter == compiledBefore,
-            "v0.7 redaction expressions were recompiled"
-        )
-        let unicodeRecords = (1...40).map {
-            sequence in
-            Body3LogRecord(
-                run: "v07-unicode",
-                sequence: sequence,
-                type: "event",
-                detail:
-                    "👩🏽‍💻 café e\u{301} record \(sequence)"
-            )
-        }
-        let unicodeProjection =
-            Body3RunLogProjection(
-                maximumCharacters: 128
-            )
-        let visible = NSMutableString()
-        var includesMarker = false
-        var sawDistinctUTF16Count = false
-        for record in unicodeRecords {
-            let mutation =
-                unicodeProjection.append(record)
-            visible.append(mutation.appendedText)
-            if mutation.removedLeadingUTF16Units > 0 {
-                let bodyStart = includesMarker
-                    ? Body3RunLogProjection
-                        .omissionMarker.utf16.count
-                    : 0
-                visible.deleteCharacters(
-                    in: NSRange(
-                        location: bodyStart,
-                        length:
-                            mutation
-                                .removedLeadingUTF16Units
-                    )
+            let records = (1...1_632).map { sequence in
+                Body3LogRecord(
+                    run: "v07-high-volume",
+                    sequence: sequence,
+                    type: "command",
+                    repository:
+                        "fixture/repository-\(sequence % 5)",
+                    operation:
+                        "operation-\(sequence % 20)",
+                    phase: "High-volume fixture",
+                    worker: sequence % 2 + 1,
+                    executable: "/usr/bin/git",
+                    arguments: [
+                        "status",
+                        "token=ghp_abcdefghijklmnopqrstuvwxyz",
+                        String(repeating: "x", count: 96),
+                    ],
+                    outcome: "exit 0",
+                    detail:
+                        "record \(sequence) authorization=Bearer secret-value"
                 )
             }
-            if mutation.startedOmittingEarlierEvents {
-                visible.insert(
-                    Body3RunLogProjection
-                        .omissionMarker,
-                    at: 0
-                )
-                includesMarker = true
+            let maximumCharacters = 8_192
+            let projection = Body3RunLogProjection(
+                maximumCharacters: maximumCharacters
+            )
+            for record in records.prefix(816) {
+                projection.append(record)
             }
-            sawDistinctUTF16Count =
-                sawDistinctUTF16Count
-                || mutation.removedLeadingUTF16Units
-                    != mutation
-                        .removedLeadingCharacters
-        }
-        try expect(
-            visible as String
-                == unicodeProjection.text
-                && unicodeProjection.text
-                    == Body3RunLogReader.render(
-                        unicodeRecords,
-                        maximumCharacters: 128
+            try expect(
+                projection.metrics.recordVisits == 816,
+                "v0.7 projection revisited a prior prefix"
+            )
+            for record in records.dropFirst(816) {
+                projection.append(record)
+            }
+            let canonical = Body3RunLogReader.render(
+                records,
+                maximumCharacters:
+                    maximumCharacters
+            )
+            let metrics = projection.metrics
+            try expect(
+                projection.text == canonical,
+                "v0.7 incremental projection changed bounded rendering"
+            )
+            try expect(
+                metrics.recordVisits == records.count
+                    && metrics.retainedCharacterCount
+                        <= maximumCharacters
+                    && metrics.omittedEarlierEvents,
+                "v0.7 projection work or retained bound is invalid"
+            )
+            let expectedCharacters = records.map(
+                Body3RunLogReader.renderLine
+            ).joined(separator: "\n").count
+            try expect(
+                metrics.renderedCharacterCount
+                    == expectedCharacters,
+                "v0.7 projection did not account once per rendered character"
+            )
+            try expect(
+                !projection.text.contains("secret-value")
+                    && !projection.text.contains("ghp_"),
+                "v0.7 incremental projection leaked redacted data"
+            )
+            let compiledAfter =
+                Redactor.testingCompiledExpressionIdentifiers
+            try expect(
+                compiledAfter == compiledBefore,
+                "v0.7 redaction expressions were recompiled"
+            )
+            let unicodeRecords = (1...40).map {
+                sequence in
+                Body3LogRecord(
+                    run: "v07-unicode",
+                    sequence: sequence,
+                    type: "event",
+                    detail:
+                        "👩🏽‍💻 café e\u{301} record \(sequence)"
+                )
+            }
+            let unicodeProjection =
+                Body3RunLogProjection(
+                    maximumCharacters: 128
+                )
+            let visible = NSMutableString()
+            var includesMarker = false
+            var sawDistinctUTF16Count = false
+            for record in unicodeRecords {
+                let mutation =
+                    unicodeProjection.append(record)
+                visible.append(mutation.appendedText)
+                if mutation.removedLeadingUTF16Units > 0 {
+                    let bodyStart = includesMarker
+                        ? Body3RunLogProjection
+                            .omissionMarker.utf16.count
+                        : 0
+                    visible.deleteCharacters(
+                        in: NSRange(
+                            location: bodyStart,
+                            length:
+                                mutation
+                                    .removedLeadingUTF16Units
+                        )
                     )
-                && sawDistinctUTF16Count,
-            "v0.7 Unicode projection or UTF-16 mutation changed bounded rendering"
-        )
+                }
+                if mutation.startedOmittingEarlierEvents {
+                    visible.insert(
+                        Body3RunLogProjection
+                            .omissionMarker,
+                        at: 0
+                    )
+                    includesMarker = true
+                }
+                sawDistinctUTF16Count =
+                    sawDistinctUTF16Count
+                    || mutation.removedLeadingUTF16Units
+                        != mutation
+                            .removedLeadingCharacters
+            }
+            try expect(
+                visible as String
+                    == unicodeProjection.text
+                    && unicodeProjection.text
+                        == Body3RunLogReader.render(
+                            unicodeRecords,
+                            maximumCharacters: 128
+                        )
+                    && sawDistinctUTF16Count,
+                "v0.7 Unicode projection or UTF-16 mutation changed bounded rendering"
+            )
+        }
         observer("BETA-V07-BODY3-LINEAR-LOG")
+    }
+
+    private static func currentDirectoryChild(_ path: String) throws -> (OwnedSpawnAnchor, OwnedDirectChild) {
+        let registry = try RuntimeFixtureSession.current()
+        var actions: posix_spawn_file_actions_t?
+        var attributes: posix_spawnattr_t?
+        try expect(posix_spawn_file_actions_init(&actions) == 0, "current-directory child file actions")
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        try expect(posix_spawnattr_init(&attributes) == 0, "current-directory child attributes")
+        defer { posix_spawnattr_destroy(&attributes) }
+        for fd in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] {
+            try expect(posix_spawn_file_actions_addopen(&actions, fd, "/dev/null",
+                fd == STDIN_FILENO ? O_RDONLY : O_WRONLY, 0) == 0, "current-directory child null stream")
+        }
+        try expect(posix_spawn_file_actions_addchdir_np(&actions, path) == 0,
+                   "current-directory child cwd")
+        var defaults = sigset_t(); sigemptyset(&defaults)
+        sigaddset(&defaults, SIGTERM); sigaddset(&defaults, SIGINT)
+        var mask = sigset_t(); sigemptyset(&mask)
+        let flags = Int16(POSIX_SPAWN_START_SUSPENDED | POSIX_SPAWN_CLOEXEC_DEFAULT
+            | POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
+        try expect(posix_spawnattr_setsigdefault(&attributes, &defaults) == 0
+            && posix_spawnattr_setsigmask(&attributes, &mask) == 0
+            && posix_spawnattr_setpgroup(&attributes, 0) == 0
+            && posix_spawnattr_setflags(&attributes, flags) == 0, "current-directory child closed attributes")
+        let strings = (["/bin/sleep", "30"] as [String]).map { strdup($0) }
+        defer { strings.forEach { free($0) } }
+        try expect(strings.allSatisfy { $0 != nil }, "current-directory child arguments")
+        var argv = strings + [nil]
+        var environment: [UnsafeMutablePointer<CChar>?] = [nil]
+        let anchor = try argv.withUnsafeMutableBufferPointer { av in
+            try environment.withUnsafeMutableBufferPointer { ev in
+                try RuntimeFixtureSpawn.spawn(registry: registry, executable: "/bin/sleep",
+                    actions: &actions, attributes: &attributes, arguments: av.baseAddress,
+                    environment: ev.baseAddress, streamsDrained: { true })
+            }
+        }
+        do {
+            let owner = try anchor.transfer(expectedExecutable: "/bin/sleep", generation: RunIdentity.make(),
+                                            reapPolicy: .afterGroupDrain)
+            try expect(owner.send(SIGCONT), "current-directory child admission refused")
+            return (anchor, owner)
+        } catch {
+            RuntimeFixtureSession.drain(anchor)
+            throw error
+        }
     }
 
     private static func recommendationPermission(
@@ -688,25 +753,8 @@ public enum V2Body3SelfTestRunner {
             "recommended",
             managedByAWA: false
         )
-        let activeProcess = Process()
-        activeProcess.executableURL = URL(
-            fileURLWithPath: "/bin/sleep"
-        )
-        activeProcess.arguments = ["5"]
-        activeProcess.currentDirectoryURL = URL(
-            fileURLWithPath: path
-        )
-        activeProcess.standardInput =
-            FileHandle.nullDevice
-        activeProcess.standardOutput =
-            FileHandle.nullDevice
-        activeProcess.standardError =
-            FileHandle.nullDevice
-        try activeProcess.run()
-        defer {
-            if activeProcess.isRunning { activeProcess.terminate() }
-            _ = OwnedProcessReaper.wait(for: activeProcess, timeout: 5)
-        }
+        let (anchor, activeProcess) = try currentDirectoryChild(path)
+        defer { RuntimeFixtureSession.drain(anchor) }
         usleep(20_000)
         try expect(
             try CurrentSessionWorktreeDetector.inspectOwnedChild(
@@ -716,14 +764,10 @@ public enum V2Body3SelfTestRunner {
             ) == .active,
             "live current-directory process was not a current-session signal"
         )
-        activeProcess.terminate()
-        try expect(
-            OwnedProcessReaper.wait(
-                for: activeProcess,
-                timeout: 5
-            ),
-            "current-session fixture child was not reaped"
-        )
+        RuntimeFixtureSession.drain(anchor)
+        guard case .reaped = activeProcess.observation else {
+            throw Body3SelfTestError("current-session fixture child was not reaped")
+        }
         let inventory = try fixture.cleanupInventory(
             executable: executable
         )
@@ -3859,45 +3903,25 @@ final class Body3Fixture {
         _ arguments: [String],
         allowFailure: Bool = false
     ) throws -> Data {
-        let process = Process()
-        process.executableURL = URL(
-            fileURLWithPath: DescriptorProcessRunner.gitPath
-        )
-        process.arguments = arguments
-        process.environment = [
-            "HOME": "/private/tmp",
-            "USER": "fixture",
-            "LOGNAME": "fixture",
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "LANG": "C",
-            "LC_ALL": "C",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0",
-        ]
-        process.standardInput = FileHandle.nullDevice
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        guard OwnedProcessReaper.wait(
-            for: process,
-            timeout: 30
-        ) else {
-            process.terminate()
-            throw Body3SelfTestError(
-                "fixture Git timed out"
-            )
+        let temporary = try M1TemporaryDirectory()
+        defer { temporary.remove() }
+        let home = temporary.path + "/home"
+        try FileManager.default.createDirectory(atPath: home,
+            withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let account = try EffectiveAccount.isolated(homeDirectory: home)
+        let directory = Darwin.open(temporary.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else { throw Body3SelfTestError("fixture command directory unavailable") }
+        defer { close(directory) }
+        let result = try ClosedProcessRunner(outputLimit: DescriptorProcessRunner.completeRepositoryOutputLimit).run(
+            command: ClosedProcessCommand(executable: discoveryFixtureGitExecutable, arguments: arguments),
+            environment: ClosedProcessRunner.environment(account: account),
+            workingDirectoryDescriptor: directory, account: account, timeout: 30,
+            cancellation: CancellationToken())
+        guard (allowFailure || result.status == 0) && !result.cancelled && !result.timedOut
+                && !result.stdoutTruncated && !result.stderrTruncated else {
+            throw Body3SelfTestError("fixture command failed: " + Redactor.subprocessBytes(result.output))
         }
-        let output = pipe.fileHandleForReading
-            .readDataToEndOfFile()
-        guard allowFailure
-                || process.terminationStatus == 0 else {
-            throw Body3SelfTestError(
-                "fixture Git failed: "
-                    + Redactor.subprocessBytes(output)
-            )
-        }
-        return output
+        return result.output
     }
 }
 #endif

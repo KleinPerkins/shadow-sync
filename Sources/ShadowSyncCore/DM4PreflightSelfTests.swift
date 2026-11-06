@@ -46,135 +46,138 @@ public enum DM4PreflightSelfTestRunner {
         _ id: String,
         testExecutable: String
     ) throws {
-        let root = try temporaryRoot()
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        let paths = try InstallationPaths.isolated(root: root)
-        switch id {
-        case "DM4-T01":
-            try check(
-                InstallationPaths.label == "com.kleinperkins.shadow-sync"
-                    && paths.state.path.hasSuffix("/state/shadow-sync"),
-                "stable launchd/state identity changed"
-            )
-        case "DM4-T02":
-            try check(
-                URL(fileURLWithPath: testExecutable).lastPathComponent
-                    == "ShadowSync",
-                "testing app executable is not ShadowSync"
-            )
-        case "DM4-T03", "DM4-T04", "DM4-T11":
-            let bundle = URL(fileURLWithPath: testExecutable)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent().path
-            let info = NSDictionary(
-                contentsOfFile: bundle + "/Contents/Info.plist"
-            ) as? [String: Any]
-            let icon = bundle + "/Contents/Resources/ShadowSync.icns"
-            let notice = bundle
-                + "/Contents/Resources/THIRD_PARTY_NOTICES.md"
-            let iconDigest = try SHA256.hash(
-                data: Data(contentsOf: URL(fileURLWithPath: icon))
-            ).map { String(format: "%02x", $0) }.joined()
-            let noticeDigest = try SHA256.hash(
-                data: Data(contentsOf: URL(fileURLWithPath: notice))
-            ).map { String(format: "%02x", $0) }.joined()
-            var iconInfo = stat()
-            var noticeInfo = stat()
-            try check(
-                info?["CFBundleDisplayName"] as? String == "ShadowSync"
-                    && info?["CFBundleName"] as? String == "ShadowSync"
-                    && info?["CFBundleExecutable"] as? String == "ShadowSync"
-                    && info?["CFBundleIdentifier"] as? String
-                        == "com.kleinperkins.shadow-sync"
-                    && info?["CFBundleIconFile"] as? String
-                        == "ShadowSync.icns"
-                    && lstat(icon, &iconInfo) == 0
-                    && (iconInfo.st_mode & S_IFMT) == S_IFREG
-                    && iconInfo.st_nlink == 1
-                    && iconInfo.st_size > 0
-                    && iconDigest
-                        == "e27b55fc793f25867793f1ca9000e2454d448329169ade1b89e4beb3950444cc"
-                    && lstat(notice, &noticeInfo) == 0
-                    && (noticeInfo.st_mode & S_IFMT) == S_IFREG
-                    && noticeInfo.st_nlink == 1
-                    && noticeDigest
-                        == "0aecc40e6acd041a89719ec68d4db33e2e292b5d1cd4b43358a081956a9a2442",
-                "signed bundle icon contract is incomplete"
-            )
-            let artifact = try BundleArtifactIdentity.inspect(
-                bundlePath: bundle
-            )
-            try check(
-                artifact.inventory.contains {
-                    $0.contains("Contents/Resources/ShadowSync.icns")
-                } && artifact.inventory.contains {
-                    $0.contains(
-                        "Contents/Resources/THIRD_PARTY_NOTICES.md"
-                    )
-                },
-                "icon or notice bytes are absent from bundle attestation"
-            )
-        case "DM4-T05":
-            try check(
-                paths.app.hasSuffix("/Applications/ShadowSync.app")
-                    && paths.executable.hasSuffix(
-                        "/ShadowSync.app/Contents/MacOS/ShadowSync"
-                    ),
-                "forward lifecycle path is not ShadowSync"
-            )
-        case "DM4-T06":
-            try check(
-                paths.predecessorApp.hasSuffix(
-                    "/Applications/Dev Main Sync.app"
+        let name = tests.first { $0.0 == id }!.1
+        try RuntimeFixtureSession.withCase("\(id) \(name)") {
+            let root = try temporaryRoot()
+            defer { try? FileManager.default.removeItem(atPath: root) }
+            let paths = try InstallationPaths.isolated(root: root)
+            switch id {
+            case "DM4-T01":
+                try check(
+                    InstallationPaths.label == "com.kleinperkins.shadow-sync"
+                        && paths.state.path.hasSuffix("/state/shadow-sync"),
+                    "stable launchd/state identity changed"
                 )
-                    && paths.predecessorExecutable.hasSuffix(
-                        "/Dev Main Sync.app/Contents/MacOS/ShadowSync"
+            case "DM4-T02":
+                try check(
+                    URL(fileURLWithPath: testExecutable).lastPathComponent
+                        == "ShadowSync",
+                    "testing app executable is not ShadowSync"
+                )
+            case "DM4-T03", "DM4-T04", "DM4-T11":
+                let bundle = URL(fileURLWithPath: testExecutable)
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent().path
+                let info = NSDictionary(
+                    contentsOfFile: bundle + "/Contents/Info.plist"
+                ) as? [String: Any]
+                let icon = bundle + "/Contents/Resources/ShadowSync.icns"
+                let notice = bundle
+                    + "/Contents/Resources/THIRD_PARTY_NOTICES.md"
+                let iconDigest = try SHA256.hash(
+                    data: Data(contentsOf: URL(fileURLWithPath: icon))
+                ).map { String(format: "%02x", $0) }.joined()
+                let noticeDigest = try SHA256.hash(
+                    data: Data(contentsOf: URL(fileURLWithPath: notice))
+                ).map { String(format: "%02x", $0) }.joined()
+                var iconInfo = stat()
+                var noticeInfo = stat()
+                try check(
+                    info?["CFBundleDisplayName"] as? String == "ShadowSync"
+                        && info?["CFBundleName"] as? String == "ShadowSync"
+                        && info?["CFBundleExecutable"] as? String == "ShadowSync"
+                        && info?["CFBundleIdentifier"] as? String
+                            == "com.kleinperkins.shadow-sync"
+                        && info?["CFBundleIconFile"] as? String
+                            == "ShadowSync.icns"
+                        && lstat(icon, &iconInfo) == 0
+                        && (iconInfo.st_mode & S_IFMT) == S_IFREG
+                        && iconInfo.st_nlink == 1
+                        && iconInfo.st_size > 0
+                        && iconDigest
+                            == "e27b55fc793f25867793f1ca9000e2454d448329169ade1b89e4beb3950444cc"
+                        && lstat(notice, &noticeInfo) == 0
+                        && (noticeInfo.st_mode & S_IFMT) == S_IFREG
+                        && noticeInfo.st_nlink == 1
+                        && noticeDigest
+                            == "0aecc40e6acd041a89719ec68d4db33e2e292b5d1cd4b43358a081956a9a2442",
+                    "signed bundle icon contract is incomplete"
+                )
+                let artifact = try BundleArtifactIdentity.inspect(
+                    bundlePath: bundle
+                )
+                try check(
+                    artifact.inventory.contains {
+                        $0.contains("Contents/Resources/ShadowSync.icns")
+                    } && artifact.inventory.contains {
+                        $0.contains(
+                            "Contents/Resources/THIRD_PARTY_NOTICES.md"
+                        )
+                    },
+                    "icon or notice bytes are absent from bundle attestation"
+                )
+            case "DM4-T05":
+                try check(
+                    paths.app.hasSuffix("/Applications/ShadowSync.app")
+                        && paths.executable.hasSuffix(
+                            "/ShadowSync.app/Contents/MacOS/ShadowSync"
+                        ),
+                    "forward lifecycle path is not ShadowSync"
+                )
+            case "DM4-T06":
+                try check(
+                    paths.predecessorApp.hasSuffix(
+                        "/Applications/Dev Main Sync.app"
+                    )
+                        && paths.predecessorExecutable.hasSuffix(
+                            "/Dev Main Sync.app/Contents/MacOS/ShadowSync"
+                        ),
+                    "predecessor lifecycle path is not exact"
+                )
+            case "DM4-T07":
+                try check(
+                    paths.app != paths.predecessorApp
+                        && paths.executable != paths.predecessorExecutable
+                        && InstallationPaths.label
+                            == "com.kleinperkins.shadow-sync",
+                    "app generations do not share one stable launchd identity"
+                )
+            case "DM4-T08":
+                try check(
+                    paths.app.deletingLastPathComponent
+                        == paths.predecessorApp.deletingLastPathComponent,
+                    "app generations cannot use same-parent atomic rollback"
+                )
+            case "DM4-T09":
+                try check(
+                    paths.launchAgent.hasSuffix(
+                        "/Library/LaunchAgents/com.kleinperkins.shadow-sync.plist"
                     ),
-                "predecessor lifecycle path is not exact"
-            )
-        case "DM4-T07":
-            try check(
-                paths.app != paths.predecessorApp
-                    && paths.executable != paths.predecessorExecutable
-                    && InstallationPaths.label
-                        == "com.kleinperkins.shadow-sync",
-                "app generations do not share one stable launchd identity"
-            )
-        case "DM4-T08":
-            try check(
-                paths.app.deletingLastPathComponent
-                    == paths.predecessorApp.deletingLastPathComponent,
-                "app generations cannot use same-parent atomic rollback"
-            )
-        case "DM4-T09":
-            try check(
-                paths.launchAgent.hasSuffix(
-                    "/Library/LaunchAgents/com.kleinperkins.shadow-sync.plist"
-                ),
-                "lifecycle verbs no longer share the stable plist"
-            )
-        case "DM4-T10":
-            try check(
-                HostControlRequest.schemaName
-                    == "shadow-sync-host-request/v1",
-                "host activation wire schema changed"
-            )
-        case "DM4-T12":
-            try check(
-                ReleaseIdentity.schemaName == "shadow-sync-release/v2"
-                    && shadowSyncSelectionPreferenceSchema
-                        == "shadow-sync-repository-selection-preferences/v1",
-                "inherited v3 wire schemas changed"
-            )
-        default:
-            throw DM4PreflightError.message("unhandled v4 test \(id)")
+                    "lifecycle verbs no longer share the stable plist"
+                )
+            case "DM4-T10":
+                try check(
+                    HostControlRequest.schemaName
+                        == "shadow-sync-host-request/v1",
+                    "host activation wire schema changed"
+                )
+            case "DM4-T12":
+                try check(
+                    ReleaseIdentity.schemaName == "shadow-sync-release/v2"
+                        && shadowSyncSelectionPreferenceSchema
+                            == "shadow-sync-repository-selection-preferences/v1",
+                    "inherited v3 wire schemas changed"
+                )
+            default:
+                throw DM4PreflightError.message("unhandled v4 test \(id)")
+            }
         }
     }
 
     private static func temporaryRoot() throws -> String {
         var template = Array(
-            "/private/tmp/shadow-sync-dm4-preflight.XXXXXX".utf8CString
+            (try RuntimeFixtureSession.fixturePrefix("shadow-sync-dm4-preflight.") + "XXXXXX").utf8CString
         )
         guard let pointer = mkdtemp(&template) else {
             throw DM4PreflightError.message("could not create v4 test root")

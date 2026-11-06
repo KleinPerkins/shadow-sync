@@ -62,7 +62,7 @@ public enum V2Body1SelfTestRunner {
         where requestedTest == nil || requestedTest == name {
             let started = MonotonicInstant.now()
             do {
-                try test()
+                try RuntimeFixtureSession.withCase(name) { try test() }
                 let duration = MonotonicInstant.now().milliseconds(
                     since: started
                 )
@@ -82,320 +82,323 @@ public enum V2Body1SelfTestRunner {
         testExecutable: String,
         onPass: (String) -> Void = { _ in }
     ) throws {
-        for (state, expected) in [
-            (FixtureState.equal, ResultCode.alreadyCurrent),
-            (FixtureState.behind, ResultCode.updated),
-        ] {
-            let prepared = try preparedFixture(
+        try RuntimeFixtureSession.withCase("BETA-V08-BOUNDED-INVENTORY") {
+            for (state, expected) in [
+                (FixtureState.equal, ResultCode.alreadyCurrent),
+                (FixtureState.behind, ResultCode.updated),
+            ] {
+                let prepared = try preparedFixture(
+                    defaultBranch: "main",
+                    state: state,
+                    additionalTrackedFiles: 512
+                )
+                defer { prepared.fixture.remove() }
+                let inventory = try prepared.fixture.gitOutput([
+                    "ls-files", "-v", "-z",
+                ])
+                try check(
+                    inventory.count > 16_384
+                        && inventory.count
+                            < DescriptorProcessRunner
+                                .completeRepositoryOutputLimit,
+                    "large Fast-forward fixture did not cross the legacy output cap"
+                )
+                let execution = try execute(
+                    prepared,
+                    operation: try makeOperation(prepared),
+                    executable: testExecutable
+                )
+                try check(
+                    execution.result.code == expected,
+                    "large-index \(state) execution failed: "
+                        + execution.result.code.rawValue
+                        + " "
+                        + (
+                            execution.result.technicalDetail
+                                ?? execution.result.explanation
+                        )
+                )
+            }
+
+            let hidden = try preparedFixture(
                 defaultBranch: "main",
-                state: state,
+                state: .equal,
                 additionalTrackedFiles: 512
             )
-            defer { prepared.fixture.remove() }
-            let inventory = try prepared.fixture.gitOutput([
-                "ls-files", "-v", "-z",
+            defer { hidden.fixture.remove() }
+            try hidden.fixture.git([
+                "update-index", "--skip-worktree",
+                "inventory-0000-\(String(repeating: "x", count: 48)).txt",
             ])
-            try check(
-                inventory.count > 16_384
-                    && inventory.count
-                        < DescriptorProcessRunner
-                            .completeRepositoryOutputLimit,
-                "large Fast-forward fixture did not cross the legacy output cap"
-            )
-            let execution = try execute(
-                prepared,
-                operation: try makeOperation(prepared),
+            let hiddenResult = try execute(
+                hidden,
+                operation: try makeOperation(hidden),
                 executable: testExecutable
+            ).result
+            try check(
+                hiddenResult.code == .skippedHiddenIndexState,
+                "large hidden-index fixture was admitted"
+            )
+
+            let leakedName = "private-file-name.txt"
+            let truncated = ProcessResult(
+                status: 0,
+                stdout: Data(leakedName.utf8),
+                stderr: Data(),
+                stdoutTruncated: true,
+                stderrTruncated: false,
+                outputByteLimit:
+                    DescriptorProcessRunner
+                        .completeRepositoryOutputLimit,
+                timedOut: false,
+                cancelled: false,
+                terminationRequested: false,
+                processID: 1
             )
             try check(
-                execution.result.code == expected,
-                "large-index \(state) execution failed: "
-                    + execution.result.code.rawValue
-                    + " "
-                    + (
-                        execution.result.technicalDetail
-                            ?? execution.result.explanation
+                truncated.outputDisposition
+                    == .stdoutExceededBound
+                    && truncated.exitedSuccessfully
+                    && !truncated.succeeded
+                    && truncated.diagnostic.contains(
+                        "33554432-byte bound (exit 0)"
                     )
+                    && !truncated.diagnostic.contains(leakedName),
+                "status-zero output overflow was not typed and sanitized"
+            )
+            let failedIndex = ProcessResult(
+                status: 1,
+                stdout: Data(leakedName.utf8),
+                stderr: Data("index command refused".utf8),
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                outputByteLimit:
+                    DescriptorProcessRunner
+                        .completeRepositoryOutputLimit,
+                timedOut: false,
+                cancelled: false,
+                terminationRequested: false,
+                processID: 1
+            )
+            try check(
+                failedIndex.diagnosticOmittingStdout
+                    == "index command refused"
+                    && !failedIndex.diagnosticOmittingStdout
+                        .contains(leakedName),
+                "complete index failure leaked ordinary stdout"
+            )
+
+            let advertised = String(repeating: "a", count: 40)
+            let exact = DefaultBranchRelation(
+                kind: .equal,
+                aheadCount: 0,
+                behindCount: 0
+            )
+            let missing =
+                RepositoryReadSession
+                    .classifyCachedRelation(
+                        trackingOID: nil,
+                        advertisedOID: advertised
+                    ) {
+                        exact
+                    }
+            let stale =
+                RepositoryReadSession
+                    .classifyCachedRelation(
+                        trackingOID:
+                            String(repeating: "b", count: 40),
+                        advertisedOID: advertised
+                    ) {
+                        exact
+                    }
+            let current =
+                RepositoryReadSession
+                    .classifyCachedRelation(
+                        trackingOID: advertised,
+                        advertisedOID: advertised
+                    ) {
+                        exact
+                    }
+            try check(
+                missing == .unavailable
+                    && stale
+                        == .remoteChangedSinceLastFetch
+                    && stale.operatorLabel
+                        == "Remote changed since last fetch · exact comparison pending"
+                    && current == exact,
+                "cached relation presentation states were not conservative and distinct"
             )
         }
-
-        let hidden = try preparedFixture(
-            defaultBranch: "main",
-            state: .equal,
-            additionalTrackedFiles: 512
-        )
-        defer { hidden.fixture.remove() }
-        try hidden.fixture.git([
-            "update-index", "--skip-worktree",
-            "inventory-0000-\(String(repeating: "x", count: 48)).txt",
-        ])
-        let hiddenResult = try execute(
-            hidden,
-            operation: try makeOperation(hidden),
-            executable: testExecutable
-        ).result
-        try check(
-            hiddenResult.code == .skippedHiddenIndexState,
-            "large hidden-index fixture was admitted"
-        )
-
-        let leakedName = "private-file-name.txt"
-        let truncated = ProcessResult(
-            status: 0,
-            stdout: Data(leakedName.utf8),
-            stderr: Data(),
-            stdoutTruncated: true,
-            stderrTruncated: false,
-            outputByteLimit:
-                DescriptorProcessRunner
-                    .completeRepositoryOutputLimit,
-            timedOut: false,
-            cancelled: false,
-            terminationRequested: false,
-            processID: 1
-        )
-        try check(
-            truncated.outputDisposition
-                == .stdoutExceededBound
-                && truncated.exitedSuccessfully
-                && !truncated.succeeded
-                && truncated.diagnostic.contains(
-                    "33554432-byte bound (exit 0)"
-                )
-                && !truncated.diagnostic.contains(leakedName),
-            "status-zero output overflow was not typed and sanitized"
-        )
-        let failedIndex = ProcessResult(
-            status: 1,
-            stdout: Data(leakedName.utf8),
-            stderr: Data("index command refused".utf8),
-            stdoutTruncated: false,
-            stderrTruncated: false,
-            outputByteLimit:
-                DescriptorProcessRunner
-                    .completeRepositoryOutputLimit,
-            timedOut: false,
-            cancelled: false,
-            terminationRequested: false,
-            processID: 1
-        )
-        try check(
-            failedIndex.diagnosticOmittingStdout
-                == "index command refused"
-                && !failedIndex.diagnosticOmittingStdout
-                    .contains(leakedName),
-            "complete index failure leaked ordinary stdout"
-        )
-
-        let advertised = String(repeating: "a", count: 40)
-        let exact = DefaultBranchRelation(
-            kind: .equal,
-            aheadCount: 0,
-            behindCount: 0
-        )
-        let missing =
-            RepositoryReadSession
-                .classifyCachedRelation(
-                    trackingOID: nil,
-                    advertisedOID: advertised
-                ) {
-                    exact
-                }
-        let stale =
-            RepositoryReadSession
-                .classifyCachedRelation(
-                    trackingOID:
-                        String(repeating: "b", count: 40),
-                    advertisedOID: advertised
-                ) {
-                    exact
-                }
-        let current =
-            RepositoryReadSession
-                .classifyCachedRelation(
-                    trackingOID: advertised,
-                    advertisedOID: advertised
-                ) {
-                    exact
-                }
-        try check(
-            missing == .unavailable
-                && stale
-                    == .remoteChangedSinceLastFetch
-                && stale.operatorLabel
-                    == "Remote changed since last fetch · exact comparison pending"
-                && current == exact,
-            "cached relation presentation states were not conservative and distinct"
-        )
         onPass("BETA-V08-BOUNDED-INVENTORY")
     }
 
     public static func runDeviceDriftOnly(
         onPass: (String) -> Void = { _ in }
     ) throws {
-        let prepared = try preparedFixture(
-            defaultBranch: "main",
-            state: .equal
-        )
-        defer { prepared.fixture.remove() }
-        let clone = try makeOperation(prepared)
-            .target.canonicalClone
-        let current = RepositoryAuthorityRecord(clone: clone)
-        func record(
-            rootDevice: UInt64? = nil,
-            rootInode: UInt64? = nil,
-            commonDevice: UInt64? = nil,
-            commonInode: UInt64? = nil,
-            path: String? = nil,
-            repositoryID: String? = nil
-        ) throws -> RepositoryAuthorityRecord {
-            let object: [String: Any] = [
-                "repositoryID": repositoryID
-                    ?? current.repositoryID,
-                "canonicalRoot": path
-                    ?? current.canonicalRoot,
-                "rootIdentity": [
-                    "device": rootDevice
-                        ?? current.rootIdentity.device,
-                    "inode": rootInode
-                        ?? current.rootIdentity.inode,
-                ],
-                "commonDirectoryIdentity": [
-                    "device": commonDevice
-                        ?? current.commonDirectoryIdentity.device,
-                    "inode": commonInode
-                        ?? current.commonDirectoryIdentity.inode,
-                ],
-                "updatedAt": current.updatedAt,
-            ]
-            return try JSONDecoder().decode(
-                RepositoryAuthorityRecord.self,
-                from: JSONSerialization.data(
-                    withJSONObject: object
+        try RuntimeFixtureSession.withCase("BETA-V02-DEVICE-DRIFT") {
+            let prepared = try preparedFixture(
+                defaultBranch: "main",
+                state: .equal
+            )
+            defer { prepared.fixture.remove() }
+            let clone = try makeOperation(prepared)
+                .target.canonicalClone
+            let current = RepositoryAuthorityRecord(clone: clone)
+            func record(
+                rootDevice: UInt64? = nil,
+                rootInode: UInt64? = nil,
+                commonDevice: UInt64? = nil,
+                commonInode: UInt64? = nil,
+                path: String? = nil,
+                repositoryID: String? = nil
+            ) throws -> RepositoryAuthorityRecord {
+                let object: [String: Any] = [
+                    "repositoryID": repositoryID
+                        ?? current.repositoryID,
+                    "canonicalRoot": path
+                        ?? current.canonicalRoot,
+                    "rootIdentity": [
+                        "device": rootDevice
+                            ?? current.rootIdentity.device,
+                        "inode": rootInode
+                            ?? current.rootIdentity.inode,
+                    ],
+                    "commonDirectoryIdentity": [
+                        "device": commonDevice
+                            ?? current.commonDirectoryIdentity.device,
+                        "inode": commonInode
+                            ?? current.commonDirectoryIdentity.inode,
+                    ],
+                    "updatedAt": current.updatedAt,
+                ]
+                return try JSONDecoder().decode(
+                    RepositoryAuthorityRecord.self,
+                    from: JSONSerialization.data(
+                        withJSONObject: object
+                    )
+                )
+            }
+            let deviceOnly = try record(
+                rootDevice: current.rootIdentity.device + 1,
+                commonDevice:
+                    current.commonDirectoryIdentity.device + 1
+            )
+            try check(
+                deviceOnly.matchesExceptDevice(clone),
+                "device-only drift was not classified"
+            )
+            for unsafe in [
+                try record(
+                    rootDevice: current.rootIdentity.device + 1,
+                    rootInode: current.rootIdentity.inode + 1
+                ),
+                try record(
+                    commonDevice:
+                        current.commonDirectoryIdentity.device + 1,
+                    commonInode:
+                        current.commonDirectoryIdentity.inode + 1
+                ),
+                try record(
+                    rootDevice: current.rootIdentity.device + 1,
+                    path: current.canonicalRoot + "-other"
+                ),
+                try record(
+                    rootDevice: current.rootIdentity.device + 1,
+                    repositoryID: "other/repository"
+                ),
+            ] {
+                try check(
+                    !unsafe.matchesExceptDevice(clone),
+                    "non-device authority drift was accepted"
+                )
+            }
+            let policyDrift = try LocalClone(
+                repositoryID: clone.repositoryID,
+                sourceSnapshot: clone.sourceSnapshot,
+                effectiveOrigin: clone.effectiveOrigin,
+                originParityVerified: clone.originParityVerified,
+                policyCategory: .reference,
+                kind: clone.kind,
+                worktrees: clone.worktrees,
+                branches: clone.branches,
+                warnings: []
+            )
+            let topologyDrift = try LocalClone(
+                repositoryID: clone.repositoryID,
+                sourceSnapshot: clone.sourceSnapshot,
+                effectiveOrigin: clone.effectiveOrigin,
+                originParityVerified: clone.originParityVerified,
+                policyCategory: clone.policyCategory,
+                kind: clone.kind,
+                worktrees: clone.worktrees,
+                branches: clone.branches,
+                warnings: ["topology changed"]
+            )
+            try check(
+                !deviceOnly.matchesExceptDevice(policyDrift)
+                    && !deviceOnly.matchesExceptDevice(topologyDrift),
+                "policy or topology drift was accepted"
+            )
+
+            let store = RepositoryAuthorityStore(
+                state: try SecureStateDirectory.open(
+                    prepared.fixture.stateLocation
                 )
             )
-        }
-        let deviceOnly = try record(
-            rootDevice: current.rootIdentity.device + 1,
-            commonDevice:
-                current.commonDirectoryIdentity.device + 1
-        )
-        try check(
-            deviceOnly.matchesExceptDevice(clone),
-            "device-only drift was not classified"
-        )
-        for unsafe in [
-            try record(
-                rootDevice: current.rootIdentity.device + 1,
-                rootInode: current.rootIdentity.inode + 1
-            ),
-            try record(
-                commonDevice:
-                    current.commonDirectoryIdentity.device + 1,
-                commonInode:
-                    current.commonDirectoryIdentity.inode + 1
-            ),
-            try record(
-                rootDevice: current.rootIdentity.device + 1,
-                path: current.canonicalRoot + "-other"
-            ),
-            try record(
-                rootDevice: current.rootIdentity.device + 1,
-                repositoryID: "other/repository"
-            ),
-        ] {
-            try check(
-                !unsafe.matchesExceptDevice(clone),
-                "non-device authority drift was accepted"
+            _ = try store.confirmCanonicalRoot(
+                clone: clone,
+                freshClones: [clone],
+                expectedFileIdentity: nil
             )
-        }
-        let policyDrift = try LocalClone(
-            repositoryID: clone.repositoryID,
-            sourceSnapshot: clone.sourceSnapshot,
-            effectiveOrigin: clone.effectiveOrigin,
-            originParityVerified: clone.originParityVerified,
-            policyCategory: .reference,
-            kind: clone.kind,
-            worktrees: clone.worktrees,
-            branches: clone.branches,
-            warnings: []
-        )
-        let topologyDrift = try LocalClone(
-            repositoryID: clone.repositoryID,
-            sourceSnapshot: clone.sourceSnapshot,
-            effectiveOrigin: clone.effectiveOrigin,
-            originParityVerified: clone.originParityVerified,
-            policyCategory: clone.policyCategory,
-            kind: clone.kind,
-            worktrees: clone.worktrees,
-            branches: clone.branches,
-            warnings: ["topology changed"]
-        )
-        try check(
-            !deviceOnly.matchesExceptDevice(policyDrift)
-                && !deviceOnly.matchesExceptDevice(topologyDrift),
-            "policy or topology drift was accepted"
-        )
-
-        let store = RepositoryAuthorityStore(
-            state: try SecureStateDirectory.open(
-                prepared.fixture.stateLocation
-            )
-        )
-        _ = try store.confirmCanonicalRoot(
-            clone: clone,
-            freshClones: [clone],
-            expectedFileIdentity: nil
-        )
-        func install(_ authorityRecord: RepositoryAuthorityRecord)
-            throws {
-            let document = try RepositoryAuthorityDocument(
-                revision: (store.snapshot().document?.revision ?? 0) + 1,
-                records: [authorityRecord]
-            )
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [
-                .prettyPrinted, .sortedKeys,
-                .withoutEscapingSlashes,
-            ]
-            var bytes = try encoder.encode(document)
-            bytes.append(0x0A)
-            let path = prepared.fixture.stateLocation.path
-                + "/" + RepositoryAuthorityStore.filename
-            try bytes.write(
-                to: URL(fileURLWithPath: path),
-                options: .atomic
-            )
-            _ = chmod(path, 0o600)
-        }
-        try install(deviceOnly)
-        let driftSnapshot = store.snapshot()
-        let refreshed = try store.refreshSelectedDeviceDrift(
-            selectedRepositoryIDs: [clone.repositoryID],
-            freshClones: [clone],
-            expectedFileIdentity: driftSnapshot.fileIdentity
-        )
-        try check(
-            refreshed.usableRecords.count == 1
-                && refreshed.usableRecords[0].matches(clone),
-            "device-only authority was not refreshed"
-        )
-
-        try install(deviceOnly)
-        let stale = store.snapshot()
-        try install(deviceOnly)
-        do {
-            _ = try store.refreshSelectedDeviceDrift(
+            func install(_ authorityRecord: RepositoryAuthorityRecord)
+                throws {
+                let document = try RepositoryAuthorityDocument(
+                    revision: (store.snapshot().document?.revision ?? 0) + 1,
+                    records: [authorityRecord]
+                )
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [
+                    .prettyPrinted, .sortedKeys,
+                    .withoutEscapingSlashes,
+                ]
+                var bytes = try encoder.encode(document)
+                bytes.append(0x0A)
+                let path = prepared.fixture.stateLocation.path
+                    + "/" + RepositoryAuthorityStore.filename
+                try bytes.writeFixtureAtomically(
+                    to: URL(fileURLWithPath: path)
+                )
+                _ = chmod(path, 0o600)
+            }
+            try install(deviceOnly)
+            let driftSnapshot = store.snapshot()
+            let refreshed = try store.refreshSelectedDeviceDrift(
                 selectedRepositoryIDs: [clone.repositoryID],
                 freshClones: [clone],
-                expectedFileIdentity: stale.fileIdentity
+                expectedFileIdentity: driftSnapshot.fileIdentity
             )
-            throw DM2Body1SelfTestError.testFailed(
-                "device drift CAS",
-                "stale authority identity was accepted"
+            try check(
+                refreshed.usableRecords.count == 1
+                    && refreshed.usableRecords[0].matches(clone),
+                "device-only authority was not refreshed"
             )
-        } catch RepositoryAuthorityStoreError.changed {
-            // Expected.
+
+            try install(deviceOnly)
+            let stale = store.snapshot()
+            try install(deviceOnly)
+            do {
+                _ = try store.refreshSelectedDeviceDrift(
+                    selectedRepositoryIDs: [clone.repositoryID],
+                    freshClones: [clone],
+                    expectedFileIdentity: stale.fileIdentity
+                )
+                throw DM2Body1SelfTestError.testFailed(
+                    "device drift CAS",
+                    "stale authority identity was accepted"
+                )
+            } catch RepositoryAuthorityStoreError.changed {
+                // Expected.
+            }
         }
         onPass("BETA-V02-DEVICE-DRIFT")
     }
@@ -404,9 +407,11 @@ public enum V2Body1SelfTestRunner {
         testExecutable: String,
         onPass: (String) -> Void = { _ in }
     ) throws {
-        try testCheckedOutTargets(
-            testExecutable: testExecutable
-        )
+        try RuntimeFixtureSession.withCase("BETA-V06-CHECKED-OUT-ADMISSION") {
+            try testCheckedOutTargets(
+                testExecutable: testExecutable
+            )
+        }
         onPass(
             "BETA-V06-CHECKED-OUT-ADMISSION"
         )
