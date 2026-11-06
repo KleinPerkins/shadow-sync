@@ -16,6 +16,8 @@
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "scripts/build-app.sh": "Standalone build-only packaging includes all three products; ordinary app launch is excluded from building and remains in separately isolated native qualification.",
+    "scripts/ci-shards.py": "All mandatory jobs use macOS 26 arm64 because tooling includes native fixtures; deterministic complete-suite partition and fail-closed aggregate remain unchanged.",
     "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
@@ -1053,7 +1055,7 @@
     {
       "mode": "100755",
       "path": "scripts/build-app.sh",
-      "sha256": "fdfca09a453f86cc18d230ced37f4187d2a9c5d749e218ebb448e98e8e9307f2"
+      "sha256": "85658ee51a49d3da526783e4ee78c0989476a96455cab3c1d7024d6428f4e59c"
     },
     {
       "mode": "100644",
@@ -1063,7 +1065,7 @@
     {
       "mode": "100644",
       "path": "scripts/ci-shards.py",
-      "sha256": "af3fee917d7846a738ea06764f42eab23515c17de60b6cf6dda874e7cbeb2406"
+      "sha256": "e3ca28ce24d518ec26a2008fc2c1a27e1289e10b4f8c54d044828da772f5ecea"
     },
     {
       "mode": "100644",

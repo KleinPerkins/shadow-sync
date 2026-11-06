@@ -153,6 +153,7 @@ fi
 
 swift build "${BUILD_ARGS[@]}" --product ShadowSync >&2
 swift build "${BUILD_ARGS[@]}" --product ShadowSyncLifecycleCoordinator >&2
+swift build "${BUILD_ARGS[@]}" --product ShadowSyncSelfTest >&2
 BIN_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
 SOURCE_BINARY="$BIN_DIR/ShadowSync"
 COORDINATOR_BINARY="$BIN_DIR/ShadowSyncLifecycleCoordinator"
@@ -300,7 +301,6 @@ fi
 mv "$APP" "$DEST"
 /usr/bin/xattr -cr "$DEST"
 codesign --verify --strict --verbose=2 "$DEST"
-/usr/bin/sandbox-exec \
-  -p '(version 1) (allow default) (deny network*)' \
-  "$DEST/Contents/MacOS/ShadowSync" --check >/dev/null
+# Building never invokes an ordinary application route or reads installed state.
+# Native execution belongs to the separately isolated mandatory CI suites.
 printf '%s\n' "$DEST"
