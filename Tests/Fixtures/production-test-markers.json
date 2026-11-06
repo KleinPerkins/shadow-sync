@@ -235,6 +235,11 @@
     "M1 FIXTURE CHANNEL CLEANUP PENDING",
     "qualified fixture interpreter is required",
     "final-config tracking ref absent; result=",
-    "test final config atomic replacement"
+    "test final config atomic replacement",
+    "POLICY-SESSION-T65-rebind-one-deadline-through-catalog-and-binding",
+    "POLICY-SESSION-T66-rebind-post-catalog-revocation-refuses-body",
+    "POLICY-SESSION-T67-rebind-post-catalog-directory-replacement-refuses",
+    "POLICY-SESSION-T68-public-bind-refreshes-advisory-eligibility",
+    "testingAfterRebindCatalog"
   ]
 }

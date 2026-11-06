@@ -17,6 +17,7 @@
     "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeFixtureSession.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeSuiteGuardian.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/SelectedRepositoryScope.swift": "Consume one freshly completed, private call-scoped catalog during rebind with one original metadata deadline; retain live policy/root/traversal/identity/postflight checks and ordinary public-bind rediscovery.",
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
@@ -522,7 +523,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/HostPolicySnapshotSelfTests.swift",
-      "sha256": "bcafe69261f5713a2d9df0c98e3d673b00a4c8ba9626f3689115482108f0e13c"
+      "sha256": "19e32206f1cdfb9f1409ae112bda56b519798b1bdc9d1e71a290199399533f97"
     },
     {
       "mode": "100644",
@@ -827,7 +828,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SelectedRepositoryScope.swift",
-      "sha256": "ed616ac31006c149cbcff3a5cf3baff62da9814e38b661d8c037b87e288c24cf"
+      "sha256": "c4f6e4abbb723e127d0fc9e8e2cf4e4d6b795f0dc9c2e7a4034689797b777a92"
     },
     {
       "mode": "100644",
@@ -872,7 +873,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "24b2ed3a7cdd0c0cc24dcbd2b291bdf27afcd0ac7576f89b9f7940d698d18528"
+      "sha256": "2392fa74e22825827cdf254204d1b36ea5023d2fcc2f51aac750419b5b33260f"
     },
     {
       "mode": "100644",
@@ -1037,7 +1038,7 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "23d1e825e884a57d9f020be94dd38df4ae5e2225dd8b9cffddf086fe20f98138"
+      "sha256": "9f80a1a82123ec45df799d76c75412ed18ca4bc169c53ca7a0327059eed86593"
     },
     {
       "mode": "100644",

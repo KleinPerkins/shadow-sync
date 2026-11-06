@@ -2040,6 +2040,155 @@ public enum HostPolicySnapshotSelfTestRunner {
             try fixture.remove()
         }
         onPass("POLICY-SESSION-T64-metadata-known-paths-share-first-classification")
+
+        try RuntimeFixtureSession.withCase("POLICY-SESSION-T65-rebind-one-deadline-through-catalog-and-binding") {
+            final class Deadlines: @unchecked Sendable {
+                let lock = NSLock()
+                private var values: [UInt64] = []
+                private var first: UInt64?
+                func record(_ value: UInt64) {
+                    lock.lock(); defer { lock.unlock() }
+                    if first == nil { first = DispatchTime.now().uptimeNanoseconds }
+                    values.append(value)
+                }
+                var all: [UInt64] { lock.lock(); defer { lock.unlock() }; return values }
+                var firstObserved: UInt64 { lock.lock(); defer { lock.unlock() }; return first ?? 0 }
+            }
+            let fixture = try SessionFixture(); defer { try? fixture.remove() }
+            let scope = try selectedScope(fixture), snapshot = try fixture.snapshot(), observed = Deadlines()
+            let admission = RepositorySelectionPathAdmission(evaluate: { paths, deadline in
+                observed.record(deadline)
+                return paths.map { RepositorySelectionAdmissionDecision(path: $0, disposition: .allowed) }
+            }, revalidate: { try snapshot.revalidate() })
+            let binder = try SelectedRepositoryScopeBinder(snapshot: snapshot, admission: admission)
+            var catalogs = 0, entered = false
+            binder.testingAfterRebindCatalog = { catalogs += 1 }
+            let started = DispatchTime.now().uptimeNanoseconds
+            try binder.withReboundScope(scope, cancellation: CancellationToken()) { rebound in
+                entered = true
+                try require(rebound == scope, "same-call catalog changed saved selection")
+            }
+            let deadlines = observed.all
+            try require(entered && catalogs == 1 && !deadlines.isEmpty && Set(deadlines).count == 1
+                && deadlines[0] > started && deadlines[0] <= observed.firstObserved + 750_000_000,
+                "rebind renewed the original metadata deadline")
+            try fixture.remove()
+        }
+        onPass("POLICY-SESSION-T65-rebind-one-deadline-through-catalog-and-binding")
+        try RuntimeFixtureSession.withCase("POLICY-SESSION-T66-rebind-post-catalog-revocation-refuses-body") {
+            for fault in ["policy", "resources", "phase", "pending", "deadline"] {
+                let fixture = try SessionFixture(); defer { try? fixture.remove() }
+                let scope = try selectedScope(fixture), revoked = CancellationToken(), phase = CancellationToken()
+                let binder = try fixture.make(resourceCheck: {
+                    if revoked.isCancelled {
+                        if fault == "pending" { throw PolicyHelperError.cleanupPending }
+                        throw PolicyHelperError.unavailable
+                    }
+                }).binder(revalidatePhase: {
+                    if phase.isCancelled { throw PolicyHelperError.unavailable }
+                })
+                var catalogs = 0, entered = false
+                binder.testingAfterRebindCatalog = {
+                    catalogs += 1
+                    if fault == "policy" { try fixture.fixture.write("owner/policy.yml", Data("changed".utf8)) }
+                    else if fault == "phase" { phase.cancel() }
+                    else if fault == "deadline" { usleep(800_000) }
+                    else { revoked.cancel() }
+                }
+                do {
+                    try binder.withReboundScope(scope, cancellation: CancellationToken()) { _ in entered = true }
+                    throw Failure.assertion("post-catalog revocation completed a rebind")
+                } catch SelectedRepositoryScopeError.policyUnavailable {
+                    try require(fault != "pending", "pending precedence was lost")
+                } catch SelectedRepositoryScopeError.cleanupPending {
+                    try require(fault == "pending", "unrelated revocation became pending")
+                } catch PolicyHelperError.unavailable {
+                    try require(fault == "phase", "wrong raw phase refusal")
+                }
+                try require(catalogs == 1 && !entered, "post-catalog revocation reached operation body")
+                try fixture.remove()
+            }
+        }
+        onPass("POLICY-SESSION-T66-rebind-post-catalog-revocation-refuses-body")
+        try RuntimeFixtureSession.withCase("POLICY-SESSION-T67-rebind-post-catalog-directory-replacement-refuses") {
+            for replaceRoot in [false, true] {
+                let fixture = try SessionFixture(); defer { try? fixture.remove() }
+                let scope = try selectedScope(fixture), binder = try fixture.make().binder()
+                let original = replaceRoot ? fixture.fixture.path : scope.repositories[0].repositoryPath
+                let retained = original + "-retained"
+                var before = stat()
+                try require(lstat(original, &before) == 0, "capture original rebind fixture directory")
+                let originalIdentity = FileIdentity(before)
+                var replacementIdentity: FileIdentity?, displaced = false, entered = false, catalogs = 0
+                binder.testingAfterRebindCatalog = {
+                    catalogs += 1
+                    try require(rename(original, retained) == 0, "retain exact original fixture directory")
+                    displaced = true
+                    try require(mkdir(original, 0o700) == 0, "create replacement fixture directory")
+                    var created = stat()
+                    try require(lstat(original, &created) == 0, "capture replacement fixture directory")
+                    replacementIdentity = FileIdentity(created)
+                    if replaceRoot { try fixture.fixture.restore() }
+                    try fixture.fixture.write("workspace/products/ready/.git/config",
+                        Data("[remote \"origin\"]\nurl = https://github.com/fixture-owner/ready.git\n".utf8))
+                    try fixture.fixture.write("workspace/products/ready/.git/refs/remotes/origin/HEAD",
+                        Data("ref: refs/remotes/origin/main\n".utf8))
+                }
+                var bodyFailure: Error?
+                do {
+                    do {
+                        try binder.withReboundScope(scope, cancellation: CancellationToken()) { _ in entered = true }
+                        throw Failure.assertion("post-catalog replacement inherited selected authority")
+                    } catch SelectedRepositoryScopeError.changed {}
+                    catch SelectedRepositoryScopeError.policyUnavailable { try require(replaceRoot, "wrong repository replacement refusal") }
+                    try require(catalogs == 1 && !entered, "replacement reached operation body")
+                } catch { bodyFailure = error }
+                do {
+                    if displaced {
+                        var current = stat(), saved = stat()
+                        if lstat(original, &current) == 0 {
+                            guard let replacementIdentity else { throw Failure.assertion("unidentified replacement retained") }
+                            try require(FileIdentity(current).matchesStableNode(replacementIdentity), "replacement changed before cleanup")
+                            try FileManager.default.removeItem(atPath: original)
+                        } else { try require(errno == ENOENT, "replacement inspection failed") }
+                        try require(lstat(retained, &saved) == 0 && FileIdentity(saved).matchesStableNode(originalIdentity),
+                                    "retained original changed before restoration")
+                        try require(rename(retained, original) == 0, "restore original fixture directory")
+                        var restored = stat()
+                        try require(lstat(original, &restored) == 0 && FileIdentity(restored).matchesStableNode(originalIdentity),
+                                    "restored original identity differs")
+                    }
+                    try fixture.remove()
+                } catch {
+                    throw Failure.assertion("rebind replacement body=\(String(describing: bodyFailure)); cleanup=\(error)")
+                }
+                if let bodyFailure { throw bodyFailure }
+            }
+        }
+        onPass("POLICY-SESSION-T67-rebind-post-catalog-directory-replacement-refuses")
+        try RuntimeFixtureSession.withCase("POLICY-SESSION-T68-public-bind-refreshes-advisory-eligibility") {
+            for changedOrigin in [false, true] {
+                let fixture = try SessionFixture(); defer { try? fixture.remove() }
+                let binder = try fixture.make().binder()
+                let catalog = try binder.processFreeCatalog(preferences: nil, generation: 1)
+                guard catalog.isComplete, let ready = catalog.catalog.candidates.first(where: { $0.id == "fixture-owner/ready" }) else {
+                    throw Failure.assertion("public binding fixture has no eligible candidate")
+                }
+                let intent = try RepositorySelectionIntent(catalog: catalog.catalog, entries: [try ready.preferenceEntry])
+                if changedOrigin {
+                    try fixture.fixture.write("workspace/products/ready/.git/config",
+                        Data("[remote \"origin\"]\nurl = https://github.com/fixture-owner/other.git\n".utf8))
+                } else {
+                    try require(unlink(fixture.fixture.path + "/workspace/products/ready/.git/refs/remotes/origin/HEAD") == 0,
+                                "remove owned advisory remote-default fixture")
+                }
+                do { _ = try binder.bind(intent: intent); throw Failure.assertion("public bind reused prior catalog eligibility") }
+                catch SelectedRepositoryScopeError.ambiguous { try require(changedOrigin, "wrong unavailable-default refusal") }
+                catch SelectedRepositoryScopeError.forbidden { try require(!changedOrigin, "wrong changed-origin refusal") }
+                try fixture.remove()
+            }
+        }
+        onPass("POLICY-SESSION-T68-public-bind-refreshes-advisory-eligibility")
     }
 
     private final class SessionFixture {

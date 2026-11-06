@@ -537,6 +537,11 @@ public final class SelectedRepositoryScopeBinder:
     private let setupDeadline: UInt64?
     private let revalidatePhase: @Sendable () throws -> Void
 
+    #if SHADOW_SYNC_TESTING
+    // Per-binder, synchronous seam; never a production source of authority.
+    var testingAfterRebindCatalog: (() throws -> Void)?
+    #endif
+
     public static func withProductionReadPhase<Value>(cancellation: CancellationToken,
         _ body: (SelectedRepositoryScopeBinder) throws -> Value
     ) throws -> Value {
@@ -766,8 +771,9 @@ public final class SelectedRepositoryScopeBinder:
         return setupDeadline ?? fresh
     }
 
-    private func bindBound(intent: RepositorySelectionIntent,
-                           deadlineLimit: UInt64?) throws -> ValidatedSelectedRepositoryScope {
+    private func bindBound(intent: RepositorySelectionIntent, deadlineLimit: UInt64?,
+                           completedCatalog: RepositorySelectionCatalogResult? = nil)
+        throws -> ValidatedSelectedRepositoryScope {
         guard !intent.entries.isEmpty else {
             throw SelectedRepositoryScopeError.invalidIntent
         }
@@ -807,23 +813,31 @@ public final class SelectedRepositoryScopeBinder:
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .metadata
         #endif
-        let catalog = RepositorySelectionCatalogDiscovery.discoverCatalog(
-            configuration: RepositorySelectionCatalogConfiguration(
-                roots: [catalogRoot],
-                policy: projection,
-                preferences: nil,
-                canonicalLocators: Dictionary(
-                    uniqueKeysWithValues: intent.entries.map {
-                        ($0.repositoryID, $0.locator)
-                    }
-                ),
-                generation: intent.generation,
-                limits: catalogLimits,
-                deadlineUptimeNanoseconds: deadline,
-                admission: admission,
-                inspectRootRepository: snapshot == nil
+        let catalog: RepositorySelectionCatalogResult
+        if let completedCatalog {
+            // Rebind alone supplies its immediately completed catalog. This is
+            // advisory metadata from this call, never a saved access grant.
+            // Live root/policy checks above and exact traversal below still run.
+            catalog = completedCatalog
+        } else {
+            catalog = RepositorySelectionCatalogDiscovery.discoverCatalog(
+                configuration: RepositorySelectionCatalogConfiguration(
+                    roots: [catalogRoot],
+                    policy: projection,
+                    preferences: nil,
+                    canonicalLocators: Dictionary(
+                        uniqueKeysWithValues: intent.entries.map {
+                            ($0.repositoryID, $0.locator)
+                        }
+                    ),
+                    generation: intent.generation,
+                    limits: catalogLimits,
+                    deadlineUptimeNanoseconds: deadline,
+                    admission: admission,
+                    inspectRootRepository: snapshot == nil
+                )
             )
-        )
+        }
         guard catalog.isComplete else {
             if catalog.degradedReason == .cleanupPending { throw SelectedRepositoryScopeError.cleanupPending }
             throw SelectedRepositoryScopeError.catalogDegraded(
@@ -831,7 +845,8 @@ public final class SelectedRepositoryScopeBinder:
                     ?? "catalog incomplete"
             )
         }
-        guard catalog.catalog.policyDigest == intent.policyDigest,
+        guard catalog.catalog.generation == intent.generation,
+              catalog.catalog.policyDigest == intent.policyDigest,
               catalog.catalog.rootIdentities
                 == intent.rootIdentities else {
             throw SelectedRepositoryScopeError.changed
@@ -944,7 +959,9 @@ public final class SelectedRepositoryScopeBinder:
     /// identity before handing it to repository inspection.
     func rebind(_ scope: ValidatedSelectedRepositoryScope,
                 deadlineLimit: UInt64? = nil) throws -> ValidatedSelectedRepositoryScope {
-        let stageDeadline = deadlineLimit.map { boundedMetadataDeadline($0) }
+        // Catalog discovery and binding share one ceiling, including ordinary
+        // reads with no enclosing command limit. Neither phase renews it.
+        let stageDeadline = boundedMetadataDeadline(deadlineLimit)
         #if SHADOW_SYNC_TESTING
         let diagnosticStart = DispatchTime.now().uptimeNanoseconds
         var diagnosticStage = DiscoveryFixtureDiagnostic.Stage.prepare
@@ -982,7 +999,10 @@ public final class SelectedRepositoryScopeBinder:
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .decisions
         #endif
-        let rebound = try bindBound(intent: intent, deadlineLimit: stageDeadline)
+        #if SHADOW_SYNC_TESTING
+        try testingAfterRebindCatalog?()
+        #endif
+        let rebound = try bindBound(intent: intent, deadlineLimit: stageDeadline, completedCatalog: catalog)
         guard rebound == scope else { throw SelectedRepositoryScopeError.changed }
         #if SHADOW_SYNC_TESTING
         diagnosticPassed = true

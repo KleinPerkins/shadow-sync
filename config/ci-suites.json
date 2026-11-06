@@ -2633,7 +2633,11 @@
           "POLICY-SESSION-T61-diagnostic-opt-in-and-concurrent-output-bounds",
           "POLICY-SESSION-T62-metadata-resource-revocation-before-during-and-after-classification",
           "POLICY-SESSION-T63-metadata-malformed-input-preserves-pending-precedence",
-          "POLICY-SESSION-T64-metadata-known-paths-share-first-classification"
+          "POLICY-SESSION-T64-metadata-known-paths-share-first-classification",
+          "POLICY-SESSION-T65-rebind-one-deadline-through-catalog-and-binding",
+          "POLICY-SESSION-T66-rebind-post-catalog-revocation-refuses-body",
+          "POLICY-SESSION-T67-rebind-post-catalog-directory-replacement-refuses",
+          "POLICY-SESSION-T68-public-bind-refreshes-advisory-eligibility"
         ],
         "kind": "runtime"
       },
