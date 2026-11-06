@@ -1014,6 +1014,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-ci-runtime": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_ci_runtime"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-ci-shards": {
       "argv": [
         "python3",
@@ -1332,6 +1344,7 @@
         "tooling-test-ci-executor",
         "tooling-test-ci-git-source",
         "tooling-test-ci-results",
+        "tooling-test-ci-runtime",
         "tooling-test-ci-shards",
         "tooling-test-coordinator-entry",
         "tooling-test-dependency-maintenance",
@@ -2946,6 +2959,20 @@
           "test_ci_results.CIResultsTests.test_unknown_files_and_symlinks_and_hardlinks_refuse",
           "test_ci_results.CIResultsTests.test_unknown_receipt_fields_refuse",
           "test_ci_results.CIResultsTests.test_zero_missing_duplicate_or_extra_executed_cases_refuse"
+        ],
+        "kind": "static"
+      },
+      "tooling-test-ci-runtime": {
+        "cases": [
+          "test_ci_runtime.CIRuntimeTests.test_complete_roster_allows_actual_composite_execution_order",
+          "test_ci_runtime.CIRuntimeTests.test_complete_roster_still_rejects_missing_cases",
+          "test_ci_runtime.CIRuntimeTests.test_duplicate_and_foreign_cases_remain_failures",
+          "test_ci_runtime.CIRuntimeTests.test_fixture_never_overwrites_existing_resource",
+          "test_ci_runtime.CIRuntimeTests.test_fixture_stages_exact_policy_pin_outside_checkout",
+          "test_ci_runtime.CIRuntimeTests.test_incomplete_attempt_preserves_only_observed_cases",
+          "test_ci_runtime.CIRuntimeTests.test_local_ipc_permission_is_namespace_and_socket_name_bound",
+          "test_ci_runtime.CIRuntimeTests.test_private_staging_preserves_build_bytes_and_required_publisher_mode",
+          "test_ci_runtime.CIRuntimeTests.test_var_alias_fixture_is_explicit_nonce_bound_and_cleanup_registered"
         ],
         "kind": "static"
       },

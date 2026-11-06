@@ -31,6 +31,9 @@ PREFIXES = ('shadow-sync-m2.', 'shadow-sync-m4.', 'shadow-sync-self-tests.',
     'shadow-sync-discovery-spawn.', 'shadow-sync-fixture-config.', 'shadow-sync-v3-preferences.',
     'shadow-sync-v3-preferences-pre-rename.', 'shadow-sync-v3-preferences-post-rename.',
     'shadow-sync-v3-catalog.', 'shadow-sync-dm4-preflight.')
+# M2 also exercises the /var alias using this one explicit private fixture root.
+FIXTURE_LOCATIONS = tuple(('/private/tmp', prefix) for prefix in PREFIXES) + (
+    ('/private/var/tmp', 'shadow-sync-m2.'),)
 TOOLS = ('/bin/bash', '/bin/sleep', '/bin/sh', '/bin/chmod', '/bin/cat', '/bin/echo',
     '/usr/bin/printf', '/usr/bin/grep', '/usr/bin/env', '/usr/bin/git', '/usr/bin/xcrun',
     '/Library/Developer/CommandLineTools/usr/bin/git',
@@ -50,16 +53,20 @@ def profile(root, nonce, executable, app, python):
     result += '(allow file-write* (literal "/dev/null"))\n(deny process-exec)\n'
     for path in (executable, app, python, *TOOLS):
         result += '(allow process-exec (literal ' + quote(path) + '))\n'
-    for prefix in PREFIXES:
+    for parent, prefix in FIXTURE_LOCATIONS:
         escaped = prefix.replace('.', '[.]')
-        result += '(deny file-read* file-write* (regex #"^/private/tmp/' + escaped + '"))\n'
-        result += '(allow file-read* file-write* (regex #"^/private/tmp/' + escaped + nonce + '[.][A-Za-z0-9-]+(/.*)?$"))\n'
+        result += '(deny file-read* file-write* (regex #"^' + parent + '/' + escaped + '"))\n'
+        result += '(allow file-read* file-write* (regex #"^' + parent + '/' + escaped + nonce + '[.][A-Za-z0-9-]+(/.*)?$"))\n'
     suffixes = (r'/[^/]+(/[A-Za-z0-9-]+)*/[.]git/hooks/(post-merge|pre-merge-commit|pre-commit|reference-transaction)',
         r'/[^/]+(/[A-Za-z0-9-]+)*/[.]githooks/reference-transaction',
         r'/home/dev/_ops/bin/(dev-worktree[.]sh|install-identity-guard[.]sh)',
         r'/(fake-gh|sleep-gh|large-gh|failure-gh)')
     for suffix in suffixes:
         result += '(allow process-exec (regex #"^/private/tmp/shadow-sync-self-tests[.]' + nonce + '[.][A-Za-z0-9-]+' + suffix + '$"))\n'
+    # Local test IPC only; Internet and unrelated local sockets remain denied.
+    for prefix in ('shadow-sync-m4.', 'shadow-sync-self-tests.'):
+        escaped = prefix.replace('.', '[.]')
+        result += '(allow network-bind network-inbound network-outbound (regex #"^/private/tmp/' + escaped + nonce + '[.][A-Za-z0-9-]+(/[^/]+)*/(host[.]sock|agent[.]sock)$"))\n'
     return result + '(allow process-exec (regex #"^/private/tmp/shadow-sync-publisher-policy-' + nonce + '[.][A-Za-z0-9-]+/executable$"))\n'
 
 
@@ -78,8 +85,32 @@ def canonical_output(suite, cases, data, *, complete):
         else:
             output.append(line)
     if complete:
-        require(seen == cases, 'Runtime stdout lacks the complete actual case roster')
+        require(set(seen) == set(cases), 'Runtime stdout lacks the complete actual case roster')
     return ('\n'.join(output) + '\n').encode('utf-8')
+
+
+def stage_policy_source(root):
+    # The self-tests deliberately accept resource inputs only from private fixture
+    # roots. Hosted checkouts live under /Users, so stage these exact pinned bytes.
+    source = ROOT / 'Resources/policy-runtime-source.json'
+    target = root / 'policy-runtime-source.json'
+    data = source.read_bytes()
+    with target.open('xb') as stream:
+        stream.write(data)
+    target.chmod(0o600)
+    require(target.read_bytes() == data == source.read_bytes(), 'Policy source staging changed')
+    return target
+
+
+def stage_runtime_executable(root, source):
+    # Keep the original build immutable. The fixture publisher contract requires
+    # 0755 executable files beneath an owner-private parent directory.
+    target = root / 'ShadowSyncSelfTest'
+    native = load('run-native-appkit')
+    native.stage_binary(source, target, build.sha(source))
+    target.chmod(0o755)
+    native.binary_identity(target, build.sha(source))
+    return target
 
 
 def run_suite(suite, root, build_root, record, context):
@@ -89,7 +120,7 @@ def run_suite(suite, root, build_root, record, context):
     require(len(rows) == 1, 'Unknown mandatory runtime suite')
     cases = rows[0]['cases']
     products = Path(record['builds']['testing']['products'])
-    executable = products / 'ShadowSyncSelfTest'
+    source_executable = products / 'ShadowSyncSelfTest'
     app = build_root / 'testing/package/ShadowSync.app/Contents/MacOS/ShadowSync'
     framework = build_root / 'policy/Python.framework'
     python = framework / 'Versions/3.14/Resources/Python.app/Contents/MacOS/Python'
@@ -104,6 +135,8 @@ def run_suite(suite, root, build_root, record, context):
     nonce = uuid.uuid4().hex
     root.mkdir(mode=0o700)
     (root / 'home').mkdir(mode=0o700); (root / 'tmp').mkdir(mode=0o700)
+    executable = stage_runtime_executable(root, source_executable)
+    policy_source = stage_policy_source(root)
     isolation = root / 'fixture.sb'
     isolation.write_text(profile(root, nonce, executable, app, python))
     env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'),
@@ -112,7 +145,7 @@ def run_suite(suite, root, build_root, record, context):
         SHADOW_SYNC_TEST_POLICY_PYTHON=str(python),
         SHADOW_SYNC_TEST_PUBLISHER_EXECUTABLE=str(build_root / 'publisher-executable'),
         SHADOW_SYNC_TEST_POLICY_FRAMEWORK=str(framework),
-        SHADOW_SYNC_TEST_POLICY_SOURCE=str(ROOT / 'Resources/policy-runtime-source.json'))
+        SHADOW_SYNC_TEST_POLICY_SOURCE=str(policy_source))
     native = load('run-native-appkit')
     def plain(name, binary, args):
         value = native.child(['/usr/bin/sandbox-exec', '-f', str(isolation), str(binary), *args],
@@ -127,9 +160,9 @@ def run_suite(suite, root, build_root, record, context):
     inventory.validate_discovery(catalog, plain('discovery', executable, ['--list-ci-suites']))
     # Prove all closed fixture prefixes permit only this attempt. These are new
     # synthetic directories, never protected/user repository paths.
-    for index, prefix in enumerate(PREFIXES):
+    for index, (parent, prefix) in enumerate(FIXTURE_LOCATIONS):
         for label, token, allowed in (('own', nonce, True), ('foreign', uuid.uuid4().hex, False)):
-            canary = Path('/private/tmp') / (prefix + token + '.canary')
+            canary = Path(parent) / (prefix + token + '.canary')
             canary.mkdir(mode=0o700); identity = (canary.stat().st_dev, canary.stat().st_ino)
             marker = canary / 'marker'; marker.write_bytes(b'preserve')
             try:
@@ -163,7 +196,7 @@ def run_suite(suite, root, build_root, record, context):
                     and not result['errors'] and not result['interrupts']
                     and terminal['reservations'] == terminal['children'] == terminal['callbacks'] == 0
                     and terminal['spawned'] == terminal['reaped'], 'Runtime ownership did not drain')
-            require(not [p for prefix in PREFIXES for p in Path('/private/tmp').glob(prefix + nonce + '.*')],
+            require(not [p for parent, prefix in FIXTURE_LOCATIONS for p in Path(parent).glob(prefix + nonce + '.*')],
                     'Runtime fixture roots remain')
             require(not list((root / 'tmp').glob('shadow-sync-runtime-owner-*'))
                     and not list((root / 'tmp').glob('shadow-sync-closed-runner-*')), 'Owner records remain')
@@ -177,6 +210,10 @@ def run_suite(suite, root, build_root, record, context):
                         == terminal['spawned'] == 0
                         and terminal['reason'] == ('cancelled' if behavior == 'cancel-before-run' else 'callerLost'),
                         'Pre-admission cancellation failed')
+        require(policy_source.read_bytes() == (ROOT / 'Resources/policy-runtime-source.json').read_bytes(),
+                'Policy source fixture changed')
+        native.binary_identity(executable, build.sha(source_executable))
+        require(stat.S_IMODE(executable.stat().st_mode) == 0o755, 'Runtime fixture mode changed')
         build.verify(record, build_root, context)
         require(all(build.sha(Path(path)) == digest for path, digest in git_identity.items()), 'Git fixture changed')
     finally:
