@@ -15,10 +15,15 @@
     "Sources/ShadowSyncCore/RuntimeFixtureSession.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeSuiteGuardian.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Tests/Tooling/test_app_workflow.py": "Bind reviewer approval to the real current CI workflow and attempt, and apply the complete protected-path boundary to ordinary and dependency PRs. Preserve negative race/trust tests; privileged App workflows remain disabled pending live qualification.",
+    "Tests/Tooling/test_dependency_maintenance.py": "Bind reviewer approval to the real current CI workflow and attempt, and apply the complete protected-path boundary to ordinary and dependency PRs. Preserve negative race/trust tests; privileged App workflows remain disabled pending live qualification.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "scripts/auto-merge.py": "Bind reviewer approval to the real current CI workflow and attempt, and apply the complete protected-path boundary to ordinary and dependency PRs. Preserve negative race/trust tests; privileged App workflows remain disabled pending live qualification.",
     "scripts/build-app.sh": "Build all three executable products in one package invocation with shared compilation; verify every product architecture and minimum OS. Preserve real fixture paths only in nondistributed testing builds; production retains source-path sanitization and separate native qualification.",
     "scripts/ci-shards.py": "All mandatory jobs use macOS 26 arm64 because tooling includes native fixtures; deterministic complete-suite partition and fail-closed aggregate remain unchanged.",
+    "scripts/dependency-maintenance.py": "Bind reviewer approval to the real current CI workflow and attempt, and apply the complete protected-path boundary to ordinary and dependency PRs. Preserve negative race/trust tests; privileged App workflows remain disabled pending live qualification.",
+    "scripts/github_automation.py": "Bind reviewer approval to the real current CI workflow and attempt, and apply the complete protected-path boundary to ordinary and dependency PRs. Preserve negative race/trust tests; privileged App workflows remain disabled pending live qualification.",
     "scripts/run-native-appkit.py": "Stage and verify only the exact AppDelegate and native-acceptance contract files inside the owned fixture; preserve all native assertions, source bindings, isolation and cleanup.",
     "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
@@ -892,7 +897,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_app_workflow.py",
-      "sha256": "f2bef84a706b3c3e49a96994cc52eff1d51effadf4415622d25c6cb5b9019473"
+      "sha256": "ace2e81a722458922af84f6b1e7361b6e23e62e5ed011de8a53a019d3962a4f0"
     },
     {
       "mode": "100644",
@@ -917,7 +922,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_dependency_maintenance.py",
-      "sha256": "4fbbc4cbfd996560dbd8e6a40b81daaa8f8c059df7fad0e8c9be6614a6aaa79e"
+      "sha256": "90842f019d7838ab91f2621bc1907e695e5746bbc4465b7a6f0b51b117f0c2f9"
     },
     {
       "mode": "100644",
@@ -1032,7 +1037,7 @@
     {
       "mode": "100644",
       "path": "scripts/auto-merge.py",
-      "sha256": "1172ae9bd51a8845707bb6b6beb960dd3ba3e3a272414b86bf1374ce17274b6d"
+      "sha256": "82a386a1f561a1d497c9346a531d5c4a294a346116440e869072e6d2e751f197"
     },
     {
       "mode": "100755",
@@ -1077,7 +1082,7 @@
     {
       "mode": "100644",
       "path": "scripts/dependency-maintenance.py",
-      "sha256": "f7bab6994888a8f4bf283424d22dcb15d37ccb6300da12e4b711e6c953258f61"
+      "sha256": "3211cef32e648a4e52c896a05c44e1db62b9096249d18890f457dbb9a9e0cd3a"
     },
     {
       "mode": "100755",
@@ -1087,7 +1092,7 @@
     {
       "mode": "100644",
       "path": "scripts/github_automation.py",
-      "sha256": "d72b43dc94a1fec1f9258b451ba2b9e89f691032668ee72b46d3c31144787b14"
+      "sha256": "d2c806bf3216c6f7d9b8a5d36c914b408c3e183adca0acd7cdbeae8bd5614e14"
     },
     {
       "mode": "100644",

@@ -30,12 +30,13 @@ def pull(number=10):
             'base': {'ref': 'main', 'repo': {'full_name': github.REPO}},
             'head': {'ref': 'dependabot/github_actions/example-2.0.0', 'sha': HEAD,
                      'repo': {'full_name': github.REPO}},
-            'auto_merge': None, 'mergeable': True}
+            'auto_merge': None, 'mergeable': True, 'changed_files': 1}
 
 
 def gate(**kwargs):
     return dict({'id': 1, 'name': 'ci-required', 'head_sha': HEAD, 'status': 'completed',
-                 'conclusion': 'success', 'app': {'id': 15368}}, **kwargs)
+                 'conclusion': 'success', 'app': {'id': 15368}, 'check_suite': {'id': 20},
+                 'details_url': f'https://github.com/{github.REPO}/actions/runs/10/job/1'}, **kwargs)
 
 
 class Harness:
@@ -44,6 +45,7 @@ class Harness:
         self.current = {p['number']: copy.deepcopy(p) for p in self.prs}
         self.calls, self.merges, self.logs = [], [], []
         self.behind, self.checks, self.reviews = 0, [gate()], []
+        self.files = [{'filename': 'Dependencies/release-notes.md'}]
         self.failures, self.reads, self.moves = {}, {}, {}
         self.main_reads = 0
         self.move_main = False
@@ -67,8 +69,25 @@ class Harness:
         if '/check-runs?' in path:
             assert token == 'read-only-fixture' and paginate
             return [{'check_runs': copy.deepcopy(self.checks)}]
+        if '/actions/' in path:
+            assert token == 'read-only-fixture'
+            if path.endswith('/workflows/ci.yml'):
+                return {'id': 30, 'path': '.github/workflows/ci.yml', 'state': 'active'}
+            if path.endswith('/runs/10'):
+                return {'id': 10, 'workflow_id': 30, 'path': '.github/workflows/ci.yml',
+                        'event': 'pull_request', 'head_sha': self.checks[0]['head_sha'],
+                        'head_repository': {'full_name': github.REPO}, 'status': 'completed',
+                        'conclusion': 'success', 'run_attempt': 1, 'check_suite_id': 20}
+            assert path == f'repos/{github.REPO}/actions/runs/10/attempts/1/jobs?per_page=100' and paginate
+            return [{'jobs': [{'name': 'ci-required', 'id': 1, 'run_id': 10, 'run_attempt': 1,
+                              'head_sha': self.checks[0]['head_sha'], 'status': 'completed',
+                              'conclusion': 'success',
+                              'check_run_url': f'https://api.github.com/repos/{github.REPO}/check-runs/1'}]}]
         match = re.search(r'/pulls/(\d+)', path)
         number = int(match[1])
+        if '/files?' in path:
+            assert paginate
+            return [copy.deepcopy(self.files)]
         if path.endswith('/update-branch'):
             return {'message': 'Updating'}
         if '/reviews?' in path:
@@ -100,6 +119,28 @@ class Harness:
 
 
 class DependencyPolicyTests(unittest.TestCase):
+    def test_protected_or_incomplete_files_refuse_every_dependency_write(self):
+        cases = [[], [{'filename': 'Package.resolved'}],
+                 [{'filename': 'Dependencies/fixture.lock'}],
+                 [{'filename': 'install.sh'}],
+                 [{'filename': 'Resources/com.kleinperkins.shadow-sync.plist.template'}],
+                 [{'filename': 'Sources/ShadowSyncCore/QualifiedCommandGraph.swift'}],
+                 [{'filename': 'Sources/ShadowSyncCore/RetainedCleanupRegistry.swift'}],
+                 [{'filename': '.github/workflows/ci.yml'}],
+                 [{'filename': 'Dependencies/release-notes.md', 'previous_filename': 'scripts/release.py'}],
+                 [{'filename': '../unsafe'}],
+                 [{'filename': 'Dependencies/release-notes.md'}] * 2]
+        protected = [row[0]['filename'] for row in cases if len(row) == 1
+                     and github.protected_files([row[0]['filename']])]
+        for name in protected:
+            cases.extend([[{'filename': name, 'previous_filename': 'Dependencies/release-notes.md'}],
+                          [{'filename': 'Dependencies/release-notes.md', 'previous_filename': name}]])
+        for files in cases:
+            with self.subTest(files=files):
+                h = Harness(); h.files = files; h.behind = 1
+                h.run()
+                self.assertEqual(h.writes(), []); self.assertEqual(h.merges, [])
+
     def test_patch_minor_and_major_use_identical_current_ci_policy(self):
         for version in ('1.0.1', '1.1.0', '2.0.0'):
             with self.subTest(version=version):

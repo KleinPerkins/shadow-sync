@@ -43,7 +43,21 @@ class AppWorkflowTests(unittest.TestCase):
             if '/check-runs?' in path:
                 self.assertEqual(token, 'fixture-read-token')
                 return [{'check_runs': [{'name': 'ci-required', 'head_sha': head, 'status': 'completed',
-                                         'conclusion': 'success' if passing_gate else 'failure', 'app': {'id': 15368}}]}]
+                                         'conclusion': 'success' if passing_gate else 'failure', 'app': {'id': 15368},
+                                         'id': 1, 'check_suite': {'id': 20},
+                                         'details_url': f'https://github.com/{app.REPO}/actions/runs/10/job/1'}]}]
+            if '/actions/' in path:
+                self.assertEqual(token, 'fixture-read-token')
+                if path.endswith('/workflows/ci.yml'):
+                    return {'id': 30, 'path': '.github/workflows/ci.yml', 'state': 'active'}
+                if path.endswith('/runs/10'):
+                    return {**run, 'workflow_id': 30, 'path': '.github/workflows/ci.yml',
+                            'status': 'completed', 'run_attempt': 1, 'check_suite_id': 20}
+                self.assertTrue(paginate)
+                self.assertEqual(path, f'repos/{app.REPO}/actions/runs/10/attempts/1/jobs?per_page=100')
+                return [{'jobs': [{'name': 'ci-required', 'id': 1, 'run_id': 10, 'run_attempt': 1,
+                                  'head_sha': head, 'status': 'completed', 'conclusion': 'success',
+                                  'check_run_url': f'https://api.github.com/repos/{app.REPO}/check-runs/1'}]}]
             if '/commits/' in path:
                 return [[{'number': candidate_number}]]
             if '/files?' in path:
@@ -123,7 +137,18 @@ class AppWorkflowTests(unittest.TestCase):
                 self.assertEqual(self.exercise(candidate_number=number), (1, [], []))
 
     def test_shadow_sync_authority_paths_cannot_receive_ordinary_approval(self):
-        paths = ['.github/workflows/release.yml', 'scripts/install-app.sh',
+        paths = ['install.sh', 'Dependencies/fixture.lock',
+                 'Resources/com.kleinperkins.shadow-sync.plist.template',
+                 'Sources/ShadowSyncCore/QualifiedCommandGraph.swift',
+                 'Sources/ShadowSyncCore/RetainedCleanupRegistry.swift',
+                 'Sources/ShadowSyncCore/CommandCustodian.swift',
+                 'Sources/ShadowSyncCore/OwnedSpawnAnchor.swift',
+                 'config/ci-suites.json', 'Resources/policy-runtime-source.json',
+                 'Sources/ShadowSyncCore/FreshStateInitialization.swift',
+                 'Sources/ShadowSyncCore/CustodyResources.swift',
+                 'Sources/ShadowSyncCore/LifecyclePublisher.swift',
+                 'Sources/ShadowSyncCore/ClosedProcessRunner.swift',
+                 '.github/workflows/release.yml', 'scripts/install-app.sh',
                  'Sources/ShadowSyncCore/InstallationLifecycle.swift',
                  'Sources/ShadowSyncCore/ReleaseIdentity.swift',
                  'Sources/ShadowSyncCore/SecureState.swift',
@@ -136,8 +161,11 @@ class AppWorkflowTests(unittest.TestCase):
                  'Resources/Info.plist', 'ShadowSync.xcodeproj/project.pbxproj',
                  'Configuration/Signing.entitlements', 'BUILD_NUMBER', 'Package.resolved']
         for path in paths:
-            with self.subTest(path=path):
-                self.assertEqual(self.exercise(file_entries=[{'filename': path}]), (0, [], []))
+            for entry in ({'filename': path},
+                          {'filename': path, 'previous_filename': 'Tests/moved.py'},
+                          {'filename': 'Tests/moved.py', 'previous_filename': path}):
+                with self.subTest(entry=entry):
+                    self.assertEqual(self.exercise(file_entries=[entry]), (0, [], []))
 
     def test_full_file_roster_includes_both_names_of_a_rename(self):
         self.assertEqual(app.complete_changed_files({'changed_files': 2}, [

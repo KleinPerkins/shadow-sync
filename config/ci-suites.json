@@ -978,6 +978,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-ci-app-identity": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_ci_app_identity"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-ci-executor": {
       "argv": [
         "python3",
@@ -1329,6 +1341,7 @@
         "tooling-test-app-credential-readiness",
         "tooling-test-app-workflow",
         "tooling-test-application-ci",
+        "tooling-test-ci-app-identity",
         "tooling-test-ci-executor",
         "tooling-test-ci-git-source",
         "tooling-test-ci-results",
@@ -2887,6 +2900,18 @@
         ],
         "kind": "static"
       },
+      "tooling-test-ci-app-identity": {
+        "cases": [
+          "test_ci_app_identity.CIAppIdentityTests.test_ambiguous_missing_or_foreign_checks_refuse",
+          "test_ci_app_identity.CIAppIdentityTests.test_complete_exact_workflow_attempt_and_read_only_token",
+          "test_ci_app_identity.CIAppIdentityTests.test_foreign_or_malformed_check_url_refuses",
+          "test_ci_app_identity.CIAppIdentityTests.test_missing_duplicate_or_foreign_required_job_refuses",
+          "test_ci_app_identity.CIAppIdentityTests.test_stale_attempt_or_mismatched_job_cannot_reuse_success",
+          "test_ci_app_identity.CIAppIdentityTests.test_wrong_run_head_origin_event_or_state_refuses",
+          "test_ci_app_identity.CIAppIdentityTests.test_wrong_workflow_identity_path_or_disabled_state_refuses"
+        ],
+        "kind": "static"
+      },
       "tooling-test-ci-executor": {
         "cases": [
           "test_ci_executor.CIExecutorTests.test_actual_command_nonzero_continues_independent_drained_suite",
@@ -2996,6 +3021,7 @@
           "test_dependency_maintenance.DependencyPolicyTests.test_old_dismissed_or_other_app_approvals_do_not_count",
           "test_dependency_maintenance.DependencyPolicyTests.test_pagination_retains_all_results_and_rejects_bad_shapes",
           "test_dependency_maintenance.DependencyPolicyTests.test_patch_minor_and_major_use_identical_current_ci_policy",
+          "test_dependency_maintenance.DependencyPolicyTests.test_protected_or_incomplete_files_refuse_every_dependency_write",
           "test_dependency_maintenance.DependencyPolicyTests.test_repeat_pass_skips_own_current_approval_and_existing_auto_merge",
           "test_dependency_maintenance.DependencyPolicyTests.test_workflow_recovers_events_without_executing_untrusted_pr_code",
           "test_dependency_maintenance.DependencyPolicyTests.test_wrong_runtime_repository_or_branch_fails_closed"

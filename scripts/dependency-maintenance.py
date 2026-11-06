@@ -4,7 +4,8 @@ import os
 import sys
 
 from github_automation import (REPO, AutomationError, SHA, api, pages, dependency_pr,
-                               ci_passed, reviewer_identity, approve_and_arm, enable_merge, Reporter)
+                               ci_passed, reviewer_identity, approve_and_arm, enable_merge, Reporter,
+                               complete_changed_files, protected_files)
 
 
 def reconcile(*, request=api, merge=enable_merge, report=None, read_token, reviewer_login):
@@ -23,6 +24,10 @@ def reconcile(*, request=api, merge=enable_merge, report=None, read_token, revie
             pr = request(path)
             if not dependency_pr(pr):
                 report(f'PR #{number}: no longer eligible; skipped.')
+                continue
+            files = complete_changed_files(pr, pages(request, path + '/files?per_page=100'))
+            if protected_files(files):
+                report(f'PR #{number}: protected dependency content requires the administration route; skipped.')
                 continue
             sha = pr['head']['sha']
             main_sha = request(f'repos/{REPO}/git/ref/heads/main')['object']['sha']

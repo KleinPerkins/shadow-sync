@@ -1,54 +1,14 @@
 #!/usr/bin/env python3
 """Trusted workflow_run handler for ordinary PRs; dependency PRs have their own policy."""
-import fnmatch
 import json
 import os
 from pathlib import Path
 import sys
 
 from github_automation import (REPO, SHA, AutomationError, Reporter, api, pages, same_repo_pr,
-                               dependabot_author, reviewer_identity, approve_and_arm, enable_merge)
+                               dependabot_author, reviewer_identity, approve_and_arm, enable_merge,
+                               complete_changed_files, protected_files)
 
-PROTECTED = (
-    '.github/*', '.gitleaks*', '_ops/*', 'Makefile', 'AGENTS.md', 'SECURITY.md',
-    'LICENSE*', 'CODEOWNERS', 'scripts/*', 'Configuration/*', 'Package.*',
-    'VERSION', 'BUILD_NUMBER', 'release-please*', '.release-please*',
-    '*.xcodeproj/*', '*.xcworkspace/*', '*.entitlements',
-    'Resources/Info.plist', 'Resources/*contract*.json', 'Resources/*release*.json',
-    'Resources/PolicyAdapter.py', 'Resources/*appcast*',
-    'Sources/ShadowSyncLifecycleCoordinator/*', 'Sources/ShadowSyncUpdateSupport/*',
-    'Sources/ShadowSyncApp/AppUpdater.swift',
-    'Sources/ShadowSyncApp/AppLifecycleRouter.swift', 'Sources/ShadowSyncApp/LifecycleMain.swift',
-    'Sources/ShadowSyncCore/InstallationLifecycle.swift', 'Sources/ShadowSyncCore/HostControl.swift',
-    'Sources/ShadowSyncCore/ReleaseIdentity.swift', 'Sources/ShadowSyncCore/SecureState.swift',
-    'Sources/ShadowSyncCore/RepositoryAuthorityStore.swift', 'Sources/ShadowSyncCore/RepositoryPolicy.swift',
-    'Sources/ShadowSyncCatalog/RepositorySelectionPolicy.swift',
-)
-
-
-def complete_changed_files(pr, entries):
-    """Reject incomplete, duplicate or malformed file evidence before approval."""
-    count = pr.get('changed_files')
-    if type(count) is not int or not 0 < count <= 3000 or len(entries) != count:
-        raise AutomationError('Incomplete changed-file evidence')
-    files, current = [], set()
-    for entry in entries:
-        if not isinstance(entry, dict):
-            raise AutomationError('Malformed changed-file evidence')
-        name = entry.get('filename')
-        names = [name]
-        if 'previous_filename' in entry:
-            names.append(entry['previous_filename'])
-        for value in names:
-            if (not isinstance(value, str) or not value or value.startswith('/')
-                    or '\\' in value or any(ord(char) < 32 or ord(char) == 127 for char in value)
-                    or any(part in ('', '.', '..') for part in value.split('/'))):
-                raise AutomationError('Unsafe changed-file path')
-        if name in current:
-            raise AutomationError('Duplicate changed-file evidence')
-        current.add(name)
-        files.extend(names)
-    return files
 
 
 def eligible(pr, run, files):
@@ -62,7 +22,7 @@ def eligible(pr, run, files):
         return False
     if pr.get('author_association') not in ('OWNER', 'MEMBER', 'COLLABORATOR'):
         return False
-    return bool(files) and not any(fnmatch.fnmatchcase(path, pattern) for path in files for pattern in PROTECTED)
+    return bool(files) and not protected_files(files)
 
 
 def main():
