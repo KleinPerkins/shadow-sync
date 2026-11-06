@@ -1218,6 +1218,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-release-assembly": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_release_assembly"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-release-credential-readiness": {
       "argv": [
         "python3",
@@ -1361,6 +1373,7 @@
         "tooling-test-policy-entry",
         "tooling-test-policy-runtime-build",
         "tooling-test-python-test-suites",
+        "tooling-test-release-assembly",
         "tooling-test-release-credential-readiness",
         "tooling-test-release-metadata",
         "tooling-test-runtime-suite-inventory",
@@ -3251,6 +3264,26 @@
           "test_python_test_suites.PythonSuiteTests.test_linked_module_and_linked_ancestor_refuse",
           "test_python_test_suites.PythonSuiteTests.test_skip_expected_failure_unexpected_success_and_setup_errors_refuse",
           "test_python_test_suites.PythonSuiteTests.test_success_reports_exact_actual_case_ids"
+        ],
+        "kind": "static"
+      },
+      "tooling-test-release-assembly": {
+        "cases": [
+          "test_release_assembly.ReleaseAssemblyTests.test_ad_hoc_or_wrong_producer_runtime_refuses",
+          "test_release_assembly.ReleaseAssemblyTests.test_assembly_preserves_inputs_and_emits_explicit_unqualified_milestones",
+          "test_release_assembly.ReleaseAssemblyTests.test_changed_checkout_prevents_assembly",
+          "test_release_assembly.ReleaseAssemblyTests.test_changed_runtime_bytes_or_escaping_links_refuse",
+          "test_release_assembly.ReleaseAssemblyTests.test_entitlements_are_rejected",
+          "test_release_assembly.ReleaseAssemblyTests.test_existing_output_is_preserved",
+          "test_release_assembly.ReleaseAssemblyTests.test_extra_or_aliased_bundle_nodes_refuse",
+          "test_release_assembly.ReleaseAssemblyTests.test_runtime_change_during_copy_refuses",
+          "test_release_assembly.ReleaseAssemblyTests.test_runtime_root_mode_drift_refuses",
+          "test_release_assembly.ReleaseAssemblyTests.test_signing_failure_retains_partial_output_without_success_receipt",
+          "test_release_assembly.ReleaseAssemblyTests.test_stale_application_resource_refuses",
+          "test_release_assembly.ReleaseAssemblyTests.test_substituted_executable_with_unchanged_metadata_refuses",
+          "test_release_assembly.ReleaseAssemblyTests.test_substitution_between_producer_check_and_raw_capture_refuses_before_signing",
+          "test_release_assembly.ReleaseAssemblyTests.test_testing_or_wrong_source_metadata_refuses_before_output",
+          "test_release_assembly.ReleaseAssemblyTests.test_wrong_publisher_and_ambiguous_signer_refuse"
         ],
         "kind": "static"
       },
