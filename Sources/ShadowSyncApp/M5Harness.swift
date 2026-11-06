@@ -3412,8 +3412,8 @@ enum M5AppKitDriver {
             fputs("M5 foreground transaction failure: \(stage)\n", stderr)
             return false
         }
-        let sourceDirectory = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
+        let sourceDirectory = URL(fileURLWithPath: root)
+            .appendingPathComponent("source")
         guard let delegateSource = try? String(
             contentsOf: sourceDirectory.appendingPathComponent(
                 "AppDelegate.swift"
@@ -3441,18 +3441,15 @@ enum M5AppKitDriver {
               ) else {
             return fail("activation API contract")
         }
-        let capabilityRoot = sourceDirectory
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
         guard let readme = try? String(
-            contentsOf: capabilityRoot.appendingPathComponent("README.md"),
+            contentsOf: sourceDirectory.appendingPathComponent("native-acceptance.md"),
             encoding: .utf8
         ),
               readme.contains("`00-dirty-first`"),
               readme.contains("as `SKIPPED_DIRTY`"),
               !readme.contains("`00-fail-first`"),
               !readme.contains("`FAILED_INSPECTION`") else {
-            return fail("README UAT taxonomy")
+            return fail("native acceptance runbook taxonomy")
         }
         guard let mapping = try? makeMapping(root: root) else {
             return fail("mapping")
@@ -4454,8 +4451,8 @@ enum M5AppKitDriver {
             )
         }
         let expectedController = ObjectIdentifier(selection)
-        let sourceDirectory = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
+        let sourceDirectory = URL(fileURLWithPath: root)
+            .appendingPathComponent("source")
         guard let delegateSource = try? String(
             contentsOf: sourceDirectory.appendingPathComponent(
                 "AppDelegate.swift"

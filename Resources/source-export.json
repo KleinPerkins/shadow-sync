@@ -1,6 +1,7 @@
 {
   "adaptations": {
     ".github/workflows/app-auto-merge.yml": "Both privileged jobs statically disabled before checkout/token mint; CI provenance and dependency-content activation blockers remain open.",
+    "Sources/ShadowSyncApp/M5Harness.swift": "Read exact runner-staged source-contract snapshots inside the native fixture; retain AppKit API and canonical native-acceptance assertions without build-path or host-home reads.",
     "Sources/ShadowSyncCore/Body3Coordinator.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
     "Sources/ShadowSyncCore/DM2Body1SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/DM2Body2SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
@@ -16,8 +17,9 @@
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
-    "scripts/build-app.sh": "Standalone build-only packaging includes all three products; ordinary app launch is excluded from building and remains in separately isolated native qualification.",
+    "scripts/build-app.sh": "Build all three executable products in one package invocation with shared compilation; verify every product architecture and minimum OS. Preserve real fixture paths only in nondistributed testing builds; production retains source-path sanitization and separate native qualification.",
     "scripts/ci-shards.py": "All mandatory jobs use macOS 26 arm64 because tooling includes native fixtures; deterministic complete-suite partition and fail-closed aggregate remain unchanged.",
+    "scripts/run-native-appkit.py": "Stage and verify only the exact AppDelegate and native-acceptance contract files inside the owned fixture; preserve all native assertions, source bindings, isolation and cleanup.",
     "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
@@ -190,7 +192,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncApp/M5Harness.swift",
-      "sha256": "90f9f167a2ca2025335ba83be3b5356bc0e178ab2ee4f044dd8432532f95b827"
+      "sha256": "a1f800ff4c8ae195d44ba82ef00b49d8edc66622567350848c0ebf24515883f2"
     },
     {
       "mode": "100644",
@@ -945,7 +947,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_native_appkit_runner.py",
-      "sha256": "73c8962c44b6d64b05e7ccdd284b6c77c939600ba167f4e7cfc7b06a801927e0"
+      "sha256": "13fef2633d854287a286535a113a940da36fded93c263b2ea2689550fbe80699"
     },
     {
       "mode": "100644",
@@ -1055,7 +1057,7 @@
     {
       "mode": "100755",
       "path": "scripts/build-app.sh",
-      "sha256": "85658ee51a49d3da526783e4ee78c0989476a96455cab3c1d7024d6428f4e59c"
+      "sha256": "8b9c578d1f2989bc27d8d686180768d530a5827d96435416f50d883c74f7db00"
     },
     {
       "mode": "100644",
@@ -1145,7 +1147,7 @@
     {
       "mode": "100644",
       "path": "scripts/run-native-appkit.py",
-      "sha256": "b0cda49cf46e73db7435b5d9dfbf4c36edbd28af38f952b065d91c717cc25056"
+      "sha256": "e5b8466d189ffcfa85a4a92bd7db8d12c1025d1e5611948c34fcfed916b8e521"
     },
     {
       "mode": "100644",

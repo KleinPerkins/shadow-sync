@@ -68,6 +68,20 @@ class ApplicationCIRegistrationTests(unittest.TestCase):
             self.assertTrue(all(u['runner'] == 'macos-26' and u['architecture'] == 'arm64' for u in partitions + full))
 
 
+class PublisherFixtureTests(unittest.TestCase):
+    def test_failed_fixture_compilation_retains_diagnostics_and_never_signs(self):
+        build = load('ci-build')
+        with tempfile.TemporaryDirectory(prefix='shadow-sync-publisher-build-') as directory:
+            root = Path(directory).resolve()
+            result = subprocess.CompletedProcess([], 1, b'compiler output', b'fixture compile failure')
+            with mock.patch.object(build.subprocess, 'run', return_value=result), \
+                    mock.patch.object(build, 'run') as sign, self.assertRaisesRegex(ValueError, 'publisher-build.log'):
+                build.publisher_fixture(root)
+            sign.assert_not_called()
+            self.assertEqual((root / 'publisher-build.log').read_bytes(), b'compiler outputfixture compile failure')
+            self.assertFalse((root / 'publisher-executable').exists())
+
+
 class RuntimeOutputTests(unittest.TestCase):
     def setUp(self):
         self.runtime = load('ci-runtime')

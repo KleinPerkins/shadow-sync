@@ -76,6 +76,10 @@ jobs:
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.raw
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stdout
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stderr
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/expanded/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/Python.framework/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/scratch/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/package/**
           if-no-files-found: error
           retention-days: 14
   compile-package:
@@ -117,6 +121,10 @@ jobs:
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.raw
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stdout
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stderr
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/expanded/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/Python.framework/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/scratch/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/package/**
           if-no-files-found: error
           retention-days: 14
   runtime-safety:
@@ -158,6 +166,10 @@ jobs:
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.raw
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stdout
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stderr
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/expanded/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/Python.framework/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/scratch/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/package/**
           if-no-files-found: error
           retention-days: 14
   native-and-lifecycle:
@@ -199,6 +211,10 @@ jobs:
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.raw
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stdout
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stderr
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/expanded/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/Python.framework/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/scratch/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/package/**
           if-no-files-found: error
           retention-days: 14
   package-contract:
@@ -240,6 +256,10 @@ jobs:
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.raw
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stdout
             ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stderr
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/expanded/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/Python.framework/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/scratch/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/package/**
           if-no-files-found: error
           retention-days: 14
   ci-required:

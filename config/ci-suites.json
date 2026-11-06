@@ -2874,6 +2874,7 @@
           "test_application_ci.ArtifactAttemptTests.test_linked_unit_directory_refused",
           "test_application_ci.ArtifactAttemptTests.test_only_exact_attempt_and_unit_is_accepted",
           "test_application_ci.ArtifactAttemptTests.test_stale_or_duplicate_attempt_preserved_and_refused",
+          "test_application_ci.PublisherFixtureTests.test_failed_fixture_compilation_retains_diagnostics_and_never_signs",
           "test_application_ci.RuntimeOutputTests.test_actual_guardian_prefix_maps_without_synthesized_passes",
           "test_application_ci.RuntimeOutputTests.test_failed_partial_execution_preserves_only_observed_passes",
           "test_application_ci.RuntimeOutputTests.test_missing_or_empty_actual_output_cannot_complete",
@@ -3095,6 +3096,8 @@
           "test_native_appkit_runner.NativeExecutorTests.test_profile_restricts_home_network_outside_writes_and_unrelated_exec",
           "test_native_appkit_runner.NativeExecutorTests.test_recovery_observes_present_absent_and_denied_without_signaling",
           "test_native_appkit_runner.NativeExecutorTests.test_request_protocol_keeps_latency_and_ui_contracts",
+          "test_native_appkit_runner.NativeExecutorTests.test_source_contract_snapshot_is_exact_private_and_read_only_at_origin",
+          "test_native_appkit_runner.NativeExecutorTests.test_source_drift_links_and_unregistered_snapshot_entries_are_refused",
           "test_native_appkit_runner.NativeExecutorTests.test_spawn_failure_cannot_claim_cleanup_or_success",
           "test_native_appkit_runner.NativeExecutorTests.test_spawn_only_crash_observes_known_identity_but_keeps_failed_fixture"
         ],

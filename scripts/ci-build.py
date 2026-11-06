@@ -41,6 +41,17 @@ def run(argv, *, timeout=600):
                           timeout=timeout).stdout.decode('utf-8')
 
 
+def publisher_fixture(root):
+    fixture = ROOT / 'Tests/Fixtures/PublisherExecutionFixture.c'
+    result = subprocess.run(['/usr/bin/xcrun', 'clang', '-arch', 'arm64', '-Os',
+        '-DSHADOW_SYNC_TESTING', '-o', str(root / 'publisher-executable'), str(fixture)],
+        cwd=ROOT, capture_output=True, timeout=120)
+    (root / 'publisher-build.log').write_bytes(result.stdout + result.stderr)
+    require(result.returncode == 0, 'Publisher fixture build failed; see publisher-build.log')
+    run(['/usr/bin/codesign', '--force', '--sign', '-', '--timestamp=none', str(root / 'publisher-executable')])
+    return dict(sha256=sha(root / 'publisher-executable'), source_sha256=sha(fixture))
+
+
 def regular_inventory(root):
     entries = {}
     for path in sorted(root.rglob('*')):
@@ -158,10 +169,7 @@ def prepare(root, context, job):
         (root / 'policy-build.log').write_bytes(result.stdout + result.stderr)
         require(result.returncode == 0, 'Policy fixture build failed')
         record['policy'] = dict(receipt_sha256=sha(root / 'policy/runtime-build.json'))
-        fixture = ROOT / 'Tests/Fixtures/PublisherExecutionFixture.c'
-        run(['/usr/bin/xcrun', 'clang', '-arch', 'arm64', '-Os', '-o', str(root / 'publisher-executable'), str(fixture)])
-        run(['/usr/bin/codesign', '--force', '--sign', '-', '--timestamp=none', str(root / 'publisher-executable')])
-        record['publisher'] = dict(sha256=sha(root / 'publisher-executable'), source_sha256=sha(fixture))
+        record['publisher'] = publisher_fixture(root)
     record['build_seconds'] = round(time.monotonic() - started, 6)
     verify(record, root, context)
     with receipt.open('x') as stream:

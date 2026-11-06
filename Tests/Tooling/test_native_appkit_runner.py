@@ -179,6 +179,49 @@ os._exit(0)
             self.assertEqual(runner.binary_identity(source, runner.sha(b'fixture')), before)
             with self.assertRaises(FileExistsError): runner.stage_binary(source, staged, runner.sha(b'fixture'))
 
+    def source_contract_fixture(self):
+        temporary = tempfile.TemporaryDirectory(prefix='shadow-sync-source-contract-')
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        source, target = root / 'checkout', root / 'fixture'
+        source.mkdir(mode=0o700); target.mkdir(mode=0o700)
+        expected = {}
+        for name, path in runner.SOURCE_CONTRACTS.items():
+            item = source / path; item.parent.mkdir(parents=True, exist_ok=True)
+            item.write_bytes(('fixture:' + name).encode()); expected[path] = runner.sha(item.read_bytes())
+        return source, target, expected
+
+    def test_source_contract_snapshot_is_exact_private_and_read_only_at_origin(self):
+        source, target, expected = self.source_contract_fixture()
+        with patch.object(runner, 'ROOT', source):
+            runner.stage_source_contracts(target, expected)
+        for name, path in runner.SOURCE_CONTRACTS.items():
+            self.assertEqual((target / 'source' / name).read_bytes(), (source / path).read_bytes())
+            self.assertEqual((target / 'source' / name).stat().st_mode & 0o777, 0o600)
+            self.assertEqual(runner.sha((source / path).read_bytes()), expected[path])
+        runner.verify_source_contracts(target, expected)
+        with patch.object(runner, 'ROOT', source), self.assertRaises(FileExistsError):
+            runner.stage_source_contracts(target, expected)
+
+    def test_source_drift_links_and_unregistered_snapshot_entries_are_refused(self):
+        source, target, expected = self.source_contract_fixture()
+        with patch.object(runner, 'ROOT', source):
+            runner.stage_source_contracts(target, expected)
+        name, path = next(iter(runner.SOURCE_CONTRACTS.items()))
+        item = target / 'source' / name; original = item.read_bytes()
+        item.write_bytes(b'drift')
+        with self.assertRaises(ValueError): runner.verify_source_contracts(target, expected)
+        item.write_bytes(original)
+        extra = target / 'source' / 'extra'; extra.write_bytes(b'extra')
+        with self.assertRaises(ValueError): runner.verify_source_contracts(target, expected)
+        extra.unlink(); item.unlink(); item.symlink_to(source / path)
+        with self.assertRaises((ValueError, OSError)): runner.verify_source_contracts(target, expected)
+        self.assertEqual((source / path).read_bytes(), original)
+        (source / path).write_bytes(b'changed origin')
+        next_target = target.parent / 'next'; next_target.mkdir(mode=0o700)
+        with patch.object(runner, 'ROOT', source), self.assertRaises(ValueError):
+            runner.stage_source_contracts(next_target, expected)
+
     def test_profile_restricts_home_network_outside_writes_and_unrelated_exec(self):
         value = runner.sandbox_profile(Path('/fixture/account'),
                 Path('/private/tmp/fixture/ShadowSync'), Path('/private/tmp/fixture')).decode()

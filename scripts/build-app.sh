@@ -141,23 +141,24 @@ BUILD_ARGS=(
   --scratch-path "$SCRATCH"
   --configuration release
   --disable-index-store
-  -Xswiftc -file-prefix-map -Xswiftc "$ROOT=/shadow-sync-source"
   -Xswiftc -debug-prefix-map -Xswiftc "$SCRATCH=/shadow-sync-build"
   -Xlinker -rpath -Xlinker /usr/lib/swift
   -Xlinker -rpath -Xlinker @loader_path
   -Xlinker -reproducible
 )
 if [ "$MODE" = "testing" ]; then
+  # Fixture readers use #filePath; testing binaries are never distributed.
   BUILD_ARGS+=(-Xswiftc -DSHADOW_SYNC_TESTING)
+else
+  BUILD_ARGS+=(-Xswiftc -file-prefix-map -Xswiftc "$ROOT=/shadow-sync-source")
 fi
 
-swift build "${BUILD_ARGS[@]}" --product ShadowSync >&2
-swift build "${BUILD_ARGS[@]}" --product ShadowSyncLifecycleCoordinator >&2
-swift build "${BUILD_ARGS[@]}" --product ShadowSyncSelfTest >&2
+# Build the package once so its executables share one compilation of the core.
+swift build "${BUILD_ARGS[@]}" >&2
 BIN_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
 SOURCE_BINARY="$BIN_DIR/ShadowSync"
 COORDINATOR_BINARY="$BIN_DIR/ShadowSyncLifecycleCoordinator"
-for SOURCE_BINARY in "$SOURCE_BINARY" "$COORDINATOR_BINARY"; do
+for SOURCE_BINARY in "$SOURCE_BINARY" "$COORDINATOR_BINARY" "$BIN_DIR/ShadowSyncSelfTest"; do
 [ -x "$SOURCE_BINARY" ] || { printf 'build-app: executable missing after build: %s\n' "$SOURCE_BINARY" >&2; exit 1; }
 [ "$(lipo -archs "$SOURCE_BINARY")" = "$(uname -m)" ] || {
   printf 'build-app: executable architecture does not match the producing host\n' >&2
