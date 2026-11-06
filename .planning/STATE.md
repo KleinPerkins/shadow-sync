@@ -2,7 +2,7 @@
 
 ## Current private-candidate qualification — 2026-11-05
 
-The latest retained evidence covers two separate 252-file candidates. The preserved base has 334 passing tooling tests and **681 of 845 mandatory cases in 21 complete suites**, with both discovery caller cases passing. A separate testing-only M2 integration candidate builds and passes 334 tooling tests plus **47 of 845 cases in four complete suites**: guardian 7, custody 11, M2 19 and practical-M2 10. These source/build identities are distinct; their counts are not added, and neither candidate has been silently promoted or exported. Earlier sections retain historical observations. Complete current-source runtime/native qualification, production integration, reviewed source export, hosted application CI and ordinary App delivery, signed release, installation/update, minimum-OS acceptance, physical UAT and legacy retirement remain open.
+The latest private 252-file candidate passes 334 tooling tests and **46 of 849 mandatory cases in five complete suites**: guardian 7, custody 11, closed runner 10, M3 15 and practical-M3 3. Its descriptor runner retains original suspended-child ownership through admission, process-group cleanup and output EOF. The fetch-failure continuation group now reports its five existing scenarios separately, preserving every assertion and the 60-second per-case limit. The preserved base has 681/845 cases on a different source; the earlier M2 candidate has 47/845 on another source. These counts are not combined, and no candidate has been silently promoted or exported. Complete current-source runtime/native qualification, production custodian and trampoline integration, reviewed source export, hosted application CI and ordinary App delivery, signed release, installation/update, minimum-OS acceptance, physical UAT and legacy retirement remain open.
 
 - Repository key: `29e9090a-7b77-443d-b953-9b1deef3bc60`
 - Lifecycle: active implementation
@@ -1261,3 +1261,30 @@ Private evidence bindings (sanitized digests only):
 - legacy-discovery/legacy-suite-integration-v1/source-contract-v5.json: `afa428b95af1af7113c82cd579a97af0a559a26a44eed02b9273afb5ec848915`.
 
 - legacy-discovery/legacy-suite-integration-v1/identity-v5.json: `44c3fd64ca8dd06f6abdf762fcac09554550034207ed8d4223a3aa1b6324830a`.
+
+
+## Descriptor runner and M3 fixture qualification
+
+The private candidate integrates the original suspended-child anchor into the descriptor Git runner. Token admission and resume use the same retained owner; the runner drains the actual group and output EOF before releasing borrowed descriptors or authority. Fixture Git setup uses the existing closed runner, and M3 cases register their actual children under fixture custody. Production durable-custodian and trampoline-preflight integration remain separate open gates.
+
+Independent source review found no P1/P2 in the bounded change. Testing and production builds succeeded; all 334 tooling tests passed. The exact current source completed 46 registered cases across five suites, with source/binary-bound raw evidence, deliberate cancellation/caller-loss checks, original-handle reaping and fixture cleanup. All 228 testing-positive exclusion markers and the testing-positive callback field are absent from the three production products. This is local development-toolchain evidence, not signed-artifact, supported-minimum-OS, hosted application-CI or installed behavior qualification.
+
+Two failed attempts remain preserved. The first passed six M3 cases before a hook-residue assertion failed because the isolation profile denied its fixture script; all 748 children were reaped. A fixed harmless canary proved baseline denial, then a narrow nonce-bound exact post-merge path rule passed positive and wrong-name/suffix/foreign-namespace negative checks. The second passed eight M3 cases before the five-scenario continuation group reached its shared 60-second fixture deadline; all 1,173 children were reaped. The final correction splits that compound group into five explicit cases with a byte-preserved assertion body and unchanged per-case budget. The mandatory inventory grows from 845 to 849 cases; no scenario, assertion or mandatory suite is removed. Fresh hook canaries and all 15 M3 plus three practical-M3 cases pass on the final source.
+
+The guardian integration roster now covers 25 suites and 728 cases; registration is not execution proof. Sixteen legacy suites containing 121 cases still require fixture integration. The current 46-case execution receipt leaves 803 cases unqualified on this exact source. Historical results remain bound to their original source, and all native UI, production lifecycle, public source, operational delivery, release, installation, minimum OS, physical UAT and two-release/90-day retirement gates remain open.
+
+Private evidence bindings (SHA-256 only; raw receipts retained privately):
+
+- source-v7.json: `37d40880c508474f76525834954f6ca655dcf3f966438ce4924884b00a5ba5c3`.
+- build-v7.json: `0a50ed8e892462abbdf80b7d2cad90151075f9df06ad427df1af8938a82890c0`.
+- production-build-v3.json: `779abc7292aeebb859af8d24bcf3e24086169ee0576a8aeffc40fdf681bdec96`.
+- production-exclusion-v3.json: `cb34fb4da37383eb41c2b53979d181dbb7beac556bc5db5093bbe3b62f099184`.
+- tooling-v6.json: `594e5efb683a3f14461a1a6be31cd410cf02fce8020fd3da9696ee985a814479`.
+- native-transport-v7.json: `fe9e8bd7f7b9a8ce98485427655322b094527f66425cb6d55863e9d17f5de75c`.
+- native-m3-v3.json: `3e343e7d59d809cc0f4ef15be9fb5d3283876dba4e232c8d155bfc8d54961f1d`.
+- qualification-ledger-v3.json: `8c74506078c32d776ba8c4c56fc8a2b08c79b2d6e618144854460ac3d482e405`.
+- m3-scenario-split-v1.json: `345d30d374994da340a7f8e2ab66f2cce4aa97e23c0c2d761714a1e920b5698d`.
+- hook-profile-v1.json: `d352cd4a2d8408c7dcf22140f4fdd75a9eba73ea92a9955db521bb9fe9da18b5`.
+- native-m3-v1.json: `e2037a8043944d937de1c0ea13c2a868dbb08055eb89d50fcf1f894d1ebb2329`.
+- native-m3-v2.json: `84004cafc23a10d1496344cdc71f169d9e8077514175f05c6866dbe6e07a0b21`.
+- descriptor-review-v1/outcome-v1.json: `2bbb34da1ce6e2256edf87701d8afea9d1f84b2e5e4500708d70b0dc507dde00`.
