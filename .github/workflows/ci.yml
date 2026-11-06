@@ -147,6 +147,10 @@ jobs:
           ref: ${{ env.CI_REVISION }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Select the admitted Apple Git fixture on this disposable runner
+        run: |
+          sudo /usr/bin/xcode-select --switch /Library/Developer/CommandLineTools
+          test "$(env -u DEVELOPER_DIR /usr/bin/xcrun --find git)" = /Library/Developer/CommandLineTools/usr/bin/git
       - name: Execute the independently owned suite partition
         env:
           CI_UNIT: ${{ matrix.id }}
