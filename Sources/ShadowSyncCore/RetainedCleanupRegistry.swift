@@ -196,15 +196,42 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     static let shared = RetainedCleanupRegistry()
     fileprivate final class ResultCell: @unchecked Sendable {
         private let mutex = NSLock()
+        private var completion = DispatchGroup()
+        private var completionPublished = false
         private var value = CustodyRegistryResult(phase: .starting, reason: nil, journal: nil, stdout: Data(), stderr: Data())
         private var receipt: UInt64 = 0
+        init() { completion.enter() }
         // This lock protects value copies only: no disk I/O, queue waits or callbacks.
         func publish(_ result: CustodyRegistryResult, deadline: UInt64) {
-            mutex.lock(); value = result; receipt = deadline; mutex.unlock()
+            mutex.lock()
+            let terminal = result.phase == .finished || result.phase == .cleanupPending
+            let wake = !completionPublished && (terminal || receipt != deadline) ? completion : nil
+            value = result; receipt = deadline
+            if terminal { completionPublished = true }
+            else if wake != nil {
+                // Cancellation can shorten the receipt while the result is
+                // still nonterminal. Replace the notification under this same
+                // lock, so each waiter captures its deadline and generation.
+                completion = DispatchGroup(); completion.enter()
+            }
+            mutex.unlock()
+            // Pending is caller-terminal while the registry retains the child.
+            // Each captured generation wakes every waiter exactly once.
+            wake?.leave()
         }
-        func read() -> (CustodyRegistryResult, UInt64) {
-            mutex.lock(); defer { mutex.unlock() }; return (value, receipt)
+        func read() -> (CustodyRegistryResult, UInt64, DispatchGroup) {
+            mutex.lock(); defer { mutex.unlock() }; return (value, receipt, completion)
         }
+        #if SHADOW_SYNC_TESTING
+        private var waitBarriers: [CustodyLeaseTestingBarrier] = []
+        func pauseWaiters(_ barriers: [CustodyLeaseTestingBarrier]) {
+            mutex.lock(); waitBarriers = barriers; mutex.unlock()
+        }
+        func takeWaitBarrier() -> CustodyLeaseTestingBarrier? {
+            mutex.lock(); defer { mutex.unlock() }
+            return waitBarriers.isEmpty ? nil : waitBarriers.removeFirst()
+        }
+        #endif
     }
     final class Handle: @unchecked Sendable {
         fileprivate let key: String
@@ -220,7 +247,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         /// A deadline response leaves actual ownership in that registry.
         func wait() -> CustodyRegistryResult {
             while true {
-                let (value, deadline) = cell.read()
+                let (value, deadline, notification) = cell.read()
                 if value.phase == .finished || value.phase == .cleanupPending { return value }
                 if DispatchTime.now().uptimeNanoseconds >= deadline {
                     registry.queue.async {
@@ -229,9 +256,17 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                     return CustodyRegistryResult(phase: .cleanupPending, reason: value.reason ?? .timeout,
                         journal: nil, stdout: value.stdout, stderr: value.stderr, trace: value.trace)
                 }
-                usleep(10_000)
+                // Publication wakes the caller immediately; the original
+                // or shortened monotonic receipt bounds a blocked registry.
+                #if SHADOW_SYNC_TESTING
+                _ = cell.takeWaitBarrier()?.pause()
+                #endif
+                _ = notification.wait(timeout: DispatchTime(uptimeNanoseconds: deadline))
             }
         }
+        #if SHADOW_SYNC_TESTING
+        func testingPauseWaiters(_ barriers: [CustodyLeaseTestingBarrier]) { cell.pauseWaiters(barriers) }
+        #endif
     }
     fileprivate final class Entry {
         let cell = ResultCell()
@@ -278,6 +313,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     }
     private let queue = DispatchQueue(label: "com.kleinperkins.shadow-sync.custody-registry")
     private var timer: DispatchSourceTimer?
+    private var timerMilliseconds: Int?
     private var entries: [String: Entry] = [:]
     private var order: [String] = []
     private var cursor = 0
@@ -419,9 +455,26 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         #endif
     }
     private func ensureTimer() {
-        guard timer == nil, !entries.isEmpty else { return }
+        guard !entries.isEmpty else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let interval = entries.values.contains {
+            !$0.cancelled && $0.phase != .cleanupPending && now < $0.state.budget.work
+        } ? 2 : 20
+        if let timer {
+            if timerMilliseconds != interval {
+                timer.schedule(deadline: .now() + .milliseconds(interval), repeating: .milliseconds(interval),
+                    leeway: .milliseconds(interval == 2 ? 1 : 5))
+                timerMilliseconds = interval
+            }
+            return
+        }
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + .milliseconds(20), repeating: .milliseconds(20), leeway: .milliseconds(5))
+        // Active admission uses short bounded polls inside the unchanged 750ms
+        // catalog budget. Draining/pending work keeps the prior 20ms cadence;
+        // an unresolved transaction must not cause indefinite fast polling.
+        timer.schedule(deadline: .now() + .milliseconds(interval), repeating: .milliseconds(interval),
+            leeway: .milliseconds(interval == 2 ? 1 : 5))
+        timerMilliseconds = interval
         timer.setEventHandler { [weak self] in self?.tick() }; self.timer = timer; timer.resume()
     }
     private func killBootstrap(_ entry: Entry) {
@@ -666,7 +719,8 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             }
         }
         for entry in entries.values { entry.publish() }
-        if entries.isEmpty { timer?.cancel(); timer = nil; cursor = 0 }
+        if entries.isEmpty { timer?.cancel(); timer = nil; timerMilliseconds = nil; cursor = 0 }
+        else { ensureTimer() }
     }
     #if SHADOW_SYNC_TESTING
     enum TestReadDeferral { case statusAfterAdmission, outputUntilReleased }
@@ -701,6 +755,12 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         let entered = DispatchSemaphore(value: 0)
         queue.async { entered.signal(); usleep(1_500_000) }
         _ = entered.wait(timeout: .now() + .seconds(3))
+    }
+    func testingCancelAndPauseQueue(_ handle: Handle, _ barrier: CustodyLeaseTestingBarrier) {
+        queue.async {
+            if let entry = self.entries[handle.key] { self.cancel(entry, reason: .cancelled) }
+            _ = barrier.pause()
+        }
     }
     enum TestCut { case beforeSpawn, afterAnchor, afterOwner }
     private var nextTestCut: TestCut?
@@ -755,7 +815,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             for entry in entries.values {
                 entry.resources.closeControl(); entry.mapping?.releaseChildCopies(); entry.publish()
             }
-            timer?.cancel(); timer = nil
+            timer?.cancel(); timer = nil; timerMilliseconds = nil
             for entry in Array(entries.values) { remove(entry) }
         }
     }

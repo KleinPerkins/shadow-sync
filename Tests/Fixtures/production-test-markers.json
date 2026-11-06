@@ -270,6 +270,7 @@
     "m6-helper-lifecycle-postflight-timeout",
     "m6-helper-lifecycle-preflight-cancel",
     "m6-helper-lifecycle-preflight-foreign",
-    "m6-helper-lifecycle-preflight-overflow"
+    "m6-helper-lifecycle-preflight-overflow",
+    "m6-registry-cancel-shortens-waiters"
   ]
 }

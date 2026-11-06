@@ -388,6 +388,7 @@ public enum M6SelfTestRunner {
         try run("m6-registry-deadline-independent-of-queue") { try CustodyRegistrySelfTests.boundedWait() }
         try run("m6-registry-aggregate-output-reservation") { try CustodyRegistrySelfTests.outputReservation() }
         try run("m6-registry-queued-start-deadline") { try CustodyRegistrySelfTests.queuedStartDeadline() }
+        try run("m6-registry-cancel-shortens-waiters") { try CustodyRegistrySelfTests.shortenedWaiters() }
         try run("m6-context-unbundled-publisher-refusal") { try CustodyContextSelfTests.unsignedFactory() }
         try run("m6-context-read-scope-exclusion") { try CustodyContextSelfTests.readScopes() }
         try run("m6-context-read-phase-return-release") { try CustodyContextSelfTests.phaseReturn() }
@@ -2758,6 +2759,48 @@ private enum CustodyRegistrySelfTests {
             try until { h.snapshot().phase == .finished }
             try check(h.snapshot().journal?.outcome == .admissionRefused && registry.testingCount == 0,
                       "deadline killed or lost resumed helper")
+        }
+    }
+    static func shortenedWaiters() throws {
+        final class Results: @unchecked Sendable {
+            private let mutex = NSLock()
+            private var values: [CustodyRegistryResult] = []
+            func append(_ value: CustodyRegistryResult) { mutex.lock(); values.append(value); mutex.unlock() }
+            func snapshot() -> [CustodyRegistryResult] { mutex.lock(); defer { mutex.unlock() }; return values }
+        }
+        try fixture { location, registry in
+            let scope = try CustodyCatalogSelfTests.scope(location)
+            let resources = try make(scope, mode: "cancel", work: 2, receipt: 0.05)
+            let handle = try registry.start(resources: resources, helper: CustodyHelperExecutable.testing(releaseSHA256: scope.releaseSHA256))
+            try until { handle.snapshot().phase == .ready }
+            let barriers = [CustodyLeaseTestingBarrier(), CustodyLeaseTestingBarrier()]
+            let queueBarrier = CustodyLeaseTestingBarrier(), group = DispatchGroup(), results = Results()
+            handle.testingPauseWaiters(barriers)
+            defer {
+                barriers.forEach { $0.release() }; queueBarrier.release(); group.wait()
+            }
+            for _ in barriers {
+                group.enter()
+                DispatchQueue.global().async { results.append(handle.wait()); group.leave() }
+            }
+            // Both callers captured the old deadline before cancellation. The
+            // queue then publishes its shorter receipt and remains held, so
+            // neither pending nor terminal publication can wake them instead.
+            for barrier in barriers { try check(barrier.waitUntilEntered(), "waiter did not capture original receipt") }
+            registry.testingCancelAndPauseQueue(handle, queueBarrier)
+            try check(queueBarrier.waitUntilEntered(), "cancellation did not publish before queue hold")
+            barriers.forEach { $0.release() }
+            try check(group.wait(timeout: .now() + .seconds(1)) == .success,
+                      "waiters missed the shortened receipt while the registry was held")
+            let returned = results.snapshot()
+            try check(returned.count == 2 && returned.allSatisfy {
+                $0.phase == .cleanupPending && $0.reason == .cancelled && $0.journal == nil
+            }, "shortened receipt returned an invented completion")
+            try check(handle.snapshot().phase == .ready && registry.hasRetainedWork,
+                      "caller deadline released retained registry ownership")
+            queueBarrier.release()
+            try until { handle.snapshot().phase == .finished }
+            try check(registry.testingCount == 0, "subsequent terminal publication lost retirement")
         }
     }
     static func queuedStartDeadline() throws {

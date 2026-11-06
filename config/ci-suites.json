@@ -2345,6 +2345,7 @@
           "m6-registry-deadline-independent-of-queue",
           "m6-registry-aggregate-output-reservation",
           "m6-registry-queued-start-deadline",
+          "m6-registry-cancel-shortens-waiters",
           "m6-context-unbundled-publisher-refusal",
           "m6-context-read-scope-exclusion",
           "m6-context-read-phase-return-release",
