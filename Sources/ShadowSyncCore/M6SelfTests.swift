@@ -3312,11 +3312,16 @@ private enum CustodyHelperSelfTests {
                 "retained_count":String(registry.testingCount)]
             guard let journal = result.journal else { throw Failure(message:"missing terminal") }
             try check(journal.outcome == expected && journal.reason == reason,"wrong durable helper result: \(String(describing:journal.outcome)) / \(String(describing:journal.reason))")
-            try check(journal.custodian != nil && journal.custodian?.pid != UInt32(getpid()),"helper identity missing")
+            // Bind the value before branching: the qualified Swift optimizer
+            // otherwise misbalances a borrow across repeated optional projections.
+            guard let custodian = journal.custodian else { throw Failure(message: "helper identity missing") }
+            let custodianPID = custodian.pid
+            try check(custodianPID != UInt32(getpid()), "helper identity missing")
             if mode == "after-admit" {
                 try check(journal.target == nil && result.stdout.isEmpty,"target spawned after cancellation")
             } else {
-                try check(journal.target != nil && journal.target?.pid != journal.custodian?.pid,"target identity not separate")
+                guard let target = journal.target else { throw Failure(message: "target identity not separate") }
+                try check(target.pid != custodianPID, "target identity not separate")
                 if mode == "before-resume" || mode == "after-preparation" { try check(result.stdout.isEmpty,"cancelled suspended target executed") }
                 else if mode == "system-missing" { try check(result.stdout.isEmpty && journal.waitStatus == 128 << 8, "missing config fixture did not exit normally") }
                 else if mode == "system-complete" || mode == "system-faildata" {
