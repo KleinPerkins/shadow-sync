@@ -585,7 +585,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "0aa73e28d7c13967fc01ab8bfa0c2ee8f392e5f3dffe3804422754b866600db0"
+      "sha256": "46329405ae4ddaa682bc33ac7de0e280185e13fd213ad2477788db5cd289ad6b"
     },
     {
       "mode": "100644",
@@ -1095,7 +1095,7 @@
     {
       "mode": "100644",
       "path": "scripts/ci-runtime.py",
-      "sha256": "73edb32e58a87ae97fd4037d6eb232343391c646c17b29fe84e6e81a35ad450a"
+      "sha256": "821598f08d5f64bd553677c02f7c9f2d2c6c21f5288386add79a4dea782f9351"
     },
     {
       "mode": "100644",

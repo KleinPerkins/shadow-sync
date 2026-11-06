@@ -153,10 +153,13 @@ def run_suite(suite, root, build_root, record, context):
         SHADOW_SYNC_TEST_PUBLISHER_EXECUTABLE=str(build_root / 'publisher-executable'),
         SHADOW_SYNC_TEST_POLICY_FRAMEWORK=str(framework),
         SHADOW_SYNC_TEST_POLICY_SOURCE=str(policy_source))
+    if suite == 'm6':
+        # Closed test-only markers preserve the failing planner path and result.
+        env['SHADOW_SYNC_TEST_M6_DIAGNOSTICS'] = '1'
     if suite == 'discovery-caller':
-        # Existing bounded, typed fixture observations expose startup failures
+        # Existing bounded cost mode isolates session/publisher revalidation
         # without recording candidate paths, request contents or child output.
-        env['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'] = '1'
+        env['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'] = 'costs'
     native = load('run-native-appkit')
     def plain(name, binary, args):
         value = native.child(['/usr/bin/sandbox-exec', '-f', str(isolation), str(binary), *args],

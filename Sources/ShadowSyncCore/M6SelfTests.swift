@@ -4206,6 +4206,16 @@ enum StrictStateAdmissionSelfTests {
 }
 
 private enum SystemConfigCommandSelfTests {
+    // Closed, testing-only phase markers for the hosted planner crash. No path,
+    // metadata, error description or observed value enters diagnostic output.
+    private enum PlannerCheckpoint: String {
+        case beforeFreeze, afterFreeze, beforeObserver, beforeInspect
+        case observerCalled, dryRun, referenceProof, beforePending, returned, caughtPending
+        func record() {
+            guard ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_M6_DIAGNOSTICS"] == "1" else { return }
+            fputs("M6 PLANNER CHECKPOINT \(rawValue)\n", stderr); fflush(stderr)
+        }
+    }
     private struct Failure: Error { let message: String }
     private enum BodyFailure: Error { case unrelated }
     private final class RegistrationObservations: @unchecked Sendable {
@@ -4398,7 +4408,9 @@ private enum SystemConfigCommandSelfTests {
                         return
                     }
                     if scenario == "inspection-planner-pending" || scenario == "inspection-planner-ordinary" {
+                        PlannerCheckpoint.beforeFreeze.record()
                         let frozen = try handle.freezeConfiguration(account: account, configurationProbe: probe)
+                        PlannerCheckpoint.afterFreeze.record()
                         let admission = GitAdmissionSnapshot(effectiveURL: origin, transport: handle.githubIdentity.transport,
                             frozenConfigSHA256: frozen.snapshot.frozenSHA256)
                         let oid = String(repeating: "a", count: 40)
@@ -4421,13 +4433,18 @@ private enum SystemConfigCommandSelfTests {
                         let observed = RegistrationObservations()
                         var commands = 0
                         do {
-                            let draft = try RepositoryMaintenanceTesting.$registrationObserver.withValue({ observed.record($0) }) {
-                                try RepositoryMaintenancePlanner.inspect(clone: maintenanceClone, remote: remote,
+                            PlannerCheckpoint.beforeObserver.record()
+                            let draft = try RepositoryMaintenanceTesting.$registrationObserver.withValue({
+                                PlannerCheckpoint.observerCalled.record(); observed.record($0)
+                            }) {
+                                PlannerCheckpoint.beforeInspect.record()
+                                return try RepositoryMaintenancePlanner.inspect(clone: maintenanceClone, remote: remote,
                                     account: account, handle: handle, frozen: frozen, admission: admission,
                                     capturedNow: Date(), validateAdmission: session.validatePhaseCompletion) {
                                         arguments, _, _, _, _ in
                                         commands += 1
                                         if commands == 1 {
+                                            PlannerCheckpoint.dryRun.record()
                                             try check(arguments.contains("--dry-run"), "planner did not begin with dry-run")
                                             return ProcessResult(status: 0,
                                                 stdout: Data("Removing worktrees/first: fixture\nRemoving worktrees/second: fixture\n".utf8),
@@ -4435,19 +4452,25 @@ private enum SystemConfigCommandSelfTests {
                                                 outputByteLimit: 4096, timedOut: false, cancelled: false,
                                                 terminationRequested: false, processID: -1)
                                         }
+                                        PlannerCheckpoint.referenceProof.record()
                                         try check(arguments.contains("rev-parse"), "unexpected planner command")
-                                        if scenario == "inspection-planner-pending" { _ = try probe.activePath(account: account) }
+                                        if scenario == "inspection-planner-pending" {
+                                            PlannerCheckpoint.beforePending.record()
+                                            _ = try probe.activePath(account: account)
+                                        }
                                         return ProcessResult(status: 1, stdout: Data(), stderr: Data(),
                                             stdoutTruncated: false, stderrTruncated: false, outputByteLimit: 4096,
                                             timedOut: false, cancelled: false, terminationRequested: false, processID: -1)
                                     }
                             }
+                            PlannerCheckpoint.returned.record()
                             try check(scenario == "inspection-planner-ordinary", "planner swallowed pending cleanup")
                             try check(observed.snapshot == identifiers && commands == 3 && calls == 1,
                                       "ordinary proof refusal stopped unrelated registration inspection")
                             try check(draft.prunable.isEmpty && draft.moved.isEmpty && draft.diagnostics.count == 2
                                 && !draft.refusals.isEmpty && !context.isClosed, "ordinary planner warnings changed")
                         } catch SystemGitConfigurationError.cleanupPending {
+                            PlannerCheckpoint.caughtPending.record()
                             try check(scenario == "inspection-planner-pending" && observed.snapshot == ["first"]
                                 && commands == 2 && calls == 2 && context.isClosed && token.areFutureChildAdmissionsClosed,
                                 "planner accessed a later registration after pending cleanup")
