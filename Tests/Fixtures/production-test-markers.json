@@ -271,6 +271,13 @@
     "m6-helper-lifecycle-preflight-cancel",
     "m6-helper-lifecycle-preflight-foreign",
     "m6-helper-lifecycle-preflight-overflow",
-    "m6-registry-cancel-shortens-waiters"
+    "m6-registry-cancel-shortens-waiters",
+    "m6-initialization-handoff-ownership-and-staging",
+    "m6-initialization-handoff-concurrent-exclusion",
+    "m6-initialization-handoff-root-refusal",
+    "m6-initialization-handoff-receipt-control-refusal",
+    "m6-initialization-handoff-custody-fence-refusal",
+    "m6-initialization-handoff-copy-failure-retention",
+    "m6-initialization-handoff-retained-child"
   ]
 }

@@ -11,6 +11,7 @@
     "Sources/ShadowSyncCore/DM2Body4SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift": "Preserve existing isolated guardian cases; strengthen cancellation proof to non-default results and add post-assembly cancellation with later-clone no-work and nonselection assertions.",
     "Sources/ShadowSyncCore/DM4PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/FreshStateInitialization.swift": "Transfer a revalidated completed fresh publication into existing lifecycle authority using the original exclusive descriptions; one-shot consumption preserves receipts, fences and failure custody.",
     "Sources/ShadowSyncCore/InstallationLifecycle.swift": "Validate fixed LaunchAgent configuration from bounded no-follow snapshot bytes and revalidate captured file and parent identities before accepting it; retain current and legacy reader argument contracts.",
     "Sources/ShadowSyncCore/LifecycleLaunchCommand.swift": "Closed canonical lifecycle launch commands, strict bounded status parsing and independently reconstructed publisher/plist/qualified-graph authority; production qualification and installer entry remain gated.",
     "Sources/ShadowSyncCore/M4SelfTests.swift": "Retain lifecycle/ownership coverage and add disposable bound-plist, unsafe-input and post-read file/parent replacement refusals with identity-checked cleanup.",
@@ -24,6 +25,7 @@
     "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeFixtureSession.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeSuiteGuardian.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/SecureState.swift": "Retain original fresh-initialization locks in lifecycle authority; explicit command mode and borrowed-lease exclusion preserve operation locking through staged admission without reacquisition.",
     "Sources/ShadowSyncCore/SelectedRepositoryScope.swift": "Consume one freshly completed, private call-scoped catalog during rebind with one original metadata deadline; retain live policy/root/traversal/identity/postflight checks and ordinary public-bind rediscovery.",
     "Sources/ShadowSyncCore/SystemGitConfigurationProbe.swift": "Validate retained evidence against sticky failure and actual context/account without resolving new configuration or reopening cancellation-closed command admission.",
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
@@ -471,7 +473,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/FreshStateInitialization.swift",
-      "sha256": "3c6ad0b56088893296814b32409d737179ffcc137e5cbde7097baf70548880da"
+      "sha256": "424e6c2bbfe6d4e98f4f3d62fcb2fcbbc66bf0477371d168a27ea45bf79f9b69"
     },
     {
       "mode": "100644",
@@ -601,7 +603,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "8721d53faaf1348c7eeb15e1b7b1dcc6167b72d5ba0aad56d98d99c3de9c5959"
+      "sha256": "5d4edcf687919d75723227327bf0f497401d3409049f3d378139e5ac2a07f8f2"
     },
     {
       "mode": "100644",
@@ -831,7 +833,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SecureState.swift",
-      "sha256": "c318244c0496f41564aa440b94b98c9e9496d436ae7ec22e9970aa857de62f6c"
+      "sha256": "618ce44093efd840862a972acc6982f31d0e99effe4454180d72d4a9374f9355"
     },
     {
       "mode": "100644",
@@ -886,7 +888,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "93ea25843daba2383e9b233b99cf7082f6be8535bf8f5d2ce06f79d7bebcdbfd"
+      "sha256": "88fca257f8e91acb032268a58f89c6f14cde49e2440b37e052978f632d0e22e4"
     },
     {
       "mode": "100644",
@@ -921,7 +923,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_application_ci.py",
-      "sha256": "52d6c844e147451bd016955355636644efba58e63dc14a2670453654b9615cf1"
+      "sha256": "c4d2c9ec523e91cadc43828437debb1e44ac707ed4ad89ca78d7469d67be7678"
     },
     {
       "mode": "100644",
@@ -1051,7 +1053,7 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "71298e0f559db64ce8b9dc40c5b200beccfc959514e745bd82d500c1ab07601c"
+      "sha256": "49541cf7ab0dd16a3c174bfd92d58a6577c873cb167575cb9ebc9744d7549db1"
     },
     {
       "mode": "100644",

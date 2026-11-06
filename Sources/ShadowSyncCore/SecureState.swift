@@ -583,21 +583,27 @@ public final class RunAuthority: @unchecked Sendable {
     private let lifecycle: OwnedFileDescriptor
     private let operation: OwnedFileDescriptor
     private let run: OwnedFileDescriptor?
+    private let commandMode: CustodyAuthorityMode
+    private let releasesInitializationLocksForStaging: Bool
 
     public var stateDirectory: SecureStateDirectory { state }
 
     private init(
         state: SecureStateDirectory,
-        namespace: Int32,
-        lifecycle: Int32,
-        operation: Int32,
-        run: Int32?
+        namespace: OwnedFileDescriptor,
+        lifecycle: OwnedFileDescriptor,
+        operation: OwnedFileDescriptor,
+        run: OwnedFileDescriptor?,
+        commandMode: CustodyAuthorityMode,
+        releasesInitializationLocksForStaging: Bool = false
     ) {
         self.state = state
-        self.namespace = OwnedFileDescriptor(namespace)
-        self.lifecycle = OwnedFileDescriptor(lifecycle)
-        self.operation = OwnedFileDescriptor(operation)
-        self.run = run.map(OwnedFileDescriptor.init)
+        self.namespace = namespace
+        self.lifecycle = lifecycle
+        self.operation = operation
+        self.run = run
+        self.commandMode = commandMode
+        self.releasesInitializationLocksForStaging = releasesInitializationLocksForStaging
     }
 
     public static func acquireRun(at location: StateLocation) throws -> RunAuthority {
@@ -624,10 +630,11 @@ public final class RunAuthority: @unchecked Sendable {
                     )
                     return RunAuthority(
                         state: state,
-                        namespace: namespace,
-                        lifecycle: lifecycle,
-                        operation: operation,
-                        run: run
+                        namespace: OwnedFileDescriptor(namespace),
+                        lifecycle: OwnedFileDescriptor(lifecycle),
+                        operation: OwnedFileDescriptor(operation),
+                        run: OwnedFileDescriptor(run),
+                        commandMode: .mutation
                     )
                 } catch {
                     close(operation)
@@ -661,10 +668,11 @@ public final class RunAuthority: @unchecked Sendable {
                 )
                 return RunAuthority(
                     state: state,
-                    namespace: namespace,
-                    lifecycle: lifecycle,
-                    operation: operation,
-                    run: nil
+                    namespace: OwnedFileDescriptor(namespace),
+                    lifecycle: OwnedFileDescriptor(lifecycle),
+                    operation: OwnedFileDescriptor(operation),
+                    run: nil,
+                    commandMode: .lifecycleMutation
                 )
             } catch {
                 close(lifecycle)
@@ -674,6 +682,26 @@ public final class RunAuthority: @unchecked Sendable {
             close(namespace)
             throw error
         }
+    }
+
+    /// Rebind only the directory name after publication. Every lock descriptor
+    /// is a duplicate of the initializer's actual exclusive description.
+    static func adoptingPublishedState(_ publication: FreshStateInitialization.PublishedState) throws -> RunAuthority {
+        let state = try SecureStateDirectory.openExisting(publication.location)
+        let claims = try publication.leases.descriptorClaims()
+        var actual = stat()
+        guard fstat(state.descriptor.value, &actual) == 0,
+              let held = claims.first(where: { $0.role == .state }),
+              held.device == UInt64(actual.st_dev), held.inode == UInt64(actual.st_ino),
+              held.uid == actual.st_uid,
+              held.device == publication.result.stateDevice,
+              held.inode == publication.result.stateInode else { throw CustodyRecordError.fenced }
+        let locks = try publication.leases.duplicateInitializationLocks(publication)
+        guard let namespace = locks[.namespace], let lifecycle = locks[.lifecycle],
+              let operation = locks[.operation], let run = locks[.run] else { throw CustodyRecordError.fenced }
+        return RunAuthority(state: state, namespace: namespace, lifecycle: lifecycle,
+            operation: operation, run: run, commandMode: .lifecycleMutation,
+            releasesInitializationLocksForStaging: true)
     }
 
     private static func acquireLock(
@@ -766,9 +794,9 @@ public final class RunAuthority: @unchecked Sendable {
         ]
         if !observationOnly {
             members.append((.operation, operation))
-            if let run { members.append((.run, run)) }
+            if commandMode == .mutation, let run { members.append((.run, run)) }
         }
-        let mode: CustodyAuthorityMode = observationOnly ? .observation : (run == nil ? .lifecycleMutation : .mutation)
+        let mode: CustodyAuthorityMode = observationOnly ? .observation : commandMode
         let result = try CustodyAuthorityLeaseSet.copy(state: state, members: members, mode: mode,
             onRelease: { [weak self] in
                 guard let self else { return }
@@ -782,6 +810,10 @@ public final class RunAuthority: @unchecked Sendable {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
         custodyAdmissionClosed = true
         guard custodyBorrowCount == 0 else { throw SecureStateError.contention("command custody") }
+        if releasesInitializationLocksForStaging {
+            namespace.closeNow()
+            run?.closeNow()
+        }
         lifecycle.closeNow()
     }
 
@@ -1031,6 +1063,25 @@ final class CustodyAuthorityLeaseSet: @unchecked Sendable {
     func duplicate() throws -> CustodyAuthorityLeaseSet {
         try validate()
         return try Self.copy(state: state, members: members.map { ($0.role, $0.descriptor) }, mode: mode, parent: self)
+    }
+
+    /// Fresh publication is the only caller. These owners must not retain this
+    /// lease family: staged admission later closes namespace/run/lifecycle while
+    /// the transferred operation description remains exclusively held.
+    fileprivate func duplicateInitializationLocks(_ publication: FreshStateInitialization.PublishedState)
+        throws -> [CustodyDescriptorClaim.Role: OwnedFileDescriptor] {
+        guard publication.leases === self, mode == .mutation, retainedParent == nil else { throw CustodyRecordError.fenced }
+        try validate()
+        var copies: [CustodyDescriptorClaim.Role: OwnedFileDescriptor] = [:]
+        for member in members where member.role != .state {
+            copies[member.role] = OwnedFileDescriptor(try member.descriptor.duplicate(minimum: 201))
+            #if SHADOW_SYNC_TESTING
+            if publication.testingFailureAfterCopies == copies.count { throw CustodyRecordError.injectedFailure }
+            #endif
+        }
+        guard Set(copies.keys) == [.namespace, .lifecycle, .operation, .run] else { throw CustodyRecordError.fenced }
+        try validate()
+        return copies
     }
 
     func validate() throws { try Self.validate(state: state, members: members) }

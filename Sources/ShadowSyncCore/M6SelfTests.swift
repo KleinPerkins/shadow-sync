@@ -321,6 +321,13 @@ public enum M6SelfTestRunner {
         try run("m6-recovery-interrupted-journal-swap") { try CustodyRecoverySelfTests.interruptedSwap() }
         try run("m6-recovery-old-lock-binding-refusal") { try CustodyRecoverySelfTests.bindingMismatch() }
         try run("m6-initialization-publication-and-retained-locks") { try FreshStateSelfTests.publication() }
+        try run("m6-initialization-handoff-ownership-and-staging") { try FreshStateSelfTests.handoffOwnership() }
+        try run("m6-initialization-handoff-concurrent-exclusion") { try FreshStateSelfTests.handoffConcurrent() }
+        try run("m6-initialization-handoff-root-refusal") { try FreshStateSelfTests.handoffRootRefusal() }
+        try run("m6-initialization-handoff-receipt-control-refusal") { try FreshStateSelfTests.handoffProofRefusal() }
+        try run("m6-initialization-handoff-custody-fence-refusal") { try FreshStateSelfTests.handoffFenceRefusal() }
+        try run("m6-initialization-handoff-copy-failure-retention") { try FreshStateSelfTests.handoffCopyFailure() }
+        try run("m6-initialization-handoff-retained-child") { try FreshStateSelfTests.handoffRetainedChild() }
         try run("m6-initialization-ordinary-executable-refusal") { try FreshStateSelfTests.publisherRefusal() }
         try run("m6-initialization-existing-state-refusal") { try FreshStateSelfTests.existingState() }
         try run("m6-initialization-legacy-state-refusal") { try FreshStateSelfTests.legacyState() }
@@ -2023,6 +2030,221 @@ private enum FreshStateSelfTests {
         do { _ = try FreshStateInitialization.production() }
         catch is PublisherPolicyError { return }
         throw H.Failure(message: "ordinary app acquired initializer publisher identity")
+    }
+    private static let handoffLocks = ["latest.log", "lifecycle.lock", "operation.lock", "run.lock"]
+    private static func lockProbe(_ path: String, shared: Bool = false, busy: Bool) throws {
+        let fd = open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        try H.check(fd >= 0, "handoff lock probe open"); defer { close(fd) }
+        let result = flock(fd, (shared ? LOCK_SH : LOCK_EX) | LOCK_NB), code = errno
+        try H.check(busy ? result == -1 && code == EWOULDBLOCK : result == 0, "handoff lock exclusion changed")
+    }
+    private static func held(_ location: StateLocation) throws {
+        for name in handoffLocks { try lockProbe(location.path + "/" + name, shared: true, busy: true) }
+    }
+    static func handoffOwnership() throws {
+        try fixture { root, location, _ in
+            let initializer = try FreshStateInitialization.testing(root: root)
+            try H.refuses { _ = try initializer.takeInstallationAuthority() }
+            let published = try initializer.publish()
+            try held(location)
+            let authority = try initializer.takeInstallationAuthority(); defer { authority.release() }
+            try H.check(authority.stateDirectory.path == location.path, "handoff retained obsolete staging path")
+            var state = stat(); try H.check(fstat(authority.stateDirectory.descriptor.value, &state) == 0
+                && UInt64(state.st_ino) == published.stateInode && UInt64(state.st_dev) == published.stateDevice, "handoff root identity")
+            try held(location)
+            try H.refuses { _ = try initializer.takeInstallationAuthority() }
+            try H.refuses { _ = try initializer.publish() }
+            var first: CustodyAuthorityLeaseSet? = try authority.retainCommandLeases()
+            var last: CustodyAuthorityLeaseSet? = try first!.duplicate()
+            try H.check(first!.mode == .lifecycleMutation
+                && Set(try first!.descriptorClaims().map(\.role)) == [.state, .namespace, .lifecycle, .operation], "fresh lifecycle command roles")
+            let names: [CustodyDescriptorClaim.Role: String] = [.namespace: "latest.log", .lifecycle: "lifecycle.lock", .operation: "operation.lock"]
+            for claim in try first!.descriptorClaims() where claim.role != .state {
+                var named = stat(); try H.check(lstat(location.path + "/" + names[claim.role]!, &named) == 0
+                    && claim.device == UInt64(named.st_dev) && claim.inode == UInt64(named.st_ino), "handoff changed a lock inode")
+            }
+            first = nil
+            try H.refuses { try authority.permitStagedHostAdmission() }
+            try H.check(!authority.commandAdmissionIsOpen, "failed staging reopened admission")
+            try held(location)
+            try last!.validate(); last = nil
+            try authority.permitStagedHostAdmission()
+            for name in ["latest.log", "lifecycle.lock", "run.lock"] { try lockProbe(location.path + "/" + name, busy: false) }
+            try lockProbe(location.path + "/operation.lock", busy: true)
+            let observation = try LifecycleAdmissionAuthority.acquire(at: location); observation.release()
+            try H.refuses { _ = try authority.retainCommandLeases() }
+            try H.refuses { _ = try RunAuthority.acquireRun(at: location) }
+            authority.release()
+            let next = try RunAuthority.acquireRun(at: location); next.release()
+            try H.refuses { _ = try initializer.takeInstallationAuthority() }
+        }
+    }
+    private final class HandoffAttempt: @unchecked Sendable {
+        let initializer: FreshStateInitialization
+        private let mutex = NSLock()
+        private var value: RunAuthority?
+        private var failure: Error?
+        init(_ initializer: FreshStateInitialization) { self.initializer = initializer }
+        func take() {
+            do { let owner = try initializer.takeInstallationAuthority(); mutex.lock(); value = owner; mutex.unlock() }
+            catch { mutex.lock(); failure = error; mutex.unlock() }
+        }
+        func result() throws -> RunAuthority {
+            mutex.lock(); defer { mutex.unlock() }
+            if let failure { throw failure }
+            guard let value else { throw H.Failure(message: "handoff attempt returned no owner") }; return value
+        }
+        func release() { mutex.lock(); let owner = value; value = nil; mutex.unlock(); owner?.release() }
+    }
+    static func handoffConcurrent() throws {
+        for replaceAfterCopy in [false, true] {
+        try fixture { root, location, _ in
+            let initializer = try FreshStateInitialization.testing(root: root); _ = try initializer.publish()
+            let barrier = CustodyLeaseTestingBarrier(), attempt = HandoffAttempt(initializer), joined = DispatchGroup()
+            initializer.testingPauseInstallationHandoff(barrier)
+            joined.enter(); DispatchQueue.global().async { attempt.take(); joined.leave() }
+            defer { barrier.release(); joined.wait(); attempt.release() }
+            try H.check(barrier.waitUntilEntered(), "handoff did not reach duplicate/consume boundary")
+            try held(location)
+            try H.refuses { _ = try initializer.takeInstallationAuthority() }
+            try H.refuses { _ = try initializer.publish() }
+            let saved = location.path + ".saved"
+            if replaceAfterCopy {
+                try H.check(rename(location.path, saved) == 0 && mkdir(location.path, 0o700) == 0,
+                            "handoff final-validation replacement")
+            }
+            barrier.release(); joined.wait()
+            let owner: RunAuthority
+            if replaceAfterCopy {
+                try H.refuses { _ = try attempt.result() }
+                for name in handoffLocks { try lockProbe(saved + "/" + name, shared: true, busy: true) }
+                try H.check(rmdir(location.path) == 0 && rename(saved, location.path) == 0,
+                            "restore final-validation fixture")
+                owner = try initializer.takeInstallationAuthority()
+            } else { owner = try attempt.result() }
+            defer { owner.release() }
+            try held(location)
+            try owner.permitStagedHostAdmission()
+            try lockProbe(location.path + "/operation.lock", busy: true)
+            try H.refuses { _ = try initializer.takeInstallationAuthority() }
+        }
+        }
+    }
+    static func handoffRootRefusal() throws {
+        for alias in [false, true] {
+            try fixture { root, location, _ in
+                let initializer = try FreshStateInitialization.testing(root: root); _ = try initializer.publish()
+                let saved = location.path + ".saved"
+                try H.check(rename(location.path, saved) == 0, "handoff root replacement")
+                if alias { try H.check(symlink(saved, location.path) == 0, "handoff root alias") }
+                else { try H.check(mkdir(location.path, 0o700) == 0, "handoff replacement directory") }
+                try H.refuses { _ = try initializer.takeInstallationAuthority() }
+                for name in handoffLocks { try lockProbe(saved + "/" + name, shared: true, busy: true) }
+                if alias { try H.check(unlink(location.path) == 0, "remove fixture alias") }
+                else { try H.check(rmdir(location.path) == 0, "remove empty fixture replacement") }
+                try H.check(rename(saved, location.path) == 0, "restore fixture root")
+                let owner = try initializer.takeInstallationAuthority(); owner.release()
+            }
+        }
+    }
+    static func handoffProofRefusal() throws {
+        for phase in ["manifest", "created", "ready", "published", "control"] {
+            for missing in [false, true] {
+                try fixture { root, location, parent in
+                    let initializer = try FreshStateInitialization.testing(root: root); let result = try initializer.publish()
+                    let path = phase == "manifest" ? parent + "/.shadow-sync-initialization.json"
+                        : phase == "control" ? location.path + "/launcher.lock"
+                        : parent + "/.shadow-sync-initialization." + result.transaction + "." + phase + ".json"
+                    // Keep the saved control outside the exact state roster;
+                    // an extra child must not mask the intended inode refusal.
+                    let saved = root + "/handoff-proof.saved"
+                    try H.check(rename(path, saved) == 0, "handoff proof fixture save")
+                    if !missing { try H.write(phase == "control" ? Data() : Data("changed".utf8), path) }
+                    try H.refuses { _ = try initializer.takeInstallationAuthority() }
+                    try held(location)
+                    if !missing {
+                        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+                        try H.check(bytes == (phase == "control" ? Data() : Data("changed".utf8)), "handoff rewrote refused evidence")
+                        try H.check(unlink(path) == 0, "remove changed fixture proof")
+                    }
+                    try H.check(rename(saved, path) == 0, "restore fixture proof")
+                    let owner = try initializer.takeInstallationAuthority(); owner.release()
+                }
+            }
+        }
+    }
+    static func handoffFenceRefusal() throws {
+        var outstanding = Data()
+        try H.fixture { location, _ in
+            let scope = try H.scope(location)
+            outstanding = try CustodyCatalog.initialized.reserving(H.journal(scope)).encode()
+        }
+        for kind in ["missing", "malformed", "outstanding"] {
+            try fixture { root, location, _ in
+                let initializer = try FreshStateInitialization.testing(root: root); _ = try initializer.publish()
+                let path = location.path + "/custody/catalog.json"
+                try H.check(rename(path, root + "/handoff-catalog.saved") == 0, "save fixture catalog")
+                if kind != "missing" { try H.write(kind == "outstanding" ? outstanding : Data("changed".utf8), path) }
+                try H.refuses { _ = try initializer.takeInstallationAuthority() }
+                try held(location)
+                if kind != "missing" {
+                    try H.check(try Data(contentsOf: URL(fileURLWithPath: path)) == (kind == "outstanding" ? outstanding : Data("changed".utf8)), "handoff reset custody fence")
+                } else { try H.check(!FileManager.default.fileExists(atPath: path), "handoff recreated missing catalog") }
+            }
+        }
+    }
+    static func handoffCopyFailure() throws {
+        for count in 1...4 {
+            try fixture { root, location, _ in
+                let initializer = try FreshStateInitialization.testing(root: root); _ = try initializer.publish()
+                initializer.testingFailInstallationCopy(after: count)
+                try H.refuses { _ = try initializer.takeInstallationAuthority() }
+                try held(location)
+                let owner = try initializer.takeInstallationAuthority(); owner.release()
+                for name in handoffLocks { try lockProbe(location.path + "/" + name, busy: false) }
+            }
+        }
+    }
+    static func handoffRetainedChild() throws {
+        try fixture { root, location, _ in
+            let initializer = try FreshStateInitialization.testing(root: root); _ = try initializer.publish()
+            let owner = try initializer.takeInstallationAuthority(); defer { owner.release() }
+            let registry = RetainedCleanupRegistry.testingInstance()
+            var failure: Error?
+            do {
+                var resources: CustodyRequestResources? = try CustodyHelperSelfTests.resources(location,
+                    mode: "lifecycle-preflight-cancel", work: 5, lifecycleOwner: owner)
+                weak var retained = resources
+                let handle = try registry.start(resources: resources!, helper: CustodyHelperExecutable.testingCustodian())
+                resources = nil
+                try CustodyHelperSelfTests.until {
+                    String(decoding: handle.snapshot().stderr, as: UTF8.self).contains("shadow-sync-fixture-serial:0:ready:")
+                }
+                try H.check(retained != nil && registry.testingCount == 1, "fresh child lost retained owner")
+                try H.refuses { try owner.permitStagedHostAdmission() }
+                try held(location)
+                handle.cancel()
+                try CustodyHelperSelfTests.until { handle.snapshot().phase == .finished && registry.testingCount == 0 && retained == nil }
+                try H.check(handle.snapshot().journal?.authority == .lifecycleMutation
+                    && handle.snapshot().journal?.reason == .cancelled, "fresh child authority or cancellation changed")
+                try owner.permitStagedHostAdmission()
+                let observation = try LifecycleAdmissionAuthority.acquire(at: location); observation.release()
+                try lockProbe(location.path + "/operation.lock", busy: true)
+            } catch { failure = error }
+            registry.testingRequestCancellation()
+            let diagnostic = MonotonicDeadline(seconds: 5)
+            var reported = false
+            while true {
+                do { try registry.testingDispose(); break }
+                catch {
+                    if diagnostic.hasExpired && !reported {
+                        fputs("M6 HANDOFF CLEANUP PENDING\n", stderr); fflush(stderr); reported = true
+                    }
+                    usleep(5_000)
+                }
+            }
+            if let failure { throw failure }
+        }
     }
     static func existingState() throws {
         try fixture { root, location, parent in

@@ -18,6 +18,19 @@ final class FreshStateInitialization {
         let stateInode: UInt64
         let publicationReceiptSHA256: String
     }
+    /// Only this initializer can construct a publication capability. The
+    /// installer receives a RunAuthority, never this capsule or raw descriptors.
+    struct PublishedState {
+        let location: StateLocation
+        let result: Result
+        let leases: CustodyAuthorityLeaseSet
+        #if SHADOW_SYNC_TESTING
+        fileprivate(set) var testingFailureAfterCopies: Int?
+        #endif
+        fileprivate init(location: StateLocation, result: Result, leases: CustodyAuthorityLeaseSet) {
+            self.location = location; self.result = result; self.leases = leases
+        }
+    }
     private let publisher: LifecyclePublisher?
     private let location: StateLocation
     private let parent: SecureStateDirectory
@@ -28,6 +41,7 @@ final class FreshStateInitialization {
     private let mutex = NSLock()
     private var leases: CustodyAuthorityLeaseSet?
     private var completed: Result?
+    private var installationAuthorityTaken = false
     private static let manifestName = ".shadow-sync-initialization.json"
     private static let guardName = ".shadow-sync-initialization.lock"
     private static let finalName = "shadow-sync"
@@ -250,6 +264,7 @@ final class FreshStateInitialization {
     func publish() throws -> Result {
         guard mutex.try() else { throw CustodyRecordError.busy }
         defer { mutex.unlock() }
+        guard !installationAuthorityTaken else { throw CustodyRecordError.fenced }
         try validate()
         if let completed {
             var current = stat()
@@ -345,7 +360,75 @@ final class FreshStateInitialization {
                             publicationReceiptSHA256: CustodyRecordBinding.digest(published))
         completed = result; return result
     }
+
+    /// Transfers original open-file descriptions after publication; no lock is
+    /// reopened or unlocked. Failure leaves the initializer's owners intact.
+    /// This does not start an installation or permit post-staged commands.
+    func takeInstallationAuthority() throws -> RunAuthority {
+        guard mutex.try() else { throw CustodyRecordError.busy }
+        defer { mutex.unlock() }
+        guard !installationAuthorityTaken, let completed, let leases,
+              leases.mode == .mutation else { throw CustodyRecordError.fenced }
+        try validatePublication(completed, leases: leases)
+        #if SHADOW_SYNC_TESTING
+        var publication = PublishedState(location: location, result: completed, leases: leases)
+        publication.testingFailureAfterCopies = installationCopyFailureAfter
+        installationCopyFailureAfter = nil
+        #else
+        let publication = PublishedState(location: location, result: completed, leases: leases)
+        #endif
+        let authority = try RunAuthority.adoptingPublishedState(publication)
+        #if SHADOW_SYNC_TESTING
+        if let barrier = installationHandoffBarrier {
+            installationHandoffBarrier = nil
+            guard barrier.pause() else { throw CustodyRecordError.busy }
+        }
+        #endif
+        try validatePublication(completed, leases: leases)
+        installationAuthorityTaken = true
+        self.leases = nil
+        // Local publication/store references expire before the caller can use
+        // staged admission. The returned owner retains no parent lease family.
+        return authority
+    }
+
+    private func validatePublication(_ result: Result, leases: CustodyAuthorityLeaseSet) throws {
+        try validate()
+        let p = parent.descriptor.value
+        let manifest = try read(Self.manifestName, at: p)
+        guard manifest == (try initialManifest()) else { throw CustodyRecordError.fenced }
+        let wire = try CustodyWire.decode(manifest, maximum: 4096)
+            .object(keys: ["schema", "transaction", "release", "parent", "guard"])
+        guard wire["transaction"] == .string(result.transaction) else { throw CustodyRecordError.fenced }
+        let state = try directory(Self.finalName, at: p)
+        let identity = try Self.node(state.value, uid: location.uid, directory: true)
+        guard identity.device == result.stateDevice, identity.inode == result.stateInode,
+              let held = try leases.descriptorClaims().first(where: { $0.role == .state }),
+              held.device == identity.device, held.inode == identity.inode else { throw CustodyRecordError.fenced }
+        let prefix = ".shadow-sync-initialization." + result.transaction
+        guard try !exists(prefix, at: p) else { throw CustodyRecordError.conflict }
+        let controls = try controlIdentities(state)
+        let published = try phase("published", manifest: manifest, state: identity, controls: controls)
+        guard try read(prefix + ".created.json", at: p) == phase("created", manifest: manifest, state: identity),
+              try read(prefix + ".ready.json", at: p) == phase("ready", manifest: manifest, state: identity, controls: controls),
+              try read(prefix + ".published.json", at: p) == published,
+              CustodyRecordBinding.digest(published) == result.publicationReceiptSHA256 else { throw CustodyRecordError.fenced }
+        let store = try CustodyCatalogStore(leases: leases)
+        try store.checkFence(ownRequests: [], scope: result.transaction, mode: .mutation)
+        try validate()
+        var named = stat()
+        guard fstatat(p, Self.finalName, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              Node(named) == identity else { throw CustodyRecordError.fenced }
+    }
     #if SHADOW_SYNC_TESTING
+    private var installationHandoffBarrier: CustodyLeaseTestingBarrier?
+    private var installationCopyFailureAfter: Int?
+    func testingFailInstallationCopy(after count: Int) {
+        mutex.lock(); installationCopyFailureAfter = count; mutex.unlock()
+    }
+    func testingPauseInstallationHandoff(_ barrier: CustodyLeaseTestingBarrier) {
+        mutex.lock(); installationHandoffBarrier = barrier; mutex.unlock()
+    }
     static func testing(root: String, release: String = String(repeating: "e", count: 64)) throws -> FreshStateInitialization {
         let location = try StateLocation.isolated(root: root)
         return try Self(location: location, release: release, publisher: nil)
