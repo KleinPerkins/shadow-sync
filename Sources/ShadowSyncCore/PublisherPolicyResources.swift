@@ -109,6 +109,92 @@ enum PublisherCodeVerifier {
         }
     }
 
+    /// A point-in-time authenticated socket-peer observation. This value carries
+    /// neither installation ownership nor command authority; every consequential
+    /// session transition must authenticate the retained socket again and compare
+    /// the observation with its original session binding.
+    struct AuditPeerObservation: Equatable, Sendable {
+        let uid: uid_t
+        let gid: gid_t
+        let pid: pid_t
+        let pidVersion: Int32
+        let auditToken: Data
+
+        fileprivate init(uid: uid_t, gid: gid_t, pid: pid_t, pidVersion: Int32, auditToken: Data) {
+            self.uid = uid; self.gid = gid; self.pid = pid
+            self.pidVersion = pidVersion; self.auditToken = auditToken
+        }
+    }
+
+    /// The caller must obtain `expected` from its authenticated exact candidate
+    /// installation binding. A peer message, serialized observation or same-team
+    /// identity cannot supply that authority. Socket peers never use the owned
+    /// suspended-child PID lookup below.
+    static func livePeer(socket: OwnedFileDescriptor, expected: Identity,
+                         expectedUID: uid_t) throws -> AuditPeerObservation {
+        do {
+            // Retain the same open-file description under its ownership lock;
+            // concurrent close/reuse of the caller's descriptor cannot redirect
+            // any of the checks below. The duplicate is always close-on-exec.
+            let descriptor = try socket.duplicate()
+            defer { close(descriptor) }
+            let before = try peerObservation(descriptor, expectedUID: expectedUID)
+            let required = try requirement(identifier: expected.identifier,
+                team: expected.team, codeDirectory: expected.codeDirectory)
+            let attributes = [kSecGuestAttributeAudit as String: before.auditToken as CFData] as CFDictionary
+            var peer: SecCode?
+            guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &peer) == errSecSuccess,
+                  let peer, SecCodeCheckValidity(peer, noNetwork, required) == errSecSuccess else {
+                throw PublisherPolicyError.unavailable
+            }
+            guard try peerObservation(descriptor, expectedUID: expectedUID) == before else {
+                throw PublisherPolicyError.unavailable
+            }
+            return before
+        } catch { throw PublisherPolicyError.unavailable }
+    }
+
+    private static func peerObservation(_ descriptor: Int32, expectedUID: uid_t) throws -> AuditPeerObservation {
+        var kind: Int32 = 0
+        var kindSize = socklen_t(MemoryLayout<Int32>.size)
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFSOCK,
+              getsockopt(descriptor, SOL_SOCKET, SO_TYPE, &kind, &kindSize) == 0,
+              Int(kindSize) == MemoryLayout<Int32>.size, kind == SOCK_STREAM else {
+            throw PublisherPolicyError.unavailable
+        }
+        // getpeername refuses an unconnected/listening socket. Check both
+        // endpoints' families; an Internet stream is never a readiness channel.
+        func unixAddress(peer: Bool) throws {
+            var address = sockaddr_un()
+            var size = socklen_t(MemoryLayout<sockaddr_un>.size)
+            let result = withUnsafeMutablePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    peer ? getpeername(descriptor, $0, &size) : getsockname(descriptor, $0, &size)
+                }
+            }
+            guard result == 0, Int(size) >= MemoryLayout<UInt8>.size + MemoryLayout<sa_family_t>.size, Int(size) <= MemoryLayout<sockaddr_un>.size,
+                  address.sun_family == sa_family_t(AF_UNIX) else { throw PublisherPolicyError.unavailable }
+        }
+        try unixAddress(peer: false)
+        try unixAddress(peer: true)
+        var token = audit_token_t()
+        var tokenSize = socklen_t(MemoryLayout<audit_token_t>.size)
+        var uid: uid_t = 0, gid: gid_t = 0, pid: pid_t = 0
+        var pidSize = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &tokenSize) == 0,
+              Int(tokenSize) == MemoryLayout<audit_token_t>.size,
+              getpeereid(descriptor, &uid, &gid) == 0,
+              getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &pid, &pidSize) == 0,
+              Int(pidSize) == MemoryLayout<pid_t>.size,
+              uid == expectedUID, uid == audit_token_to_euid(token), gid == audit_token_to_egid(token),
+              pid > 0, pid == audit_token_to_pid(token) else { throw PublisherPolicyError.unavailable }
+        // Decode using SDK accessors, never guessed audit_token_t word offsets.
+        // Preserve all token bytes, including the process-generation binding.
+        return AuditPeerObservation(uid: uid, gid: gid, pid: pid,
+            pidVersion: audit_token_to_pidversion(token), auditToken: withUnsafeBytes(of: token) { Data($0) })
+    }
+
     static func suspendedChild(_ pid: pid_t, expected: Identity) throws {
         // Only the runner supplies its own live, unreaped, suspended child PID.
         // No PID from disk, a socket, or a user preference reaches this method.

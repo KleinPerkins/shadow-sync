@@ -328,6 +328,34 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     }
     private init() {}
 
+    final class InstallationRetirement: @unchecked Sendable {
+        private let registry: RetainedCleanupRegistry
+        private let closed: ClosedInstallationBorrowing
+        fileprivate init(registry: RetainedCleanupRegistry, closed: ClosedInstallationBorrowing) {
+            self.registry = registry; self.closed = closed
+        }
+        func revalidate(for owner: InstallationTransactionOwner) throws {
+            guard closed.belongs(to: owner) else { throw CustodyRecordError.fenced }
+            try registry.validateInstallationRetirement(closed)
+        }
+    }
+    private func validateInstallationRetirement(_ closed: ClosedInstallationBorrowing) throws {
+        // No owner mutex is held while taking the registry's reservation lock.
+        // reservedIDs includes queued admission and remains present until remove.
+        // Conversely the closed family cannot reach zero while any prepared,
+        // registry or inherited-resource parent alias still owns its leases.
+        try closed.validate()
+        reservationMutex.lock()
+        let empty = reservedIDs.isEmpty && outputReserved == 0
+        reservationMutex.unlock()
+        guard empty else { throw CustodyRecordError.fenced }
+        try closed.validate()
+    }
+    func installationRetirement(after closed: ClosedInstallationBorrowing) throws -> InstallationRetirement {
+        try validateInstallationRetirement(closed)
+        return InstallationRetirement(registry: self, closed: closed)
+    }
+
     func start(_ command: PreparedCustodyCommand) throws -> Handle {
         // One-use claim and reservation are in-memory only. The serial owner
         // performs context/publisher/durable validation before any child exists.

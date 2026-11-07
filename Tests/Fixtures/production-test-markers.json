@@ -296,6 +296,20 @@
     "m6-installation-storage-initial-admission",
     "m6-installation-storage-complete-chain",
     "m6-installation-storage-published-control-replacement",
-    "m6-installation-storage-control-write-cuts"
+    "m6-installation-storage-control-write-cuts",
+    "m6-installation-owner-old-aliases",
+    "m6-installation-owner-borrowed-lifetime",
+    "m6-installation-owner-closed-borrowing",
+    "m6-installation-owner-busy-transfer",
+    "m6-installation-owner-protection-drift",
+    "m6-installation-owner-state-replacement",
+    "m6-installation-owner-wrong-capsule",
+    "m6-live-peer-closed-descriptor",
+    "m6-live-peer-non-socket",
+    "m6-live-peer-unconnected-stream",
+    "m6-live-peer-datagram",
+    "m6-live-peer-wrong-uid",
+    "m6-live-peer-unsigned-identity",
+    "m6-installation-owner-acl-drift"
   ]
 }

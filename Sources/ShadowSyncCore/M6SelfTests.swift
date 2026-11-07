@@ -50,6 +50,21 @@ public enum M6SelfTestRunner {
         try run("m6-installation-storage-published-control-replacement") { try InstallationStorageFixtures.publishedReplacement() }
         try run("m6-installation-storage-control-write-cuts") { try InstallationStorageFixtures.writeCuts() }
 
+        try run("m6-installation-owner-old-aliases") { try InstallationOwnershipFixtures.oldAliases() }
+        try run("m6-installation-owner-borrowed-lifetime") { try InstallationOwnershipFixtures.borrowedLifetime() }
+        try run("m6-installation-owner-closed-borrowing") { try InstallationOwnershipFixtures.closedBorrowing() }
+        try run("m6-installation-owner-busy-transfer") { try InstallationOwnershipFixtures.busyTransfer() }
+        try run("m6-installation-owner-protection-drift") { try InstallationOwnershipFixtures.protectionChanges() }
+        try run("m6-installation-owner-acl-drift") { try InstallationOwnershipFixtures.aclChanges() }
+        try run("m6-installation-owner-state-replacement") { try InstallationOwnershipFixtures.stateReplacement() }
+        try run("m6-installation-owner-wrong-capsule") { try InstallationOwnershipFixtures.wrongOwner() }
+        try run("m6-live-peer-closed-descriptor") { try LivePeerFixtures.invalid("closed") }
+        try run("m6-live-peer-non-socket") { try LivePeerFixtures.invalid("regular") }
+        try run("m6-live-peer-unconnected-stream") { try LivePeerFixtures.invalid("unconnected") }
+        try run("m6-live-peer-datagram") { try LivePeerFixtures.pair(datagram: true) }
+        try run("m6-live-peer-wrong-uid") { try LivePeerFixtures.pair(datagram: false, wrongUID: true) }
+        try run("m6-live-peer-unsigned-identity") { try LivePeerFixtures.pair(datagram: false) }
+
         try run("m6-command-graph-valid") { try CommandGraphSelfTests.run("valid") }
         try run("m6-command-graph-empty") { try CommandGraphSelfTests.run("empty") }
         try run("m6-command-graph-unknown-build") { try CommandGraphSelfTests.run("unknown-build") }

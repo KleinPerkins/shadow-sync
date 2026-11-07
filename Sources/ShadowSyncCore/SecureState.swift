@@ -578,6 +578,10 @@ public final class RunAuthority: @unchecked Sendable {
     // A failed/busy transition does not reopen it; only a fresh authority may
     // issue new leases. Existing retained descriptions remain valid until closed.
     private var custodyAdmissionClosed = false
+    // Reference-only seal. It can never be reconstructed from an installation
+    // record, PID or source path; old aliases cannot release a consumed owner.
+    private var installationSeal: InstallationOwnershipSeal?
+    private var installationBorrowingClosed = false
     private let state: SecureStateDirectory
     private let namespace: OwnedFileDescriptor
     private let lifecycle: OwnedFileDescriptor
@@ -736,7 +740,7 @@ public final class RunAuthority: @unchecked Sendable {
     /// Never create a missing name or repair modes during ordinary operation.
     func openRetainedLogForWriting(append: Bool = false) throws -> Int32 {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
-        guard !custodyAdmissionClosed else {
+        guard !custodyAdmissionClosed, commandMode != .lifecycleMutation else {
             throw SecureStateError.contention("closed log authority")
         }
         try state.validateRegular(fd: namespace.value, name: "latest.log", repairPermissions: false)
@@ -758,7 +762,9 @@ public final class RunAuthority: @unchecked Sendable {
 
     func duplicateOperationLease() throws -> Int32 {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
-        guard !custodyAdmissionClosed else { throw SecureStateError.contention("closed command custody") }
+        guard !custodyAdmissionClosed, commandMode != .lifecycleMutation else {
+            throw SecureStateError.contention("untracked lifecycle operation alias")
+        }
         return try operation.duplicate()
     }
 
@@ -808,6 +814,7 @@ public final class RunAuthority: @unchecked Sendable {
 
     func permitStagedHostAdmission() throws {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal == nil else { throw CustodyRecordError.fenced }
         custodyAdmissionClosed = true
         guard custodyBorrowCount == 0 else { throw SecureStateError.contention("command custody") }
         if releasesInitializationLocksForStaging {
@@ -819,6 +826,7 @@ public final class RunAuthority: @unchecked Sendable {
 
     func acquireRetirementNamespace(timeout: TimeInterval = 5) throws {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal == nil else { throw CustodyRecordError.fenced }
         custodyAdmissionClosed = true
         #if SHADOW_SYNC_TESTING
         if let barrier = testingCustodyRetirementBarrier {
@@ -856,11 +864,81 @@ public final class RunAuthority: @unchecked Sendable {
         custodyMutex.lock()
         #endif
         defer { custodyMutex.unlock() }
+        guard installationSeal == nil else { return }
         custodyAdmissionClosed = true
         run?.closeNow()
         operation.closeNow()
         lifecycle.closeNow()
         namespace.closeNow()
+    }
+
+    fileprivate func consumeInstallation() throws -> InstallationOwnershipSeal {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        // Failure permanently closes OLD borrowing too. The original operation
+        // remains owned here so existing registered work can finish draining.
+        custodyAdmissionClosed = true
+        guard commandMode == .lifecycleMutation, installationSeal == nil,
+              custodyBorrowCount == 0 else { throw CustodyRecordError.fenced }
+        let binding = try InstallationStateBinding.capture(stateDescriptor: state.descriptor.value, uid: state.uid)
+        try validateInstallationDescriptions(binding)
+        let seal = InstallationOwnershipSeal(binding)
+        installationSeal = seal
+        return seal
+    }
+    private func validateInstallationDescriptions(_ binding: InstallationStateBinding) throws {
+        // Temporary duplicates validate the actual original descriptions and all
+        // pinned state/lock ACLs. They close before this method returns and never
+        // acquire, convert or unlock a flock.
+        var members: [(CustodyDescriptorClaim.Role, OwnedFileDescriptor)] = [
+            (.state, state.descriptor), (.namespace, namespace), (.lifecycle, lifecycle), (.operation, operation)]
+        if let run { members.append((.run, run)) }
+        let leases = try CustodyAuthorityLeaseSet.copy(state: state, members: members,
+            mode: run == nil ? .lifecycleMutation : .mutation)
+        try binding.validateLive(stateDescriptor: state.descriptor.value, uid: state.uid, leases: leases)
+    }
+    fileprivate func validateInstallation(_ seal: InstallationOwnershipSeal, closedBorrowing: Bool = false) throws {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal, custodyAdmissionClosed,
+              !closedBorrowing || (installationBorrowingClosed && custodyBorrowCount == 0) else {
+            throw CustodyRecordError.fenced
+        }
+        try validateInstallationDescriptions(seal.binding)
+    }
+    fileprivate func borrowInstallation(_ owner: InstallationTransactionOwner,
+                                       seal: InstallationOwnershipSeal) throws -> CustodyAuthorityLeaseSet {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal, custodyAdmissionClosed, !installationBorrowingClosed else {
+            throw CustodyRecordError.fenced
+        }
+        try validateInstallationDescriptions(seal.binding)
+        let result = try CustodyAuthorityLeaseSet.copy(state: state, members: [
+            (.state, state.descriptor), (.namespace, namespace), (.lifecycle, lifecycle), (.operation, operation),
+        ], mode: .lifecycleMutation, onRelease: { [self, owner] in
+            // The lease implementation closes every actual duplicate BEFORE
+            // calling this hook. Its strong owner reference preserves the
+            // original operation description through the last borrowed alias.
+            withExtendedLifetime(owner) {
+                custodyMutex.lock(); custodyBorrowCount -= 1; custodyMutex.unlock()
+            }
+        })
+        custodyBorrowCount += 1
+        return result
+    }
+    fileprivate func closeInstallationBorrowing(_ seal: InstallationOwnershipSeal) throws {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal else { throw CustodyRecordError.fenced }
+        installationBorrowingClosed = true
+        guard custodyBorrowCount == 0 else { throw CustodyRecordError.fenced }
+        try validateInstallationDescriptions(seal.binding)
+    }
+    fileprivate func releaseInstallation(_ seal: InstallationOwnershipSeal) {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal else { return }
+        // Every borrowed family strongly retains its owner until its descriptors
+        // have closed and its release hook has run. No public release method can
+        // get here, and the old seal stays consumed after the final close.
+        installationBorrowingClosed = true
+        run?.closeNow(); lifecycle.closeNow(); namespace.closeNow(); operation.closeNow()
     }
 
     #if SHADOW_SYNC_TESTING
@@ -884,6 +962,96 @@ public final class RunAuthority: @unchecked Sendable {
         testingCustodyObservationMutex.unlock()
     }
     #endif
+}
+
+fileprivate final class InstallationOwnershipSeal {
+    let binding: InstallationStateBinding
+    init(_ binding: InstallationStateBinding) { self.binding = binding }
+}
+
+/// One-way ownership of an already acquired/transferred original lifecycle
+/// authority. This does not perform an installation action, write a control,
+/// create staged command permission, or admit a host. Those require the durable
+/// transaction and authenticated readiness integration separately.
+final class InstallationTransactionOwner: @unchecked Sendable {
+    private let original: RunAuthority
+    private let seal: InstallationOwnershipSeal
+    private let publisher: LifecyclePublisher?
+    private let fixtureRoot: String?
+    private let location: StateLocation
+
+    private init(original: RunAuthority, publisher: LifecyclePublisher?, fixtureRoot: String?, location: StateLocation) throws {
+        self.original = original; self.publisher = publisher; self.fixtureRoot = fixtureRoot; self.location = location
+        // All fallible checks precede sealing. No temporary consumed owner may
+        // unwind and close the original operation after a failed factory return.
+        try Self.validateNamedState(original, location: location)
+        seal = try original.consumeInstallation()
+    }
+    private static func validateNamedState(_ original: RunAuthority, location: StateLocation) throws {
+        guard original.stateDirectory.path == location.path, original.stateDirectory.uid == location.uid else {
+            throw CustodyRecordError.fenced
+        }
+        let named = try SecureStateDirectory.openExisting(location)
+        var a = stat(), b = stat()
+        guard fstat(named.descriptor.value, &a) == 0, fstat(original.stateDirectory.descriptor.value, &b) == 0,
+              FileIdentity(a).matchesStableNode(FileIdentity(b)) else { throw CustodyRecordError.fenced }
+    }
+    static func consume(_ authority: RunAuthority, publisher: LifecyclePublisher) throws -> InstallationTransactionOwner {
+        try publisher.revalidate()
+        guard authority.stateDirectory.uid == publisher.account.uid else { throw CustodyRecordError.fenced }
+        return try Self(original: authority, publisher: publisher, fixtureRoot: nil, location: StateLocation.production())
+    }
+    func revalidate() throws {
+        if let publisher { try publisher.revalidate() }
+        else {
+            #if SHADOW_SYNC_TESTING
+            guard let fixtureRoot, try TestIsolation.validateRoot(fixtureRoot) == fixtureRoot,
+                  original.stateDirectory.path == (try StateLocation.isolated(root: fixtureRoot)).path else {
+                throw CustodyRecordError.fenced
+            }
+            #else
+            throw CustodyRecordError.fenced
+            #endif
+        }
+        try Self.validateNamedState(original, location: location)
+        try original.validateInstallation(seal)
+    }
+    // Metadata/storage and future exclusive command contexts retain this family.
+    // A lifecycleMutation lease alone remains blocked by an initial/active
+    // installation control; no command permission is synthesized here.
+    func retainExclusiveLeases() throws -> CustodyAuthorityLeaseSet {
+        try revalidate()
+        return try original.borrowInstallation(self, seal: seal)
+    }
+    func closeBorrowing() throws -> ClosedInstallationBorrowing {
+        // Close first, even if publisher revalidation or drainage then fails.
+        try original.closeInstallationBorrowing(seal)
+        try revalidate()
+        return ClosedInstallationBorrowing(self)
+    }
+    fileprivate func validateClosedBorrowing() throws {
+        try revalidate()
+        try original.validateInstallation(seal, closedBorrowing: true)
+    }
+    deinit { original.releaseInstallation(seal) }
+    #if SHADOW_SYNC_TESTING
+    static func testingConsume(_ authority: RunAuthority, root: String) throws -> InstallationTransactionOwner {
+        let root = try TestIsolation.validateRoot(root)
+        guard authority.stateDirectory.path == (try StateLocation.isolated(root: root)).path else {
+            throw CustodyRecordError.fenced
+        }
+        return try Self(original: authority, publisher: nil, fixtureRoot: root, location: StateLocation.isolated(root: root))
+    }
+    #endif
+}
+
+/// Only the consumed owner can mint this in-memory capsule. It is a permanently
+/// closed borrowing family, not evidence that command journals are retired.
+final class ClosedInstallationBorrowing: @unchecked Sendable {
+    private let owner: InstallationTransactionOwner
+    fileprivate init(_ owner: InstallationTransactionOwner) { self.owner = owner }
+    func validate() throws { try owner.validateClosedBorrowing() }
+    func belongs(to candidate: InstallationTransactionOwner) -> Bool { owner === candidate }
 }
 
 public final class LifecycleAdmissionAuthority: @unchecked Sendable {
