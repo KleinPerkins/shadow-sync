@@ -43,7 +43,52 @@ class PythonSuiteTests(unittest.TestCase):
                               ' def test_z(self): pass\n', '--suite', 'test_fixture')
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout.splitlines(),
-                         ['FAIL test_fixture.Cases.test_a', 'PASS test_fixture.Cases.test_z'])
+                         ['FAIL test_fixture.Cases.test_a',
+                          'DIAGNOSTIC ' + json.dumps({
+                              'schema': 'shadow-sync-python-failure/v1',
+                              'case': 'test_fixture.Cases.test_a', 'cause': 'assertion',
+                              'operation': 'unspecified', 'phase': 'unspecified', 'exit_code': None},
+                              sort_keys=True, separators=(',', ':')),
+                          'PASS test_fixture.Cases.test_z'])
+
+    def test_diagnostics_keep_only_closed_failure_fields(self):
+        for cause, expression in [
+                ('timeout', 'subprocess.TimeoutExpired(["private-command"], 5, output="private-output")'),
+                ('assertion', 'AssertionError("private-message")'),
+                ('os-error', 'OSError("private-path")'),
+                ('other', 'RuntimeError("private-environment")')]:
+            with self.subTest(cause=cause):
+                result = self.exercise('import unittest, subprocess\nclass Cases(unittest.TestCase):\n'
+                    ' def test_one(self):\n'
+                    '  error = ' + expression + '\n'
+                    '  error.shadow_sync_diagnostic = {"operation":"fixture-install", '
+                    '"phase":"run", "exit_code":None, "extra":"private-extra"}\n'
+                    '  raise error\n', '--all')
+                self.assertEqual(result.returncode, 1)
+                lines = result.stdout.splitlines()
+                self.assertEqual(lines[0], 'FAIL test_fixture.Cases.test_one')
+                self.assertEqual(json.loads(lines[1].removeprefix('DIAGNOSTIC ')), {
+                    'schema': 'shadow-sync-python-failure/v1', 'case': 'test_fixture.Cases.test_one',
+                    'cause': cause, 'operation': 'fixture-install', 'phase': 'run', 'exit_code': None})
+                self.assertEqual(len(lines), 2)
+                self.assertNotIn('private-', result.stdout + result.stderr)
+
+    def test_diagnostics_reject_arbitrary_metadata_and_bound_exit_status(self):
+        for detail in ({'operation': 'private-path', 'phase': ['private-value'], 'exit_code': True},
+                       {'operation': {}, 'phase': 'private-command', 'exit_code': 256},
+                       {'exit_code': -256}, ['private-output']):
+            with self.subTest(detail=detail):
+                error = AssertionError('private-message')
+                error.shadow_sync_diagnostic = detail
+                diagnostic = runner.failure_diagnostic(self, (type(error), error, None))
+                self.assertEqual(diagnostic['operation'], 'unspecified')
+                self.assertEqual(diagnostic['phase'], 'unspecified')
+                self.assertIsNone(diagnostic['exit_code'])
+                self.assertNotIn('private-', json.dumps(diagnostic))
+        for exit_code in (-255, -9, 0, 64, 255):
+            error = AssertionError('private-message')
+            error.shadow_sync_diagnostic = {'exit_code': exit_code}
+            self.assertEqual(runner.failure_diagnostic(self, (type(error), error, None))['exit_code'], exit_code)
 
     def test_skip_expected_failure_unexpected_success_and_setup_errors_refuse(self):
         bodies = [

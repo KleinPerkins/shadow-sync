@@ -42,11 +42,13 @@
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_release_notarization.py": "Disposable synthetic signing/notary adapters exercise packaging, retry, tamper and refusal paths; no credentials or product submission.",
+    "Tests/Tooling/test_source_installation_boundary.py": "Preserve fixture-only command vectors, assertions and five-second subprocess limits while binding closed failure fields to the exact operation and assertion phase.",
     "scripts/auto-merge.py": "Keep installation, custody, publisher, policy and mandatory CI registration families on the protected owner/admin technical-review route, including both names of renames; privileged App activation remains separately gated.",
     "scripts/build-app.sh": "Build all three executable products in one package invocation with shared compilation; verify every product architecture and minimum OS. Preserve real fixture paths only in nondistributed testing builds; production retains source-path sanitization and separate native qualification.",
     "scripts/ci-runtime.py": "Retain the existing bounded registry and successful policy-helper phase diagnostics for discovery admission without changing deadlines, policies or assertions.",
     "scripts/ci-shards.py": "All mandatory jobs use macOS 26 arm64 because tooling includes native fixtures; deterministic complete-suite partition and fail-closed aggregate remain unchanged.",
     "scripts/notarize-release-bundle.py": "Source-bound MVP app and DMG notarization, stapling and Gatekeeper gates; preserve submission IDs and input bytes; no publication, installation, or acceptance claim.",
+    "scripts/python-test-suites.py": "Retain strict mandatory completion and closed failure diagnostics with canonical case, enumerated cause/operation/phase and bounded exit status; never expose exception text, traceback, command, environment or output.",
     "scripts/run-native-appkit.py": "Stage and verify only the exact AppDelegate and native-acceptance contract files inside the owned fixture; preserve all native assertions, source bindings, isolation and cleanup.",
     "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
@@ -1055,7 +1057,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_python_test_suites.py",
-      "sha256": "a2e8f5df2e3e01cff192bcfadba8715dcaf6b355d5ac50e57ea7f35b3137f2ad"
+      "sha256": "5907f8f9a198c5d2b19ef29f931aa3dc6d2a6b48ec156875de83ddd91e8b1b8b"
     },
     {
       "mode": "100644",
@@ -1080,7 +1082,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_source_installation_boundary.py",
-      "sha256": "7ea765bc32e21ab5c903247b655d8aa53c599ef3865d618d3d760455f3a4199c"
+      "sha256": "732f9f3f2ef9e423089dc2bceedd5b8b4e82011dcba1f7fa0ae087798097d76e"
     },
     {
       "mode": "100644",
@@ -1090,7 +1092,7 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "cabfc9f7bcfa33101dffa8dfde9177a59d1b074b2b4d10896f0df7a1e1480e9b"
+      "sha256": "b0b779427388ef41860738ab430c46944108508d4cfa6b30aebcf6903fab60b7"
     },
     {
       "mode": "100644",
@@ -1235,7 +1237,7 @@
     {
       "mode": "100644",
       "path": "scripts/python-test-suites.py",
-      "sha256": "aa632f452743d131144fbe89ee24c39d60e58845587dc7ed785acc724b999ae1"
+      "sha256": "61fa3073aff24d88c31458fbea88f55041730d05692d02cb089cb1af14f9c45e"
     },
     {
       "mode": "100644",

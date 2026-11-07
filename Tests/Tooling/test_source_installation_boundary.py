@@ -130,20 +130,34 @@ class SourceInstallationBoundaryTests(unittest.TestCase):
                 path.unlink()
 
     def test_absent_fixture_doctor_and_direct_live_refusal(self):
+        def check(operation, script, args, expected, absent=False):
+            detail = {'operation': operation, 'phase': 'run', 'exit_code': None}
+            try:
+                result = subprocess.run(['/bin/bash', str(ROOT / script), *args],
+                    env={'PATH': '/usr/bin:/bin'}, capture_output=True, timeout=5)
+                detail.update(phase='returncode', exit_code=result.returncode)
+                self.assertEqual(result.returncode, expected)
+                if absent:
+                    detail['phase'] = 'output'
+                    self.assertIn(b'product is absent', result.stdout)
+            except (AssertionError, subprocess.TimeoutExpired, OSError) as error:
+                # These fixed fields are the only diagnostics admitted by the runner.
+                error.shadow_sync_diagnostic = detail
+                raise
+
         with tempfile.TemporaryDirectory(prefix='shadow-sync-doctor-', dir='/private/tmp') as temporary:
             root = Path(temporary); root.chmod(0o700)
             stub = root / 'launchctl-stub'
             stub.write_text('#!/bin/sh\nprintf "Could not find service\\n" >&2\nexit 113\n'); stub.chmod(0o700)
-            for script, args in [('install.sh', ['--doctor', '--test-root', str(root)]),
-                    ('scripts/source-doctor.sh', ['--home', str(root / 'home'), '--launchctl', str(stub)])]:
-                result = subprocess.run(['/bin/bash', str(ROOT / script), *args],
-                    env={'PATH': '/usr/bin:/bin'}, capture_output=True, timeout=5)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn(b'product is absent', result.stdout)
-            for home, executable in [('/', '/bin/launchctl'), (str(root / 'home'), '/bin/launchctl')]:
-                result = subprocess.run(['/bin/bash', str(ROOT / 'scripts/source-doctor.sh'), '--home', home,
-                    '--launchctl', executable], env={'PATH': '/usr/bin:/bin'}, capture_output=True, timeout=5)
-                self.assertEqual(result.returncode, 64)
+            for operation, script, args in [
+                    ('fixture-install', 'install.sh', ['--doctor', '--test-root', str(root)]),
+                    ('fixture-direct', 'scripts/source-doctor.sh',
+                     ['--home', str(root / 'home'), '--launchctl', str(stub)])]:
+                check(operation, script, args, 0, absent=True)
+            for operation, home in [('live-home-refusal', '/'),
+                                    ('live-launchctl-refusal', str(root / 'home'))]:
+                check(operation, 'scripts/source-doctor.sh',
+                      ['--home', home, '--launchctl', '/bin/launchctl'], 64)
 
     def test_staged_bundle_aliases_refuse_before_diagnostic_tools(self):
         with tempfile.TemporaryDirectory(prefix='shadow-sync-doctor-', dir='/private/tmp') as temporary:

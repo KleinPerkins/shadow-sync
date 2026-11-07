@@ -3381,6 +3381,8 @@
         "cases": [
           "test_python_test_suites.PythonSuiteTests.test_completion_requires_started_stopped_and_passed_rosters",
           "test_python_test_suites.PythonSuiteTests.test_custom_discovery_cannot_hide_a_case",
+          "test_python_test_suites.PythonSuiteTests.test_diagnostics_keep_only_closed_failure_fields",
+          "test_python_test_suites.PythonSuiteTests.test_diagnostics_reject_arbitrary_metadata_and_bound_exit_status",
           "test_python_test_suites.PythonSuiteTests.test_empty_broken_and_unknown_registration_refuse",
           "test_python_test_suites.PythonSuiteTests.test_failure_continues_later_cases_and_remains_failure",
           "test_python_test_suites.PythonSuiteTests.test_framework_discovery_lists_cases_without_running_them",
