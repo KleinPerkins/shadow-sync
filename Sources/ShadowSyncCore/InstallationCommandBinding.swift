@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-/// Sealed observations for fixed reservation or drain-prior diagnostics. This wire value is
+/// Sealed observations for fixed exclusive diagnostics or staged action intents. This wire value is
 /// not authority: admission also needs actual inherited leases, a live exact
 /// coordinator, its publisher and the matching durable command reservation.
 struct InstallationCommandBinding: Equatable {
@@ -15,6 +15,7 @@ struct InstallationCommandBinding: Equatable {
     ]) }
     func validate() throws {
         try control.validate(); try controlNode.validate()
+        if stagedMode != nil { try validateStaged(); return }
         let drain = control.step?.action == .drainPrior && control.step?.status == .intent
         guard control.phase == .active,
               drain || (control.step?.action == .reserve && control.step?.status == .complete), control.readinessCommit == nil,
@@ -51,6 +52,74 @@ struct InstallationCommandBinding: Equatable {
             guard (name.hasPrefix(InstallationStepReceipt.prefix) || name.hasPrefix(InstallationDocumentPreimage.prefix)), name.hasSuffix(".json"),
                   !name.contains("/"), node.type == .regular, node.mode == 0o100600,
                   node.uid == controlNode.uid else { throw CustodyRecordError.fenced }
+        }
+    }
+    // These are finite installation action bounds, not a general receipt bag.
+    // Actual receipt bytes/links and ALL referenced document preimages are checked
+    // again by installationSnapshot under the live metadata guard. Wire decoding
+    // alone cannot prove a chain, grant a permit or admit any command.
+    static let maximumStagedOrdinal: UInt64 = 15
+    static let maximumStagedReceiptNodes = 29 + 2 * InstallationDocument.allCases.count
+    var stagedMode: CustodyAuthorityMode? {
+        guard control.step?.status == .intent else { return nil }
+        switch control.step?.action {
+        case .bootstrapCandidate?, .kickstartCandidate?: return .installationStagedStart
+        case .candidateStop?: return .installationStagedStop
+        default: return nil
+        }
+    }
+    func validateStagedOperation(mode: CustodyAuthorityMode, operation: LifecycleLaunchCommand.Operation) throws {
+        try validate()
+        guard stagedMode == mode else { throw CustodyRecordError.fenced }
+        switch (control.step?.action, operation) {
+        case (.bootstrapCandidate?, .bootstrap), (.kickstartCandidate?, .kickstart), (.candidateStop?, .bootout): return
+        default: throw CustodyRecordError.fenced
+        }
+    }
+    private func validateStaged() throws {
+        guard let mode = stagedMode, let step = control.step, let transaction = control.transaction,
+              transaction.intent == .install || transaction.intent == .repair,
+              transaction.priorCommitDigest == nil, transaction.candidate != nil,
+              control.readinessCommit == nil,
+              control.phase == (mode == .installationStagedStart ? .active : .recovery),
+              controlNode.type == .regular, controlNode.mode == 0o100600,
+              controlNode.uid == control.state.directory.uid,
+              receiptNodes.count <= Self.maximumStagedReceiptNodes else { throw CustodyRecordError.fenced }
+        switch step.action {
+        case .bootstrapCandidate: guard step.ordinal == 13 else { throw CustodyRecordError.fenced }
+        case .kickstartCandidate: guard step.ordinal == 14 else { throw CustodyRecordError.fenced }
+        case .candidateStop: guard (13...Self.maximumStagedOrdinal).contains(step.ordinal) else { throw CustodyRecordError.fenced }
+        default: throw CustodyRecordError.fenced
+        }
+        var expected = Set<String>()
+        for ordinal in 1...step.ordinal {
+            expected.insert(String(ordinal) + "-intent")
+            if ordinal < step.ordinal { expected.insert(String(ordinal) + "-complete") }
+        }
+        var found = Set<String>(), documents = Set<String>()
+        let prefix = InstallationStepReceipt.prefix + transaction.id + "-"
+        for (name, node) in receiptNodes {
+            try node.validate()
+            guard node.type == .regular, node.mode == 0o100600, node.uid == controlNode.uid,
+                  name.hasSuffix(".json"), !name.contains("/") else { throw CustodyRecordError.fenced }
+            if name.hasPrefix(prefix) {
+                let parts = name.dropFirst(prefix.count).dropLast(5).split(separator: "-", omittingEmptySubsequences: false)
+                guard parts.count == 3, CustodyWire.hex(String(parts[2]), bytes: 32),
+                      found.insert(String(parts[0]) + "-" + String(parts[1])).inserted else { throw CustodyRecordError.fenced }
+                if String(parts[0]) == String(step.ordinal) {
+                    guard String(parts[2]) == control.latestReceiptDigest else { throw CustodyRecordError.fenced }
+                }
+            } else {
+                guard name.hasPrefix(InstallationDocumentPreimage.prefix),
+                      CustodyWire.hex(String(name.dropFirst(InstallationDocumentPreimage.prefix.count).dropLast(5)), bytes: 32),
+                      documents.insert(name).inserted else { throw CustodyRecordError.fenced }
+            }
+        }
+        guard found == expected, documents.count <= 2 * InstallationDocument.allCases.count else { throw CustodyRecordError.fenced }
+        for slot in [InstallationSlot.stateSource, .stateDestination] {
+            for digest in (transaction.slots.images[slot]?.documentReceipts ?? [:]).values.compactMap({ $0 }) {
+                guard documents.contains(InstallationDocumentPreimage.prefix + digest + ".json") else { throw CustodyRecordError.fenced }
+            }
         }
     }
     func encode() throws -> Data {

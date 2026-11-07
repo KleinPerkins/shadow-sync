@@ -227,7 +227,8 @@ enum InstallationExclusivePreparationFixtures {
     }
     /// Shared by the separate admission-transfer fixtures. Real preparation and
     /// intent publication run before dropping the sole journal and its leases.
-    static func withPreparedIntent(_ body: (String, StateLocation, InstallationTransactionOwner,
+    static func withPreparedIntent(bindingSource: ((InstallationBindingTestingSource) -> Void)? = nil,
+        _ body: (String, StateLocation, InstallationTransactionOwner,
         CustodyCatalogStore.InstallationStagedAdmissionIntent, RetainedCleanupRegistry) throws -> Void) throws {
         try InstallationOwnershipFixtures.fixture { root, location, original in
             for suffix in ["/home", "/home/Applications", "/home/Library", "/home/Library/LaunchAgents"] {
@@ -255,6 +256,7 @@ enum InstallationExclusivePreparationFixtures {
                 try H.check(releasedJournal == nil && releasedLifecycle == nil, "intent retained journal/capture/lifecycle")
                 try H.check(!registry.hasRetainedWork && registry.testingOriginalHelpersReaped, "intent command retirement incomplete")
                 try intent.revalidate(for: owner, deadline: .init(seconds: 3))
+                bindingSource?(source)
                 try body(root, location, owner, intent, registry)
             } catch { failure = error }
             journal = nil; lifecycle = nil

@@ -111,6 +111,12 @@ public enum M6SelfTestRunner {
         try run("m6-installation-staged-owner-drift-refusals") { try InstallationStagedCustodyFixtures.wrongOwnerAndDrift() }
         try run("m6-installation-staged-wire-roundtrip") { try InstallationStagedCustodyFixtures.wireRoundtrip() }
         try run("m6-installation-staged-wire-refusals") { try InstallationStagedCustodyFixtures.wireRefusals() }
+        try run("m6-installation-staged-journal-continuation") { try InstallationStagedJournalFixtures.continuation() }
+        try run("m6-installation-staged-journal-order-owner-refusals") { try InstallationStagedJournalFixtures.orderAndOwners() }
+        try run("m6-installation-staged-journal-stop-intent") { try InstallationStagedJournalFixtures.stopIntent() }
+        try run("m6-installation-staged-journal-binding-refusals") { try InstallationStagedJournalFixtures.bindingRefusals() }
+        try run("m6-installation-staged-journal-substitution-refusals") { try InstallationStagedJournalFixtures.substitutionRefusals() }
+        try run("m6-installation-staged-journal-persistence-cuts") { try InstallationStagedJournalFixtures.persistenceCuts() }
         try run("m6-installation-readiness-wire-roundtrip") { try InstallationReadinessWireFixtures.roundtrip() }
         try run("m6-installation-readiness-wire-canonical-refusals") { try InstallationReadinessWireFixtures.canonicalRefusals() }
         try run("m6-installation-readiness-wire-field-refusals") { try InstallationReadinessWireFixtures.fieldRefusals() }
@@ -2980,14 +2986,27 @@ private enum CustodyRegistrySelfTests {
             stdoutLimit: output, stderrLimit: output, workingDirectory: scope.leases.duplicateStateDirectory().0)
     }
     static func native(_ mode: String, pending: Bool = false, cancel: Bool = false, eof: Bool = false) throws {
+        var stage = "fixture-setup"
+        var stageStarted = DispatchTime.now().uptimeNanoseconds
+        var stageElapsed: UInt64 = 0
+        func entering(_ value: String) {
+            stage = value; stageStarted = DispatchTime.now().uptimeNanoseconds
+        }
+        do {
         try fixture { location, registry in
+            do {
+            entering("scope")
             var scope: CustodyMetadataScope? = try CustodyCatalogSelfTests.scope(location)
+            entering("resources")
             var resources: CustodyRequestResources? = try make(scope!, mode: mode)
             weak var retainedResources = resources
             weak var retainedScope = scope
             let id = resources!.request.binding.requestID
             let workDeadline = resources!.request.budget.work
-            let handle = try registry.start(resources: resources!, helper: CustodyHelperExecutable.testing(releaseSHA256: scope!.releaseSHA256))
+            entering("helper")
+            let helper = try CustodyHelperExecutable.testing(releaseSHA256: scope!.releaseSHA256)
+            entering("registry-start")
+            let handle = try registry.start(resources: resources!, helper: helper)
             resources = nil; scope = nil
             if mode == "early-cancel" { handle.cancel() }
             if cancel || eof || mode == "delayed-exit" {
@@ -3003,10 +3022,12 @@ private enum CustodyRegistrySelfTests {
                     "terminal receipt released an unreaped helper")
             }
             if pending {
+                entering("pending-reap")
                 try until {
                     if case .reaped = registry.testingPoll(handle) { return handle.snapshot().phase == .cleanupPending }
                     return false
                 }
+                entering("pending-assertions")
                 try check(handle.snapshot().phase == .cleanupPending && registry.testingCount == 1 && retainedResources != nil && retainedScope != nil,
                     "unverified exit released registry authority")
                 try check(!FileManager.default.fileExists(atPath: location.path + "/custody/receipts/" + id + ".caller.json"), "invalid terminal was archived")
@@ -3020,8 +3041,10 @@ private enum CustodyRegistrySelfTests {
                               "missing terminal was detected only by timeout")
                 }
                 if mode == "malformed" { try check(handle.snapshot().stdout.count == 4096, "poisoned status starved bounded output drainage") }
+                entering("pending-dispose")
                 try registry.testingDispose()
             } else {
+                entering("terminal-retirement")
                 try until { handle.snapshot().phase == .finished }
                 try check(registry.testingCount == 0 && handle.snapshot().journal?.outcome == .admissionRefused,
                     "fixture refusal did not retire")
@@ -3034,9 +3057,29 @@ private enum CustodyRegistrySelfTests {
                 try check(!FileManager.default.fileExists(atPath: location.path + "/custody/" + id + ".json"), "active terminal not retired")
                 try until { retainedResources == nil && retainedScope == nil }
                 // Retaining the result handle cannot retain authority after completion.
+                entering("retired-exclusive-reacquisition")
                 let mutation = try RunAuthority.acquireLifecycleMutation(at: location); mutation.release()
                 handle.cancel(); try check(handle.snapshot().phase == .finished, "completed handle changed")
             }
+            entering("fixture-teardown")
+            } catch {
+                stageElapsed = DispatchTime.now().uptimeNanoseconds - stageStarted
+                throw error
+            }
+        }
+        } catch {
+            // Emit only after the fixture has drained its original helpers and
+            // released its registry. Preserve the original error and assertions.
+            if stageElapsed == 0 { stageElapsed = DispatchTime.now().uptimeNanoseconds - stageStarted }
+            if ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_M6_DIAGNOSTICS"] == "1" {
+                let fields: [String: Any] = ["mode": mode, "stage": stage,
+                    "elapsed_ns": stageElapsed, "error_type": String(reflecting: type(of: error))]
+                if let bytes = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]),
+                   bytes.count <= 1_024, let line = String(data: bytes, encoding: .utf8) {
+                    fputs("M6 REGISTRY CASE DIAGNOSTIC " + line + "\n", stderr); fflush(stderr)
+                }
+            }
+            throw error
         }
     }
     static func bootstrap(_ cut: RetainedCleanupRegistry.TestCut) throws {

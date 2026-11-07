@@ -6,7 +6,7 @@
     "Sources/ShadowSyncCore/Body3Coordinator.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
     "Sources/ShadowSyncCore/CommandCustodian.swift": "Retain the shared direct-child owner and original deadlines through discovery and closed lifecycle serial stages; consume bounded preflight/postflight output before semantic admission and retain actual raw child statuses.",
     "Sources/ShadowSyncCore/CommandCustodyContext.swift": "Retain the live installation journal permit through the existing command preparation and registry pipeline; permit only fixed service-status diagnostics after complete reservation and reject consequential commands without a matching action intent.",
-    "Sources/ShadowSyncCore/CustodyCatalog.swift": "Retain consumed-owner exclusive journal behavior and explicitly refuse generic staged metadata scopes until live durable continuation and exact sealed action binding exist.",
+    "Sources/ShadowSyncCore/CustodyCatalog.swift": "Continue the detached installation intent with the same typed staged owner using existing atomic receipt/control storage and temporary staged leases; pin the complete metadata family, preserve pending evidence and close starts on failure. Command completion and staged helper/context execution remain unavailable.",
     "Sources/ShadowSyncCore/CustodyInheritedCommand.swift": "Preserve existing authenticated inherited command behavior and explicitly refuse staged helper imports until durable staged action and candidate authentication joins exist.",
     "Sources/ShadowSyncCore/CustodyJournal.swift": "Persist closed staged mode observations with exact operation/no-run lease shape and required input digest; reject non-lifecycle command kinds in staged journal and catalog entries.",
     "Sources/ShadowSyncCore/CustodyProtocol.swift": "Add exactly closed staged-start and staged-stop wire modes with required operation and sealed input roles, no run or other descriptor roles, fixed command kinds and distinct launch operation shapes; observations remain non-authoritative.",
@@ -17,25 +17,31 @@
     "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift": "Preserve existing isolated guardian cases; strengthen cancellation proof to non-default results and add post-assembly cancellation with later-clone no-work and nonselection assertions.",
     "Sources/ShadowSyncCore/DM4PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/DiscoveryCallerSelfTests.swift": "Keep real-helper discovery and complete command cleanup assertions; recognize only the exact synthetic installation control and receipt bytes reconstructed from held fixture state. Unknown or changed receipt families remain fatal.",
+    "Sources/ShadowSyncCore/DiscoveryMetadataAccess.swift": "Prepare the closed read-path roster after exact candidate/scope/digest admission and before requireSelected; preserve all later prefix admission, physical identity, validation and postflight calls under the original metadata deadline.",
     "Sources/ShadowSyncCore/DiscoveryTestingSupport.swift": "Keep terminal diagnostic capacity independent of successful and registry-progress trace saturation; preserve closed fields, opt-in output, existing bounds and production exclusion.",
     "Sources/ShadowSyncCore/FreshStateInitialization.swift": "Publish mandatory initial installation control before readiness, bind its bytes/inode in immutable publication proofs, and use initializer-only inspection while retaining original locks. Same-object retries revalidate the complete publication proof.",
     "Sources/ShadowSyncCore/HostControl.swift": "Retain bounded frames across a persistent installation socket and accept one caller-supplied absolute deadline; preserve the existing single-frame typed host-control wrappers. Reject blocking descriptors before raw IO.",
-    "Sources/ShadowSyncCore/InstallationCommandBinding.swift": "Bind fixed installation diagnostics to the live consumed coordinator owner, exact durable control and complete retained receipt set; serialized observations alone never authorize commands.",
+    "Sources/ShadowSyncCore/HostPolicySnapshotSelfTests.swift": "Retain rebind-prefetch and existing safety cases; add fixed-read first-batch roster and fresh-stage helper checks, protected/stale/replaced identity and postflight refusals, original deadline expiry and bounded request/cache cases.",
+    "Sources/ShadowSyncCore/InstallationCommandBinding.swift": "Bind staged action observations to exact finite receipt identities beyond reservation diagnostics; validate full live receipt/document chains and action/mode compatibility while preserving existing sealed-input bounds. Decoded metadata remains non-authoritative.",
     "Sources/ShadowSyncCore/InstallationControlFixtures.swift": "Fifteen pure metadata fixtures include canonical observation digest/filename equivalence and malformed, reordered, UID and changed-byte refusals; synthetic metadata grants no production authority.",
     "Sources/ShadowSyncCore/InstallationControlRecord.swift": "Preserve canonical typed receipt observation and shared state-bound transaction digest bytes; metadata never grants production authority.",
-    "Sources/ShadowSyncCore/InstallationExclusivePreparationFixtures.swift": "Retain exact fresh-install action intent, fixed-slot preimages and postimages, bounded descriptor-bound preparation, and one-use staged-admission intent; existing-install migration and activation remain gated.",
+    "Sources/ShadowSyncCore/InstallationExclusivePreparationFixtures.swift": "Retain exact fresh-install action intent, fixed-slot preimages and postimages, bounded descriptor-bound preparation, and one-use staged-admission intent; existing-install migration and activation remain gated. Expose the existing synthetic binding source to the staged journal fixture without changing owner, retirement or preparation semantics.",
     "Sources/ShadowSyncCore/InstallationLifecycle.swift": "Retain exact fresh-install action intent, fixed-slot preimages and postimages, bounded descriptor-bound preparation, and one-use staged-admission intent; existing-install migration and activation remain gated.",
     "Sources/ShadowSyncCore/InstallationLockTransferFixtures.swift": "Exercise continuous operation exclusion, alias retirement, same-inode reacquisition, bounded synchronous deadline failure and fenced transfer refusal in private disposable fixtures.",
     "Sources/ShadowSyncCore/InstallationReadinessWire.swift": "Strict canonical seven-message installation readiness observations; decoded fields and transcript digests confer no live authority.",
     "Sources/ShadowSyncCore/InstallationReadinessWireFixtures.swift": "Disposable socket-pair and canonical-wire cases cover strict field/frame refusal, coalesced frames, EOF and expired absolute budgets without installed-state access. Require exact timeout and blocking-descriptor refusals; exercise waiting and kernel-buffer backpressure.",
     "Sources/ShadowSyncCore/InstallationStagedCustodyFixtures.swift": "Synchronous disposable staged custody fixtures cover original exclusion, alias closure, actual retirement transition, wrong-owner/protection refusal and exact request/journal/catalog representations; no candidate startup or staged commands run.",
+    "Sources/ShadowSyncCore/InstallationStagedJournalFixtures.swift": "Synchronous owner-bound staged journal fixtures cover real transfer, fixed intents, exact observations and refusals; full receipt/control atomic-publication and recovery-control cuts assert exact evidence identities/bytes, retained preimages, sticky refusal and continuous operation exclusion. No staged completion or candidate authentication is fabricated. Distinguish bundle-root/content drift from identical inner-node replacement; label each refusal and exercise source-content changes through the existing synthetic source binding.",
     "Sources/ShadowSyncCore/InstallationStorageFixtures.swift": "Disposable storage fixtures exercise initial refusal, complete chains and missing evidence, exact published-control replacement refusal, and interrupted control writes; synthetic fixture commits confer no installed readiness proof.",
     "Sources/ShadowSyncCore/LifecycleLaunchCommand.swift": "Closed canonical lifecycle launch commands, strict bounded status parsing and independently reconstructed publisher/plist/qualified-graph authority; production qualification and installer entry remain gated.",
     "Sources/ShadowSyncCore/LifecyclePublisher.swift": "Bind immutable installation candidate evidence to the verified running coordinator, exact app/helper code identities, sealed release and canonical bundle inventory; preserve effective-user source ownership refusal.",
     "Sources/ShadowSyncCore/M4SelfTests.swift": "Retain lifecycle/ownership coverage and add disposable bound-plist, unsafe-input and post-read file/parent replacement refusals with identity-checked cleanup.",
     "Sources/ShadowSyncCore/M6SelfTests.swift": "Register every installation metadata case as a literal mandatory M6 body while retaining all existing runtime assertions.",
     "Sources/ShadowSyncCore/PolicyAuthorityFile.swift": "Expose captured owner-private mode for lifecycle plist validation; byte, file, ACL and parent snapshot revalidation remain unchanged.",
+    "Sources/ShadowSyncCore/PolicyRuntimeBulkDirectory.swift": "Reuse fully zeroed 64 KiB scratch and reset cursors through invocation-local completed-reader checkout; preserve packed record validation, native refill operations and value-copy isolation. Test-only scalar storage/reset observations are excluded from production.",
+    "Sources/ShadowSyncCore/PolicyRuntimeLayout.swift": "Keep scratch exclusive to each active recursive revalidation frame and return it on unwind to the same invocation; preserve initial capture, physical operations, metadata comparisons, inventory and ancestor postflight checks.",
     "Sources/ShadowSyncCore/PublisherBundleLayout.swift": "Retain the closed publisher and framework layout; accept only the exact bounded non-executable Apple ticket location and preserve/revalidate ticket bytes without treating it as publisher authority.",
+    "Sources/ShadowSyncCore/PublisherPolicyResourcesSelfTests.swift": "Exercise native recursive inventory parity, exclusive parent batches, sibling reset, multiple refills, copy isolation, throw cleanup and physical drift refusals in owned disposable fixtures.",
     "Sources/ShadowSyncCore/RemovalTransaction.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
     "Sources/ShadowSyncCore/RepositoryDiscovery.swift": "Batch only consecutive pre-access path admissions before the same filesystem operations; preserve protected-ancestor checks, all other per-access validation and original deadlines.",
     "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift": "Preserve drained inspection evidence after cancellation through completion-only authority checks; retain strict new-work admission and hard-exclude later uninspected cleanup candidates.",
@@ -45,8 +51,8 @@
     "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeFixtureSession.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeSuiteGuardian.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
-    "Sources/ShadowSyncCore/SecureState.swift": "Retain original operation custody through staged start and stop lease families; permanently close start aliases and require actual registry retirement before the stop-only lease transition. Command and readiness authority remain closed.",
-    "Sources/ShadowSyncCore/SelectedRepositoryScope.swift": "Preserve call-scoped completed catalog reuse, full fresh policy/resource checks and the original metadata deadline; admit bounded consecutive path groups only across no-I/O boundaries with ordered hooks and final fresh validation.",
+    "Sources/ShadowSyncCore/SecureState.swift": "Bind actual transferred staged admission to its exact detached intent and original owner; retain original operation continuity and one-way start/stop lease boundaries. No candidate authentication, execution or readiness authority is added.",
+    "Sources/ShadowSyncCore/SelectedRepositoryScope.swift": "Thread bounded exact-byte selected locators only through rebind into its first required-root admission batch; preserve the shared metadata deadline, current policy classification, completed catalog reuse, every later admission and physical identity check.",
     "Sources/ShadowSyncCore/SystemGitConfigurationProbe.swift": "Validate retained evidence against sticky failure and actual context/account without resolving new configuration or reopening cancellation-closed command admission.",
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
@@ -387,7 +393,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CustodyCatalog.swift",
-      "sha256": "ec09599bea6fde43b272a73e488c192dbed6b8419aace3f79479da4b4b13fab4"
+      "sha256": "95efdbecabb9d0daa0b053e3ba86499182b835293320db487a31b3b5bd96ff46"
     },
     {
       "mode": "100644",
@@ -477,7 +483,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DiscoveryMetadataAccess.swift",
-      "sha256": "a49f46a6ecd375e99f764aa95f59b181b5e5171a44a79e6974079c5255d9c87f"
+      "sha256": "6fe9c958c53fdbf4b4e8dbc898cad542592ad5bff968da975de5c17866c2c9e5"
     },
     {
       "mode": "100644",
@@ -562,12 +568,12 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/HostPolicySnapshotSelfTests.swift",
-      "sha256": "db12f876de444347340a829236d93760e2da31f9aa8222f3b866f412ce0eea09"
+      "sha256": "91634f3aef0e919f681c5fc1e3ba89cebbeb6ec68c13ef1a974faad7f8b9490c"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationCommandBinding.swift",
-      "sha256": "68ba249d8180ac6334f1e4b2c57478be2e6ba70c0c4b3afbf3d82830e58e5f2e"
+      "sha256": "ef52532f9100349415854490da31c650cd6f3eaf58f296288633f8725c7bfa6b"
     },
     {
       "mode": "100644",
@@ -592,7 +598,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationExclusivePreparationFixtures.swift",
-      "sha256": "ec640d9574098d34640250d95adaddd8401de84579bff04faa076300cb8a7481"
+      "sha256": "f3221837d42edf3d9d686066d71cdf5e6a8c58f0ed6c15e00b9cd15e095838ce"
     },
     {
       "mode": "100644",
@@ -633,6 +639,11 @@
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationStagedCustodyFixtures.swift",
       "sha256": "d9103a591af273ec242e2129b92e5e62a236ebd5e28103189b989566a15e80d3"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/InstallationStagedJournalFixtures.swift",
+      "sha256": "34075f5b50513c29b56639654e379456ac92d9c8daeb0f2a62d925bd7695e684"
     },
     {
       "mode": "100644",
@@ -707,7 +718,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "31be8dc09ec077127a3ac54a4dc9062b17f0dacf0641c92b989b778000a65f73"
+      "sha256": "c7d64a973f07ea381b6529510ea0a55856c8ddde7d7ad53d4d01f9cb7689386f"
     },
     {
       "mode": "100644",
@@ -767,12 +778,12 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/PolicyRuntimeBulkDirectory.swift",
-      "sha256": "ec839a92f744606ef9cf840f94a0193e7565d6bfd9578066417ff0cd8331a1ba"
+      "sha256": "52f9cc31b419313781bb3a66d0b8ade04ae05c9df55f7215146865d48554538f"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/PolicyRuntimeLayout.swift",
-      "sha256": "05423a47024a68ed55b000ee035af36f7105367573673119f208e92ddc730235"
+      "sha256": "4c057c0892add8e811a5064d272d4e57643a8bdb61e20e20b9003880eb18f070"
     },
     {
       "mode": "100644",
@@ -807,7 +818,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/PublisherPolicyResourcesSelfTests.swift",
-      "sha256": "02d27dcb660104c6bf051a17c666d3dce4bc402936366c6667a363f482218171"
+      "sha256": "ea27ec3c71757f78d0d9c41f86081b8c0f3f286425616ca7744a80b685288208"
     },
     {
       "mode": "100644",
@@ -937,7 +948,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SecureState.swift",
-      "sha256": "877a04bafa773fcdc8b0144a6b5b0b88dc52bebf56fe23f10bb484cb5eafb18f"
+      "sha256": "ef0dc5c412e9a61262b1fcca97c6c96dff45df6a67a2be31515025594f8f6b74"
     },
     {
       "mode": "100644",
@@ -947,7 +958,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SelectedRepositoryScope.swift",
-      "sha256": "ce60a1a419bd1d9967d92789930d306f1ad6c89df48e97596caeccc33467bb7c"
+      "sha256": "a6b6110e48ca788beb7123d9eb1523320ba16e0d7a53c3170bed5adbc6c322d9"
     },
     {
       "mode": "100644",
@@ -992,7 +1003,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "e0d36687e037bbc6ac2cfd66c6c54e70eb9cf07a1a31659a3db86b333fe6cfc2"
+      "sha256": "1b30a2273893b1b5e188139dab0ddf8a8e11311dece7a3122ee72bd47ccf65b4"
     },
     {
       "mode": "100644",
@@ -1027,7 +1038,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_application_ci.py",
-      "sha256": "3a3fe69cd40ebc62ec2298ecc80a7dea061b2d3c4ab3a66654234217c410d31a"
+      "sha256": "552ca77d50514768b11a4d9afeb3164aaabe6b0d13ebfffebb01ab8950a017ba"
     },
     {
       "mode": "100644",
@@ -1147,7 +1158,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "29e165f563396e76fad5388d97273a7f664f38404dec8e3dfa5e05ce499278cc"
+      "sha256": "5205bdfaa08ce58684e8ee821870de0f8064182d68b4c33b0bb6414096106c99"
     },
     {
       "mode": "100644",
@@ -1162,7 +1173,7 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "93249976df5458e7d5931276b6c1ef4aa2bce072aa7eb96c29f0c344ec603869"
+      "sha256": "128728145457890b69f7e093048087bd0498c1a431f3f2941240cec245659566"
     },
     {
       "mode": "100644",
@@ -1456,8 +1467,8 @@
     },
     {
       "mode": "100644",
-      "path": "tests/Fixtures/production-test-markers.json",
-      "sha256": "eb50b8450dc08777afff5d82a0d25d55227adab17c968f2614b8407ee7ee5c9d"
+      "path": "Tests/Fixtures/production-test-markers.json",
+      "sha256": "051f5c81a700bef8ce71564d600a90a7595ecfe1476bb0536efc7cf8cd89d21d"
     }
   ],
   "history": "reviewed snapshot; private history and deployment data excluded",

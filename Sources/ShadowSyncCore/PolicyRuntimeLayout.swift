@@ -187,13 +187,17 @@ struct PolicyRuntimeTree: Equatable, Sendable {
         var nodes: [String: Node] = expected == nil ? ["": parents.last!] : [:]
         var observedCount = 1
         var machO: [String] = []
+        // Invocation-local scratch. Active parent batches remain checked out
+        // while children run; only completed/unwinding siblings share storage.
+        var bulkReaders = PolicyRuntimeBulkDirectory.Pool()
         func scan(_ fd: Int32, prefix: String) throws {
             let duplicate = fcntl(fd, F_DUPFD_CLOEXEC, 10)
             guard duplicate >= 0 else { throw PublisherPolicyError.unavailable }
             let stream = expected == nil ? fdopendir(duplicate) : nil
             if expected == nil, stream == nil { close(duplicate); throw PublisherPolicyError.unavailable }
             defer { if let stream { closedir(stream) } else { close(duplicate) } }
-            var bulk = PolicyRuntimeBulkDirectory()
+            var bulk: PolicyRuntimeBulkDirectory? = expected == nil ? PolicyRuntimeBulkDirectory() : bulkReaders.take()
+            defer { if expected != nil { bulkReaders.put(&bulk) } }
             var seen: Set<String> = []
             while true {
                 let name: String
@@ -207,7 +211,7 @@ struct PolicyRuntimeTree: Equatable, Sendable {
                         $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) { String(cString: $0) }
                     }
                 } else {
-                    guard let entry = try bulk.next(fd: duplicate) else { break }
+                    guard let entry = try bulk!.next(fd: duplicate) else { break }
                     name = entry.name; batched = entry.regularFile
                 }
                 if name == "." || name == ".." { continue }

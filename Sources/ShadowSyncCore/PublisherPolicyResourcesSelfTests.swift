@@ -467,9 +467,19 @@ public enum PublisherPolicyResourcesSelfTestRunner {
             let layout = try PolicyRuntimeLayout.decode(Data(contentsOf: URL(fileURLWithPath: framework + "/" + PolicyRuntimeLayout.manifest)),
                 source: Data(contentsOf: URL(fileURLWithPath: sourcePath)))
             var compared: Set<String> = [], regular = 0
+            var pool = PolicyRuntimeBulkDirectory.Pool()
+            var active: Set<UInt> = [], storage: Set<UInt> = []
+            var scans = 0, reused = 0, pendingParents = 0, highWater = 0
             func walk(_ fd: Int32, prefix: String) throws {
-                var reader = PolicyRuntimeBulkDirectory()
-                while let entry = try reader.next(fd: fd) {
+                var reader: PolicyRuntimeBulkDirectory? = pool.take()
+                let address = reader!.testingStorageAddress
+                try require(reader!.testingIsReset && active.insert(address).inserted,
+                            "checked-out bulk scratch is stale or aliases active parent")
+                if !storage.insert(address).inserted { reused += 1 }
+                scans += 1; highWater = max(highWater, active.count)
+                defer { pool.put(&reader); active.remove(address) }
+                while let entry = try reader!.next(fd: fd) {
+                    try require(reader!.testingStorageAddress == address, "bulk refill unexpectedly copied scratch")
                     let path = prefix.isEmpty ? entry.name : prefix + "/" + entry.name
                     try require(compared.insert(path).inserted && compared.count <= 4096, "bulk duplicates or overflow")
                     var reference = stat()
@@ -485,15 +495,22 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                         let child = openat(fd, entry.name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
                         try require(child >= 0, "parity child directory")
                         defer { close(child) }
+                        let pending = reader!.testingPendingCount
+                        if pending > 0 { pendingParents += 1 }
                         try walk(child, prefix: path)
+                        try require(reader!.testingPendingCount == pending && reader!.testingStorageAddress == address,
+                                    "recursive child changed pending parent batch")
                     }
                 }
+                try require(reader!.testingStorageAddress == address, "bulk EOF unexpectedly copied scratch")
             }
             let fd = Darwin.open(framework, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             try require(fd >= 0, "parity root"); defer { close(fd) }
             try walk(fd, prefix: "")
             try require(compared == Set(layout.entries.keys) && compared.count == 158 && regular == 124,
                         "complete packaged runtime parity")
+            try require(scans == 22 && highWater == 7 && storage.count == highWater && reused == scans - highWater
+                && pendingParents > 0 && active.isEmpty, "bulk scratch recursion/reuse coverage changed")
             print("METRIC policy-runtime bulk-stat-parity-entries=\(compared.count) regular=\(regular)")
         }
         onPass("PUBLISHER-POLICY-T13-native-bulk-stat-full-inventory-parity")
@@ -635,6 +652,180 @@ public enum PublisherPolicyResourcesSelfTestRunner {
             }
         }
         onPass("PUBLISHER-POLICY-T19-install-stapled-ticket-preservation-and-refusals")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T20-bulk-sibling-reset-multirefill-and-copy-isolation") {
+            var entries: [String: PolicyRuntimeLayout.Entry] = [:]
+            for name in ["large", "small", "empty"] {
+                entries[name] = .init(kind: .directory, mode: 0o755, target: nil)
+            }
+            var largeNames: Set<String> = []
+            for index in 0..<900 {
+                let name = String(format: "item-%04d-", index) + String(repeating: "x", count: 120)
+                largeNames.insert(name)
+                entries["large/" + name] = .init(kind: .file, mode: 0o644, target: nil)
+            }
+            entries["small/only"] = .init(kind: .file, mode: 0o644, target: nil)
+            let fixture = try Fixture(layout: PolicyRuntimeLayout(entries: entries))
+            defer { try? fixture.remove() }
+            var pool = PolicyRuntimeBulkDirectory.Pool()
+            var reader: PolicyRuntimeBulkDirectory? = pool.take()
+            let address = reader!.testingStorageAddress
+            func collect(_ name: String, expected: Set<String>, multi: Bool = false) throws {
+                try require(reader!.testingIsReset && reader!.testingStorageAddress == address, "sibling scratch not fully reset/reused")
+                let fd = Darwin.open(fixture.framework + "/" + name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try require(fd >= 0, "sibling directory open"); defer { close(fd) }
+                var names: Set<String> = [], batches: Set<Int> = []
+                while let entry = try reader!.next(fd: fd) {
+                    try require(names.insert(entry.name).inserted && reader!.testingStorageAddress == address,
+                                "sibling duplicate or COW allocation")
+                    batches.insert(reader!.testingTotalCount)
+                }
+                try require(names == expected && (!multi || batches.count > 1), "sibling stale tail, count or refill differs")
+                try require(try reader!.next(fd: fd) == nil, "sibling EOF not stable")
+                pool.put(&reader); try require(reader == nil, "returned scratch remains checked out")
+                reader = pool.take()
+            }
+            try collect("large", expected: largeNames, multi: true)
+            try collect("small", expected: ["only"])
+            try collect("empty", expected: [])
+            try collect("large", expected: largeNames, multi: true)
+            try collect("empty", expected: [])
+            try collect("small", expected: ["only"])
+            let fd = Darwin.open(fixture.framework + "/large", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try require(fd >= 0, "alias directory open"); defer { close(fd) }
+            let first = try reader!.next(fd: fd)
+            var alias = reader!
+            let pending = alias.testingPendingCount
+            try require(first != nil && pending > 0, "alias fixture lacks pending batch")
+            pool.put(&reader); reader = pool.take()
+            try require(reader!.testingIsReset && reader!.testingStorageAddress != alias.testingStorageAddress
+                && alias.testingStorageAddress == address && alias.testingPendingCount == pending,
+                "reset mutated copied pending reader or failed COW isolation")
+            let second = try alias.next(fd: fd)
+            try require(second != nil && second!.name != first!.name && largeNames.contains(second!.name)
+                && alias.testingPendingCount == pending - 1, "copied pending batch was cleared")
+            pool.put(&reader)
+            try fixture.remove()
+        }
+        onPass("PUBLISHER-POLICY-T20-bulk-sibling-reset-multirefill-and-copy-isolation")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T21-bulk-throw-unwind-clears-scratch-and-descriptors") {
+            let layout = PolicyRuntimeLayout(entries: ["child": .init(kind: .directory, mode: 0o755, target: nil),
+                "child/é": .init(kind: .file, mode: 0o644, target: nil)])
+            let fixture = try Fixture(layout: layout); defer { try? fixture.remove() }
+            var pool = PolicyRuntimeBulkDirectory.Pool(), addresses: Set<UInt> = []
+            var closed: [Int32] = [], active: Set<UInt> = [], enteredChild = false
+            func walk(_ path: String) throws {
+                let fd = Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try require(fd >= 0, "throw directory open")
+                defer { close(fd); closed.append(fd) }
+                var reader: PolicyRuntimeBulkDirectory? = pool.take()
+                let address = reader!.testingStorageAddress
+                try require(reader!.testingIsReset && active.insert(address).inserted, "throw active scratch alias")
+                addresses.insert(address)
+                defer { pool.put(&reader); active.remove(address) }
+                while let entry = try reader!.next(fd: fd) {
+                    try require(entry.name == "child", "throw fixture unexpected entry")
+                    enteredChild = true
+                    try walk(path + "/" + entry.name)
+                }
+            }
+            try refused { try walk(fixture.framework) }
+            try require(enteredChild && addresses.count == 2 && active.isEmpty && closed.count == 2,
+                        "throw fixture did not unwind both active frames")
+            for fd in closed { errno = 0; try require(fcntl(fd, F_GETFD) == -1 && errno == EBADF, "throw descriptor leaked") }
+            var first: PolicyRuntimeBulkDirectory? = pool.take(), second: PolicyRuntimeBulkDirectory? = pool.take()
+            try require(first!.testingIsReset && second!.testingIsReset
+                && first!.testingStorageAddress != second!.testingStorageAddress
+                && addresses == [first!.testingStorageAddress, second!.testingStorageAddress], "throw scratch reset/COW differs")
+            pool.put(&first); pool.put(&second)
+            // A separate invocation-local pool has no active storage in common.
+            var fresh = PolicyRuntimeBulkDirectory.Pool()
+            var next: PolicyRuntimeBulkDirectory? = fresh.take()
+            try require(next!.testingIsReset && !addresses.contains(next!.testingStorageAddress), "fresh invocation retained old scratch")
+            fresh.put(&next)
+            try fixture.remove()
+        }
+        onPass("PUBLISHER-POLICY-T21-bulk-throw-unwind-clears-scratch-and-descriptors")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T22-bulk-recursive-multibatch-physical-drift-refusals") {
+            guard let framework = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_FRAMEWORK"],
+                  let sourcePath = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_SOURCE"],
+                  framework.hasPrefix("/private/tmp/"), sourcePath.hasPrefix("/private/tmp/") else {
+                throw Failure.assertion("explicit test resources missing")
+            }
+            let original = try PolicyRuntimeLayout.decode(
+                Data(contentsOf: URL(fileURLWithPath: framework + "/" + PolicyRuntimeLayout.manifest)),
+                source: Data(contentsOf: URL(fileURLWithPath: sourcePath)))
+            var entries = original.entries
+            // Root needs multiple native batches while nested siblings retain
+            // pending parent records. The direct reader case proves refills.
+            for index in 0..<400 {
+                entries[String(format: "root-%04d-", index) + String(repeating: "x", count: 120)] =
+                    .init(kind: .file, mode: 0o644, target: nil)
+            }
+            for index in 0..<12 {
+                let name = String(format: "sibling-%02d", index)
+                entries[name] = .init(kind: .directory, mode: 0o755, target: nil)
+                entries[name + "/nested"] = .init(kind: .directory, mode: 0o755, target: nil)
+                entries[name + "/nested/file"] = .init(kind: .file, mode: 0o644, target: nil)
+            }
+            let layout = PolicyRuntimeLayout(entries: entries)
+            func verify(_ mutation: (Fixture, String) throws -> Void) throws {
+                let fixture = try Fixture(layout: layout); defer { try? fixture.remove() }
+                let tree = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: layout)
+                try tree.revalidate(root: fixture.framework, owner: geteuid(), layout: layout)
+                try require(tree.nodes.count == entries.count + 1, "recursive inventory omitted entries")
+                try mutation(fixture, fixture.framework + "/sibling-11/nested/file")
+                try refused { try tree.revalidate(root: fixture.framework, owner: geteuid(), layout: layout) }
+                try fixture.remove()
+            }
+            try verify { fixture, target in
+                let replacement = fixture.path + "/replacement"
+                try Data(contentsOf: URL(fileURLWithPath: target)).write(to: URL(fileURLWithPath: replacement))
+                try require(chmod(replacement, 0o644) == 0 && rename(replacement, target) == 0, "recursive inode replacement")
+            }
+            try verify { _, target in try require(chmod(target, 0o600) == 0, "recursive mode drift") }
+            try verify { fixture, target in try require(link(target, fixture.path + "/hardlink") == 0, "recursive link-count drift") }
+            try verify { _, target in try Data("changed metadata".utf8).write(to: URL(fileURLWithPath: target)) }
+            try verify { _, target in try require(unlink(target) == 0, "recursive missing entry") }
+            try verify { _, target in try Data("extra".utf8).write(to: URL(fileURLWithPath: target + "-extra")) }
+            try verify { fixture, _ in
+                let link = fixture.framework + "/Python"
+                try require(unlink(link) == 0 && symlink("missing", link) == 0 && lchmod(link, 0o755) == 0,
+                            "recursive symlink drift")
+            }
+            try verify { fixture, _ in
+                let ancestor = fixture.framework + "/sibling-11/nested"
+                try require(rename(ancestor, fixture.path + "/old-ancestor") == 0 && mkdir(ancestor, 0o755) == 0
+                    && chmod(ancestor, 0o755) == 0, "recursive ancestor replacement")
+                try Data("fixture".utf8).write(to: URL(fileURLWithPath: ancestor + "/file"))
+                try require(chmod(ancestor + "/file", 0o644) == 0, "recursive replacement mode")
+            }
+            // Use the established qualified chmod fixture, then clear only
+            // this owned ACL before identity-checked fixture removal.
+            let aclFixture = try Fixture(layout: layout)
+            let aclTarget = aclFixture.framework + "/sibling-11/nested/file"
+            defer {
+                if let empty = acl_init(0) {
+                    _ = acl_set_link_np(aclTarget, ACL_TYPE_EXTENDED, empty)
+                    acl_free(UnsafeMutableRawPointer(empty))
+                }
+                try? aclFixture.remove()
+            }
+            let retained = try PolicyRuntimeTree.capture(root: aclFixture.framework, owner: geteuid(), layout: layout)
+            try retained.revalidate(root: aclFixture.framework, owner: geteuid(), layout: layout)
+            let directory = open(aclFixture.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try require(directory >= 0, "ACL drift scratch open"); defer { close(directory) }
+            let account = EffectiveAccount(uid: geteuid(), username: "fixture", homeDirectory: aclFixture.path)
+            let changed = try ClosedProcessRunner(outputLimit: 4096).run(
+                command: ClosedProcessCommand(executable: "/bin/chmod", arguments: ["+a", "everyone deny delete", aclTarget]),
+                environment: ClosedProcessRunner.environment(account: account), workingDirectoryDescriptor: directory,
+                account: account, timeout: 2, cancellation: CancellationToken())
+            try require(changed.status == 0 && !changed.timedOut && !changed.cancelled
+                && !changed.stdoutTruncated && !changed.stderrTruncated, "ACL drift setup failed")
+            errno = 0
+            try require(waitpid(changed.processID, nil, WNOHANG) == -1 && errno == ECHILD, "ACL drift child not reaped")
+            try refused { try retained.revalidate(root: aclFixture.framework, owner: geteuid(), layout: layout) }
+        }
+        onPass("PUBLISHER-POLICY-T22-bulk-recursive-multibatch-physical-drift-refusals")
     }
 
 

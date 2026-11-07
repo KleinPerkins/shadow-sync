@@ -710,7 +710,7 @@ public final class SelectedRepositoryScopeBinder:
     private func processFreeCatalogBound(preferences: RepositorySelectionPreferenceDocument?,
         canonicalLocators: [String: RepositorySelectionLocator] = [:],
         sessionEntries: [RepositorySelectionPreferenceEntry] = [], generation: UInt64,
-        deadlineLimit: UInt64?
+        deadlineLimit: UInt64?, firstAdmissionHints: [RepositorySelectionLocator] = []
     ) throws -> RepositorySelectionCatalogResult {
         let deadline = boundedMetadataDeadline(deadlineLimit)
         #if SHADOW_SYNC_TESTING
@@ -722,7 +722,7 @@ public final class SelectedRepositoryScopeBinder:
                 started: diagnosticStart, deadline: deadline, succeeded: diagnosticPassed)
         }
         #endif
-        let root = try openRoot(deadline: deadline)
+        let root = try openRoot(deadline: deadline, lexicalHints: firstAdmissionHints)
         defer { close(root.descriptor) }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .projection
@@ -992,7 +992,8 @@ public final class SelectedRepositoryScopeBinder:
         #endif
         let catalog = try processFreeCatalogBound(preferences: nil,
             canonicalLocators: Dictionary(uniqueKeysWithValues: entries.map { ($0.repositoryID, $0.locator) }),
-            generation: scope.selectionGeneration, deadlineLimit: stageDeadline)
+            generation: scope.selectionGeneration, deadlineLimit: stageDeadline,
+            firstAdmissionHints: Array(entries.prefix(63).map(\.locator)))
         guard catalog.isComplete else {
             if catalog.degradedReason == .cleanupPending { throw SelectedRepositoryScopeError.cleanupPending }
             throw SelectedRepositoryScopeError.catalogDegraded(
@@ -1174,11 +1175,36 @@ public final class SelectedRepositoryScopeBinder:
         let identity: FileIdentity
     }
 
-    private func openRoot(deadline: UInt64) throws -> OpenedRoot {
+    /// Hints are bounded lexical input only. Reserve the first slot for root
+    /// admission and preserve exact bytes when filtering and deduplicating.
+    /// Inspect at most 63 hints, even when duplicates or unrelated roots occur.
+    static func firstRootAdmissionPaths(root: String, projectionRoot: [String],
+                                        lexicalHints: [RepositorySelectionLocator]) throws
+        -> [RepositorySelectionAdmissionPath] {
+        var paths = [try RepositorySelectionAdmissionPath(root: root, components: [])]
+        var seen = Set<Data>()
+        let prefix = projectionRoot.map { Data($0.utf8) }
+        for hint in lexicalHints.prefix(63) {
+            guard hint.governedRoot.utf8.elementsEqual(root.utf8),
+                  hint.components.map({ Data($0.utf8) }).starts(with: prefix),
+                  seen.insert(Data(hint.relativePath.utf8)).inserted else { continue }
+            paths.append(try RepositorySelectionAdmissionPath(root: root, components: hint.components))
+        }
+        return paths
+    }
+
+    private func openRoot(deadline: UInt64, lexicalHints: [RepositorySelectionLocator] = []) throws -> OpenedRoot {
         try revalidatePhase()
         do {
-            try admission.requireAllowed(
-                RepositorySelectionAdmissionPath(root: logicalRoot, components: []), deadline: deadline)
+            // Only rebind supplies hints. Classify them with the required root
+            // in this invocation's first batch, before any root filesystem I/O.
+            // Hint decisions never grant access; later exact admissions and
+            // physical identity checks remain mandatory, including for root.
+            let paths = try Self.firstRootAdmissionPaths(root: logicalRoot,
+                projectionRoot: snapshot?.projection.rootComponents ?? [], lexicalHints: lexicalHints)
+            guard case .allowed = try admission.classify(paths, deadline: deadline)[0] else {
+                throw RepositorySelectionAdmissionError.unavailable
+            }
         } catch { throw Self.policyFailure(error) }
         let descriptor = Darwin.open(
             governedRootPath,

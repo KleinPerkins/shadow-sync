@@ -1353,7 +1353,7 @@ final class InstallationTransactionOwner: @unchecked Sendable {
             try retirement.revalidate(for: self)
             try revalidate()
             guard !deadline.hasExpired else { throw CustodyRecordError.fenced }
-            return InstallationStagedAdmission(self)
+            return InstallationStagedAdmission(self, intent: intent)
         } catch {
             // Original operation remains retained even after postflight failure.
             // No restoration, old admission reopening or retry is authorized.
@@ -1421,7 +1421,18 @@ final class InstallationTransactionOwner: @unchecked Sendable {
 /// durable action continuation, publisher binding and helper admission are separate.
 final class InstallationStagedAdmission: @unchecked Sendable {
     private let owner: InstallationTransactionOwner
-    fileprivate init(_ owner: InstallationTransactionOwner) { self.owner = owner }
+    private let intent: CustodyCatalogStore.InstallationStagedAdmissionIntent
+    fileprivate init(_ owner: InstallationTransactionOwner, intent: CustodyCatalogStore.InstallationStagedAdmissionIntent) {
+        self.owner = owner; self.intent = intent
+    }
+    func validateOwner(_ candidate: InstallationTransactionOwner,
+                       intent: CustodyCatalogStore.InstallationStagedAdmissionIntent) throws {
+        guard owner === candidate, self.intent === intent else { throw CustodyRecordError.fenced }
+        try revalidate()
+    }
+    func continueJournal(deadline: MonotonicDeadline) throws -> CustodyCatalogStore.InstallationStagedJournal {
+        try intent.continueJournal(admission: self, deadline: deadline)
+    }
     func revalidate() throws { try owner.validateStagedBorrowing(mode: .installationStagedStart) }
     func retainStartLeases() throws -> CustodyAuthorityLeaseSet {
         try owner.retainStagedLeases(mode: .installationStagedStart)
@@ -1444,6 +1455,9 @@ final class ClosedInstallationStagedStarts: @unchecked Sendable {
 final class InstallationStagedStopAdmission: @unchecked Sendable {
     private let owner: InstallationTransactionOwner
     fileprivate init(_ owner: InstallationTransactionOwner) { self.owner = owner }
+    func validateOwner(_ candidate: InstallationTransactionOwner) throws {
+        guard owner === candidate else { throw CustodyRecordError.fenced }; try revalidate()
+    }
     func revalidate() throws { try owner.validateStagedBorrowing(mode: .installationStagedStop) }
     func retainStopLeases() throws -> CustodyAuthorityLeaseSet {
         try owner.retainStagedLeases(mode: .installationStagedStop)
