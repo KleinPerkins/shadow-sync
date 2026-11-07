@@ -310,6 +310,7 @@
     "m6-live-peer-datagram",
     "m6-live-peer-wrong-uid",
     "m6-live-peer-unsigned-identity",
-    "m6-installation-owner-acl-drift"
+    "m6-installation-owner-acl-drift",
+    "m6-installation-canonical-observation-binding"
   ]
 }

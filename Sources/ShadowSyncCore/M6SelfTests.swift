@@ -33,6 +33,7 @@ public enum M6SelfTestRunner {
         try run("m6-installation-initial-fenced-roundtrip") { try InstallationControlFixtures.initial() }
         try run("m6-installation-first-reserve-intent") { try InstallationControlFixtures.firstIntent() }
         try run("m6-installation-canonical-refusals") { try InstallationControlFixtures.malformed() }
+        try run("m6-installation-canonical-observation-binding") { try InstallationControlFixtures.canonicalObservations() }
         try run("m6-installation-fixed-slots-and-documents") { try InstallationControlFixtures.fixedSlots() }
         try run("m6-installation-phase-combinations") { try InstallationControlFixtures.phases() }
         try run("m6-installation-closed-transitions") { try InstallationControlFixtures.transitions() }

@@ -300,6 +300,48 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             DiscoveryFixtureDiagnostic.record(.registry, stage: stage,
                 started: diagnosticStarted, deadline: resources.request.budget.work)
         }
+        private var diagnosticFailures: UInt8 = 0
+        func diagnosticFailure(_ error: Error, retiring: Bool) {
+            guard command != nil, resources.request.kind == .policyClassify else { return }
+            let flag: UInt8 = retiring ? 2 : 1
+            guard diagnosticFailures & flag == 0 else { return }
+            diagnosticFailures |= flag
+            // Closed numeric observations only; never format arbitrary errors,
+            // paths, requests or child output. Retained polling emits at most
+            // one start and one retirement failure for this entry.
+            let code: UInt64
+            var systemCode: UInt64 = 0
+            if let error = error as? CustodyRecordError {
+                switch error {
+                case .invalidRecord: code = 1
+                case .invalidTransition: code = 2
+                case .conflict: code = 3
+                case .fenced: code = 4
+                case .busy: code = 5
+                case .unsafeMetadata: code = 6
+                case .persistence(let value): code = 7; systemCode = UInt64(UInt32(bitPattern: value))
+                case .committedCleanupFailure(let value): code = 8; systemCode = UInt64(UInt32(bitPattern: value))
+                case .injectedFailure: code = 9
+                }
+            } else { code = 255 }
+            var bits: UInt64 = retiring ? 64 : 0
+            if metadataAttempted { bits |= 1 }; if metadata != nil { bits |= 2 }
+            if spawnAttempted { bits |= 4 }; if anchor != nil { bits |= 8 }
+            if owner != nil { bits |= 16 }; if resumed { bits |= 32 }
+            if terminal != nil { bits |= 1 << 48 }; if statusEnded { bits |= 1 << 49 }
+            if stdoutEnded { bits |= 1 << 50 }; if stderrEnded { bits |= 1 << 51 }
+            if traceEnded { bits |= 1 << 52 }
+            if let owner {
+                switch owner.observation {
+                case .running: bits |= 1 << 53
+                case .reaped: bits |= 2 << 53
+                case .ownershipFailure: bits |= 3 << 53
+                }
+            }
+            DiscoveryFixtureDiagnostic.record(.registry, stage: .failure,
+                started: diagnosticStarted, deadline: resources.request.budget.work,
+                resultBits: bits | (code << 8) | (systemCode << 16))
+        }
         #endif
         init(_ resources: CustodyRequestResources, _ helper: CustodyHelperExecutable, command: PreparedCustodyCommand?) throws {
             self.resources = resources; self.helper = helper; self.command = command
@@ -406,6 +448,9 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                 #endif
                 try self.spawn(entry)
             } catch {
+                #if SHADOW_SYNC_TESTING
+                entry.diagnosticFailure(error, retiring: false)
+                #endif
                 if !entry.metadataAttempted {
                     // No metadata transition or spawn was attempted; no active
                     // transaction can be forgotten by releasing this reservation.
@@ -681,7 +726,12 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             entry.publish()
             entry.resources.closeControl(); entry.mapping?.releaseChildCopies()
             remove(entry)
-        } catch { pending(entry, reason: .persistenceFailure) }
+        } catch {
+            #if SHADOW_SYNC_TESTING
+            entry.diagnosticFailure(error, retiring: true)
+            #endif
+            pending(entry, reason: .persistenceFailure)
+        }
     }
     private func tick() {
         let now = DispatchTime.now().uptimeNanoseconds

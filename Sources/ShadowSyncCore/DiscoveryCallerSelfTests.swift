@@ -222,6 +222,8 @@ public enum DiscoveryCallerSelfTestRunner {
         let cancellation = CancellationToken()
         private let directory: Int32
         private let identity: FileIdentity
+        private let installationControlBytes: Data
+        private let installationReceiptBytes: [String: Data]
         private var removed = false
 
         init(systemConfiguration: Bool) throws {
@@ -276,8 +278,26 @@ public enum DiscoveryCallerSelfTestRunner {
                 let location = try StateLocation.isolated(root: root)
                 try TestIsolation.initializeState(at: location)
                 let initialOwner = try RunAuthority.acquireRun(at: location)
+                let installationControlBytes: Data
+                let installationReceiptBytes: [String: Data]
                 do {
-                    try CustodyCatalogStore.testingInitialize(leases: initialOwner.retainCommandLeases(), root: root)
+                    let leases = try initialOwner.retainCommandLeases()
+                    try CustodyCatalogStore.testingInitialize(leases: leases, root: root)
+                    // Rebuild the exact synthetic seed from the held fixture
+                    // descriptors. Cleanup must not learn its allowlist from
+                    // whatever files happen to be present at disposal time.
+                    let state = try leases.duplicateStateDirectory()
+                    let binding = try InstallationStateBinding.capture(stateDescriptor: state.0.value, uid: state.1)
+                    var harness = try InstallationControlFixtures.Harness(state: binding)
+                    try harness.throughReady(); try harness.commitReady()
+                    for action in [InstallationAction.cleanupCoordination, .cleanupBackups, .cleanupIncoming, .finish] {
+                        try harness.pair(action)
+                    }
+                    try harness.record.validateReceiptChain(harness.receipts)
+                    installationControlBytes = try harness.record.encode()
+                    installationReceiptBytes = try Dictionary(uniqueKeysWithValues: harness.receipts.map { receipt in
+                        (try receipt.filename(uid: state.1), try receipt.encode(uid: state.1))
+                    })
                 } catch {
                     initialOwner.release()
                     throw error
@@ -289,6 +309,8 @@ public enum DiscoveryCallerSelfTestRunner {
                 self.root = root; self.home = home; self.repository = repository; self.identity = identity
                 self.directory = directory; self.account = account; self.context = context
                 self.publisher = publisher; self.snapshot = snapshot
+                self.installationControlBytes = installationControlBytes
+                self.installationReceiptBytes = installationReceiptBytes
             } catch {
                 if directory >= 0 { close(directory) }
                 var current = stat()
@@ -322,13 +344,25 @@ public enum DiscoveryCallerSelfTestRunner {
                 && context.testingScope.observation == .terminal
                 && context.testingScope.testingRead().entries.isEmpty,
                 "discovery cleanup unresolved; fixture and transaction evidence retained at \(root)")
-            let receipts = try StateLocation.isolated(root: root).path + "/custody/receipts"
+            let custody = try StateLocation.isolated(root: root).path + "/custody"
+            let control = try PolicyAuthorityFile.read(path: custody + "/" + InstallationControlRecord.filename,
+                owner: account.uid, maximumBytes: InstallationControlRecord.maximumBytes)
+            try require(control.bytes == installationControlBytes,
+                "fixture installation control changed; evidence retained")
+            let receipts = custody + "/receipts"
             var discoveryCount = 0
             let names = try FileManager.default.contentsOfDirectory(atPath: receipts)
-            let journalNames = names.filter {
-                !$0.hasSuffix(".caller.json") && !$0.hasPrefix("discovery-resource-")
-            }
             var expectedNames = Set<String>()
+            for (name, bytes) in installationReceiptBytes {
+                let file = try PolicyAuthorityFile.read(path: receipts + "/" + name,
+                    owner: account.uid, maximumBytes: InstallationStepReceipt.maximumBytes)
+                try require(file.bytes == bytes, "fixture installation receipt binding; evidence retained")
+                expectedNames.insert(name)
+            }
+            let journalNames = names.filter {
+                installationReceiptBytes[$0] == nil
+                    && !$0.hasSuffix(".caller.json") && !$0.hasPrefix("discovery-resource-")
+            }
             for name in journalNames {
                 try require(name.hasSuffix(".json") && RunIdentity.isValid(String(name.dropLast(5))), "unexpected fixture receipt")
                 expectedNames.insert(name)

@@ -564,6 +564,13 @@ enum CustodyWire {
                 try put("["); for (i, v) in a.enumerated() { if i > 0 { try put(",") }; try render(v) }; try put("]")
             case let .string(s):
                 try put("\"")
+                // Canonical receipt keys and digests usually need no escaping.
+                // Append their exact UTF-8 once instead of allocating a String
+                // and extending Data for every scalar. Quotes, backslashes and
+                // ASCII controls still take the existing canonical escape path.
+                if !s.utf8.contains(where: { $0 < 32 || $0 == 34 || $0 == 92 }) {
+                    try put(s); try put("\""); return
+                }
                 for scalar in s.unicodeScalars {
                     switch scalar.value {
                     case 34: try put("\\\""); case 92: try put("\\\\")

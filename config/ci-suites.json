@@ -2142,6 +2142,7 @@
           "m6-installation-initial-fenced-roundtrip",
           "m6-installation-first-reserve-intent",
           "m6-installation-canonical-refusals",
+          "m6-installation-canonical-observation-binding",
           "m6-installation-fixed-slots-and-documents",
           "m6-installation-phase-combinations",
           "m6-installation-closed-transitions",

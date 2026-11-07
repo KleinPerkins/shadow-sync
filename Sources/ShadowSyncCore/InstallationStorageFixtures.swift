@@ -76,6 +76,19 @@ enum InstallationStorageFixtures {
             try refuses { try store.checkFence(ownRequests: [], scope: RunIdentity.make(), mode: .read) }
             try check(rename(saved, selected) == 0, "restore exact fixture receipt")
             try store.checkFence(ownRequests: [], scope: RunIdentity.make(), mode: .read)
+            // Every admission rereads and validates the chain: neither its old
+            // digest nor its metadata can survive a changed receipt on disk.
+            let receiptBytes = try Data(contentsOf: URL(fileURLWithPath: selected))
+            let changed = receiptBytes + Data(" ".utf8)
+            try changed.write(to: URL(fileURLWithPath: selected))
+            try refuses { try store.checkFence(ownRequests: [], scope: RunIdentity.make(), mode: .read) }
+            try receiptBytes.write(to: URL(fileURLWithPath: selected))
+            try check(chmod(selected, 0o600) == 0, "restore receipt mode")
+            try store.checkFence(ownRequests: [], scope: RunIdentity.make(), mode: .read)
+            try check(chmod(selected, 0o644) == 0, "receipt mode drift fixture")
+            try refuses { try store.checkFence(ownRequests: [], scope: RunIdentity.make(), mode: .read) }
+            try check(chmod(selected, 0o600) == 0, "restore private receipt mode")
+            try store.checkFence(ownRequests: [], scope: RunIdentity.make(), mode: .read)
         }
     }
     static func publishedReplacement() throws {

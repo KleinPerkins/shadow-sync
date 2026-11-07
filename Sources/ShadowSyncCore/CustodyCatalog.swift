@@ -401,7 +401,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
         guard fd >= 0 else { throw CustodyRecordError.unsafeMetadata }
         guard let stream = fdopendir(fd) else { close(fd); throw CustodyRecordError.unsafeMetadata }
         defer { closedir(stream) }
-        var chain: [InstallationStepReceipt] = []
+        var chain: [InstallationStepReceipt.CanonicalObservation] = []
         // A local metadata ceiling consumes caller time; it never renews a
         // command's absolute admission/work deadline. Historical command receipt
         // count is not a new retention/deletion policy.
@@ -418,11 +418,11 @@ final class CustodyCatalogStore: @unchecked Sendable {
             if name == "." || name == ".." { continue }
             if name.hasPrefix(InstallationStepReceipt.prefix) {
                 guard chain.count < 256 else { throw CustodyRecordError.fenced }
-                let receipt = try InstallationStepReceipt.decode(read(name, at: receipts.descriptor.value,
+                let observation = try InstallationStepReceipt.CanonicalObservation(decoding: read(name, at: receipts.descriptor.value,
                     maximum: InstallationStepReceipt.maximumBytes).bytes, uid: uid)
-                guard receipt.transactionID == record.transaction?.id,
-                      try receipt.filename(uid: uid) == name else { throw CustodyRecordError.fenced }
-                chain.append(receipt)
+                guard observation.receipt.transactionID == record.transaction?.id,
+                      observation.filename == name else { throw CustodyRecordError.fenced }
+                chain.append(observation)
             } else {
                 // Preserve existing command archives. Unknown names, including
                 // incomplete atomic-write temporaries, are evidence of uncertainty.
@@ -438,8 +438,11 @@ final class CustodyCatalogStore: @unchecked Sendable {
                 try validate(node, at: receipts.descriptor.value, name: name, isDirectory: false)
             }
         }
-        chain.sort { a, b in a.ordinal == b.ordinal ? a.status == .intent && b.status == .complete : a.ordinal < b.ordinal }
-        try record.validateReceiptChain(chain)
+        chain.sort { a, b in
+            let a = a.receipt, b = b.receipt
+            return a.ordinal == b.ordinal ? a.status == .intent && b.status == .complete : a.ordinal < b.ordinal
+        }
+        try record.validateReceiptChain(observations: chain)
         return (file, record)
     }
     private func installationFence(mode: CustodyAuthorityMode) throws {

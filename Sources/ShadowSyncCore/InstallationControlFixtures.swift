@@ -141,6 +141,58 @@ enum InstallationControlFixtures {
         let escaped = Data(text.replacingOccurrences(of: "initial", with: "\\u0069nitial").utf8)
         try refuses { _ = try InstallationControlRecord.decode(escaped) }
     }
+    static func canonicalObservations() throws {
+        let strings = [("", "\"\""), ("receipt-a/012", "\"receipt-a/012\""),
+            ("é🐚\u{2028}", "\"é🐚\u{2028}\""), ("a\"b\\c", "\"a\\\"b\\\\c\""),
+            ("\0\t\n\r\u{1f}", "\"\\u0000\\u0009\\u000a\\u000d\\u001f\"")]
+        for (value, expected) in strings {
+            let bytes = Data(expected.utf8)
+            try check(try CustodyWire.encode(.string(value), maximum: bytes.count) == bytes,
+                      "canonical string bytes or exact bound changed")
+            do {
+                _ = try CustodyWire.encode(.string(value), maximum: bytes.count - 1)
+                throw Failure(message: "canonical string byte bound bypassed")
+            } catch is CustodyProtocolError { }
+            try check(try CustodyWire.decode(bytes, maximum: bytes.count) == .string(value),
+                      "canonical string roundtrip changed")
+        }
+        var h = try Harness(); try h.throughReady(); try h.commitReady()
+        for action in [InstallationAction.cleanupCoordination, .cleanupBackups, .cleanupIncoming, .finish] { try h.pair(action) }
+        typealias Observation = InstallationStepReceipt.CanonicalObservation
+        let observations = try h.receipts.map { receipt -> Observation in
+            let bytes = try receipt.encode(uid: 501)
+            let decoded = try Observation(decoding: bytes, uid: 501)
+            let typed = try Observation(validating: receipt, uid: 501)
+            try check(decoded.receipt == receipt && decoded.uid == 501 && decoded.digest == typed.digest
+                && decoded.digest == (try receipt.digest(uid: 501))
+                && decoded.filename == (try receipt.filename(uid: 501)), "canonical observation changed receipt binding")
+            return decoded
+        }
+        try check(observations.count == 40, "complete canonical observation fixture")
+        try h.record.validateReceiptChain(observations: observations)
+        try refuses { try h.record.validateReceiptChain(observations: Array(observations.dropFirst())) }
+        try refuses { try h.record.validateReceiptChain(observations: observations + [observations.last!]) }
+        try refuses { try h.record.validateReceiptChain(observations: Array(observations.reversed())) }
+        try refuses {
+            try h.record.validateReceiptChain(observations: h.receipts.map { try Observation(validating: $0, uid: 502) })
+        }
+        let receipt = h.receipts[0], bytes = try receipt.encode(uid: 501), text = String(decoding: bytes, as: UTF8.self)
+        let invalid = [bytes + Data(" ".utf8),
+            Data(text.replacingOccurrences(of: "\"ordinal\":1", with: "\"ordinal\":1,\"ordinal\":1").utf8),
+            Data(text.replacingOccurrences(of: "\"ordinal\":1", with: "\"ordinal\":01").utf8),
+            Data(text.replacingOccurrences(of: "\"ordinal\":1", with: "\"ordinal\":18446744073709551616").utf8),
+            Data(text.replacingOccurrences(of: "reserve", with: "\\u0072eserve").utf8),
+            try CustodyWire.encode(replacing(receipt.wire, key: "extra", with: .null), maximum: 32_768)]
+        for data in invalid {
+            try refuses { _ = try Observation(decoding: data, uid: 501) }
+            try refuses { _ = try InstallationStepReceipt.decode(data, uid: 501) }
+        }
+        // A new read must validate its own bytes, even after a good observation.
+        let changed = try CustodyWire.encode(replacing(receipt.wire, key: "bindingDigest", with: .string(otherSHA)), maximum: 32_768)
+        let changedObservation = try Observation(decoding: changed, uid: 501)
+        try check(changedObservation.digest != observations[0].digest, "canonical digest reused across observations")
+        try refuses { try h.record.validateReceiptChain(observations: [changedObservation] + observations.dropFirst()) }
+    }
     static func fixedSlots() throws {
         var h = try Harness(); try h.add(.reserve, status: .intent)
         guard case let .object(control) = h.record.wire,

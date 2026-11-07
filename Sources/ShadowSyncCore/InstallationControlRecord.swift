@@ -430,13 +430,36 @@ struct InstallationStepReceipt: Equatable {
     func encode(uid: UInt32) throws -> Data { try validate(uid: uid); return try CustodyWire.encode(wire, maximum: Self.maximumBytes) }
     func digest(uid: UInt32) throws -> String { InstallationWire.hash(try encode(uid: uid)) }
     static func decode(_ data: Data, uid: UInt32) throws -> Self {
-        do {
-            let value = try Self(wire: InstallationWire.decode(data))
-            try value.validate(uid: uid); return value
-        } catch { throw InstallationRecordError.invalidRecord }
+        try CanonicalObservation(decoding: data, uid: uid).receipt
     }
     // Exact recognized names only: no caller-selected receipt destination.
     func filename(uid: UInt32) throws -> String { Self.prefix + transactionID + "-" + String(ordinal) + "-" + status.rawValue + "-" + (try digest(uid: uid)) + ".json" }
+
+    // One immutable, snapshot-local observation of validated canonical bytes.
+    // Both constructors validate the receipt for the recorded UID; no caller can
+    // supply a digest. This is neither live storage proof nor reusable authority.
+    struct CanonicalObservation {
+        let receipt: InstallationStepReceipt
+        let uid: UInt32
+        let digest: String
+        init(validating receipt: InstallationStepReceipt, uid: UInt32) throws {
+            let data = try receipt.encode(uid: uid)
+            self.receipt = receipt; self.uid = uid; digest = InstallationWire.hash(data)
+        }
+        init(decoding data: Data, uid: UInt32) throws {
+            do {
+                let receipt = try InstallationStepReceipt(wire: InstallationWire.parse(data))
+                // Compare the typed serialization, not just the parsed wire:
+                // schema conversion must preserve every canonical byte too.
+                guard try receipt.encode(uid: uid) == data else { throw InstallationRecordError.invalidRecord }
+                self.receipt = receipt; self.uid = uid; digest = InstallationWire.hash(data)
+            } catch { throw InstallationRecordError.invalidRecord }
+        }
+        var filename: String {
+            InstallationStepReceipt.prefix + receipt.transactionID + "-" + String(receipt.ordinal)
+                + "-" + receipt.status.rawValue + "-" + digest + ".json"
+        }
+    }
 }
 extension InstallationStepReceipt {
     init(wire: PolicyWireValue) throws {
@@ -523,22 +546,30 @@ struct InstallationControlRecord: Equatable {
     // observations only. Storage metadata, extras, current boot/process, live
     // peers, retired commands and allowed residual layout remain caller gates.
     func validateReceiptChain(_ receipts: [InstallationStepReceipt]) throws {
+        guard receipts.count <= 256 else { throw InstallationRecordError.invalidRecord }
+        try validateReceiptChain(observations: receipts.map {
+            try InstallationStepReceipt.CanonicalObservation(validating: $0, uid: state.directory.uid)
+        })
+    }
+    func validateReceiptChain(observations: [InstallationStepReceipt.CanonicalObservation]) throws {
         try validate()
-        if phase == .initial { guard receipts.isEmpty else { throw InstallationRecordError.invalidRecord }; return }
-        guard let transaction, let step, !receipts.isEmpty, receipts.count <= 256 else { throw InstallationRecordError.invalidRecord }
+        if phase == .initial { guard observations.isEmpty else { throw InstallationRecordError.invalidRecord }; return }
+        guard let transaction, let step, !observations.isEmpty, observations.count <= 256 else { throw InstallationRecordError.invalidRecord }
         // Every receipt publication consumes at least one control revision after
         // the initial control. Recovery-only replacements and earlier completed
         // transactions may make revision larger, but never smaller.
-        guard revision > UInt64(receipts.count) else { throw InstallationRecordError.invalidRecord }
+        guard revision > UInt64(observations.count) else { throw InstallationRecordError.invalidRecord }
         let uid = state.directory.uid, binding = try bindingDigest()
-        var prior: InstallationStepReceipt?
+        var prior: InstallationStepReceipt.CanonicalObservation?
         var rollback = false, committed = false
         var candidateReadyDigest: String?
-        for (index, receipt) in receipts.enumerated() {
-            try receipt.validate(uid: uid)
+        for (index, observation) in observations.enumerated() {
+            guard observation.uid == uid else { throw InstallationRecordError.invalidRecord }
+            let receipt = observation.receipt
             guard receipt.transactionID == transaction.id, receipt.bindingDigest == binding else { throw InstallationRecordError.invalidRecord }
-            if let prior {
-                guard receipt.previousReceiptDigest == (try prior.digest(uid: uid)) else { throw InstallationRecordError.invalidRecord }
+            if let priorObservation = prior {
+                let prior = priorObservation.receipt
+                guard receipt.previousReceiptDigest == priorObservation.digest else { throw InstallationRecordError.invalidRecord }
                 if prior.status == .intent {
                     guard receipt.status == .complete, receipt.ordinal == prior.ordinal, receipt.action == prior.action,
                           receipt.preimage == prior.preimage else { throw InstallationRecordError.invalidRecord }
@@ -555,19 +586,21 @@ struct InstallationControlRecord: Equatable {
                       receipt.previousReceiptDigest == nil else { throw InstallationRecordError.invalidRecord }
             }
             if receipt.action == .candidateStop || (transaction.intent == .remove && receipt.action == .restoreApplication) { rollback = true }
-            if receipt.action == .candidateReady && receipt.status == .complete { candidateReadyDigest = try receipt.digest(uid: uid) }
+            if receipt.action == .candidateReady && receipt.status == .complete { candidateReadyDigest = observation.digest }
             if receipt.action == .readinessCommit && receipt.status == .complete {
                 guard let readinessCommit, readinessCommit.completedStepReceiptDigest == candidateReadyDigest,
                       readinessCommit.commitRevision >= UInt64(index) + 2,
-                      revision - readinessCommit.commitRevision >= UInt64(receipts.count - index - 1) else {
+                      revision - readinessCommit.commitRevision >= UInt64(observations.count - index - 1) else {
                     throw InstallationRecordError.invalidRecord
                 }
                 committed = true
             }
-            prior = receipt
+            prior = observation
         }
-        guard let latest = prior, try latest.step() == step,
-              try latest.digest(uid: uid) == latestReceiptDigest,
+        guard let latestObservation = prior else { throw InstallationRecordError.invalidRecord }
+        let latest = latestObservation.receipt
+        guard try latest.step() == step,
+              latestObservation.digest == latestReceiptDigest,
               transaction.slots == (latest.postimage ?? latest.preimage),
               committed == (readinessCommit != nil),
               !rollback || phase == .recovery else { throw InstallationRecordError.invalidRecord }
@@ -713,13 +746,16 @@ private enum InstallationActionTable {
 }
 
 private enum InstallationWire {
-    static func decode(_ data: Data) throws -> PolicyWireValue {
+    static func parse(_ data: Data) throws -> PolicyWireValue {
         guard !data.isEmpty, data.count <= InstallationControlRecord.maximumBytes else { throw InstallationRecordError.limit }
         // Seventeen fixed slot keys exceed configuration's 16-object-key cap.
         // Reuse the existing larger-object profile, then enforce exact schema,
         // small byte cap and canonical byte equality. No grammar broadening.
         var parser = try PolicyWireParser(data, profile: .bundleLayout)
-        let value = try parser.parse()
+        return try parser.parse()
+    }
+    static func decode(_ data: Data) throws -> PolicyWireValue {
+        let value = try parse(data)
         guard try CustodyWire.encode(value, maximum: InstallationControlRecord.maximumBytes) == data else {
             throw InstallationRecordError.invalidRecord
         }
