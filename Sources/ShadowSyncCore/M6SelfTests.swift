@@ -71,6 +71,14 @@ public enum M6SelfTestRunner {
         try run("m6-installation-slot-existing-maximum-documents") { try InstallationSlotCaptureFixtures.maximumDocuments() }
         try run("m6-installation-slot-retained-identity-owner") { try InstallationSlotCaptureFixtures.retainedIdentityAndOwner() }
         try run("m6-installation-slot-orphan-preimage-admission") { try InstallationSlotCaptureFixtures.orphanPreimageAdmission() }
+        try run("m6-installation-journal-reservation-failure") { try InstallationJournalFixtures.reservationAndFailure() }
+        try run("m6-installation-journal-receipt-cuts") { try InstallationJournalFixtures.receiptCuts() }
+        try run("m6-installation-journal-tampered-successors") { try InstallationJournalFixtures.tamperedSuccessors() }
+        try run("m6-installation-journal-source-owner-drift") { try InstallationJournalFixtures.sourceAndOwnerDrift() }
+        try run("m6-installation-journal-uncertain-write-cuts") { try InstallationJournalFixtures.uncertainWriteCuts() }
+        try run("m6-installation-journal-retained-identities") { try InstallationJournalFixtures.controlAndReceiptIdentity() }
+        try run("m6-installation-journal-history-refusal") { try InstallationJournalFixtures.committedRollover() }
+        try run("m6-installation-journal-maximum-documents") { try InstallationJournalFixtures.maximumDocuments() }
         try run("m6-live-peer-closed-descriptor") { try LivePeerFixtures.invalid("closed") }
         try run("m6-live-peer-non-socket") { try LivePeerFixtures.invalid("regular") }
         try run("m6-live-peer-unconnected-stream") { try LivePeerFixtures.invalid("unconnected") }

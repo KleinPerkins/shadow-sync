@@ -981,6 +981,7 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     private let location: StateLocation
     private let bindingMutex = NSLock()
     private var liveBinding: InstallationLiveSnapshot?
+    private var installationJournalClaimed = false
     #if SHADOW_SYNC_TESTING
     private var testingBindingSource: InstallationBindingTestingSource?
     #endif
@@ -1047,6 +1048,14 @@ final class InstallationTransactionOwner: @unchecked Sendable {
             throw CustodyRecordError.fenced
             #endif
         }
+    }
+    // A consumed owner issues at most one live journal. Neither wire identity nor
+    // a second capture can reconstruct its pending publication capability.
+    func claimInstallationJournal() throws {
+        bindingMutex.lock(); defer { bindingMutex.unlock() }
+        try revalidateOriginal()
+        guard !installationJournalClaimed else { throw CustodyRecordError.fenced }
+        installationJournalClaimed = true
     }
     func installationBinding() throws -> InstallationLiveBinding {
         bindingMutex.lock(); defer { bindingMutex.unlock() }
@@ -1134,8 +1143,8 @@ fileprivate struct InstallationLiveSnapshot: Equatable {
     let state: InstallationStateBinding
 }
 
-/// Evidence only: no journal, staged permission or readiness authority. A future
-/// writer must retain the SAME consumed owner; wire observations cannot mint it.
+/// Live evidence only: no staged permission or readiness authority. The journal
+/// retains the SAME consumed owner; wire observations cannot mint either one.
 final class InstallationLiveBinding {
     private let owner: InstallationTransactionOwner
     private let snapshot: InstallationLiveSnapshot

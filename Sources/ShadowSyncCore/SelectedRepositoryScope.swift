@@ -329,12 +329,17 @@ final class RepositoryDiscoveryPolicy {
         return record(original)
     }
 
-    func willAccess(_ path: String) throws {
+    func willAccess(_ path: String) throws { try willAccess([path]) }
+
+    /// Consecutive lexical admissions may share one boundary only when no
+    /// candidate I/O intervenes. Preserve each ordered hook and complete fresh
+    /// validation after all hooks, immediately before the caller's candidate I/O.
+    func willAccess(_ paths: [String]) throws {
         try validateLocalAuthority()
         do {
-            try classifyAccessPrefixes([path])
+            try classifyAccessPrefixes(paths)
             #if SHADOW_SYNC_TESTING
-            testingBeforeAccess?(path)
+            for path in paths { testingBeforeAccess?(path) }
             #endif
             try validate()
         } catch { throw preparationFailure(error) }

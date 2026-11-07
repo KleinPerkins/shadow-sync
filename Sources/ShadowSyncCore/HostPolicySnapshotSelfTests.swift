@@ -1139,18 +1139,28 @@ public enum HostPolicySnapshotSelfTestRunner {
         }
         onPass("POLICY-SESSION-T24-discovery-refuses-protected-linked-target-before-access")
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T25-discovery-shares-one-metadata-deadline") {
-            let fixture = try metadataFixture(); defer { try? fixture.remove() }
-            let scope = try selectedScope(fixture), binder = try fixture.make().binder()
-            var accesses: [String] = []
-            try denied {
-                try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
-                    service.testingBeforeAccess = { accesses.append($0) }
-                    usleep(800_000)
-                    _ = try RepositoryDiscovery().discoverMetadata(scope: scope, policy: service)
+            for batched in [false, true] {
+                let fixture = try metadataFixture(); defer { try? fixture.remove() }
+                let scope = try selectedScope(fixture), audit = CommandAudit()
+                let binder = try fixture.make(audit: audit).binder()
+                var accesses: [String] = [], callsBefore = -1
+                try denied {
+                    try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
+                        service.testingBeforeAccess = { accesses.append($0) }
+                        callsBefore = audit.invocations.count
+                        usleep(800_000)
+                        if batched {
+                            let path = scope.repositories[0].repositoryPath
+                            try service.willAccess([path, path + "/.git", path + "/.git/config"])
+                        } else {
+                            _ = try RepositoryDiscovery().discoverMetadata(scope: scope, policy: service)
+                        }
+                    }
                 }
+                try require(accesses.isEmpty && audit.invocations.count == callsBefore,
+                            "discovery extended the expired metadata deadline or launched a helper")
+                try fixture.remove()
             }
-            try require(accesses.isEmpty, "discovery extended the expired metadata deadline")
-            try fixture.remove()
         }
         onPass("POLICY-SESSION-T25-discovery-shares-one-metadata-deadline")
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T26-discovery-never-falls-back-to-legacy-git") {
@@ -1942,62 +1952,94 @@ public enum HostPolicySnapshotSelfTestRunner {
         }
         onPass("POLICY-SESSION-T61-diagnostic-opt-in-and-concurrent-output-bounds")
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T62-metadata-resource-revocation-before-during-and-after-classification") {
-            enum Cut { case beforeClassification, duringClassification, beforeAccess }
-            for cut in [Cut.beforeClassification, .duringClassification, .beforeAccess] {
-                let fixture = try metadataFixture(); defer { try? fixture.remove() }
-                // Bind the directory only after the marker exists. Changing
-                // bytes in this existing file isolates resource revocation from
-                // an unrelated selected-directory identity change.
-                let marker = fixture.fixture.path + "/resource-marker"
-                try Data("baseline".utf8).write(to: URL(fileURLWithPath: marker), options: .withoutOverwriting)
-                try require(chmod(marker, 0o600) == 0, "metadata drift marker permissions")
-                let scope = try selectedScope(fixture), audit = CommandAudit()
-                let armed = CancellationToken(), revoked = CancellationToken(), faultObserved = CancellationToken()
-                let binder = try fixture.make(cut == .duringClassification ? "resource-drift" : "valid",
-                    audit: audit, resourceCheck: {
-                        if armed.isCancelled && (revoked.isCancelled
-                            || (try? Data(contentsOf: URL(fileURLWithPath: marker))) == Data("changed".utf8)) {
-                            faultObserved.cancel()
-                            throw PolicyHelperError.unavailable
+            enum Cut { case beforeClassification, duringClassification, firstAccess, finalAccess }
+            for batched in [false, true] {
+                for cut in [Cut.beforeClassification, .duringClassification, .firstAccess, .finalAccess] {
+                    let fixture = try metadataFixture(); defer { try? fixture.remove() }
+                    // Bind the directory only after the marker exists. Changing
+                    // bytes in this existing file isolates resource revocation from
+                    // an unrelated selected-directory identity change.
+                    let marker = fixture.fixture.path + "/resource-marker"
+                    try Data("baseline".utf8).write(to: URL(fileURLWithPath: marker), options: .withoutOverwriting)
+                    try require(chmod(marker, 0o600) == 0, "metadata drift marker permissions")
+                    let scope = try selectedScope(fixture), audit = CommandAudit()
+                    let armed = CancellationToken(), revoked = CancellationToken(), faultObserved = CancellationToken()
+                    let binder = try fixture.make(cut == .duringClassification ? "resource-drift" : "valid",
+                        audit: audit, resourceCheck: {
+                            if armed.isCancelled && (revoked.isCancelled
+                                || (try? Data(contentsOf: URL(fileURLWithPath: marker))) == Data("changed".utf8)) {
+                                faultObserved.cancel()
+                                throw PolicyHelperError.unavailable
+                            }
+                        }).binder()
+                    var entered = false, returnedFromAccess = false, accessHooks = 0, callsBefore = -1
+                    try denied {
+                        try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
+                            entered = true; callsBefore = audit.invocations.count
+                            if cut == .duringClassification {
+                                try require(try Data(contentsOf: URL(fileURLWithPath: marker)) == Data("changed".utf8),
+                                            "metadata drift setup marker missing")
+                                try Data("baseline".utf8).write(to: URL(fileURLWithPath: marker))
+                            }
+                            armed.cancel()
+                            if cut == .beforeClassification { revoked.cancel() }
+                            let path = scope.repositories[0].repositoryPath
+                            let paths = [path, path + "/.git", path + "/.git/config"]
+                            service.testingBeforeAccess = { _ in
+                                accessHooks += 1
+                                if cut == .firstAccess || (cut == .finalAccess && accessHooks == (batched ? paths.count : 1)) {
+                                    revoked.cancel()
+                                }
+                            }
+                            if batched { try service.willAccess(paths) }
+                            else { try service.willAccess(path) }
+                            returnedFromAccess = true
                         }
-                    }).binder()
-                var entered = false, returnedFromAccess = false, accessHooks = 0, callsBefore = -1
+                    }
+                    try require(faultObserved.isCancelled, "resource fault was not observed; refusal may be unrelated")
+                    try require(entered && !returnedFromAccess,
+                                "metadata resource refusal did not precede caller access")
+                    let expectedHooks = cut == .firstAccess || cut == .finalAccess ? (batched ? 3 : 1) : 0
+                    try require(accessHooks == expectedHooks,
+                                "metadata resource failure crossed access boundary")
+                    try require(audit.invocations.count - callsBefore == (cut == .beforeClassification ? 0 : 1),
+                                "metadata resource failure reached an unexpected helper")
+                    if cut == .duringClassification {
+                        try require(try Data(contentsOf: URL(fileURLWithPath: marker)) == Data("changed".utf8),
+                                    "mid-classification resource cut not exercised")
+                    }
+                    try require(unlink(marker) == 0, "metadata drift marker cleanup")
+                    try fixture.remove()
+                }
+            }
+            for batched in [false, true] {
+                let fixture = try metadataFixture(); defer { try? fixture.remove() }
+                let scope = try selectedScope(fixture), audit = CommandAudit()
+                let binder = try fixture.make(audit: audit).binder()
+                var hooks = 0, changed = false, candidateAccesses = 0
                 try denied {
                     try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
-                        entered = true; callsBefore = audit.invocations.count
-                        if cut == .duringClassification {
-                            try require(try Data(contentsOf: URL(fileURLWithPath: marker)) == Data("changed".utf8),
-                                        "metadata drift setup marker missing")
-                            try Data("baseline".utf8).write(to: URL(fileURLWithPath: marker))
-                        }
-                        armed.cancel()
-                        if cut == .beforeClassification { revoked.cancel() }
+                        let path = scope.repositories[0].repositoryPath
+                        let paths = [path, path + "/.git", path + "/.git/config"]
                         service.testingBeforeAccess = { _ in
-                            accessHooks += 1
-                            if cut == .beforeAccess { revoked.cancel() }
+                            hooks += 1
+                            if hooks == (batched ? paths.count : 1) {
+                                changed = chmod(fixture.fixture.path + "/owner/policy.yml", 0o622) == 0
+                            }
                         }
-                        try service.willAccess(scope.repositories[0].repositoryPath)
-                        returnedFromAccess = true
+                        if batched { try service.willAccess(paths) }
+                        else { try service.willAccess(path) }
+                        candidateAccesses += 1
                     }
                 }
-                try require(faultObserved.isCancelled, "resource fault was not observed; refusal may be unrelated")
-                try require(entered && !returnedFromAccess,
-                            "metadata resource refusal did not precede caller access")
-                try require(accessHooks == (cut == .beforeAccess ? 1 : 0),
-                            "metadata resource failure crossed access boundary")
-                try require(audit.invocations.count - callsBefore == (cut == .beforeClassification ? 0 : 1),
-                            "metadata resource failure reached an unexpected helper")
-                if cut == .duringClassification {
-                    try require(try Data(contentsOf: URL(fileURLWithPath: marker)) == Data("changed".utf8),
-                                "mid-classification resource cut not exercised")
-                }
-                try require(unlink(marker) == 0, "metadata drift marker cleanup")
+                try require(changed && hooks == (batched ? 3 : 1) && candidateAccesses == 0,
+                            "final access hook policy drift escaped fresh validation")
                 try fixture.remove()
             }
         }
         onPass("POLICY-SESSION-T62-metadata-resource-revocation-before-during-and-after-classification")
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T63-metadata-malformed-input-preserves-pending-precedence") {
-            for variant in 0..<3 {
+            for variant in 0..<7 {
                 let fixture = try metadataFixture(); defer { try? fixture.remove() }
                 let scope = try selectedScope(fixture), audit = CommandAudit()
                 let pending = CancellationToken(), faultObserved = CancellationToken()
@@ -2013,7 +2055,11 @@ public enum HostPolicySnapshotSelfTestRunner {
                         entered = true; callsBefore = audit.invocations.count; pending.cancel()
                         if variant == 0 { try service.requireAllowed("") }
                         else if variant == 1 { try service.prepareAccess([]) }
-                        else { try service.prepareAccess([fixture.fixture.path + "/../outside"]) }
+                        else if variant == 2 { try service.prepareAccess([fixture.fixture.path + "/../outside"]) }
+                        else if variant == 3 { try service.willAccess([]) }
+                        else if variant == 4 { try service.willAccess([fixture.fixture.path + "/../outside"]) }
+                        else if variant == 5 { try service.willAccess(Array(repeating: scope.repositories[0].repositoryPath, count: 65)) }
+                        else { try service.willAccess([scope.repositories[0].repositoryPath, ""]) }
                     }
                     throw Failure.assertion("malformed metadata request lost pending refusal")
                 } catch SelectedRepositoryScopeError.cleanupPending {}
@@ -2024,6 +2070,109 @@ public enum HostPolicySnapshotSelfTestRunner {
         }
         onPass("POLICY-SESSION-T63-metadata-malformed-input-preserves-pending-precedence")
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T64-metadata-known-paths-share-first-classification") {
+            final class AdmissionProbe: @unchecked Sendable {
+                private let lock = NSLock()
+                private var checks = 0
+                private var requests: [[Data]] = []
+                private var deadlines: [UInt64] = []
+                func validate() { lock.lock(); defer { lock.unlock() }; checks += 1 }
+                func evaluate(_ paths: [RepositorySelectionAdmissionPath], _ deadline: UInt64) {
+                    lock.lock(); defer { lock.unlock() }
+                    requests.append(paths.map { Data($0.components.joined(separator: "/").utf8) })
+                    deadlines.append(deadline)
+                }
+                func state() -> (Int, [[Data]], [UInt64]) {
+                    lock.lock(); defer { lock.unlock() }; return (checks, requests, deadlines)
+                }
+            }
+            // Count the complete admission wrapper, including both classify
+            // validations and the final fresh validation, rather than timing it.
+            for batched in [false, true] {
+                let fixture = try metadataFixture(); defer { try? fixture.remove() }
+                let scope = try selectedScope(fixture), snapshot = try fixture.snapshot(), probe = AdmissionProbe()
+                let admission = RepositorySelectionPathAdmission(evaluate: { paths, deadline in
+                    probe.evaluate(paths, deadline)
+                    return paths.map { RepositorySelectionAdmissionDecision(path: $0, disposition: .allowed) }
+                }, revalidate: { probe.validate(); try snapshot.revalidate() })
+                let binder = try SelectedRepositoryScopeBinder(snapshot: snapshot, admission: admission)
+                try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
+                    let path = scope.repositories[0].repositoryPath
+                    // Canonically equivalent Unicode remains distinct policy bytes.
+                    let paths = [path + "/caf\u{00e9}", path + "/cafe\u{0301}", path + "/.git/config"]
+                    let before = probe.state()
+                    var hooks: [Data] = []
+                    service.testingBeforeAccess = { hooks.append(Data($0.utf8)) }
+                    if batched { try service.willAccess(paths) }
+                    else { for path in paths { try service.willAccess(path) } }
+                    let after = probe.state(), requests = Array(after.1.dropFirst(before.1.count))
+                    try require(after.0 - before.0 == (batched ? 3 : 9)
+                        && requests.count == (batched ? 1 : 3), "access batching lost full validation or repeated its wrapper")
+                    try require(hooks == paths.map { Data($0.utf8) }, "batch access hooks changed order or exact bytes")
+                    var expected: [Data] = [], seen: Set<Data> = []
+                    for path in paths {
+                        let relative = String(path.dropFirst(fixture.fixture.path.count + 1)).split(separator: "/").map(String.init)
+                        for count in 0...relative.count {
+                            let prefix = Data(relative.prefix(count).joined(separator: "/").utf8)
+                            if seen.insert(prefix).inserted { expected.append(prefix) }
+                        }
+                    }
+                    var actual: [Data] = [], observed: Set<Data> = []
+                    for prefix in requests.flatMap({ $0 }) {
+                        if observed.insert(prefix).inserted { actual.append(prefix) }
+                    }
+                    try require(actual == expected, "batch omitted an exact leaf or ancestor")
+                    let deadlines = Array(after.2.dropFirst(before.2.count))
+                    try require(Set(deadlines).count == 1, "access paths renewed the metadata deadline")
+                    // The admitted maximum keeps all hooks and still uses one wrapper.
+                    if batched {
+                        let start = probe.state(), count = hooks.count
+                        try service.willAccess(Array(repeating: path, count: 64))
+                        try require(hooks.count - count == 64 && probe.state().0 - start.0 == 3,
+                                    "bounded maximum access group lost hooks or full validation")
+                    }
+                }
+                try fixture.remove()
+            }
+            // An allowed leaf cannot confer access through one protected
+            // ancestor, and swallowing that refusal cannot reopen the service.
+            for variant in 0..<4 {
+                let fixture = try metadataFixture(); defer { try? fixture.remove() }
+                let scope = try selectedScope(fixture), audit = CommandAudit()
+                let binder = try fixture.make("exact-only", audit: audit).binder()
+                var hooks = 0, candidateAccesses = 0, protectedAncestorObserved = false
+                try denied {
+                    try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
+                        let path = scope.repositories[0].repositoryPath
+                        service.testingBeforeAccess = { _ in hooks += 1 }
+                        service.testingProtectedPath = { observed, deadline in
+                            if observed.utf8.elementsEqual((path + "/blocked").utf8)
+                                && DispatchTime.now().uptimeNanoseconds < deadline {
+                                protectedAncestorObserved = true
+                            }
+                        }
+                        let paths: [String]
+                        switch variant {
+                        case 0: paths = [path + "/.git/config", path + "/blocked/allowed-leaf"]
+                        case 1: paths = Array(repeating: path, count: 65)
+                        case 2: paths = []
+                        default: paths = [path, path + "/../outside"]
+                        }
+                        let before = audit.invocations.count
+                        try denied {
+                            try service.willAccess(paths)
+                            candidateAccesses += 1
+                        }
+                        try require(variant == 0 ? protectedAncestorObserved : audit.invocations.count == before,
+                                    "batch refused before the intended protected or lexical boundary")
+                        let calls = audit.invocations.count
+                        try denied { try service.willAccess(path); candidateAccesses += 1 }
+                        try denied { try service.willAccess([path, path + "/.git"]); candidateAccesses += 1 }
+                        try require(audit.invocations.count == calls, "sticky batch refusal reached another classifier")
+                    }
+                }
+                try require(hooks == 0 && candidateAccesses == 0, "batch refusal crossed candidate access boundary")
+                try fixture.remove()
+            }
             let fixture = try metadataFixture(); defer { try? fixture.remove() }
             let scope = try selectedScope(fixture), audit = CommandAudit()
             let binder = try fixture.make(audit: audit).binder()

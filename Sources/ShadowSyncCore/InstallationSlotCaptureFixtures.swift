@@ -4,7 +4,7 @@ import Foundation
 
 enum InstallationSlotCaptureFixtures {
     typealias H = InstallationStorageFixtures
-    private struct NoCommands: LaunchAgentControlling, InstalledHostControlling {
+    struct NoCommands: LaunchAgentControlling, InstalledHostControlling {
         func state(label: String) -> LaunchAgentState { .queryFailure }
         func processDisposition(processID: pid_t, expectedProgram: String) -> LaunchAgentProcessDisposition { .mismatch }
         func bootstrap(label: String, plist: String, expectedProgram: String) throws { throw H.Failure(message: "capture launched command") }
@@ -13,7 +13,7 @@ enum InstallationSlotCaptureFixtures {
         func requestExit(location: StateLocation, executable: String, release: ReleaseIdentity) throws { throw H.Failure(message: "capture contacted host") }
         func isReady(location: StateLocation, executable: String, release: ReleaseIdentity, timeout: TimeInterval) -> Bool { false }
     }
-    private static func fixture(_ body: (String, StateLocation, InstallationTransactionOwner, InstallationLiveBinding, InstallationLifecycle) throws -> Void) throws {
+    static func fixture(_ body: (String, StateLocation, InstallationTransactionOwner, InstallationLiveBinding, InstallationLifecycle) throws -> Void) throws {
         try InstallationOwnershipFixtures.fixture { root, location, original in
             for suffix in ["/home", "/home/Applications", "/home/Library", "/home/Library/LaunchAgents"] {
                 try H.check(mkdir(root + suffix, 0o700) == 0, "capture fixture parent")

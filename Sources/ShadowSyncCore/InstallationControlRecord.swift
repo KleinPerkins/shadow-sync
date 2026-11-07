@@ -304,6 +304,9 @@ struct InstallationTransaction: Equatable {
         if let priorCommitDigest { try InstallationWire.requireDigest(priorCommitDigest) }
         try candidate?.validate(); try slots.validate(uid: state.directory.uid)
     }
+    func bindingDigest(state: InstallationStateBinding) throws -> String {
+        try InstallationWire.digest(.object(["state": state.wire, "transaction": .object(bindingWire)]))
+    }
     var bindingWire: [String: PolicyWireValue] { [
         "id": .string(id), "boot": .string(boot), "intent": .string(intent.rawValue), "coordinator": coordinator.wire,
         "sourceReleaseDigest": .string(sourceReleaseDigest), "candidate": candidate?.wire ?? .null,
@@ -538,7 +541,7 @@ struct InstallationControlRecord: Equatable {
     }
     func bindingDigest() throws -> String {
         guard let transaction else { throw InstallationRecordError.invalidRecord }
-        return try InstallationWire.digest(.object(["state": state.wire, "transaction": .object(transaction.bindingWire)]))
+        return try transaction.bindingDigest(state: state)
     }
 
     // Requires the COMPLETE current-transaction chain (<=256 records), already

@@ -328,6 +328,19 @@
     "m6-installation-slot-preimage-write-cuts",
     "m6-installation-slot-existing-maximum-documents",
     "m6-installation-slot-retained-identity-owner",
-    "m6-installation-slot-orphan-preimage-admission"
+    "m6-installation-slot-orphan-preimage-admission",
+    "InstallationJournalFixtures",
+    "JOURNAL_WRITE_CUT",
+    "JOURNAL_MAX_NS",
+    "testingInstallationRecord",
+    "testingWriteFault",
+    "m6-installation-journal-reservation-failure",
+    "m6-installation-journal-receipt-cuts",
+    "m6-installation-journal-tampered-successors",
+    "m6-installation-journal-source-owner-drift",
+    "m6-installation-journal-uncertain-write-cuts",
+    "m6-installation-journal-retained-identities",
+    "m6-installation-journal-history-refusal",
+    "m6-installation-journal-maximum-documents"
   ]
 }
