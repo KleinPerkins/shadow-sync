@@ -44,8 +44,8 @@ public enum CommandCustodian {
         guard ["complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay",
                "trace-complete","trace-overflow","trace-resist","policy-echo","policy-resist",
                     "system-complete","system-missing","system-faildata","system-resist","system-overflow",
-               "config-complete","config-resist", "system-multiple-policy-batches", "classification-allow", "classification-protected", "classification-malformed", "classification-nonce", "classification-binding", "classification-code-allow", "lifecycle-absent", "lifecycle-loaded", "lifecycle-empty", "lifecycle-foreign"].contains(mode) else { return 64 }
-        if mode == "resist" || mode == "trace-resist" || mode == "policy-resist" || mode == "system-resist" || mode == "config-resist" { signal(SIGTERM, SIG_IGN) }
+               "config-complete","config-resist-sigterm-fixture", "system-multiple-policy-batches", "classification-allow", "classification-protected", "classification-malformed", "classification-nonce", "classification-binding", "classification-code-allow", "lifecycle-absent", "lifecycle-loaded", "lifecycle-empty", "lifecycle-foreign"].contains(mode) else { return 64 }
+        if mode == "resist" || mode == "trace-resist" || mode == "policy-resist" || mode == "system-resist" || mode == "config-resist-sigterm-fixture" { signal(SIGTERM, SIG_IGN) }
         if mode.hasPrefix("lifecycle-") {
             guard let home = ProcessInfo.processInfo.environment["HOME"],
                   let account = try? EffectiveAccount.isolated(homeDirectory: home), fcntl(198, F_GETFD) >= 0 else { return 75 }

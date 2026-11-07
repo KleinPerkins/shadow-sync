@@ -50,7 +50,9 @@ def package_contract(build, work, record):
                   'Invalid production exclusion roster')
     testing = Path(record['builds']['testing']['products']) / 'ShadowSyncSelfTest'
     raw = testing.read_bytes()
-    build.require(all(value.encode() in raw for value in markers['markers']), 'Testing positive control missing')
+    missing = [value for value in markers['markers'] if value.encode() not in raw]
+    build.require(not missing, 'Testing positive control missing '
+                  f'({len(missing)}/{len(markers["markers"])}): ' + json.dumps(missing, ensure_ascii=True))
     demangler = build.run(['/usr/bin/xcrun', '--find', 'swift-demangle']).strip()
     pattern = re.compile(r'\bShadowSyncCore\.PolicyAuthorityFile\.\(Revalidation in _[A-F0-9]+\)\.afterRead :')
     def fields(path):

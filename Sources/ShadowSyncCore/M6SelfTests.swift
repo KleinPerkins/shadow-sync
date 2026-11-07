@@ -5101,7 +5101,7 @@ private enum SystemConfigCommandSelfTests {
         weak var owner = frozen
         func create(kind: CustodyCommandKind = .discoveryGit, input value: Data? = nil) throws -> CustodyRequestResources {
             try CustodyRequestResources(scope: context.testingScope, kind: kind,
-                arguments: [scenario == "custody-cancel" || scenario == "custody-eof" ? "config-resist" : "config-complete"],
+                arguments: [scenario == "custody-cancel" || scenario == "custody-eof" ? "config-resist-sigterm-fixture" : "config-complete"],
                 environment: ClosedProcessRunner.environment(account: account),
                 budget: CustodyBudget.make(kind: kind, workSeconds: 2, termSeconds: 0.1,
                     killSeconds: 0.2, receiptSeconds: 0.2), stdoutLimit: 65_536, stderrLimit: 65_536,

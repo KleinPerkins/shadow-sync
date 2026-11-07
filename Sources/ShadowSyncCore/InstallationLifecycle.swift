@@ -596,12 +596,13 @@ public final class InstallationLifecycle: @unchecked Sendable {
             )
         }
         var launcher: LauncherAuthority?
+        var priorDrainStarted = false
         var mutationStarted = false
         var committed = false
         var coordinationBackup: CoordinationBackup?
-        let priorWasRunning = prior.running
         do {
             try fault("after-gates")
+            priorDrainStarted = true
             launcher = try acquireLauncher(
                 expectedRelease: prior.artifact?.release,
                 executable: prior.executable,
@@ -716,7 +717,6 @@ public final class InstallationLifecycle: @unchecked Sendable {
                 do {
                     try rollback(
                         prior: prior,
-                        restartPriorHost: priorWasRunning,
                         replacementRelease: source.release,
                         coordinationBackup: coordinationBackup
                     )
@@ -725,9 +725,9 @@ public final class InstallationLifecycle: @unchecked Sendable {
                         String(describing: error)
                     )
                 }
-            } else if prior.requiresInertRecovery {
-                // A failed transition never grants permission to reactivate a
-                // predecessor, including one stored at the current app path.
+            } else if prior.requiresInertRecovery || priorDrainStarted {
+                // Once drainage begins, failure leaves the verified prior
+                // generation stopped. Recovery never grants restart authority.
                 do {
                     let stopped = try acquireLauncher(
                         expectedRelease: prior.artifact?.release,
@@ -751,26 +751,6 @@ public final class InstallationLifecycle: @unchecked Sendable {
                         String(describing: error)
                     )
                 }
-            } else if prior.running,
-                      !host.isReady(
-                        location: paths.state,
-                        executable: prior.executable,
-                        release: prior.artifact!.release,
-                        timeout: 0
-                      ) {
-                try? launchAgent.bootout(
-                    label: InstallationPaths.label,
-                    expectedProgram: prior.executable
-                )
-                try? launchAgent.bootstrap(
-                    label: InstallationPaths.label,
-                    plist: paths.launchAgent,
-                    expectedProgram: prior.executable
-                )
-                try? launchAgent.kickstart(
-                    label: InstallationPaths.label,
-                    expectedProgram: prior.executable
-                )
             }
             throw error
         }
@@ -941,7 +921,6 @@ public final class InstallationLifecycle: @unchecked Sendable {
             do {
                 try rollback(
                     prior: prior,
-                    restartPriorHost: prior.running,
                     replacementRelease: prior.artifact?.release
                 )
                 if dualCanonicalApps,
@@ -1492,7 +1471,6 @@ public final class InstallationLifecycle: @unchecked Sendable {
 
     private func rollback(
         prior: Prior,
-        restartPriorHost: Bool,
         replacementRelease: ReleaseIdentity? = nil,
         coordinationBackup: CoordinationBackup? = nil
     ) throws {
@@ -1549,54 +1527,12 @@ public final class InstallationLifecycle: @unchecked Sendable {
             throw error
         }
         rollbackLauncher.release()
-        if prior.requiresInertRecovery {
-            // Restore verified preimages only. Registration and restart are not
-            // rollback rights for the legacy generation.
-            guard try loadedProgram() == nil else {
-                throw InstallationLifecycleError.launchAgentMismatch
-            }
-            return
-        }
-        if prior.loadedProgram != nil, Self.pathExists(paths.launchAgent) {
-            try launchAgent.bootstrap(
-                label: InstallationPaths.label,
-                plist: paths.launchAgent,
-                expectedProgram: prior.executable
-            )
-            guard try loadedProgram() == prior.executable else {
-                throw InstallationLifecycleError.launchAgentMismatch
-            }
-            if restartPriorHost, let priorRelease = prior.artifact?.release {
-                try launchAgent.kickstart(
-                    label: InstallationPaths.label,
-                    expectedProgram: prior.executable
-                )
-                guard let readyIdentity = host.readyIdentity(
-                    location: paths.state,
-                    executable: prior.executable,
-                    release: priorRelease,
-                    timeout: 5
-                ) else {
-                    throw InstallationLifecycleError.hostNotReady
-                }
-                _ = try InstalledStateAdmission.requireLoadedProcess(
-                    launchAgent: launchAgent,
-                    executable: prior.executable,
-                    expectedProcessID: readyIdentity.processID
-                )
-            } else if let priorRelease = prior.artifact?.release,
-                      host.isReady(
-                location: paths.state,
-                        executable: prior.executable,
-                release: priorRelease,
-                timeout: 0.25
-            ) {
-                try host.requestExit(
-                    location: paths.state,
-                    executable: prior.executable,
-                    release: priorRelease
-                )
-            }
+        // ADR 0003 applies to every generation: restore verified preimages to
+        // a stopped state. A later explicit repair owns any new activation.
+        // The validated plist has RunAtLoad and KeepAlive disabled; preserving
+        // its bytes does not authorize loading it or recreating a Login Item.
+        guard try loadedProgram() == nil else {
+            throw InstallationLifecycleError.launchAgentMismatch
         }
     }
 

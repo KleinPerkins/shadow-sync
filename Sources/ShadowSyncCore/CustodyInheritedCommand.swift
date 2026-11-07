@@ -198,7 +198,7 @@ final class CustodyInheritedCommand {
                   ["complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay","deadline-before-control",
                    "trace-complete","trace-overflow","trace-resist","policy-echo","policy-resist",
                     "system-complete","system-missing","system-faildata","system-resist","system-overflow",
-                    "config-complete","config-resist", "serial-complete", "serial-system-failure", "serial-policy-failure",
+                    "config-complete","config-resist-sigterm-fixture", "serial-complete", "serial-system-failure", "serial-policy-failure",
                     "serial-system-cancel", "serial-policy-cancel", "serial-command-cancel", "serial-between-cancel",
                     "serial-next-before-spawn", "serial-next-after-spawn", "serial-next-before-record",
                     "serial-system-missing-next-before-spawn", "serial-system-missing-next-after-spawn", "serial-system-missing-next-before-record",

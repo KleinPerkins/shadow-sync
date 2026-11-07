@@ -213,7 +213,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncApp/M6Harness.swift",
-      "sha256": "6fa1921e1bc33833ea0feb53f15b8d16f070c57c7d917cf8fcba649e60867a0f"
+      "sha256": "5379605f989f8afaa12ced2928ca4c17285a590c8cde8de8d4a8b1d57c3cdf98"
     },
     {
       "mode": "100644",
@@ -333,7 +333,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CommandCustodian.swift",
-      "sha256": "fda8af4cdbac90120593d8a93f86dd93ac2a10bae0df1f1c6e460730798299b5"
+      "sha256": "17a96e4aaf4bdfa3fb40ff340257617ffb936231ca0df4cbe552cfddbbce7ead"
     },
     {
       "mode": "100644",
@@ -363,7 +363,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CustodyInheritedCommand.swift",
-      "sha256": "412773d58e51b1ba13b263168345482cedd8777bcf02dee1c30cbe20bcd7986e"
+      "sha256": "b981150ff79baa80c41fa449ce24170c16183f7b88ef082f568ba7603a0c9a2c"
     },
     {
       "mode": "100644",
@@ -538,7 +538,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
-      "sha256": "582e5b86ad638888f1715e555dacca46281c4f289034b07657333fc624543cc7"
+      "sha256": "01e6e1b9ac2349c1e8beb2285bc768c71c62d58507d74788026acf3a720f31e3"
     },
     {
       "mode": "100644",
@@ -603,7 +603,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "5d4edcf687919d75723227327bf0f497401d3409049f3d378139e5ac2a07f8f2"
+      "sha256": "59a52aa0b819ba6769c8eeb44261270148ec87ba1afbfbafd67ad61f315c2b81"
     },
     {
       "mode": "100644",

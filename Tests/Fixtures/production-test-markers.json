@@ -138,7 +138,7 @@
     "m6-frozen-custody-native",
     "m6-frozen-custody-pending",
     "native read-only target did not receive exact frozen bytes",
-    "config-resist",
+    "config-resist-sigterm-fixture",
     "POLICY-SNAPSHOT-T11-cross-process-identity-stable-under-sibling-change",
     "POLICY-SNAPSHOT-T12-identical-bytes-new-inode-changes-handoff",
     "POLICY-SNAPSHOT-T13-retained-file-new-ancestor-changes-handoff",
