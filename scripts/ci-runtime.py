@@ -157,9 +157,10 @@ def run_suite(suite, root, build_root, record, context):
         # Closed test-only markers preserve the failing planner path and result.
         env['SHADOW_SYNC_TEST_M6_DIAGNOSTICS'] = '1'
     if suite == 'discovery-caller':
-        # Existing bounded cost mode isolates session/publisher revalidation
-        # without recording candidate paths, request contents or child output.
-        env['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'] = 'costs'
+        # Retain the existing bounded successful-helper and registry phase trace
+        # without candidate paths, request contents or child output. Cost mode
+        # suppresses those phases and cannot locate hosted admission latency.
+        env['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'] = '1'
     native = load('run-native-appkit')
     def plain(name, binary, args):
         value = native.child(['/usr/bin/sandbox-exec', '-f', str(isolation), str(binary), *args],
