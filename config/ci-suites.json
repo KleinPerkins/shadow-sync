@@ -1242,6 +1242,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-release-candidate": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_release_candidate"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-release-credential-readiness": {
       "argv": [
         "python3",
@@ -1399,6 +1411,7 @@
         "tooling-test-policy-runtime-build",
         "tooling-test-python-test-suites",
         "tooling-test-release-assembly",
+        "tooling-test-release-candidate",
         "tooling-test-release-credential-readiness",
         "tooling-test-release-metadata",
         "tooling-test-release-notarization",
@@ -2170,6 +2183,14 @@
           "m6-installation-live-binding-owner-source-mismatch",
           "m6-installation-live-binding-observation-drift",
           "m6-installation-live-binding-state-drift",
+          "m6-installation-slot-durable-fixed-capture",
+          "m6-installation-slot-unsafe-documents-refuse",
+          "m6-installation-slot-source-parent-drift-refuse",
+          "m6-installation-slot-orphan-endpoints-names-refuse",
+          "m6-installation-slot-preimage-write-cuts",
+          "m6-installation-slot-existing-maximum-documents",
+          "m6-installation-slot-retained-identity-owner",
+          "m6-installation-slot-orphan-preimage-admission",
           "m6-live-peer-closed-descriptor",
           "m6-live-peer-non-socket",
           "m6-live-peer-unconnected-stream",
@@ -3409,6 +3430,42 @@
           "test_release_assembly.ReleaseAssemblyTests.test_substitution_between_producer_check_and_raw_capture_refuses_before_signing",
           "test_release_assembly.ReleaseAssemblyTests.test_testing_or_wrong_source_metadata_refuses_before_output",
           "test_release_assembly.ReleaseAssemblyTests.test_wrong_publisher_and_ambiguous_signer_refuse"
+        ],
+        "kind": "static"
+      },
+      "tooling-test-release-candidate": {
+        "cases": [
+          "test_release_candidate.ImmutabilityClientTests.test_disabled_immutable_setting_and_redirect_refuse",
+          "test_release_candidate.ImmutabilityClientTests.test_only_fixed_read_endpoint_receives_admin_token",
+          "test_release_candidate.ReleaseCandidateTests.test_allocation_refuses_draft_tags_reused_build_and_unknown",
+          "test_release_candidate.ReleaseCandidateTests.test_api_pagination_reads_every_page",
+          "test_release_candidate.ReleaseCandidateTests.test_assembly_notary_and_distribution_substitution_refuse",
+          "test_release_candidate.ReleaseCandidateTests.test_changed_download_or_latest_never_claims_success",
+          "test_release_candidate.ReleaseCandidateTests.test_changed_prepared_inputs_refuse_signing",
+          "test_release_candidate.ReleaseCandidateTests.test_changed_tag_or_existing_assets_blocks_upload",
+          "test_release_candidate.ReleaseCandidateTests.test_ci_wrong_app_source_attempt_or_incomplete_refuses",
+          "test_release_candidate.ReleaseCandidateTests.test_cleanup_failure_blocks_all_uploads",
+          "test_release_candidate.ReleaseCandidateTests.test_closed_environment_strips_unknown_secrets_and_restores_parent",
+          "test_release_candidate.ReleaseCandidateTests.test_complete_ci_and_immutable_admission",
+          "test_release_candidate.ReleaseCandidateTests.test_evidence_rejects_private_text_in_allowlisted_digest",
+          "test_release_candidate.ReleaseCandidateTests.test_existing_asset_prevents_overwrite",
+          "test_release_candidate.ReleaseCandidateTests.test_failed_reservation_never_retries_or_deletes",
+          "test_release_candidate.ReleaseCandidateTests.test_failed_token_revocation_cannot_write_success_receipt",
+          "test_release_candidate.ReleaseCandidateTests.test_failure_evidence_retains_submission_id_but_no_private_logs",
+          "test_release_candidate.ReleaseCandidateTests.test_latest_ci_attempt_cannot_borrow_previous_attempt_success",
+          "test_release_candidate.ReleaseCandidateTests.test_main_source_and_repository_identity_refuse",
+          "test_release_candidate.ReleaseCandidateTests.test_missing_immutability_capability_refuses_before_allocation",
+          "test_release_candidate.ReleaseCandidateTests.test_nonimmutable_publication_never_claims_success",
+          "test_release_candidate.ReleaseCandidateTests.test_notary_failure_uses_existing_cleanup_and_does_not_resubmit",
+          "test_release_candidate.ReleaseCandidateTests.test_preparation_fetches_and_builds_without_credentials_before_reservation",
+          "test_release_candidate.ReleaseCandidateTests.test_prepare_refuses_credentials_before_any_api",
+          "test_release_candidate.ReleaseCandidateTests.test_public_receipt_excludes_arbitrary_producer_fields",
+          "test_release_candidate.ReleaseCandidateTests.test_publish_immutable_nonlatest_and_download_same_bytes",
+          "test_release_candidate.ReleaseCandidateTests.test_trusted_main_context_only",
+          "test_release_candidate.ReleaseCandidateTests.test_upload_substitution_refuses_before_publication",
+          "test_release_candidate.ReleaseCandidateTests.test_uploads_remain_bound_to_the_original_digest",
+          "test_release_candidate.ReleaseCandidateTests.test_verified_token_revocation_is_source_bound_in_evidence",
+          "test_release_candidate.ReleaseCandidateTests.test_workflow_is_protected_pinned_and_has_no_sparkle_or_pr_trigger"
         ],
         "kind": "static"
       },

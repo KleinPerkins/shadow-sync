@@ -63,6 +63,14 @@ public enum M6SelfTestRunner {
         try run("m6-installation-live-binding-owner-source-mismatch") { try InstallationOwnershipFixtures.liveBindingMismatch() }
         try run("m6-installation-live-binding-observation-drift") { try InstallationOwnershipFixtures.liveBindingDrift() }
         try run("m6-installation-live-binding-state-drift") { try InstallationOwnershipFixtures.liveBindingStateDrift() }
+        try run("m6-installation-slot-durable-fixed-capture") { try InstallationSlotCaptureFixtures.completeDurableCapture() }
+        try run("m6-installation-slot-unsafe-documents-refuse") { try InstallationSlotCaptureFixtures.unsafeDocuments() }
+        try run("m6-installation-slot-source-parent-drift-refuse") { try InstallationSlotCaptureFixtures.sourceAndParentDrift() }
+        try run("m6-installation-slot-orphan-endpoints-names-refuse") { try InstallationSlotCaptureFixtures.unknownEndpointsAndNames() }
+        try run("m6-installation-slot-preimage-write-cuts") { try InstallationSlotCaptureFixtures.preimageCuts() }
+        try run("m6-installation-slot-existing-maximum-documents") { try InstallationSlotCaptureFixtures.maximumDocuments() }
+        try run("m6-installation-slot-retained-identity-owner") { try InstallationSlotCaptureFixtures.retainedIdentityAndOwner() }
+        try run("m6-installation-slot-orphan-preimage-admission") { try InstallationSlotCaptureFixtures.orphanPreimageAdmission() }
         try run("m6-live-peer-closed-descriptor") { try LivePeerFixtures.invalid("closed") }
         try run("m6-live-peer-non-socket") { try LivePeerFixtures.invalid("regular") }
         try run("m6-live-peer-unconnected-stream") { try LivePeerFixtures.invalid("unconnected") }

@@ -277,6 +277,17 @@ final class CustodyRecoveryContext {
     #endif
 }
 
+// Actual receipt descriptions retained by the live capture. Metadata-equivalent
+// replacement files cannot replace durability proof, even with identical bytes.
+final class InstallationDocumentRetention {
+    fileprivate let descriptor: OwnedFileDescriptor
+    fileprivate let identity: FileIdentity
+    fileprivate let acl: String
+    fileprivate init(_ descriptor: OwnedFileDescriptor, identity: FileIdentity, acl: String) {
+        self.descriptor = descriptor; self.identity = identity; self.acl = acl
+    }
+}
+
 /// Descriptor-relative, app-owned metadata only. Its stable guard is acquired
 /// last, held only for bounded metadata transitions, and never grants operation
 /// authority. No public callbacks run while it is held.
@@ -393,7 +404,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
         }
         return result.sorted()
     }
-    private func installationSnapshot() throws -> (File, InstallationControlRecord) {
+    private func installationSnapshot(pendingPreimages: [String: InstallationDocumentPreimage] = [:]) throws -> (File, InstallationControlRecord) {
         let file = try read(InstallationControlRecord.filename, maximum: InstallationControlRecord.maximumBytes)
         let record = try InstallationControlRecord.decode(file.bytes)
         try record.state.validateLive(stateDescriptor: root.value, uid: uid, leases: leases)
@@ -402,6 +413,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
         guard let stream = fdopendir(fd) else { close(fd); throw CustodyRecordError.unsafeMetadata }
         defer { closedir(stream) }
         var chain: [InstallationStepReceipt.CanonicalObservation] = []
+        var documents: [String: InstallationDocumentPreimage] = [:]
         // A local metadata ceiling consumes caller time; it never renews a
         // command's absolute admission/work deadline. Historical command receipt
         // count is not a new retention/deletion policy.
@@ -416,7 +428,15 @@ final class CustodyCatalogStore: @unchecked Sendable {
                 pointer.withMemoryRebound(to: CChar.self, capacity: Int(row.pointee.d_namlen) + 1) { String(cString: $0) }
             }
             if name == "." || name == ".." { continue }
-            if name.hasPrefix(InstallationStepReceipt.prefix) {
+            if name.hasPrefix(InstallationDocumentPreimage.prefix) {
+                guard documents.count < 1024 else { throw CustodyRecordError.fenced }
+                let observation = try InstallationDocumentPreimage.CanonicalObservation(decoding: read(name, at: receipts.descriptor.value,
+                    maximum: InstallationDocumentPreimage.maximumBytes).bytes, uid: uid)
+                let document = observation.receipt, digest = observation.digest
+                guard name == observation.filename, documents.updateValue(document, forKey: digest) == nil else {
+                    throw CustodyRecordError.fenced
+                }
+            } else if name.hasPrefix(InstallationStepReceipt.prefix) {
                 guard chain.count < 256 else { throw CustodyRecordError.fenced }
                 let observation = try InstallationStepReceipt.CanonicalObservation(decoding: read(name, at: receipts.descriptor.value,
                     maximum: InstallationStepReceipt.maximumBytes).bytes, uid: uid)
@@ -443,7 +463,105 @@ final class CustodyCatalogStore: @unchecked Sendable {
             return a.ordinal == b.ordinal ? a.status == .intent && b.status == .complete : a.ordinal < b.ordinal
         }
         try record.validateReceiptChain(observations: chain)
+        // Every referenced document must resolve to complete recoverable bytes,
+        // in the exact transaction/namespace/document slot. Unreferenced bytes
+        // are permitted ONLY for the same live factory's pending capture.
+        var referenced = Set<String>()
+        var snapshots = chain.flatMap { [$0.receipt.preimage, $0.receipt.postimage].compactMap { $0 } }
+        if let current = record.transaction?.slots { snapshots.append(current) }
+        for snapshot in snapshots {
+            for slot in [InstallationSlot.stateSource, .stateDestination] {
+                guard let image = snapshot.images[slot], let node = image.node else { continue }
+                guard let refs = image.documentReceipts else { throw CustodyRecordError.fenced }
+                for document in InstallationDocument.allCases {
+                    guard let digest = refs[document] ?? nil else { continue }
+                    guard let receipt = documents[digest], receipt.transactionID == record.transaction?.id,
+                          receipt.slot == slot, receipt.document == document, receipt.namespace == node else {
+                        throw CustodyRecordError.fenced
+                    }
+                    referenced.insert(digest)
+                }
+            }
+        }
+        for (digest, document) in documents where !referenced.contains(digest) {
+            guard pendingPreimages[digest] == document else { throw CustodyRecordError.fenced }
+        }
         return (file, record)
+    }
+    /// A privately minted live capture selects a closed set of document receipts;
+    /// callers cannot supply a filename, bytes, fd or arbitrary replacement.
+    /// Original owner validation and bundle/code work stay OUTSIDE catalog.lock.
+    func validateInstallationPreimages(_ capture: InstallationCapturedSlots) throws {
+        try capture.validateSource()
+        let pending = Dictionary(uniqueKeysWithValues: capture.canonicalPreimages.map { ($0.digest, $0.receipt) })
+        try locked {
+            let record = try installationSnapshot(pendingPreimages: pending).1
+            guard record.state == capture.stateBinding else { throw CustodyRecordError.fenced }
+            guard Set(capture.retainedPreimages.keys) == Set(capture.canonicalPreimages.map(\.filename)) else {
+                throw CustodyRecordError.fenced
+            }
+            for observation in capture.canonicalPreimages {
+                guard let retained = capture.retainedPreimages[observation.filename] else { throw CustodyRecordError.fenced }
+                let held = try Self.node(retained.descriptor, uid: uid, directory: false)
+                let current = try read(observation.filename, at: receipts.descriptor.value, maximum: InstallationDocumentPreimage.maximumBytes)
+                guard held.identity == retained.identity, held.acl == retained.acl,
+                      current.identity == held.identity, current.acl == held.acl,
+                      current.bytes == observation.bytes else { throw CustodyRecordError.fenced }
+            }
+            try validateBindings()
+        }
+        try capture.validateSource()
+    }
+    func persistInstallationPreimages(_ capture: InstallationCapturedSlots) throws -> [String: InstallationDocumentRetention] {
+        try capture.validateSource()
+        var retained: [String: InstallationDocumentRetention] = [:]
+        let pending = Dictionary(uniqueKeysWithValues: capture.canonicalPreimages.map { ($0.digest, $0.receipt) })
+        try locked {
+            do {
+                guard leases.mode == .lifecycleMutation else { throw CustodyRecordError.fenced }
+                let record = try installationSnapshot(pendingPreimages: pending).1
+                // Historical committed rollover requires its separate full-chain
+                // retention design. Capture cannot silently start that migration.
+                guard record.phase == .initial || record.transaction?.id == capture.transactionID,
+                      record.state == capture.stateBinding, record.phase != .committed,
+                      try snapshot().1.entries.isEmpty else { throw CustodyRecordError.fenced }
+                for observation in capture.canonicalPreimages {
+                    let name = observation.filename, bytes = observation.bytes
+                    var info = stat()
+                    if fstatat(receipts.descriptor.value, name, &info, AT_SYMLINK_NOFOLLOW) == 0 {
+                        let existing = try read(name, at: receipts.descriptor.value, maximum: InstallationDocumentPreimage.maximumBytes)
+                        guard existing.bytes == bytes else { throw CustodyRecordError.conflict }
+                        let raw = openat(receipts.descriptor.value, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                        guard raw >= 0 else { throw CustodyRecordError.unsafeMetadata }
+                        let retained = OwnedFileDescriptor(raw)
+                        let node = try Self.node(retained, uid: uid, directory: false)
+                        guard node.identity == existing.identity, node.acl == existing.acl,
+                              fsync(raw) == 0, fsync(receipts.descriptor.value) == 0 else { throw CustodyRecordError.persistence(errno) }
+                        let after = try read(name, at: receipts.descriptor.value, maximum: InstallationDocumentPreimage.maximumBytes)
+                        guard after.identity == existing.identity, after.acl == existing.acl, after.bytes == bytes else {
+                            throw CustodyRecordError.conflict
+                        }
+                    } else {
+                        guard errno == ENOENT else { throw CustodyRecordError.unsafeMetadata }
+                        try write(name, at: receipts.descriptor.value, bytes: bytes, expected: nil)
+                    }
+                }
+                _ = try installationSnapshot(pendingPreimages: pending)
+                for observation in capture.canonicalPreimages {
+                    let raw = openat(receipts.descriptor.value, observation.filename, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                    guard raw >= 0 else { throw CustodyRecordError.unsafeMetadata }
+                    let owned = OwnedFileDescriptor(raw), held = try Self.node(owned, uid: uid, directory: false)
+                    let named = try read(observation.filename, at: receipts.descriptor.value, maximum: InstallationDocumentPreimage.maximumBytes)
+                    guard named.identity == held.identity, named.acl == held.acl, named.bytes == observation.bytes,
+                          fsync(raw) == 0, fsync(receipts.descriptor.value) == 0 else { throw CustodyRecordError.fenced }
+                    try validate(held, at: receipts.descriptor.value, name: observation.filename, isDirectory: false)
+                    retained[observation.filename] = InstallationDocumentRetention(owned, identity: held.identity, acl: held.acl)
+                }
+                try validateBindings()
+            } catch { poisoned = true; throw error }
+        }
+        try capture.validateSource()
+        return retained
     }
     private func installationFence(mode: CustodyAuthorityMode) throws {
         let record = try installationSnapshot().1

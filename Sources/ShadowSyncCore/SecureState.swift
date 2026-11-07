@@ -1032,6 +1032,22 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     }
     /// Bind once, from live observations only. A later caller cannot choose a
     /// generation, source, candidate, process, boot or replacement state binding.
+    // Fixed installer layout must belong to this consumed owner. A public paths
+    // value or a metadata-equivalent state never selects a capture authority.
+    func validateInstallationPaths(_ paths: InstallationPaths) throws {
+        try revalidate()
+        if publisher != nil {
+            guard paths == (try InstallationPaths.production()) else { throw CustodyRecordError.fenced }
+        } else {
+            #if SHADOW_SYNC_TESTING
+            guard let fixtureRoot, paths == (try InstallationPaths.isolated(root: fixtureRoot)) else {
+                throw CustodyRecordError.fenced
+            }
+            #else
+            throw CustodyRecordError.fenced
+            #endif
+        }
+    }
     func installationBinding() throws -> InstallationLiveBinding {
         bindingMutex.lock(); defer { bindingMutex.unlock() }
         let observed = try captureLiveBinding(generation: liveBinding?.process.generation ?? RunIdentity.make())

@@ -317,6 +317,17 @@
     "m6-installation-live-binding-observation-drift",
     "m6-installation-live-binding-state-drift",
     "InstallationBindingTestingSource",
-    "testingSetBindingSource"
+    "testingSetBindingSource",
+    "InstallationSlotCaptureFixtures",
+    "testingSlotCaptureStoreFault",
+    "testingSlotCaptureStage",
+    "m6-installation-slot-durable-fixed-capture",
+    "m6-installation-slot-unsafe-documents-refuse",
+    "m6-installation-slot-source-parent-drift-refuse",
+    "m6-installation-slot-orphan-endpoints-names-refuse",
+    "m6-installation-slot-preimage-write-cuts",
+    "m6-installation-slot-existing-maximum-documents",
+    "m6-installation-slot-retained-identity-owner",
+    "m6-installation-slot-orphan-preimage-admission"
   ]
 }
