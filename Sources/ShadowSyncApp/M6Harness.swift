@@ -807,9 +807,29 @@ private final class ProcessLaunchAgent: LaunchAgentControlling, @unchecked Senda
             )
         )
         data.append(0x0A)
-        try data.write(to: URL(fileURLWithPath: statePath), options: .atomic)
-        guard chmod(statePath, 0o600) == 0 else {
-            throw M6HarnessError.message("could not secure simulated launchd state")
+        // Foundation's atomic writer may use an ambient temporary directory.
+        // Keep the simulated service's replacement in its validated fixture.
+        let directory = try TestIsolation.validateRoot(root)
+        let parent = Darwin.open(directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw M6HarnessError.message("could not open simulated launchd fixture") }
+        defer { close(parent) }
+        let temporary = ".simulated-launchd-" + RunIdentity.make()
+        let fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw M6HarnessError.message("could not stage simulated launchd state") }
+        defer { close(fd); _ = unlinkat(parent, temporary, 0) }
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let written = Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if written < 0 && errno == EINTR { continue }
+                guard written > 0 else { throw M6HarnessError.message("could not write simulated launchd state") }
+                offset += written
+            }
+        }
+        guard fsync(fd) == 0,
+              renameat(parent, temporary, parent, "simulated-launchd.json") == 0,
+              fsync(parent) == 0 else {
+            throw M6HarnessError.message("could not commit simulated launchd state")
         }
     }
 }

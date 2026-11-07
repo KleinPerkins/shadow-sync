@@ -2,6 +2,7 @@
   "adaptations": {
     ".github/workflows/app-auto-merge.yml": "Both privileged jobs statically disabled before checkout/token mint; CI provenance and dependency-content activation blockers remain open.",
     "Sources/ShadowSyncApp/M5Harness.swift": "Read exact runner-staged source-contract snapshots inside the native fixture; retain AppKit API and canonical native-acceptance assertions without build-path or host-home reads.",
+    "Sources/ShadowSyncApp/M6Harness.swift": "Preserve stopped rollback and explicit repair assertions; persist simulated launchd state through an in-directory atomic replacement inside the validated disposable fixture.",
     "Sources/ShadowSyncCore/Body3Coordinator.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
     "Sources/ShadowSyncCore/CommandCustodian.swift": "Retain the shared direct-child owner and original deadlines through discovery and closed lifecycle serial stages; consume bounded preflight/postflight output before semantic admission and retain actual raw child statuses.",
     "Sources/ShadowSyncCore/CustodyInheritedCommand.swift": "Authenticate exact inherited descriptor roles and independent publisher/resources for closed discovery and signed-coordinator lifecycle commands; no decoded path or process observation grants authority.",
@@ -33,6 +34,7 @@
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_release_notarization.py": "Disposable synthetic signing/notary adapters exercise packaging, retry, tamper and refusal paths; no credentials or product submission.",
     "scripts/build-app.sh": "Build all three executable products in one package invocation with shared compilation; verify every product architecture and minimum OS. Preserve real fixture paths only in nondistributed testing builds; production retains source-path sanitization and separate native qualification.",
+    "scripts/ci-runtime.py": "Retain the existing bounded registry and successful policy-helper phase diagnostics for discovery admission without changing deadlines, policies or assertions.",
     "scripts/ci-shards.py": "All mandatory jobs use macOS 26 arm64 because tooling includes native fixtures; deterministic complete-suite partition and fail-closed aggregate remain unchanged.",
     "scripts/notarize-release-bundle.py": "Source-bound MVP app and DMG notarization, stapling and Gatekeeper gates; preserve submission IDs and input bytes; no publication, installation, or acceptance claim.",
     "scripts/run-native-appkit.py": "Stage and verify only the exact AppDelegate and native-acceptance contract files inside the owned fixture; preserve all native assertions, source bindings, isolation and cleanup.",
@@ -213,7 +215,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncApp/M6Harness.swift",
-      "sha256": "5379605f989f8afaa12ced2928ca4c17285a590c8cde8de8d4a8b1d57c3cdf98"
+      "sha256": "6f6c3750ea9bd6881af25ee88587007faa6a82552646e248c45191c560880fce"
     },
     {
       "mode": "100644",
@@ -1113,7 +1115,7 @@
     {
       "mode": "100644",
       "path": "scripts/ci-runtime.py",
-      "sha256": "821598f08d5f64bd553677c02f7c9f2d2c6c21f5288386add79a4dea782f9351"
+      "sha256": "536665456b4571b4f279c9109dda5ad25ee04026ae441d1f6f02a6cef234d0b3"
     },
     {
       "mode": "100644",
