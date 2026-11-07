@@ -278,6 +278,20 @@
     "m6-initialization-handoff-receipt-control-refusal",
     "m6-initialization-handoff-custody-fence-refusal",
     "m6-initialization-handoff-copy-failure-retention",
-    "m6-initialization-handoff-retained-child"
+    "m6-initialization-handoff-retained-child",
+    "m6-installation-initial-fenced-roundtrip",
+    "m6-installation-first-reserve-intent",
+    "m6-installation-canonical-refusals",
+    "m6-installation-fixed-slots-and-documents",
+    "m6-installation-phase-combinations",
+    "m6-installation-closed-transitions",
+    "m6-installation-completion-not-skippable",
+    "m6-installation-receipt-chain-integrity",
+    "m6-installation-commit-not-circular",
+    "m6-installation-postcommit-forward-only",
+    "m6-installation-precommit-stopped-recovery",
+    "m6-installation-committed-process-history",
+    "m6-installation-removal-fenced-tombstone",
+    "m6-installation-revision-ordinal-overflow"
   ]
 }

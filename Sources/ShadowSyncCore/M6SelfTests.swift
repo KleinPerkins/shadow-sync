@@ -30,6 +30,21 @@ public enum M6SelfTestRunner {
             record(name)
         }
 
+        try run("m6-installation-initial-fenced-roundtrip") { try InstallationControlFixtures.initial() }
+        try run("m6-installation-first-reserve-intent") { try InstallationControlFixtures.firstIntent() }
+        try run("m6-installation-canonical-refusals") { try InstallationControlFixtures.malformed() }
+        try run("m6-installation-fixed-slots-and-documents") { try InstallationControlFixtures.fixedSlots() }
+        try run("m6-installation-phase-combinations") { try InstallationControlFixtures.phases() }
+        try run("m6-installation-closed-transitions") { try InstallationControlFixtures.transitions() }
+        try run("m6-installation-completion-not-skippable") { try InstallationControlFixtures.intentIsNotCompletion() }
+        try run("m6-installation-receipt-chain-integrity") { try InstallationControlFixtures.chain() }
+        try run("m6-installation-commit-not-circular") { try InstallationControlFixtures.commitReference() }
+        try run("m6-installation-postcommit-forward-only") { try InstallationControlFixtures.forwardOnly() }
+        try run("m6-installation-precommit-stopped-recovery") { try InstallationControlFixtures.rollback() }
+        try run("m6-installation-committed-process-history") { try InstallationControlFixtures.history() }
+        try run("m6-installation-removal-fenced-tombstone") { try InstallationControlFixtures.removal() }
+        try run("m6-installation-revision-ordinal-overflow") { try InstallationControlFixtures.bounds() }
+
         try run("m6-command-graph-valid") { try CommandGraphSelfTests.run("valid") }
         try run("m6-command-graph-empty") { try CommandGraphSelfTests.run("empty") }
         try run("m6-command-graph-unknown-build") { try CommandGraphSelfTests.run("unknown-build") }

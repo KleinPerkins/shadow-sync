@@ -13,9 +13,12 @@
     "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift": "Preserve existing isolated guardian cases; strengthen cancellation proof to non-default results and add post-assembly cancellation with later-clone no-work and nonselection assertions.",
     "Sources/ShadowSyncCore/DM4PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/FreshStateInitialization.swift": "Transfer a revalidated completed fresh publication into existing lifecycle authority using the original exclusive descriptions; one-shot consumption preserves receipts, fences and failure custody.",
+    "Sources/ShadowSyncCore/InstallationControlFixtures.swift": "Fourteen mandatory pure metadata fixtures cover canonical refusals, complete chains, irreversible commit and fenced recovery; no host or installation access.",
+    "Sources/ShadowSyncCore/InstallationControlRecord.swift": "Closed installation control and chained step receipt metadata under ADR 0009; decoding grants no live authority. Storage, admission and lifecycle integration remain required.",
     "Sources/ShadowSyncCore/InstallationLifecycle.swift": "Validate fixed LaunchAgent configuration from bounded no-follow snapshot bytes and revalidate captured file and parent identities before accepting it; retain current and legacy reader argument contracts.",
     "Sources/ShadowSyncCore/LifecycleLaunchCommand.swift": "Closed canonical lifecycle launch commands, strict bounded status parsing and independently reconstructed publisher/plist/qualified-graph authority; production qualification and installer entry remain gated.",
     "Sources/ShadowSyncCore/M4SelfTests.swift": "Retain lifecycle/ownership coverage and add disposable bound-plist, unsafe-input and post-read file/parent replacement refusals with identity-checked cleanup.",
+    "Sources/ShadowSyncCore/M6SelfTests.swift": "Register every installation metadata case as a literal mandatory M6 body while retaining all existing runtime assertions.",
     "Sources/ShadowSyncCore/PolicyAuthorityFile.swift": "Expose captured owner-private mode for lifecycle plist validation; byte, file, ACL and parent snapshot revalidation remain unchanged.",
     "Sources/ShadowSyncCore/PublisherBundleLayout.swift": "Retain the closed publisher and framework layout; accept only the exact bounded non-executable Apple ticket location and preserve/revalidate ticket bytes without treating it as publisher authority.",
     "Sources/ShadowSyncCore/RemovalTransaction.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
@@ -539,6 +542,16 @@
     },
     {
       "mode": "100644",
+      "path": "Sources/ShadowSyncCore/InstallationControlFixtures.swift",
+      "sha256": "1008f96ec14efdc77016364d1ff953d0b3bca892042ca0839898167c957ddcc4"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/InstallationControlRecord.swift",
+      "sha256": "e7d06036f4261e4ba6a0caf25ad5fb9ca82118c596d7e5d44279583fe0740cad"
+    },
+    {
+      "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
       "sha256": "01e6e1b9ac2349c1e8beb2285bc768c71c62d58507d74788026acf3a720f31e3"
     },
@@ -605,7 +618,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "59a52aa0b819ba6769c8eeb44261270148ec87ba1afbfbafd67ad61f315c2b81"
+      "sha256": "8b20d538884acd43bfd9b5df9436d6e90f006b725c475051fd4a92fc134722b9"
     },
     {
       "mode": "100644",
@@ -890,7 +903,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "88fca257f8e91acb032268a58f89c6f14cde49e2440b37e052978f632d0e22e4"
+      "sha256": "b4d9203df245662fc21b2ae40142a85d63023e56cc55346fbf60052ab96b8bd3"
     },
     {
       "mode": "100644",
@@ -925,7 +938,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_application_ci.py",
-      "sha256": "c4d2c9ec523e91cadc43828437debb1e44ac707ed4ad89ca78d7469d67be7678"
+      "sha256": "66a4b56b592e7e1516910cff602d41ec8da8d2a91f53834efafa823cb52df991"
     },
     {
       "mode": "100644",
@@ -1040,7 +1053,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "ac6d7c76125b550e3033541a319f8e7c05d9b5692225c365d1e9c415590a7776"
+      "sha256": "948452d67cd97f8420f184df49e847c7e389d8c805c2d2aba9089c195b611432"
     },
     {
       "mode": "100644",
@@ -1055,7 +1068,7 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "49541cf7ab0dd16a3c174bfd92d58a6577c873cb167575cb9ebc9744d7549db1"
+      "sha256": "57dea064b197e4230a0a21abd5f4785c9230bb224a3836c943ab4bdde76aef9a"
     },
     {
       "mode": "100644",
