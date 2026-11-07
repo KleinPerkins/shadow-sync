@@ -45,6 +45,11 @@ public enum M6SelfTestRunner {
         try run("m6-installation-removal-fenced-tombstone") { try InstallationControlFixtures.removal() }
         try run("m6-installation-revision-ordinal-overflow") { try InstallationControlFixtures.bounds() }
 
+        try run("m6-installation-storage-initial-admission") { try InstallationStorageFixtures.initial() }
+        try run("m6-installation-storage-complete-chain") { try InstallationStorageFixtures.committed() }
+        try run("m6-installation-storage-published-control-replacement") { try InstallationStorageFixtures.publishedReplacement() }
+        try run("m6-installation-storage-control-write-cuts") { try InstallationStorageFixtures.writeCuts() }
+
         try run("m6-command-graph-valid") { try CommandGraphSelfTests.run("valid") }
         try run("m6-command-graph-empty") { try CommandGraphSelfTests.run("empty") }
         try run("m6-command-graph-unknown-build") { try CommandGraphSelfTests.run("unknown-build") }
@@ -1052,6 +1057,7 @@ private enum CustodyCatalogSelfTests {
         do { try body() } catch is CustodyRecordError { return }
         catch is CustodyProtocolError { return } catch is PolicyProtocolError { return }
         catch is SecureStateError { return } catch is PolicyAuthorityFileError { return }
+        catch is InstallationRecordError { return }
         throw Failure(message: "custody metadata unexpectedly accepted")
     }
     static func fixture(initialized: Bool = true, _ body: (StateLocation, String) throws -> Void) throws {
@@ -2036,7 +2042,7 @@ private enum FreshStateSelfTests {
             }
             try H.check(try initializer!.publish() == result, "same-object retry")
             initializer = nil
-            _ = try H.scope(location)
+            try H.refuses { _ = try H.scope(location) }
             try H.check(try attempt(root) == result, "reopened transaction changed publication")
             try H.check(!FileManager.default.fileExists(atPath: parent + "/.shadow-sync-initialization." + result.transaction), "stage remains after publication")
         }
@@ -2224,6 +2230,16 @@ private enum FreshStateSelfTests {
         try fixture { root, location, _ in
             let initializer = try FreshStateInitialization.testing(root: root); _ = try initializer.publish()
             let owner = try initializer.takeInstallationAuthority(); defer { owner.release() }
+            // Publication alone must refuse ordinary commands. The remainder
+            // exercises actual inherited-description/registry retention against
+            // synthetic committed fixture metadata; it is NOT authenticated
+            // installation/readiness qualification.
+            do {
+                let leases = try owner.retainCommandLeases()
+                let store = try CustodyCatalogStore(leases: leases)
+                try H.refuses { try store.checkFence(ownRequests: [], scope: RunIdentity.make(), mode: .lifecycleMutation) }
+                try CustodyCatalogStore.testingSeedCommittedInstallation(leases: leases, root: root)
+            }
             let registry = RetainedCleanupRegistry.testingInstance()
             var failure: Error?
             do {
@@ -2377,7 +2393,7 @@ private enum FreshStateSelfTests {
         }
     }
     static func readyControls(replace: Bool) throws {
-        for name in ["latest.log", "lifecycle.lock", "operation.lock", "run.lock", "launcher.lock", "custody/catalog.lock", "custody/catalog.json"] {
+        for name in ["latest.log", "lifecycle.lock", "operation.lock", "run.lock", "launcher.lock", "custody/catalog.lock", "custody/catalog.json", "custody/installation.json"] {
             try fixture { root, location, parent in
                 try H.refuses { _ = try attempt(root, cut: .afterReady) }
                 let path = parent + "/.shadow-sync-initialization." + (try transaction(parent)) + "/" + name
@@ -2406,17 +2422,17 @@ private enum FreshStateSelfTests {
         }
     }
     static func writeRetry(partial: Bool) throws {
-        for name in (partial ? [".shadow-sync-initialization.json", "catalog.json"] : [".shadow-sync-initialization.json", "operation.lock", "catalog.json"]) {
+        for name in (partial ? [".shadow-sync-initialization.json", "catalog.json", "installation.json"] : [".shadow-sync-initialization.json", "operation.lock", "catalog.json", "installation.json"]) {
             try fixture { root, location, _ in
                 try H.refuses { _ = try attempt(root, cut: partial ? .partialWrite(name) : .temporaryCreated(name)) }
                 try H.check(!FileManager.default.fileExists(atPath: location.path), "partial write published")
                 _ = try attempt(root)
-                _ = try H.scope(location)
+                try H.refuses { _ = try H.scope(location) }
             }
         }
     }
     static func crashWorker(root: String, target: String, partial: String) -> Int32 {
-        guard [".shadow-sync-initialization.json", "catalog.json"].contains(target), ["yes", "no"].contains(partial) else { return 64 }
+        guard [".shadow-sync-initialization.json", "catalog.json", "installation.json"].contains(target), ["yes", "no"].contains(partial) else { return 64 }
         do {
             let initializer = try FreshStateInitialization.testing(root: root)
             initializer.testingCrash(partial == "yes" ? .partialWrite(target) : .temporaryCreated(target))
@@ -2424,7 +2440,7 @@ private enum FreshStateSelfTests {
         } catch { return 66 }
     }
     static func processDeath() throws {
-        for target in [".shadow-sync-initialization.json", "catalog.json"] {
+        for target in [".shadow-sync-initialization.json", "catalog.json", "installation.json"] {
             for partial in ["yes", "no"] {
                 try fixture { root, location, _ in
                     var actions: posix_spawn_file_actions_t?, attr: posix_spawnattr_t?
@@ -2459,7 +2475,7 @@ private enum FreshStateSelfTests {
                     try H.check(clean && waitpid(anchor.processID, &status, WNOHANG) == -1 && errno == ECHILD, "crash child reaping")
                     if let failure { throw failure }
                     try H.check(!FileManager.default.fileExists(atPath: location.path), "crash published incomplete state")
-                    _ = try attempt(root); _ = try H.scope(location)
+                    _ = try attempt(root); try H.refuses { _ = try H.scope(location) }
                 }
             }
         }
@@ -2473,7 +2489,7 @@ private enum FreshStateSelfTests {
             let result = try attempt(root)
             try H.check(result.transaction == tx && (!exists || result.stateInode == UInt64(before.st_ino)), "retry replaced transaction or state inode")
             try H.check(try CustodyCatalog.decode(H.bytes(location, "catalog.json")) == CustodyCatalog.initialized, "retry catalog mismatch")
-            _ = try H.scope(location)
+            try H.refuses { _ = try H.scope(location) }
         }
     }
 }

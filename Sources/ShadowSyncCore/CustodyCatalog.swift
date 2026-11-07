@@ -1,6 +1,83 @@
 import Darwin
 import Foundation
 
+// Descriptor observations only. No path, PID, decoded record or opened file
+// grants a lease. Callers must retain their original typed authority separately.
+extension InstallationStateBinding {
+    private struct ObservedNode {
+        let descriptor: OwnedFileDescriptor
+        let identity: InstallationNodeIdentity
+        let parent: Int32?
+        let name: String?
+    }
+    private static func identity(_ fd: Int32, uid: uid_t, directory: Bool) throws -> InstallationNodeIdentity {
+        var value = stat()
+        guard fstat(fd, &value) == 0, value.st_uid == uid,
+              value.st_mode == (directory ? S_IFDIR | 0o700 : S_IFREG | 0o600),
+              directory ? value.st_nlink > 0 : value.st_nlink == 1 else {
+            throw CustodyRecordError.unsafeMetadata
+        }
+        let result = InstallationNodeIdentity(device: UInt64(value.st_dev), inode: UInt64(value.st_ino),
+            type: directory ? .directory : .regular, uid: value.st_uid, mode: UInt32(value.st_mode),
+            links: UInt64(value.st_nlink),
+            aclDigest: CustodyRecordBinding.digest(Data(try PolicyAuthorityFile.privateStateACL(fd).utf8)))
+        try result.validate(); return result
+    }
+    private static func open(_ parent: Int32, _ name: String, uid: uid_t, directory: Bool) throws -> ObservedNode {
+        let raw = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | (directory ? O_DIRECTORY : 0))
+        guard raw >= 0 else { throw CustodyRecordError.unsafeMetadata }
+        let owner = OwnedFileDescriptor(raw)
+        return try ObservedNode(descriptor: owner, identity: identity(raw, uid: uid, directory: directory), parent: parent, name: name)
+    }
+    static func capture(stateDescriptor: Int32, uid: uid_t) throws -> Self {
+        let state = try identity(stateDescriptor, uid: uid, directory: true)
+        let custody = try open(stateDescriptor, "custody", uid: uid, directory: true)
+        let namespace = try open(stateDescriptor, "latest.log", uid: uid, directory: false)
+        let lifecycle = try open(stateDescriptor, "lifecycle.lock", uid: uid, directory: false)
+        let operation = try open(stateDescriptor, "operation.lock", uid: uid, directory: false)
+        let run = try open(stateDescriptor, "run.lock", uid: uid, directory: false)
+        let launcher = try open(stateDescriptor, "launcher.lock", uid: uid, directory: false)
+        let catalog = try open(custody.descriptor.value, "catalog.lock", uid: uid, directory: false)
+        // Keep every opened description alive until the entire named set has
+        // been rechecked; an earlier close could hide inode substitution.
+        for node in [custody, namespace, lifecycle, operation, run, launcher, catalog] {
+            let current = try identity(node.descriptor.value, uid: uid, directory: node.identity.type == .directory)
+            var named = stat()
+            guard current == node.identity, let parent = node.parent, let name = node.name,
+                  fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  UInt64(named.st_dev) == current.device, UInt64(named.st_ino) == current.inode,
+                  named.st_uid == current.uid, UInt32(named.st_mode) == current.mode,
+                  UInt64(named.st_nlink) == current.links else { throw CustodyRecordError.unsafeMetadata }
+        }
+        guard try identity(stateDescriptor, uid: uid, directory: true) == state else { throw CustodyRecordError.unsafeMetadata }
+        let result = Self(directory: state, namespace: namespace.identity, lifecycle: lifecycle.identity,
+            operation: operation.identity, run: run.identity, launcher: launcher.identity, catalogGuard: catalog.identity)
+        try result.validate(); return result
+    }
+    func validateLive(stateDescriptor: Int32, uid: uid_t, leases: CustodyAuthorityLeaseSet) throws {
+        try validate()
+        let current = try Self.capture(stateDescriptor: stateDescriptor, uid: uid)
+        // Directory link counts may change when valid child directories appear.
+        // Both observations must be live/private; only this count is not stable.
+        let a = directory, b = current.directory
+        guard a.device == b.device, a.inode == b.inode, a.type == b.type, a.uid == b.uid,
+              a.mode == b.mode, a.aclDigest == b.aclDigest, a.links > 0, b.links > 0,
+              namespace == current.namespace, lifecycle == current.lifecycle, operation == current.operation,
+              run == current.run, launcher == current.launcher, catalogGuard == current.catalogGuard else {
+            throw CustodyRecordError.fenced
+        }
+        let expected: [CustodyDescriptorClaim.Role: InstallationNodeIdentity] = [
+            .state: directory, .namespace: namespace, .lifecycle: lifecycle, .operation: operation, .run: run]
+        for held in try leases.descriptorClaims() {
+            guard let node = expected[held.role], held.device == node.device, held.inode == node.inode,
+                  held.uid == node.uid, held.mode == node.mode,
+                  held.role == .state ? held.links > 0 : held.links == node.links else {
+                throw CustodyRecordError.fenced
+            }
+        }
+    }
+}
+
 /// Live, reference-bound metadata scope. Its random UUID cannot be supplied from
 /// disk. It owns actual leases but grants no executable/publisher/candidate trust.
 /// The command context will add those checks before any helper spawn.
@@ -316,12 +393,100 @@ final class CustodyCatalogStore: @unchecked Sendable {
         }
         return result.sorted()
     }
+    private func installationSnapshot() throws -> (File, InstallationControlRecord) {
+        let file = try read(InstallationControlRecord.filename, maximum: InstallationControlRecord.maximumBytes)
+        let record = try InstallationControlRecord.decode(file.bytes)
+        try record.state.validateLive(stateDescriptor: root.value, uid: uid, leases: leases)
+        let fd = openat(receipts.descriptor.value, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw CustodyRecordError.unsafeMetadata }
+        guard let stream = fdopendir(fd) else { close(fd); throw CustodyRecordError.unsafeMetadata }
+        defer { closedir(stream) }
+        var chain: [InstallationStepReceipt] = []
+        // A local metadata ceiling consumes caller time; it never renews a
+        // command's absolute admission/work deadline. Historical command receipt
+        // count is not a new retention/deletion policy.
+        let scanLimit = MonotonicDeadline(seconds: 0.250)
+        while true {
+            guard !scanLimit.hasExpired else { throw CustodyRecordError.busy }
+            errno = 0
+            guard let row = readdir(stream) else {
+                guard errno == 0 else { throw CustodyRecordError.persistence(errno) }; break
+            }
+            let name = withUnsafePointer(to: row.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(row.pointee.d_namlen) + 1) { String(cString: $0) }
+            }
+            if name == "." || name == ".." { continue }
+            if name.hasPrefix(InstallationStepReceipt.prefix) {
+                guard chain.count < 256 else { throw CustodyRecordError.fenced }
+                let receipt = try InstallationStepReceipt.decode(read(name, at: receipts.descriptor.value,
+                    maximum: InstallationStepReceipt.maximumBytes).bytes, uid: uid)
+                guard receipt.transactionID == record.transaction?.id,
+                      try receipt.filename(uid: uid) == name else { throw CustodyRecordError.fenced }
+                chain.append(receipt)
+            } else {
+                // Preserve existing command archives. Unknown names, including
+                // incomplete atomic-write temporaries, are evidence of uncertainty.
+                let uuid: String
+                if name.hasPrefix("discovery-resource-"), name.hasSuffix(".json") {
+                    uuid = String(name.dropFirst("discovery-resource-".count).dropLast(5))
+                } else if name.hasSuffix(".caller.json") { uuid = String(name.dropLast(12)) }
+                else if name.hasSuffix(".recovery.json") { uuid = String(name.dropLast(14)) }
+                else if name.hasSuffix(".json") { uuid = String(name.dropLast(5)) }
+                else { throw CustodyRecordError.fenced }
+                guard RunIdentity.isValid(uuid) else { throw CustodyRecordError.fenced }
+                let node = try Self.openNode(receipts.descriptor.value, name, uid: uid, directory: false)
+                try validate(node, at: receipts.descriptor.value, name: name, isDirectory: false)
+            }
+        }
+        chain.sort { a, b in a.ordinal == b.ordinal ? a.status == .intent && b.status == .complete : a.ordinal < b.ordinal }
+        try record.validateReceiptChain(chain)
+        return (file, record)
+    }
+    private func installationFence(mode: CustodyAuthorityMode) throws {
+        let record = try installationSnapshot().1
+        switch record.phase {
+        case .committed: break // Exact installed residual slots remain a separate live installation gate.
+        case .active, .recovery:
+            guard mode == .observation else { throw CustodyRecordError.fenced }
+        case .initial:
+            // Initial diagnostics use the initializer's typed inspection below;
+            // they cannot spawn an ordinary lifecycle observation command.
+            throw CustodyRecordError.fenced
+        }
+    }
+    func checkFreshInitializationFence(_ proof: FreshStateInitialization.ControlInspection) throws {
+        try locked {
+            guard proof.leases === leases, leases.mode == .mutation else { throw CustodyRecordError.fenced }
+            let record = try installationSnapshot().1
+            guard record.phase == .initial,
+                  Set(try names()) == ["catalog.lock", "catalog.json", "receipts", InstallationControlRecord.filename],
+                  try CustodyCatalog.decode(read("catalog.json", maximum: CustodyCatalog.maximumBytes).bytes) == .initialized else {
+                throw CustodyRecordError.fenced
+            }
+            // Fresh state has no command or installation history at all.
+            let fd = openat(receipts.descriptor.value, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw CustodyRecordError.unsafeMetadata }
+            guard let stream = fdopendir(fd) else { close(fd); throw CustodyRecordError.unsafeMetadata }
+            defer { closedir(stream) }
+            while true {
+                errno = 0
+                guard let row = readdir(stream) else {
+                    guard errno == 0 else { throw CustodyRecordError.persistence(errno) }; break
+                }
+                let name = withUnsafePointer(to: row.pointee.d_name) { pointer in
+                    pointer.withMemoryRebound(to: CChar.self, capacity: Int(row.pointee.d_namlen) + 1) { String(cString: $0) }
+                }
+                guard name == "." || name == ".." else { throw CustodyRecordError.fenced }
+            }
+        }
+    }
+
     private func snapshot() throws -> (File, CustodyCatalog, [String: CustodyJournal]) {
         let file = try read("catalog.json", maximum: CustodyCatalog.maximumBytes), catalog = try CustodyCatalog.decode(file.bytes)
         var journals: [String: CustodyJournal] = [:]
         let expected = Set(catalog.entries.map(\.filename)), all = Set(try names())
         guard expected.isSubset(of: all), all.contains("catalog.lock"), all.contains("receipts") else { throw CustodyRecordError.fenced }
-        for name in all.subtracting(["catalog.json", "catalog.lock", "receipts"]) {
+        for name in all.subtracting(["catalog.json", "catalog.lock", "receipts", InstallationControlRecord.filename]) {
             guard name.hasSuffix(".json"), RunIdentity.isValid(String(name.dropLast(5))) else { throw CustodyRecordError.fenced }
             let bytes = try read(name, maximum: CustodyJournal.maximumBytes).bytes
             let journal = try CustodyJournal.decode(bytes)
@@ -374,12 +539,17 @@ final class CustodyCatalogStore: @unchecked Sendable {
         }
     }
     func checkFence(ownRequests: Set<String>, scope: String, mode: CustodyAuthorityMode) throws {
-        try locked { let s = try snapshot(); try fence(s.1, journals: s.2, ownRequests: ownRequests, scope: scope, mode: mode) }
+        try locked {
+            guard mode == leases.mode else { throw CustodyRecordError.fenced }
+            try installationFence(mode: mode)
+            let s = try snapshot(); try fence(s.1, journals: s.2, ownRequests: ownRequests, scope: scope, mode: mode)
+        }
     }
     fileprivate func reserveAndPrepare(_ journal: CustodyJournal, ownRequests: Set<String>, scope: String) throws {
         try locked {
             guard journal.authority == leases.mode, journal.binding.scopeID == scope,
                   journal.binding.uid == uid, journal.phase == .prepared else { throw CustodyRecordError.fenced }
+            try installationFence(mode: journal.authority)
             let s = try snapshot(); try fence(s.1, journals: s.2, ownRequests: ownRequests, scope: scope, mode: journal.authority)
             guard s.2[journal.binding.requestID] == nil else { throw CustodyRecordError.conflict }
             var archivedInfo = stat()
@@ -744,6 +914,41 @@ final class CustodyCatalogStore: @unchecked Sendable {
     private var testingCut: Fault?
     func testingFault(_ cut: Fault?) { mutex.lock(); testingCut = cut; mutex.unlock() }
     func testingRead() throws -> CustodyCatalog { try locked { try snapshot().1 } }
+    // Synthetic metadata for isolated command/lease tests, never an installer
+    // completion receipt or evidence of authenticated readiness. Only testing
+    // builds can seed it; production has no corresponding bypass or path API.
+    static func testingSeedCommittedInstallation(leases: CustodyAuthorityLeaseSet, root fixtureRoot: String) throws {
+        let fixture = try TestIsolation.validateRoot(fixtureRoot)
+        let state = try leases.duplicateStateDirectory()
+        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(state.0.value, F_GETPATH, &path) == 0, String(cString: path).hasPrefix(fixture + "/"),
+              leases.mode == .mutation || leases.mode == .lifecycleMutation else { throw CustodyRecordError.unsafeMetadata }
+        let store = try Self(leases: leases)
+        try store.locked {
+            guard try store.names().allSatisfy({ ["catalog.lock", "catalog.json", "receipts", InstallationControlRecord.filename].contains($0) }),
+                  try CustodyCatalog.decode(store.read("catalog.json", maximum: CustodyCatalog.maximumBytes).bytes) == .initialized else {
+                throw CustodyRecordError.fenced
+            }
+            let binding = try InstallationStateBinding.capture(stateDescriptor: state.0.value, uid: state.1)
+            let expected: File?
+            var existing = stat()
+            if fstatat(store.directory.descriptor.value, InstallationControlRecord.filename, &existing, AT_SYMLINK_NOFOLLOW) == 0 {
+                expected = try store.read(InstallationControlRecord.filename, maximum: InstallationControlRecord.maximumBytes)
+                guard expected!.bytes == (try InstallationControlRecord.initial(state: binding).encode()) else { throw CustodyRecordError.fenced }
+            } else {
+                guard errno == ENOENT else { throw CustodyRecordError.unsafeMetadata }; expected = nil
+            }
+            var harness = try InstallationControlFixtures.Harness(state: binding)
+            try harness.throughReady(); try harness.commitReady()
+            for action in [InstallationAction.cleanupCoordination, .cleanupBackups, .cleanupIncoming, .finish] { try harness.pair(action) }
+            try harness.record.validateReceiptChain(harness.receipts)
+            for receipt in harness.receipts {
+                try store.write(receipt.filename(uid: state.1), at: store.receipts.descriptor.value,
+                                bytes: receipt.encode(uid: state.1), expected: nil)
+            }
+            try store.write(InstallationControlRecord.filename, bytes: harness.record.encode(), expected: expected)
+        }
+    }
     static func testingInitialize(leases: CustodyAuthorityLeaseSet, root fixtureRoot: String) throws {
         let root = try TestIsolation.validateRoot(fixtureRoot)
         let state = try leases.duplicateStateDirectory()
@@ -762,6 +967,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
             guard fsync(fd) == 0 else { throw CustodyRecordError.persistence(errno) }
         }
         guard fsync(directory.descriptor.value) == 0, fsync(state.0.value) == 0 else { throw CustodyRecordError.persistence(errno) }
+        try testingSeedCommittedInstallation(leases: leases, root: fixtureRoot)
     }
     #endif
 }

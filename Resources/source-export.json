@@ -5,6 +5,7 @@
     "Sources/ShadowSyncApp/M6Harness.swift": "Preserve stopped rollback and explicit repair assertions; persist simulated launchd state through an in-directory atomic replacement inside the validated disposable fixture.",
     "Sources/ShadowSyncCore/Body3Coordinator.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
     "Sources/ShadowSyncCore/CommandCustodian.swift": "Retain the shared direct-child owner and original deadlines through discovery and closed lifecycle serial stages; consume bounded preflight/postflight output before semantic admission and retain actual raw child statuses.",
+    "Sources/ShadowSyncCore/CustodyCatalog.swift": "Bind mandatory installation metadata to live original state/lock descriptions; validate complete receipt chains under the existing catalog guard at command admission. Initial state remains fenced; authenticated coordinator and residual-layout integration remain incomplete.",
     "Sources/ShadowSyncCore/CustodyInheritedCommand.swift": "Authenticate exact inherited descriptor roles and independent publisher/resources for closed discovery and signed-coordinator lifecycle commands; no decoded path or process observation grants authority.",
     "Sources/ShadowSyncCore/DM2Body1SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/DM2Body2SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
@@ -12,10 +13,11 @@
     "Sources/ShadowSyncCore/DM2Body4SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift": "Preserve existing isolated guardian cases; strengthen cancellation proof to non-default results and add post-assembly cancellation with later-clone no-work and nonselection assertions.",
     "Sources/ShadowSyncCore/DM4PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
-    "Sources/ShadowSyncCore/FreshStateInitialization.swift": "Transfer a revalidated completed fresh publication into existing lifecycle authority using the original exclusive descriptions; one-shot consumption preserves receipts, fences and failure custody.",
-    "Sources/ShadowSyncCore/InstallationControlFixtures.swift": "Fourteen mandatory pure metadata fixtures cover canonical refusals, complete chains, irreversible commit and fenced recovery; no host or installation access.",
+    "Sources/ShadowSyncCore/FreshStateInitialization.swift": "Publish mandatory initial installation control before readiness, bind its bytes/inode in immutable publication proofs, and use initializer-only inspection while retaining original locks. Same-object retries revalidate the complete publication proof.",
+    "Sources/ShadowSyncCore/InstallationControlFixtures.swift": "Fourteen pure metadata fixtures and a fixture-only chain constructor can bind actual isolated state observations for custody tests; no production writer or authenticated readiness authority.",
     "Sources/ShadowSyncCore/InstallationControlRecord.swift": "Closed installation control and chained step receipt metadata under ADR 0009; decoding grants no live authority. Storage, admission and lifecycle integration remain required.",
     "Sources/ShadowSyncCore/InstallationLifecycle.swift": "Validate fixed LaunchAgent configuration from bounded no-follow snapshot bytes and revalidate captured file and parent identities before accepting it; retain current and legacy reader argument contracts.",
+    "Sources/ShadowSyncCore/InstallationStorageFixtures.swift": "Disposable storage fixtures exercise initial refusal, complete chains and missing evidence, exact published-control replacement refusal, and interrupted control writes; synthetic fixture commits confer no installed readiness proof.",
     "Sources/ShadowSyncCore/LifecycleLaunchCommand.swift": "Closed canonical lifecycle launch commands, strict bounded status parsing and independently reconstructed publisher/plist/qualified-graph authority; production qualification and installer entry remain gated.",
     "Sources/ShadowSyncCore/M4SelfTests.swift": "Retain lifecycle/ownership coverage and add disposable bound-plist, unsafe-input and post-read file/parent replacement refusals with identity-checked cleanup.",
     "Sources/ShadowSyncCore/M6SelfTests.swift": "Register every installation metadata case as a literal mandatory M6 body while retaining all existing runtime assertions.",
@@ -363,7 +365,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CustodyCatalog.swift",
-      "sha256": "eac83de36234c4995b61daaf4412879242b283099e0c80ce58d62b1cd0819429"
+      "sha256": "eb2958791a2ab3cfe2d6c0090532438cdd13df77dddabb3ccb2a9b17672f41c1"
     },
     {
       "mode": "100644",
@@ -478,7 +480,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/FreshStateInitialization.swift",
-      "sha256": "424e6c2bbfe6d4e98f4f3d62fcb2fcbbc66bf0477371d168a27ea45bf79f9b69"
+      "sha256": "c7c56b8ea619f4b45a83228ecbfffeb03374c52060d367379bba465ef1ac3046"
     },
     {
       "mode": "100644",
@@ -543,7 +545,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationControlFixtures.swift",
-      "sha256": "1008f96ec14efdc77016364d1ff953d0b3bca892042ca0839898167c957ddcc4"
+      "sha256": "4bcf468d9d2e7c4a8fbd3b9ffeecec4ca78b653961447b8c627a4311bfbc9bd4"
     },
     {
       "mode": "100644",
@@ -554,6 +556,11 @@
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
       "sha256": "01e6e1b9ac2349c1e8beb2285bc768c71c62d58507d74788026acf3a720f31e3"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/InstallationStorageFixtures.swift",
+      "sha256": "2a114dde1b9022a78637c3b5a52ce6fecde5dc2099bea0355627a6309d4da5a3"
     },
     {
       "mode": "100644",
@@ -618,7 +625,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "8b20d538884acd43bfd9b5df9436d6e90f006b725c475051fd4a92fc134722b9"
+      "sha256": "7a37bfb98171e5e96f8fb636206e61aea8ba7afb7dfe0b98afc5ca48799560ea"
     },
     {
       "mode": "100644",
@@ -903,7 +910,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "b4d9203df245662fc21b2ae40142a85d63023e56cc55346fbf60052ab96b8bd3"
+      "sha256": "51603def4617c5be83100c46fa42366bc0c7ec84e11b72d960689a76385858e7"
     },
     {
       "mode": "100644",
@@ -938,7 +945,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_application_ci.py",
-      "sha256": "66a4b56b592e7e1516910cff602d41ec8da8d2a91f53834efafa823cb52df991"
+      "sha256": "6d52fe066e4a4c8c95b6a16b2b5c47d64d16015f5f41c6474481ea03c1eb6d8c"
     },
     {
       "mode": "100644",
@@ -1053,7 +1060,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "948452d67cd97f8420f184df49e847c7e389d8c805c2d2aba9089c195b611432"
+      "sha256": "c04b8c3e7ab27842784a7ba9c8821c1bf3647c74408a25e314d91d50b0bbbc76"
     },
     {
       "mode": "100644",
@@ -1068,12 +1075,12 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "57dea064b197e4230a0a21abd5f4785c9230bb224a3836c943ab4bdde76aef9a"
+      "sha256": "88bcc70b5cb59770eb125e8053fdc892214677ad9b73be0d066a58e123572f56"
     },
     {
       "mode": "100644",
       "path": "config/identity-exceptions.json",
-      "sha256": "920feb492046d39bee6846a3f900bdbed2598fda07efbef620eddeb38249aa5a"
+      "sha256": "3f53b6432ccd383b29977db8e25d1d6ee5194d3f89b2cfd593c970e98d775436"
     },
     {
       "mode": "100644",

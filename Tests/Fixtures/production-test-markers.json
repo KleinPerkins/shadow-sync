@@ -292,6 +292,10 @@
     "m6-installation-precommit-stopped-recovery",
     "m6-installation-committed-process-history",
     "m6-installation-removal-fenced-tombstone",
-    "m6-installation-revision-ordinal-overflow"
+    "m6-installation-revision-ordinal-overflow",
+    "m6-installation-storage-initial-admission",
+    "m6-installation-storage-complete-chain",
+    "m6-installation-storage-published-control-replacement",
+    "m6-installation-storage-control-write-cuts"
   ]
 }

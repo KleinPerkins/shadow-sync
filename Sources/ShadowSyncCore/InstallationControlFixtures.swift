@@ -34,14 +34,14 @@ enum InstallationControlFixtures {
         }
         return InstallationSlotSnapshot(images: images)
     }
-    static func process(_ pid: UInt32) -> InstallationProcessObservation {
-        InstallationProcessObservation(pid: pid, uid: 501, startSeconds: 1, startMicroseconds: 2, generation: generation)
+    static func process(_ pid: UInt32, uid: UInt32 = 501) -> InstallationProcessObservation {
+        InstallationProcessObservation(pid: pid, uid: uid, startSeconds: 1, startMicroseconds: 2, generation: generation)
     }
-    static func transaction(intent: InstallationTransactionIntent = .install) throws -> InstallationTransaction {
+    static func transaction(intent: InstallationTransactionIntent = .install, uid: UInt32 = 501) throws -> InstallationTransaction {
         let release = try ReleaseIdentity(sourceRevision: String(repeating: "d", count: 40), sourceInputSHA256: sha,
             releaseContractSHA256: otherSHA, architecture: "arm64", buildMode: "production")
         return InstallationTransaction(id: uuid, boot: boot, intent: intent,
-            coordinator: InstallationCoordinatorObservation(process: process(400), team: ReleaseIdentity.publisherTeamIdentifier,
+            coordinator: InstallationCoordinatorObservation(process: process(400, uid: uid), team: ReleaseIdentity.publisherTeamIdentifier,
                 identifier: LifecyclePublisher.identifier, cdHash: cd), sourceReleaseDigest: otherSHA,
             candidate: intent == .remove ? nil : InstallationCandidate(release: release, bundleDigest: sha, appCDHash: cd, coordinatorCDHash: cd),
             priorCommitDigest: nil, slots: slots())
@@ -62,9 +62,9 @@ enum InstallationControlFixtures {
         let transaction: InstallationTransaction
         var receipts: [InstallationStepReceipt] = []
         var record: InstallationControlRecord
-        init(intent: InstallationTransactionIntent = .install) throws {
-            state = InstallationControlFixtures.state()
-            transaction = try InstallationControlFixtures.transaction(intent: intent)
+        init(intent: InstallationTransactionIntent = .install, state binding: InstallationStateBinding? = nil) throws {
+            state = binding ?? InstallationControlFixtures.state()
+            transaction = try InstallationControlFixtures.transaction(intent: intent, uid: state.directory.uid)
             record = try .initial(state: state)
         }
         mutating func add(_ action: InstallationAction, status: InstallationStepStatus,
@@ -72,11 +72,11 @@ enum InstallationControlFixtures {
                           commit: InstallationReadinessCommit? = nil, validate: Bool = true) throws {
             let ordinal = status == .complete ? receipts.last!.ordinal : (receipts.last?.ordinal ?? 0) + 1
             let receipt = InstallationStepReceipt(transactionID: transaction.id, ordinal: ordinal,
-                previousReceiptDigest: try receipts.last?.digest(uid: 501), action: action, status: status,
+                previousReceiptDigest: try receipts.last?.digest(uid: state.directory.uid), action: action, status: status,
                 preimage: transaction.slots, postimage: status == .complete ? transaction.slots : nil,
                 bindingDigest: try bindingDigest())
             let next = InstallationControlRecord(revision: record.revision + 1, phase: phase ?? (record.phase == .initial ? .active : record.phase),
-                state: state, transaction: transaction, step: try receipt.step(), latestReceiptDigest: try receipt.digest(uid: 501),
+                state: state, transaction: transaction, step: try receipt.step(), latestReceiptDigest: try receipt.digest(uid: state.directory.uid),
                 readinessCommit: commit ?? record.readinessCommit, recoveryReason: reason ?? record.recoveryReason)
             let proposed = receipts + [receipt]
             if validate { try record.validateReplacement(next, receipts: proposed) }
@@ -100,13 +100,13 @@ enum InstallationControlFixtures {
                 .openStagedAdmission, .bootstrapCandidate, .kickstartCandidate, .candidateReady] { try pair(action) }
         }
         mutating func commitReady() throws {
-            let readyDigest = try receipts.last!.digest(uid: 501)
+            let readyDigest = try receipts.last!.digest(uid: state.directory.uid)
             try add(.readinessCommit, status: .intent)
             let c = InstallationReadinessCommit(transactionID: uuid, commitRevision: record.revision + 1,
                 candidateReleaseDigest: transaction.candidate!.release.releaseContractSHA256,
                 candidateBundleDigest: sha, candidateAppCDHash: cd, candidateCoordinatorCDHash: cd,
                 stateBindingDigest: try state.digest(), completedStepReceiptDigest: readyDigest,
-                host: InstallationControlFixtures.process(401), precommitTranscriptDigest: otherSHA)
+                host: InstallationControlFixtures.process(401, uid: state.directory.uid), precommitTranscriptDigest: otherSHA)
             try add(.readinessCommit, status: .complete, phase: .committed, commit: c)
         }
     }

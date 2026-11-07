@@ -18,6 +18,12 @@ final class FreshStateInitialization {
         let stateInode: UInt64
         let publicationReceiptSHA256: String
     }
+    /// Only fresh initialization can inspect the fenced initial controls.
+    /// This capsule identifies retained leases; it grants no operation permission.
+    struct ControlInspection {
+        let leases: CustodyAuthorityLeaseSet
+        fileprivate init(leases: CustodyAuthorityLeaseSet) { self.leases = leases }
+    }
     /// Only this initializer can construct a publication capability. The
     /// installer receives a RunAuthority, never this capsule or raw descriptors.
     struct PublishedState {
@@ -218,7 +224,8 @@ final class FreshStateInitialization {
             guard mkdirat(state.value, "custody", 0o700) == 0, fsync(state.value) == 0 else { throw CustodyRecordError.persistence(errno) }
         }
         let custody = try directory("custody", at: state.value)
-        guard try names(custody.value).isSubset(of: ["catalog.lock", "catalog.json", "receipts", temporaryName("catalog.lock"), temporaryName("catalog.json")]) else { throw CustodyRecordError.conflict }
+        guard try names(custody.value).isSubset(of: ["catalog.lock", "catalog.json", InstallationControlRecord.filename, "receipts",
+            temporaryName("catalog.lock"), temporaryName("catalog.json"), temporaryName(InstallationControlRecord.filename)]) else { throw CustodyRecordError.conflict }
         if try !exists("receipts", at: custody.value) {
             guard mkdirat(custody.value, "receipts", 0o700) == 0, fsync(custody.value) == 0 else { throw CustodyRecordError.persistence(errno) }
         }
@@ -226,6 +233,9 @@ final class FreshStateInitialization {
         guard try names(receipts.value).isEmpty else { throw CustodyRecordError.conflict }
         try writeOnce("catalog.lock", bytes: Data(), at: custody.value)
         try writeOnce("catalog.json", bytes: CustodyCatalog.initialized.encode(), at: custody.value)
+        let initial = try InstallationControlRecord.initial(state:
+            InstallationStateBinding.capture(stateDescriptor: state.value, uid: location.uid)).encode()
+        try writeOnce(InstallationControlRecord.filename, bytes: initial, at: custody.value)
         guard fsync(receipts.value) == 0, fsync(custody.value) == 0, fsync(state.value) == 0 else { throw CustodyRecordError.persistence(errno) }
     }
 
@@ -235,12 +245,16 @@ final class FreshStateInitialization {
         let files = ["latest.log", "lifecycle.lock", "operation.lock", "run.lock", "launcher.lock"]
         guard try names(state.value) == Set(files + ["custody"]) else { throw CustodyRecordError.fenced }
         let custody = try directory("custody", at: state.value), receipts = try directory("receipts", at: custody.value)
-        guard try names(custody.value) == ["catalog.lock", "catalog.json", "receipts"], try names(receipts.value).isEmpty else { throw CustodyRecordError.fenced }
+        guard try names(custody.value) == ["catalog.lock", "catalog.json", InstallationControlRecord.filename, "receipts"],
+              try names(receipts.value).isEmpty else { throw CustodyRecordError.fenced }
+        let initial = try InstallationControlRecord.initial(state:
+            InstallationStateBinding.capture(stateDescriptor: state.value, uid: location.uid)).encode()
         var controls: [String: PolicyWireValue] = ["custody": try Self.node(custody.value, uid: location.uid, directory: true).wire,
             "custody/receipts": try Self.node(receipts.value, uid: location.uid, directory: true).wire]
         for (fd, name, key, bytes) in files.map({ (state.value, $0, $0, Data()) }) + [
             (custody.value, "catalog.lock", "custody/catalog.lock", Data()),
-            (custody.value, "catalog.json", "custody/catalog.json", try CustodyCatalog.initialized.encode())] {
+            (custody.value, "catalog.json", "custody/catalog.json", try CustodyCatalog.initialized.encode()),
+            (custody.value, InstallationControlRecord.filename, "custody/" + InstallationControlRecord.filename, initial)] {
             guard try read(name, at: fd) == bytes else { throw CustodyRecordError.fenced }
             let raw = openat(fd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
             guard raw >= 0 else { throw CustodyRecordError.unsafeMetadata }
@@ -271,8 +285,7 @@ final class FreshStateInitialization {
             guard fstatat(parent.descriptor.value, Self.finalName, &current, AT_SYMLINK_NOFOLLOW) == 0,
                   UInt64(current.st_dev) == completed.stateDevice, UInt64(current.st_ino) == completed.stateInode,
                   let leases else { throw CustodyRecordError.fenced }
-            let store = try CustodyCatalogStore(leases: leases)
-            try store.checkFence(ownRequests: [], scope: completed.transaction, mode: .mutation)
+            try validatePublication(completed, leases: leases)
             return completed
         }
         let p = parent.descriptor.value
@@ -335,7 +348,7 @@ final class FreshStateInitialization {
             guard claim?.device == identity.device, claim?.inode == identity.inode else { throw CustodyRecordError.fenced }
         } else { leases = try CustodyAuthorityLeaseSet.retainRecoveryLeases(at: stateLocation) }
         let store = try CustodyCatalogStore(leases: leases!)
-        try store.checkFence(ownRequests: [], scope: tx, mode: .mutation)
+        try store.checkFreshInitializationFence(ControlInspection(leases: leases!))
         let controls = try controlIdentities(state)
         let ready = try phase("ready", manifest: manifest, state: identity, controls: controls)
         if hasFinal { guard try read(record("ready"), at: p) == ready else { throw CustodyRecordError.fenced } }
@@ -414,7 +427,7 @@ final class FreshStateInitialization {
               try read(prefix + ".published.json", at: p) == published,
               CustodyRecordBinding.digest(published) == result.publicationReceiptSHA256 else { throw CustodyRecordError.fenced }
         let store = try CustodyCatalogStore(leases: leases)
-        try store.checkFence(ownRequests: [], scope: result.transaction, mode: .mutation)
+        try store.checkFreshInitializationFence(ControlInspection(leases: leases))
         try validate()
         var named = stat()
         guard fstatat(p, Self.finalName, &named, AT_SYMLINK_NOFOLLOW) == 0,
