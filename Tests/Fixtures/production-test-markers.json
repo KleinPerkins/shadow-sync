@@ -341,6 +341,17 @@
     "m6-installation-journal-uncertain-write-cuts",
     "m6-installation-journal-retained-identities",
     "m6-installation-journal-history-refusal",
-    "m6-installation-journal-maximum-documents"
+    "m6-installation-journal-maximum-documents",
+    "InstallationCommandBridgeFixtures",
+    "testingInstallationCandidate",
+    "testingInstallationDiagnostic",
+    "m6-installation-command-completed-command",
+    "m6-installation-command-owner-publisher",
+    "m6-installation-command-durable-substitution",
+    "m6-installation-command-helper-control-substitution",
+    "m6-installation-command-closure-pending",
+    "m6-installation-command-terminal-not-retirement",
+    "m6-installation-command-retirement-after-release",
+    "m6-installation-command-sealed-shape"
   ]
 }

@@ -79,6 +79,14 @@ public enum M6SelfTestRunner {
         try run("m6-installation-journal-retained-identities") { try InstallationJournalFixtures.controlAndReceiptIdentity() }
         try run("m6-installation-journal-history-refusal") { try InstallationJournalFixtures.committedRollover() }
         try run("m6-installation-journal-maximum-documents") { try InstallationJournalFixtures.maximumDocuments() }
+        try run("m6-installation-command-completed-command") { try InstallationCommandBridgeFixtures.completedCommand() }
+        try run("m6-installation-command-owner-publisher") { try InstallationCommandBridgeFixtures.wrongOwnerAndPublisher() }
+        try run("m6-installation-command-durable-substitution") { try InstallationCommandBridgeFixtures.durableSubstitution() }
+        try run("m6-installation-command-helper-control-substitution") { try InstallationCommandBridgeFixtures.helperRejectsChangedControl() }
+        try run("m6-installation-command-closure-pending") { try InstallationCommandBridgeFixtures.closureAndPending() }
+        try run("m6-installation-command-terminal-not-retirement") { try InstallationCommandBridgeFixtures.terminalIsNotRetirement() }
+        try run("m6-installation-command-retirement-after-release") { try InstallationCommandBridgeFixtures.retirementAfterRelease() }
+        try run("m6-installation-command-sealed-shape") { try InstallationCommandBridgeFixtures.sealedShape() }
         try run("m6-live-peer-closed-descriptor") { try LivePeerFixtures.invalid("closed") }
         try run("m6-live-peer-non-socket") { try LivePeerFixtures.invalid("regular") }
         try run("m6-live-peer-unconnected-stream") { try LivePeerFixtures.invalid("unconnected") }

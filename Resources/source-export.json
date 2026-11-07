@@ -5,6 +5,7 @@
     "Sources/ShadowSyncApp/M6Harness.swift": "Preserve stopped rollback and explicit repair assertions; persist simulated launchd state through an in-directory atomic replacement inside the validated disposable fixture.",
     "Sources/ShadowSyncCore/Body3Coordinator.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
     "Sources/ShadowSyncCore/CommandCustodian.swift": "Retain the shared direct-child owner and original deadlines through discovery and closed lifecycle serial stages; consume bounded preflight/postflight output before semantic admission and retain actual raw child statuses.",
+    "Sources/ShadowSyncCore/CommandCustodyContext.swift": "Retain the live installation journal permit through the existing command preparation and registry pipeline; permit only fixed service-status diagnostics after complete reservation and reject consequential commands without a matching action intent.",
     "Sources/ShadowSyncCore/CustodyCatalog.swift": "Retain the consumed installation owner and exact document/step descriptors through initial reservation, unchanged-slot completion and same-live-session single-successor reconciliation; ordinary admission remains strict and unsupported history or actions refuse.",
     "Sources/ShadowSyncCore/CustodyInheritedCommand.swift": "Authenticate exact inherited descriptor roles and independent publisher/resources for closed discovery and signed-coordinator lifecycle commands; no decoded path or process observation grants authority.",
     "Sources/ShadowSyncCore/CustodyProtocol.swift": "Preserve canonical wire grammar and byte bounds while appending exact UTF-8 in one operation for strings requiring no escaping; existing scalar escape path remains for controls, quotes and backslashes.",
@@ -17,6 +18,7 @@
     "Sources/ShadowSyncCore/DiscoveryCallerSelfTests.swift": "Keep real-helper discovery and complete command cleanup assertions; recognize only the exact synthetic installation control and receipt bytes reconstructed from held fixture state. Unknown or changed receipt families remain fatal.",
     "Sources/ShadowSyncCore/DiscoveryTestingSupport.swift": "Bound optional fixture traces and retain a separate bounded allowance for closed numeric first-failure evidence; no paths, errors, command data or budget changes.",
     "Sources/ShadowSyncCore/FreshStateInitialization.swift": "Publish mandatory initial installation control before readiness, bind its bytes/inode in immutable publication proofs, and use initializer-only inspection while retaining original locks. Same-object retries revalidate the complete publication proof.",
+    "Sources/ShadowSyncCore/InstallationCommandBinding.swift": "Bind fixed installation diagnostics to the live consumed coordinator owner, exact durable control and complete retained receipt set; serialized observations alone never authorize commands.",
     "Sources/ShadowSyncCore/InstallationControlFixtures.swift": "Fifteen pure metadata fixtures include canonical observation digest/filename equivalence and malformed, reordered, UID and changed-byte refusals; synthetic metadata grants no production authority.",
     "Sources/ShadowSyncCore/InstallationControlRecord.swift": "Preserve canonical typed receipt observation and shared state-bound transaction digest bytes; metadata never grants production authority.",
     "Sources/ShadowSyncCore/InstallationLifecycle.swift": "Validate fixed LaunchAgent configuration from bounded no-follow snapshot bytes and revalidate captured file and parent identities before accepting it; retain current and legacy reader argument contracts. Capture all fixed installation slots under the consumed owner, retaining durable complete document preimages and exact identities without enabling transaction actions.",
@@ -28,6 +30,7 @@
     "Sources/ShadowSyncCore/PolicyAuthorityFile.swift": "Expose captured owner-private mode for lifecycle plist validation; byte, file, ACL and parent snapshot revalidation remain unchanged.",
     "Sources/ShadowSyncCore/PublisherBundleLayout.swift": "Retain the closed publisher and framework layout; accept only the exact bounded non-executable Apple ticket location and preserve/revalidate ticket bytes without treating it as publisher authority.",
     "Sources/ShadowSyncCore/RemovalTransaction.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
+    "Sources/ShadowSyncCore/RepositoryDiscovery.swift": "Batch only consecutive pre-access path admissions before the same filesystem operations; preserve protected-ancestor checks, all other per-access validation and original deadlines.",
     "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift": "Preserve drained inspection evidence after cancellation through completion-only authority checks; retain strict new-work admission and hard-exclude later uninspected cleanup candidates.",
     "Sources/ShadowSyncCore/RepositoryLifecycle.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RepositoryMaintenance.swift": "Keep the production planner entry and shared inspection logic; provide testing-only synchronous call-scoped registration observation at the original pre-access boundary.",
@@ -50,8 +53,7 @@
     "scripts/notarize-release-bundle.py": "Source-bound MVP app and DMG notarization, stapling and Gatekeeper gates; preserve submission IDs and input bytes; no publication, installation, or acceptance claim.",
     "scripts/python-test-suites.py": "Retain strict mandatory completion and closed failure diagnostics with canonical case, enumerated cause/operation/phase and bounded exit status; never expose exception text, traceback, command, environment or output.",
     "scripts/run-native-appkit.py": "Stage and verify only the exact AppDelegate and native-acceptance contract files inside the owned fixture; preserve all native assertions, source bindings, isolation and cleanup.",
-    "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
-    "Sources/ShadowSyncCore/RepositoryDiscovery.swift": "Batch only consecutive pre-access path admissions before the same filesystem operations; preserve protected-ancestor checks, all other per-access validation and original deadlines."
+    "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
   "files": [
@@ -358,7 +360,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CommandCustodyContext.swift",
-      "sha256": "92c44151b46be4fb447e88d53eff787f05d2cbad8e1d2d1d975d2763586e4f9e"
+      "sha256": "94eafed70ca589215ba7505d947fa251b81d5d8aa5dd1e63bc52b96d9c5c76dc"
     },
     {
       "mode": "100644",
@@ -378,12 +380,12 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CustodyCatalog.swift",
-      "sha256": "396b57a58e82a297906f865109aa7b4323f4d2943ebc5ba9dba5677d6e2428ec"
+      "sha256": "8bd0c90c1320fd37e096648a351caa22df09393251c2c1ac1b6cecf70534f6da"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CustodyInheritedCommand.swift",
-      "sha256": "b981150ff79baa80c41fa449ce24170c16183f7b88ef082f568ba7603a0c9a2c"
+      "sha256": "1baf91802838a943e3e50f2bd723f9dd780011bc7ad2548e7ea277e0900d799f"
     },
     {
       "mode": "100644",
@@ -557,6 +559,16 @@
     },
     {
       "mode": "100644",
+      "path": "Sources/ShadowSyncCore/InstallationCommandBinding.swift",
+      "sha256": "b9113ca17d3af52f5bec91b5967df218d0a4a872cb5723f23b2b9d32c26a172b"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/InstallationCommandBridgeFixtures.swift",
+      "sha256": "10603fcfcc6d37bb1e485edc8e165fcfa15d89151807c5e502c25dcbb3531332"
+    },
+    {
+      "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationControlFixtures.swift",
       "sha256": "4841312c4492659c655e86a61bb33572807a4da36618cd17abeba04ffc66ddcb"
     },
@@ -663,7 +675,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "41dbbc9800e48c8014581658ad245f7151d90383491329f0386ebd8e3f0da89b"
+      "sha256": "1711d744272955aec29711b95a4e26e461c4f901848b413a44f4d564cb3a9a14"
     },
     {
       "mode": "100644",
@@ -843,7 +855,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RetainedCleanupRegistry.swift",
-      "sha256": "a9d649860b351f967c17828025ec28d586acbda75e174fba209fec358ecfbcc0"
+      "sha256": "1978f292b71bfc3b360af237805a31e0b7b5c24d7d957e0fb6815672e2b1d7f4"
     },
     {
       "mode": "100644",
@@ -893,7 +905,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SecureState.swift",
-      "sha256": "1fab8f2d12e1911be4269b37be7da95c69c2d871a4fecab3095b1d892ee8e19d"
+      "sha256": "5885202a0804f9cf23121397d46f5c91f447cb5ccf7e456884e007b0fc7a9fc1"
     },
     {
       "mode": "100644",
@@ -948,7 +960,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "8a29184d0cdeaf393e27e2064ee3ed502ea851dd801bfd8e79fc8d033b6720a8"
+      "sha256": "cb4658e76a129891a03bc5e1848a09090533271e852cb86ad293fe990acaa1b1"
     },
     {
       "mode": "100644",
@@ -983,7 +995,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_application_ci.py",
-      "sha256": "38cb872b6c4d4f7c55727c7ac16208be454e80fdf98879818bec984511322cb6"
+      "sha256": "3e098ef93c1b569a99c0f61604f328e0f4554e830f90a7ffbe507da030b5d725"
     },
     {
       "mode": "100644",
@@ -1103,7 +1115,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "f1aa0b29fe3ce9fc726faab68e4ce48afa6c8077d711254f425758abe73771bd"
+      "sha256": "f234adce74db0abd911dd9c1d65f5d823646896b9a6d47d52e2fc9154114484d"
     },
     {
       "mode": "100644",
@@ -1118,7 +1130,7 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "f618b0770c23ffb6562eb7841d171248a8b36a10beb83992a48dc808f537d742"
+      "sha256": "9d13137b64dfb7a78cb0c075782755f36e311411acad28216328389384c01d42"
     },
     {
       "mode": "100644",

@@ -93,16 +93,19 @@ final class CustodyMetadataScope: @unchecked Sendable {
     private var state: State = .open
     private var liveRequests: Set<String> = []
     private let store: CustodyCatalogStore
+    private let installation: CustodyCatalogStore.InstallationCommandPermit?
 
-    init(leases: CustodyAuthorityLeaseSet, releaseSHA256: String, generation: String) throws {
+    init(leases: CustodyAuthorityLeaseSet, releaseSHA256: String, generation: String, installation: CustodyCatalogStore.InstallationCommandPermit? = nil) throws {
         guard CustodyWire.hex(releaseSHA256, bytes: 32), RunIdentity.isValid(generation) else { throw CustodyRecordError.invalidRecord }
-        self.leases = leases; self.releaseSHA256 = releaseSHA256; self.generation = generation
+        self.leases = leases; self.releaseSHA256 = releaseSHA256; self.generation = generation; self.installation = installation
         bootID = try CustodyBootIdentity.current(); uid = geteuid()
         store = try CustodyCatalogStore(leases: leases)
         // Validate all evidence now, then again in the same guarded transition
         // as every reservation. This initial read is never cached admission.
-        try store.checkFence(ownRequests: [], scope: id, mode: leases.mode)
+        try installation?.revalidate()
+        try store.checkFence(ownRequests: [], scope: id, mode: leases.mode, installation: installation)
     }
+    func revalidateInstallation() throws { try installation?.revalidate() }
     var observation: State { mutex.lock(); defer { mutex.unlock() }; return state }
     func close() {
         mutex.lock(); defer { mutex.unlock() }
@@ -115,6 +118,7 @@ final class CustodyMetadataScope: @unchecked Sendable {
         try result.validate(); return result
     }
     func prepare(_ request: UnvalidatedCustodyRequest) throws -> PreparedCustodyMetadata {
+        try installation?.revalidate()
         mutex.lock(); defer { mutex.unlock() }
         guard state == .open, request.binding.scopeID == id, request.binding.bootID == bootID,
               request.binding.releaseSHA256 == releaseSHA256, request.binding.callerGeneration == generation,
@@ -124,7 +128,11 @@ final class CustodyMetadataScope: @unchecked Sendable {
                                     now: DispatchTime.now().uptimeNanoseconds)
         let journal = try CustodyJournal(prepared: request, leases: leases.descriptorClaims())
         do {
-            try store.reserveAndPrepare(journal, ownRequests: liveRequests, scope: id)
+            if let installation {
+                guard request.kind == .launchctlRead,
+                      request.inputSHA256 == CustodyRecordBinding.digest(try installation.observation.encode()) else { throw CustodyRecordError.fenced }
+            }
+            try store.reserveAndPrepare(journal, ownRequests: liveRequests, scope: id, installation: installation)
             liveRequests.insert(journal.binding.requestID)
             return PreparedCustodyMetadata(scope: self, journal: journal)
         } catch {
@@ -310,6 +318,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
     private let receipts: Node
     private let mutex = NSLock()
     private var poisoned = false
+    private var installationCommandPins: [String: Node] = [:]
 
     init(leases: CustodyAuthorityLeaseSet) throws {
         self.leases = leases
@@ -675,18 +684,20 @@ final class CustodyCatalogStore: @unchecked Sendable {
             throw CustodyRecordError.fenced
         }
     }
-    func checkFence(ownRequests: Set<String>, scope: String, mode: CustodyAuthorityMode) throws {
+    func checkFence(ownRequests: Set<String>, scope: String, mode: CustodyAuthorityMode, installation: InstallationCommandPermit? = nil) throws {
         try locked {
             guard mode == leases.mode else { throw CustodyRecordError.fenced }
-            try installationFence(mode: mode)
+            if let installation { try validateInstallationCommand(installation.observation) }
+            else { try installationFence(mode: mode) }
             let s = try snapshot(); try fence(s.1, journals: s.2, ownRequests: ownRequests, scope: scope, mode: mode)
         }
     }
-    fileprivate func reserveAndPrepare(_ journal: CustodyJournal, ownRequests: Set<String>, scope: String) throws {
+    fileprivate func reserveAndPrepare(_ journal: CustodyJournal, ownRequests: Set<String>, scope: String, installation: InstallationCommandPermit? = nil) throws {
         try locked {
             guard journal.authority == leases.mode, journal.binding.scopeID == scope,
                   journal.binding.uid == uid, journal.phase == .prepared else { throw CustodyRecordError.fenced }
-            try installationFence(mode: journal.authority)
+            if let installation { try validateInstallationCommand(installation.observation) }
+            else { try installationFence(mode: journal.authority) }
             let s = try snapshot(); try fence(s.1, journals: s.2, ownRequests: ownRequests, scope: scope, mode: journal.authority)
             guard s.2[journal.binding.requestID] == nil else { throw CustodyRecordError.conflict }
             var archivedInfo = stat()
@@ -735,6 +746,8 @@ final class CustodyCatalogStore: @unchecked Sendable {
     }
     fileprivate func claimHelper(_ inherited: CustodyInheritedCommand) throws -> CustodyJournal {
         try locked {
+            if let installation = inherited.installation { try validateInstallationCommand(installation) }
+            else { try installationFence(mode: inherited.request.authority) }
             let s = try snapshot(), request = inherited.request
             let expected = try CustodyJournal(prepared: request, leases: leases.descriptorClaims())
             guard s.1.entries.contains(CustodyCatalogEntry(expected)),
@@ -1321,8 +1334,24 @@ extension InstallationTransactionOwner {
 extension CustodyCatalogStore {
     /// One retained live owner/session, not restart or historical recovery. The
     /// only completion currently evidenced is reserve's exact unchanged slots.
+    final class InstallationCommandPermit {
+        fileprivate let observation: InstallationCommandBinding
+        private let session: InstallationJournalSession
+        fileprivate init(session: InstallationJournalSession, observation: InstallationCommandBinding) {
+            self.session = session; self.observation = observation
+        }
+        var generation: String { observation.control.transaction!.coordinator.process.generation }
+        func revalidate() throws { try session.validateCommandPermit(self) }
+        func validateOwner(_ owner: InstallationTransactionOwner) throws {
+            guard session.owner === owner else { throw CustodyRecordError.fenced }; try revalidate()
+        }
+        func validatePublisher(_ caller: ProcessIdentity, helper: CustodyHelperExecutable) throws {
+            try observation.validateParent(caller, helper: helper)
+        }
+        func sealedInput() throws -> Data { try revalidate(); return try observation.encode() }
+    }
     final class InstallationJournalSession {
-        private let owner: InstallationTransactionOwner
+        fileprivate let owner: InstallationTransactionOwner
         private let binding: InstallationLiveBinding
         private let capture: InstallationCapturedSlots
         private let store: CustodyCatalogStore
@@ -1336,6 +1365,31 @@ extension CustodyCatalogStore {
             let receipt: InstallationStepReceipt.CanonicalObservation
         }
         private var pending: Pending?
+        private var commandsClaimed = false
+        func commandPermit(for candidate: InstallationTransactionOwner, deadline: MonotonicDeadline) throws -> InstallationCommandPermit {
+            try serialized(deadline: deadline) { deadline in
+                guard owner === candidate, owner.commandAdmissionIsOpen, !commandsClaimed, pending == nil else { throw CustodyRecordError.fenced }
+                return try store.locked {
+                    try validateLocked(deadline)
+                    var nodes = try retainedSteps.mapValues { try store.installationCommandNode($0.identity, acl: $0.acl) }
+                    for (name, retained) in capture.retainedPreimages {
+                        nodes[name] = try store.installationCommandNode(retained.identity, acl: retained.acl)
+                    }
+                    let observation = try InstallationCommandBinding(control: current,
+                        controlNode: store.installationCommandNode(anchor.identity, acl: anchor.acl), receiptNodes: nodes)
+                    try observation.validate(); try store.validateInstallationCommand(observation)
+                    commandsClaimed = true
+                    return InstallationCommandPermit(session: self, observation: observation)
+                }
+            }
+        }
+        fileprivate func validateCommandPermit(_ permit: InstallationCommandPermit) throws {
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard commandsClaimed, owner.commandAdmissionIsOpen, pending == nil,
+                  current == permit.observation.control else { throw CustodyRecordError.fenced }
+            try binding.revalidate(for: owner); try capture.validateSource()
+            try store.locked { try store.validateInstallationCommand(permit.observation) }
+        }
         // Pin exact receipt descriptions across a cut. Identical replacement
         // bytes/inode metadata cannot substitute for this live durability proof.
         private var retainedSteps: [String: Node] = [:]
@@ -1517,6 +1571,49 @@ extension CustodyCatalogStore {
                     return next
                 }
             }
+        }
+    }
+}
+
+
+extension CustodyCatalogStore {
+    private func installationCommandNode(_ identity: FileIdentity, acl: String) throws -> InstallationNodeIdentity {
+        let node = InstallationNodeIdentity(device: identity.device, inode: identity.inode, type: .regular,
+            uid: identity.owner, mode: UInt32(identity.mode), links: UInt64(identity.linkCount),
+            aclDigest: CustodyRecordBinding.digest(Data(acl.utf8)))
+        try node.validate(); return node
+    }
+    private func validateInstallationCommand(_ binding: InstallationCommandBinding) throws {
+        try binding.validate()
+        guard leases.mode == .lifecycleMutation else { throw CustodyRecordError.fenced }
+        let value = try installationSnapshot()
+        guard value.1 == binding.control,
+              try installationCommandNode(value.0.identity, acl: value.0.acl) == binding.controlNode else { throw CustodyRecordError.fenced }
+        try binding.control.state.validateLive(stateDescriptor: root.value, uid: uid, leases: leases)
+        // Retain actual control/receipt descriptions too. Matching bytes and
+        // recycled inode numbers cannot replace this live validation family.
+        let expectedNodes = binding.receiptNodes.merging([InstallationControlRecord.filename: binding.controlNode]) { _, _ in binding.controlNode }
+        if !installationCommandPins.isEmpty {
+            guard Set(installationCommandPins.keys) == Set(expectedNodes.keys) else { throw CustodyRecordError.fenced }
+        }
+        for (name, expected) in expectedNodes {
+            let parent = name == InstallationControlRecord.filename ? directory.descriptor.value : receipts.descriptor.value
+            let node: Node
+            if let retained = installationCommandPins[name] { node = retained }
+            else { node = try Self.openNode(parent, name, uid: uid, directory: false) }
+            try validate(node, at: parent, name: name, isDirectory: false)
+            guard try installationCommandNode(node.identity, acl: node.acl) == expected else { throw CustodyRecordError.fenced }
+            installationCommandPins[name] = node
+        }
+    }
+    func checkInheritedInstallation(_ inherited: CustodyInheritedCommand) throws {
+        guard let binding = inherited.installation else { return }
+        try binding.validateParent(inherited.parent, helper: inherited.helper)
+        try locked {
+            try validateInstallationCommand(binding)
+            let s = try snapshot()
+            try fence(s.1, journals: s.2, ownRequests: [inherited.request.binding.requestID],
+                      scope: inherited.request.binding.scopeID, mode: leases.mode)
         }
     }
 }

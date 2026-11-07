@@ -26,7 +26,7 @@ class RuntimeInventoryTests(unittest.TestCase):
 
     def test_current_source_has_complete_entrypoint_and_case_registration(self):
         result = inventory.inspect(self.root)
-        self.assertEqual((len(result['suites']), result['case_count'], len(result['other_entrypoints'])), (41, 948, 12))
+        self.assertEqual((len(result['suites']), result['case_count'], len(result['other_entrypoints'])), (41, 956, 12))
         self.assertFalse(result['runtime_executed'])
 
     def test_m6_unregistered_missing_duplicate_or_dynamic_body_refuses(self):

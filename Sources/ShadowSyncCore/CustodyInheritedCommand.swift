@@ -12,6 +12,8 @@ final class CustodyInheritedCommand {
     let account: EffectiveAccount
     let policy: PolicyCommandAuthority?
     let discovery: InheritedDiscoveryResources?
+    let installation: InstallationCommandBinding?
+    private var installationStore: CustodyCatalogStore?
     private(set) var lifecycle: LifecycleLaunchAuthority?
     var lifecycleCommand: LifecycleLaunchCommand? {
         #if SHADOW_SYNC_TESTING
@@ -113,6 +115,7 @@ final class CustodyInheritedCommand {
         let request = try UnvalidatedCustodyRequest.decode(raw, expected: binding,
             permittedWorkSeconds: kind == .discoveryGit ? DiscoveryGitCommand.maximumWorkSeconds : min(10, kind.maximumWorkSeconds))
         let hasFrozenConfiguration = request.descriptors.contains { $0.role == .gitFile }
+        let installationInput = request.authority == .lifecycleMutation && request.kind == .launchctlRead && request.inputSHA256 != nil
         // Coordinator roles cannot borrow repository authority. Mutation needs
         // actual lifecycle leases and the independently validated closed adapter.
         if helper.isLifecycleCoordinator {
@@ -136,7 +139,7 @@ final class CustodyInheritedCommand {
         if fixture, request.kind == .policyClassify { permittedKind = true }
         #endif
         guard permittedKind, (request.inputSHA256 != nil) == (request.kind == .policyClassify
-                || hasFrozenConfiguration || (usesRealWire && request.kind == .discoveryGit)),
+                || hasFrozenConfiguration || installationInput || (usesRealWire && request.kind == .discoveryGit)),
               !hasFrozenConfiguration || request.kind == .discoveryGit,
               request.stdoutLimit <= (request.kind == .discoveryGit ? UInt64(DiscoveryGitCommand.stdoutLimit) : UInt64(LifecycleCommandRunner.outputLimit)),
               request.stderrLimit <= (request.kind == .discoveryGit ? UInt64(DiscoveryGitCommand.stderrLimit) : UInt64(LifecycleCommandRunner.outputLimit)) else {
@@ -148,6 +151,7 @@ final class CustodyInheritedCommand {
         if request.traceLimit > 0 { roles.insert(.traceOutput) }
         if request.kind == .policyClassify { roles.formUnion([.input, .code]) }
         if usesRealWire, request.kind == .discoveryGit { roles.insert(.input) }
+        if installationInput { roles.insert(.input) }
         if hasFrozenConfiguration { roles.formUnion([.input, .gitDirectory, .gitFile]) }
         guard Set(request.descriptors.map(\.role)) == roles,
               actual == Set(roles.map { Int32($0.number) }).union([0,1,2]) else {
@@ -157,6 +161,10 @@ final class CustodyInheritedCommand {
         // resources. Decoded metadata alone cannot authenticate input or code.
         sealedInput = request.inputSHA256 != nil ? try Self.readSealed(8, role: .input) : nil
         sealedCode = request.kind == .policyClassify ? try Self.readSealed(9, role: .code) : nil
+        if installationInput {
+            guard let sealedInput else { throw CustodyRecordError.fenced }
+            installation = try InstallationCommandBinding.decode(sealedInput)
+        } else { installation = nil }
         let inputHash = sealedInput.map(CustodyRecordBinding.digest), codeHash = sealedCode.map(CustodyRecordBinding.digest)
         guard request.inputSHA256 == inputHash,
               try CustodyRequestResources.resourceDigest(request.descriptors, input: inputHash, code: codeHash) == request.resourcesSHA256 else {
@@ -281,6 +289,10 @@ final class CustodyInheritedCommand {
         // No inherited original survives into a target. The retained duplicates
         // describe the same held locks; none is unlocked or reacquired.
         for fd in actual where fd > 2 { close(fd) }
+        if let installation {
+            try installation.validateParent(parent, helper: helper)
+            installationStore = try CustodyCatalogStore(leases: CustodyAuthorityLeaseSet.importing(self))
+        }
         try revalidateResources()
         try revalidateParent()
     }
@@ -302,6 +314,7 @@ final class CustodyInheritedCommand {
     }
     func revalidateResources() throws {
         try revalidatePersistenceResources()
+        try installationStore?.checkInheritedInstallation(self)
         try discovery?.revalidate()
         try lifecycle?.revalidate()
         try frozenConfiguration?.revalidate()

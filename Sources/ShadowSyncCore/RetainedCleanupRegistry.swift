@@ -65,6 +65,31 @@ final class CustodyHelperExecutable: @unchecked Sendable {
         try result.revalidate(); return result
     }
     var isLifecycleCoordinator: Bool { lifecyclePublisher != nil }
+    func validateInstallationPublisher(_ transaction: InstallationTransaction) throws {
+        try revalidate()
+        if let lifecyclePublisher {
+            let identity = try lifecyclePublisher.installationIdentity()
+            let code = identity.coordinatorCode
+            guard transaction.sourceReleaseDigest == identity.sourceReleaseDigest,
+                  transaction.candidate == (transaction.intent == .remove ? nil : identity.candidate),
+                  transaction.coordinator.team == code.team,
+                  transaction.coordinator.identifier == code.identifier,
+                  transaction.coordinator.cdHash == code.codeDirectory.map({ String(format: "%02x", $0) }).joined() else {
+                throw CustodyRecordError.fenced
+            }
+        } else {
+            #if SHADOW_SYNC_TESTING
+            // Existing isolated fixture executable, never a production publisher.
+            guard fixture, transaction.sourceReleaseDigest == releaseSHA256,
+                  transaction.candidate == (try Self.testingInstallationCandidate()),
+                  transaction.coordinator.team == ReleaseIdentity.publisherTeamIdentifier,
+                  transaction.coordinator.identifier == LifecyclePublisher.identifier,
+                  transaction.coordinator.cdHash == transaction.candidate?.coordinatorCDHash else { throw CustodyRecordError.fenced }
+            #else
+            throw CustodyRecordError.fenced
+            #endif
+        }
+    }
     func productionGraphResource() throws -> PolicyAuthorityFile {
         guard publisher != nil, let graphResource else { throw PublisherPolicyError.unavailable }
         try revalidate()
@@ -108,6 +133,14 @@ final class CustodyHelperExecutable: @unchecked Sendable {
         return [path, "--shadow-sync-command-custodian"]
     }
     #if SHADOW_SYNC_TESTING
+    static func testingInstallationCandidate() throws -> InstallationCandidate {
+        let fixture = try InstallationControlFixtures.transaction().candidate!
+        let release = try ReleaseIdentity(sourceRevision: fixture.release.sourceRevision,
+            sourceInputSHA256: fixture.release.sourceInputSHA256,
+            releaseContractSHA256: String(repeating: "c", count: 64), architecture: "arm64", buildMode: "production")
+        return InstallationCandidate(release: release, bundleDigest: fixture.bundleDigest,
+            appCDHash: fixture.appCDHash, coordinatorCDHash: fixture.coordinatorCDHash)
+    }
     var testingAutomaticAdmission: Bool { custodianFixture }
     static func testingDiscovery(home: String? = nil) throws -> CustodyHelperExecutable {
         let result = try testing(releaseSHA256: String(repeating: "c", count: 64))

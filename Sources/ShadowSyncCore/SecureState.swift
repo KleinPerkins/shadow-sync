@@ -924,6 +924,10 @@ public final class RunAuthority: @unchecked Sendable {
         custodyBorrowCount += 1
         return result
     }
+    fileprivate func installationCommandsOpen(_ seal: InstallationOwnershipSeal) -> Bool {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        return installationSeal === seal && custodyAdmissionClosed && !installationBorrowingClosed
+    }
     fileprivate func closeInstallationBorrowing(_ seal: InstallationOwnershipSeal) throws {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
         guard installationSeal === seal else { throw CustodyRecordError.fenced }
@@ -1105,6 +1109,12 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     // Metadata/storage and future exclusive command contexts retain this family.
     // A lifecycleMutation lease alone remains blocked by an initial/active
     // installation control; no command permission is synthesized here.
+    var commandAdmissionIsOpen: Bool { original.installationCommandsOpen(seal) }
+    func installationCommandHelper() throws -> CustodyHelperExecutable {
+        try revalidate()
+        guard let publisher else { throw CustodyRecordError.fenced }
+        return try CustodyHelperExecutable.lifecycle(publisher)
+    }
     func retainExclusiveLeases() throws -> CustodyAuthorityLeaseSet {
         try revalidate()
         return try original.borrowInstallation(self, seal: seal)
