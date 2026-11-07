@@ -23,6 +23,18 @@ PROTECTED = (
     'Sources/ShadowSyncCore/ReleaseIdentity.swift', 'Sources/ShadowSyncCore/SecureState.swift',
     'Sources/ShadowSyncCore/RepositoryAuthorityStore.swift', 'Sources/ShadowSyncCore/RepositoryPolicy.swift',
     'Sources/ShadowSyncCatalog/RepositorySelectionPolicy.swift',
+    # Installation/policy authority extends beyond the original extraction files.
+    # Protect the closed families so adding a coordinator or custody seam does
+    # not accidentally make protected administration an ordinary App change.
+    'Sources/ShadowSyncCore/Installation*.swift', 'Sources/ShadowSyncCore/Lifecycle*.swift',
+    'Sources/ShadowSyncCore/LegacyInstallationRelease.swift',
+    'Sources/ShadowSyncCore/FreshStateInitialization.swift',
+    'Sources/ShadowSyncCore/Custody*.swift', 'Sources/ShadowSyncCore/CommandCustod*.swift',
+    'Sources/ShadowSyncCore/RetainedCleanupRegistry.swift',
+    'Sources/ShadowSyncCore/Publisher*.swift', 'Sources/ShadowSyncCore/Policy*.swift',
+    'Sources/ShadowSyncCore/HostPolicy*.swift',
+    'Resources/source-export.json', 'config/*',
+    'Tests/ShadowSyncSelfTests/*', 'Tests/Fixtures/production-test-markers.json',
 )
 
 

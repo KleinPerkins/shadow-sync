@@ -193,5 +193,119 @@ enum InstallationOwnershipFixtures {
             }
         }
     }
+    static func bindingSource(_ root: String, _ original: RunAuthority) throws -> InstallationBindingTestingSource {
+        let candidate = try InstallationControlFixtures.transaction().candidate!
+        let process = ProcessIdentity(processID: 400, processGroupID: 401, userID: original.stateDirectory.uid,
+            startSeconds: 1, startMicroseconds: 2, executablePath: "/fixture/ShadowSync.app/Contents/Helpers/ShadowSyncLifecycleCoordinator",
+            generation: InstallationControlFixtures.generation)
+        return try InstallationBindingTestingSource(root: root, candidate: candidate,
+            process: process, boot: InstallationControlFixtures.boot)
+    }
+    static func liveBindingStable() throws {
+        try fixture { root, location, original in
+            var owner: InstallationTransactionOwner? = try .testingConsume(original, root: root)
+            weak var weakOwner = owner
+            let source = try bindingSource(root, original)
+            try owner!.testingSetBindingSource(source)
+            var first: InstallationLiveBinding? = try owner!.installationBinding()
+            do {
+                let again = try owner!.installationBinding()
+                try first!.revalidate(for: owner!); try again.revalidate(for: owner!)
+                try H.check(first!.coordinator == again.coordinator && first!.candidate == again.candidate
+                    && first!.state == again.state && first!.boot == again.boot
+                    && first!.sourceReleaseDigest == again.sourceReleaseDigest, "binding changed on repeated use")
+                try H.check(first!.coordinator.process.generation == source.process.generation,
+                    "coordinator generation changed")
+                try first!.coordinator.validate(uid: original.stateDirectory.uid); try first!.state.validate()
+                try H.refuses { try owner!.testingSetBindingSource(source) }
+            }
+            original.release(); owner = nil
+            try H.check(weakOwner != nil, "live evidence lost consumed owner")
+            try excluded(location)
+            first = nil
+            try H.check(weakOwner == nil, "live evidence retained owner after last reference")
+            try excluded(location, expected: false)
+        }
+    }
+    static func liveBindingMismatch() throws {
+        try fixture { root, _, original in
+            let owner = try InstallationTransactionOwner.testingConsume(original, root: root)
+            try H.refuses { _ = try owner.installationBinding() }
+            let source = try bindingSource(root, original)
+            try owner.testingSetBindingSource(source)
+            let binding = try owner.installationBinding()
+            try fixture { otherRoot, _, otherOriginal in
+                let other = try InstallationTransactionOwner.testingConsume(otherOriginal, root: otherRoot)
+                let otherSource = try bindingSource(otherRoot, otherOriginal)
+                try H.refuses { try other.testingSetBindingSource(source) }
+                try other.testingSetBindingSource(otherSource)
+                _ = try other.installationBinding()
+                try H.refuses { try binding.revalidate(for: other) }
+                // Same bytes under another fixture source still cannot rebind.
+                source.identity = otherSource.identity
+                try H.refuses { try binding.revalidate(for: owner) }
+                source.identity = try LifecyclePublisher.InstallationIdentity.testing(root: root, candidate: binding.candidate)
+                try binding.revalidate(for: owner)
+            }
+        }
+    }
+    static func liveBindingDrift() throws {
+        for change in ["boot", "pid", "start", "group", "uid", "path", "generation", "bundle", "app", "helper", "release", "unavailable"] {
+            try fixture { root, location, original in
+                let owner = try InstallationTransactionOwner.testingConsume(original, root: root)
+                let source = try bindingSource(root, original)
+                try owner.testingSetBindingSource(source)
+                let binding = try owner.installationBinding(), p = source.process, c = binding.candidate
+                if change == "boot" { source.boot = InstallationControlFixtures.uuid }
+                else if change == "unavailable" { source.available = false }
+                else if ["bundle", "app", "helper", "release"].contains(change) {
+                    let release = try change == "release" ? ReleaseIdentity(sourceRevision: String(repeating: "e", count: 40),
+                        sourceInputSHA256: c.release.sourceInputSHA256,
+                        releaseContractSHA256: InstallationControlFixtures.sha, architecture: "arm64", buildMode: "production") : c.release
+                    let candidate = InstallationCandidate(release: release,
+                        bundleDigest: change == "bundle" ? InstallationControlFixtures.otherSHA : c.bundleDigest,
+                        appCDHash: change == "app" ? String(repeating: "d", count: 40) : c.appCDHash,
+                        coordinatorCDHash: change == "helper" ? String(repeating: "e", count: 40) : c.coordinatorCDHash)
+                    source.identity = try LifecyclePublisher.InstallationIdentity.testing(root: root, candidate: candidate)
+                } else {
+                    source.process = ProcessIdentity(processID: change == "pid" ? p.processID + 1 : p.processID,
+                        processGroupID: change == "group" ? p.processGroupID + 1 : p.processGroupID,
+                        userID: change == "uid" ? p.userID + 1 : p.userID,
+                        startSeconds: change == "start" ? p.startSeconds + 1 : p.startSeconds,
+                        startMicroseconds: p.startMicroseconds,
+                        executablePath: change == "path" ? "/fixture/other-coordinator" : p.executablePath,
+                        generation: change == "generation" ? InstallationControlFixtures.uuid : p.generation)
+                }
+                try H.refuses { try binding.revalidate(for: owner) }
+                try H.refuses { try owner.revalidate() }
+                try H.refuses { _ = try owner.installationBinding() }
+                try excluded(location)
+                source.boot = binding.boot; source.process = p; source.available = true
+                source.identity = try LifecyclePublisher.InstallationIdentity.testing(root: root, candidate: c)
+                try binding.revalidate(for: owner)
+            }
+        }
+    }
+    static func liveBindingStateDrift() throws {
+        try fixture { root, location, original in
+            let owner = try InstallationTransactionOwner.testingConsume(original, root: root)
+            try owner.testingSetBindingSource(bindingSource(root, original))
+            let binding = try owner.installationBinding()
+            for relative in ["", "/operation.lock", "/custody/catalog.lock"] {
+                let path = location.path + relative, mode: mode_t = relative.isEmpty ? 0o700 : 0o600
+                try H.check(chmod(path, mode | 0o040) == 0, "change bound state protection")
+                try H.refuses { try binding.revalidate(for: owner) }
+                try H.refuses { _ = try owner.installationBinding() }
+                try H.check(chmod(path, mode) == 0, "restore bound state protection")
+                try binding.revalidate(for: owner)
+            }
+            let saved = location.path + ".binding-saved"
+            try H.check(rename(location.path, saved) == 0 && mkdir(location.path, 0o700) == 0, "replace bound state")
+            try H.refuses { try binding.revalidate(for: owner) }
+            try H.check(rmdir(location.path) == 0 && rename(saved, location.path) == 0, "restore bound state")
+            try binding.revalidate(for: owner); try excluded(location)
+        }
+    }
+
 }
 #endif

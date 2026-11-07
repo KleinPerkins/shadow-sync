@@ -311,6 +311,12 @@
     "m6-live-peer-wrong-uid",
     "m6-live-peer-unsigned-identity",
     "m6-installation-owner-acl-drift",
-    "m6-installation-canonical-observation-binding"
+    "m6-installation-canonical-observation-binding",
+    "m6-installation-live-binding-stable",
+    "m6-installation-live-binding-owner-source-mismatch",
+    "m6-installation-live-binding-observation-drift",
+    "m6-installation-live-binding-state-drift",
+    "InstallationBindingTestingSource",
+    "testingSetBindingSource"
   ]
 }

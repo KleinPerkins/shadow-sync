@@ -59,6 +59,10 @@ public enum M6SelfTestRunner {
         try run("m6-installation-owner-acl-drift") { try InstallationOwnershipFixtures.aclChanges() }
         try run("m6-installation-owner-state-replacement") { try InstallationOwnershipFixtures.stateReplacement() }
         try run("m6-installation-owner-wrong-capsule") { try InstallationOwnershipFixtures.wrongOwner() }
+        try run("m6-installation-live-binding-stable") { try InstallationOwnershipFixtures.liveBindingStable() }
+        try run("m6-installation-live-binding-owner-source-mismatch") { try InstallationOwnershipFixtures.liveBindingMismatch() }
+        try run("m6-installation-live-binding-observation-drift") { try InstallationOwnershipFixtures.liveBindingDrift() }
+        try run("m6-installation-live-binding-state-drift") { try InstallationOwnershipFixtures.liveBindingStateDrift() }
         try run("m6-live-peer-closed-descriptor") { try LivePeerFixtures.invalid("closed") }
         try run("m6-live-peer-non-socket") { try LivePeerFixtures.invalid("regular") }
         try run("m6-live-peer-unconnected-stream") { try LivePeerFixtures.invalid("unconnected") }

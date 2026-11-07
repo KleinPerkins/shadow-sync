@@ -979,6 +979,11 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     private let publisher: LifecyclePublisher?
     private let fixtureRoot: String?
     private let location: StateLocation
+    private let bindingMutex = NSLock()
+    private var liveBinding: InstallationLiveSnapshot?
+    #if SHADOW_SYNC_TESTING
+    private var testingBindingSource: InstallationBindingTestingSource?
+    #endif
 
     private init(original: RunAuthority, publisher: LifecyclePublisher?, fixtureRoot: String?, location: StateLocation) throws {
         self.original = original; self.publisher = publisher; self.fixtureRoot = fixtureRoot; self.location = location
@@ -1001,7 +1006,7 @@ final class InstallationTransactionOwner: @unchecked Sendable {
         guard authority.stateDirectory.uid == publisher.account.uid else { throw CustodyRecordError.fenced }
         return try Self(original: authority, publisher: publisher, fixtureRoot: nil, location: StateLocation.production())
     }
-    func revalidate() throws {
+    private func revalidateOriginal() throws {
         if let publisher { try publisher.revalidate() }
         else {
             #if SHADOW_SYNC_TESTING
@@ -1015,6 +1020,62 @@ final class InstallationTransactionOwner: @unchecked Sendable {
         }
         try Self.validateNamedState(original, location: location)
         try original.validateInstallation(seal)
+    }
+    func revalidate() throws {
+        bindingMutex.lock(); defer { bindingMutex.unlock() }
+        try revalidateOriginal()
+        if let liveBinding {
+            guard try captureLiveBinding(generation: liveBinding.process.generation) == liveBinding else {
+                throw CustodyRecordError.fenced
+            }
+        }
+    }
+    /// Bind once, from live observations only. A later caller cannot choose a
+    /// generation, source, candidate, process, boot or replacement state binding.
+    func installationBinding() throws -> InstallationLiveBinding {
+        bindingMutex.lock(); defer { bindingMutex.unlock() }
+        let observed = try captureLiveBinding(generation: liveBinding?.process.generation ?? RunIdentity.make())
+        if let liveBinding {
+            guard observed == liveBinding else { throw CustodyRecordError.fenced }
+        } else { liveBinding = observed }
+        return InstallationLiveBinding(owner: self, snapshot: observed)
+    }
+    private func captureLiveBinding(generation: String) throws -> InstallationLiveSnapshot {
+        try revalidateOriginal()
+        let identity: LifecyclePublisher.InstallationIdentity
+        let process: ProcessIdentity
+        let boot: String
+        if let publisher {
+            boot = try CustodyBootIdentity.current()
+            identity = try publisher.installationIdentity()
+            process = try identity.captureCoordinator(generation: generation)
+            try identity.revalidate()
+            guard boot == (try CustodyBootIdentity.current()),
+                  process == (try identity.captureCoordinator(generation: generation)) else {
+                throw CustodyRecordError.fenced
+            }
+        } else {
+            #if SHADOW_SYNC_TESTING
+            guard let source = testingBindingSource, source.available else { throw CustodyRecordError.fenced }
+            identity = source.identity; process = source.process; boot = source.boot
+            #else
+            throw CustodyRecordError.fenced
+            #endif
+        }
+        guard RunIdentity.isValid(boot), process.processID > 1,
+              process.userID == original.stateDirectory.uid,
+              RunIdentity.isValid(process.generation), process.startSeconds > 0,
+              process.startMicroseconds < 1_000_000 else { throw CustodyRecordError.fenced }
+        try identity.candidate.validate()
+        try revalidateOriginal()
+        return InstallationLiveSnapshot(boot: boot, process: process, identity: identity, state: seal.binding)
+    }
+    fileprivate func validateLiveBinding(_ expected: InstallationLiveSnapshot) throws {
+        bindingMutex.lock(); defer { bindingMutex.unlock() }
+        guard liveBinding == expected,
+              try captureLiveBinding(generation: expected.process.generation) == expected else {
+            throw CustodyRecordError.fenced
+        }
     }
     // Metadata/storage and future exclusive command contexts retain this family.
     // A lifecycleMutation lease alone remains blocked by an initial/active
@@ -1035,6 +1096,11 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     }
     deinit { original.releaseInstallation(seal) }
     #if SHADOW_SYNC_TESTING
+    func testingSetBindingSource(_ source: InstallationBindingTestingSource) throws {
+        bindingMutex.lock(); defer { bindingMutex.unlock() }
+        guard publisher == nil, fixtureRoot == source.root, liveBinding == nil else { throw CustodyRecordError.fenced }
+        try revalidateOriginal(); testingBindingSource = source
+    }
     static func testingConsume(_ authority: RunAuthority, root: String) throws -> InstallationTransactionOwner {
         let root = try TestIsolation.validateRoot(root)
         guard authority.stateDirectory.path == (try StateLocation.isolated(root: root)).path else {
@@ -1044,6 +1110,55 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     }
     #endif
 }
+
+fileprivate struct InstallationLiveSnapshot: Equatable {
+    let boot: String
+    let process: ProcessIdentity
+    let identity: LifecyclePublisher.InstallationIdentity
+    let state: InstallationStateBinding
+}
+
+/// Evidence only: no journal, staged permission or readiness authority. A future
+/// writer must retain the SAME consumed owner; wire observations cannot mint it.
+final class InstallationLiveBinding {
+    private let owner: InstallationTransactionOwner
+    private let snapshot: InstallationLiveSnapshot
+    fileprivate init(owner: InstallationTransactionOwner, snapshot: InstallationLiveSnapshot) {
+        self.owner = owner; self.snapshot = snapshot
+    }
+    var boot: String { snapshot.boot }
+    var state: InstallationStateBinding { snapshot.state }
+    var sourceReleaseDigest: String { snapshot.identity.sourceReleaseDigest }
+    var candidate: InstallationCandidate { snapshot.identity.candidate }
+    var coordinator: InstallationCoordinatorObservation {
+        let p = snapshot.process, code = snapshot.identity.coordinatorCode
+        return InstallationCoordinatorObservation(process: .init(pid: UInt32(p.processID), uid: p.userID,
+            startSeconds: p.startSeconds, startMicroseconds: p.startMicroseconds, generation: p.generation),
+            team: code.team, identifier: code.identifier,
+            cdHash: code.codeDirectory.map { String(format: "%02x", $0) }.joined())
+    }
+    func revalidate(for candidate: InstallationTransactionOwner) throws {
+        guard owner === candidate else { throw CustodyRecordError.fenced }
+        try owner.validateLiveBinding(snapshot)
+    }
+}
+
+#if SHADOW_SYNC_TESTING
+// Only disposable fixture owners accept this source. No production callback,
+// current boot, real process capture or installed publisher is involved.
+final class InstallationBindingTestingSource {
+    let root: String
+    var identity: LifecyclePublisher.InstallationIdentity
+    var process: ProcessIdentity
+    var boot: String
+    var available = true
+    init(root: String, candidate: InstallationCandidate, process: ProcessIdentity, boot: String) throws {
+        self.root = try TestIsolation.validateRoot(root)
+        identity = try LifecyclePublisher.InstallationIdentity.testing(root: root, candidate: candidate)
+        self.process = process; self.boot = boot
+    }
+}
+#endif
 
 /// Only the consumed owner can mint this in-memory capsule. It is a permanently
 /// closed borrowing family, not evidence that command journals are retired.

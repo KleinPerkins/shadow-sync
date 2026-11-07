@@ -22,6 +22,7 @@
     "Sources/ShadowSyncCore/InstallationLifecycle.swift": "Validate fixed LaunchAgent configuration from bounded no-follow snapshot bytes and revalidate captured file and parent identities before accepting it; retain current and legacy reader argument contracts.",
     "Sources/ShadowSyncCore/InstallationStorageFixtures.swift": "Disposable storage fixtures exercise initial refusal, complete chains and missing evidence, exact published-control replacement refusal, and interrupted control writes; synthetic fixture commits confer no installed readiness proof.",
     "Sources/ShadowSyncCore/LifecycleLaunchCommand.swift": "Closed canonical lifecycle launch commands, strict bounded status parsing and independently reconstructed publisher/plist/qualified-graph authority; production qualification and installer entry remain gated.",
+    "Sources/ShadowSyncCore/LifecyclePublisher.swift": "Bind immutable installation candidate evidence to the verified running coordinator, exact app/helper code identities, sealed release and canonical bundle inventory; preserve effective-user source ownership refusal.",
     "Sources/ShadowSyncCore/M4SelfTests.swift": "Retain lifecycle/ownership coverage and add disposable bound-plist, unsafe-input and post-read file/parent replacement refusals with identity-checked cleanup.",
     "Sources/ShadowSyncCore/M6SelfTests.swift": "Register every installation metadata case as a literal mandatory M6 body while retaining all existing runtime assertions.",
     "Sources/ShadowSyncCore/PolicyAuthorityFile.swift": "Expose captured owner-private mode for lifecycle plist validation; byte, file, ACL and parent snapshot revalidation remain unchanged.",
@@ -34,13 +35,14 @@
     "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeFixtureSession.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeSuiteGuardian.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
-    "Sources/ShadowSyncCore/SecureState.swift": "Retain original fresh-initialization locks in lifecycle authority; explicit command mode and borrowed-lease exclusion preserve operation locking through staged admission without reacquisition.",
+    "Sources/ShadowSyncCore/SecureState.swift": "Consume actual original installation authority once and retain duplicate families; bind one live kernel boot/process/generation/source/candidate/state observation to that same retained owner and revalidate without reopening or unlocking operation authority.",
     "Sources/ShadowSyncCore/SelectedRepositoryScope.swift": "Consume one freshly completed, private call-scoped catalog during rebind with one original metadata deadline; retain live policy/root/traversal/identity/postflight checks and ordinary public-bind rediscovery.",
     "Sources/ShadowSyncCore/SystemGitConfigurationProbe.swift": "Validate retained evidence against sticky failure and actual context/account without resolving new configuration or reopening cancellation-closed command admission.",
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_release_notarization.py": "Disposable synthetic signing/notary adapters exercise packaging, retry, tamper and refusal paths; no credentials or product submission.",
+    "scripts/auto-merge.py": "Keep installation, custody, publisher, policy and mandatory CI registration families on the protected owner/admin technical-review route, including both names of renames; privileged App activation remains separately gated.",
     "scripts/build-app.sh": "Build all three executable products in one package invocation with shared compilation; verify every product architecture and minimum OS. Preserve real fixture paths only in nondistributed testing builds; production retains source-path sanitization and separate native qualification.",
     "scripts/ci-runtime.py": "Retain the existing bounded registry and successful policy-helper phase diagnostics for discovery admission without changing deadlines, policies or assertions.",
     "scripts/ci-shards.py": "All mandatory jobs use macOS 26 arm64 because tooling includes native fixtures; deterministic complete-suite partition and fail-closed aggregate remain unchanged.",
@@ -563,7 +565,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationOwnershipFixtures.swift",
-      "sha256": "256123e1f5c71a5edaa4fd98abe5f371406127fc26f4aafef0c96e0e78a7d669"
+      "sha256": "9f12d6e26f750207e87744b1062bcf4d034d7d99eedfb6f436ee5879d7bd06cb"
     },
     {
       "mode": "100644",
@@ -593,7 +595,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/LifecyclePublisher.swift",
-      "sha256": "fd08a75f209289fc819e5239808acd48348932ac8f89b9cdab0b15ad0c25ed0a"
+      "sha256": "ae39b2d36d1086d947c84bb24db51de5c0d96ecaa26790f8ba1a60c97d297ac6"
     },
     {
       "mode": "100644",
@@ -638,7 +640,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "cecf3eb3242212a3350b53642ca17a3d9fb2d958fe31edbc98cd7130b066b87f"
+      "sha256": "d30d708ecf9dc78e0582ff164031cfef645583f93f06660889c154de24eff792"
     },
     {
       "mode": "100644",
@@ -868,7 +870,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SecureState.swift",
-      "sha256": "8093201db0f2c1f8d52f3cbeb94452ae27050d886a011ec5be017a5610e0ae01"
+      "sha256": "da3330f212f171e35bdd2aad9c086f6dc026b6018327256bdacb3542c0929077"
     },
     {
       "mode": "100644",
@@ -923,7 +925,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "244bcd22c9015a376e5294e397376c29e60b3dd9cfb21aca835b3d0c622bdbb3"
+      "sha256": "e797450ed534cf4f298d8400e48e0c0286842ed311c20a141c81716e6d3ac368"
     },
     {
       "mode": "100644",
@@ -953,12 +955,12 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_app_workflow.py",
-      "sha256": "f2bef84a706b3c3e49a96994cc52eff1d51effadf4415622d25c6cb5b9019473"
+      "sha256": "b2c4bf7eacf97b9706f6e9b6c13fac96c8147e34c062889dfcff234be0cc7b22"
     },
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_application_ci.py",
-      "sha256": "79bf380a7a305937439b78445f3660a3c6dd6adfde96879378ffa8761837fb2c"
+      "sha256": "f0d1337a73cc6b1f3be3de34398df3932502c30c3d96b89afda366fe40a2d103"
     },
     {
       "mode": "100644",
@@ -1073,7 +1075,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "d9e2f65a726d916bb4fddf650bd3a343d058e9577eacf4015c9f04cdaf32cd69"
+      "sha256": "12dcfe15850d1a4807671f46d9f5b26dd758fbd58dbe888756bb56ac13736f40"
     },
     {
       "mode": "100644",
@@ -1088,7 +1090,7 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "f291d4936719d0cb4977432b8398c76b06d141ccb84f795ff5e98352cfae4b68"
+      "sha256": "cabfc9f7bcfa33101dffa8dfde9177a59d1b074b2b4d10896f0df7a1e1480e9b"
     },
     {
       "mode": "100644",
@@ -1113,7 +1115,7 @@
     {
       "mode": "100644",
       "path": "scripts/auto-merge.py",
-      "sha256": "1172ae9bd51a8845707bb6b6beb960dd3ba3e3a272414b86bf1374ce17274b6d"
+      "sha256": "8df039a06cc3bf3361951a3723fa2b56e2c3cfdd4645154194a8f549a6fe19f0"
     },
     {
       "mode": "100755",
