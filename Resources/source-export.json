@@ -18,12 +18,15 @@
     "Sources/ShadowSyncCore/DiscoveryCallerSelfTests.swift": "Keep real-helper discovery and complete command cleanup assertions; recognize only the exact synthetic installation control and receipt bytes reconstructed from held fixture state. Unknown or changed receipt families remain fatal.",
     "Sources/ShadowSyncCore/DiscoveryTestingSupport.swift": "Keep terminal diagnostic capacity independent of successful and registry-progress trace saturation; preserve closed fields, opt-in output, existing bounds and production exclusion.",
     "Sources/ShadowSyncCore/FreshStateInitialization.swift": "Publish mandatory initial installation control before readiness, bind its bytes/inode in immutable publication proofs, and use initializer-only inspection while retaining original locks. Same-object retries revalidate the complete publication proof.",
+    "Sources/ShadowSyncCore/HostControl.swift": "Retain bounded frames across a persistent installation socket and accept one caller-supplied absolute deadline; preserve the existing single-frame typed host-control wrappers. Reject blocking descriptors before raw IO.",
     "Sources/ShadowSyncCore/InstallationCommandBinding.swift": "Bind fixed installation diagnostics to the live consumed coordinator owner, exact durable control and complete retained receipt set; serialized observations alone never authorize commands.",
     "Sources/ShadowSyncCore/InstallationControlFixtures.swift": "Fifteen pure metadata fixtures include canonical observation digest/filename equivalence and malformed, reordered, UID and changed-byte refusals; synthetic metadata grants no production authority.",
     "Sources/ShadowSyncCore/InstallationControlRecord.swift": "Preserve canonical typed receipt observation and shared state-bound transaction digest bytes; metadata never grants production authority.",
     "Sources/ShadowSyncCore/InstallationExclusivePreparationFixtures.swift": "Retain exact fresh-install action intent, fixed-slot preimages and postimages, bounded descriptor-bound preparation, and one-use staged-admission intent; existing-install migration and activation remain gated.",
     "Sources/ShadowSyncCore/InstallationLifecycle.swift": "Retain exact fresh-install action intent, fixed-slot preimages and postimages, bounded descriptor-bound preparation, and one-use staged-admission intent; existing-install migration and activation remain gated.",
     "Sources/ShadowSyncCore/InstallationLockTransferFixtures.swift": "Exercise continuous operation exclusion, alias retirement, same-inode reacquisition, bounded synchronous deadline failure and fenced transfer refusal in private disposable fixtures.",
+    "Sources/ShadowSyncCore/InstallationReadinessWire.swift": "Strict canonical seven-message installation readiness observations; decoded fields and transcript digests confer no live authority.",
+    "Sources/ShadowSyncCore/InstallationReadinessWireFixtures.swift": "Disposable socket-pair and canonical-wire cases cover strict field/frame refusal, coalesced frames, EOF and expired absolute budgets without installed-state access. Require exact timeout and blocking-descriptor refusals; exercise waiting and kernel-buffer backpressure.",
     "Sources/ShadowSyncCore/InstallationStorageFixtures.swift": "Disposable storage fixtures exercise initial refusal, complete chains and missing evidence, exact published-control replacement refusal, and interrupted control writes; synthetic fixture commits confer no installed readiness proof.",
     "Sources/ShadowSyncCore/LifecycleLaunchCommand.swift": "Closed canonical lifecycle launch commands, strict bounded status parsing and independently reconstructed publisher/plist/qualified-graph authority; production qualification and installer entry remain gated.",
     "Sources/ShadowSyncCore/LifecyclePublisher.swift": "Bind immutable installation candidate evidence to the verified running coordinator, exact app/helper code identities, sealed release and canonical bundle inventory; preserve effective-user source ownership refusal.",
@@ -527,7 +530,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/HostControl.swift",
-      "sha256": "1c64b462b34e75dedd3504aed6c5722afe675ac2f24102f72fc311690661f40c"
+      "sha256": "3a97d1b55d4f77c1eda68eb4941145dca3df08dff3091f6c77943f016ce11de9"
     },
     {
       "mode": "100644",
@@ -611,6 +614,16 @@
     },
     {
       "mode": "100644",
+      "path": "Sources/ShadowSyncCore/InstallationReadinessWire.swift",
+      "sha256": "80f61e60c516691892f94224a7bf2c24d2fc55b5e763d2ddc6f685665d9bb23d"
+    },
+    {
+      "mode": "100644",
+      "path": "Sources/ShadowSyncCore/InstallationReadinessWireFixtures.swift",
+      "sha256": "211aaecdd884cb5a88d717cf3c47c6f12b44c49e2b0d80222781bb6f5aacc603"
+    },
+    {
+      "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationSlotCaptureFixtures.swift",
       "sha256": "d22e33d2e7dc454b708a7c91df57aa5315786ec2c05edda1bae432949b60061f"
     },
@@ -687,7 +700,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "4049cf116da540d5166fa7765825145c648bc7f9a382194ae683616d90842ebd"
+      "sha256": "24fbef08fa4547a87af93d71c269515eb672f6958ada13a4c77212b4b26c7ce9"
     },
     {
       "mode": "100644",
@@ -972,7 +985,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "17770818b97da3909a04f8c96a16b7902ab4e2e87ebb1fa102fff15a728b0fdd"
+      "sha256": "a430846ca5ffa1fbf34efcc6ad357511756b2fef0a83ce2001033fdfbc19fd3b"
     },
     {
       "mode": "100644",
@@ -1007,7 +1020,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_application_ci.py",
-      "sha256": "eaea27b87dca45a0713ce01cc9f5f44173d41e08b5d87708f623b0d6125a1285"
+      "sha256": "29e730a59f31906fa551c09d07c92eba43cfeb16107b79ccd3f087097f914f09"
     },
     {
       "mode": "100644",
@@ -1127,7 +1140,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "fad54fc9e57173e1fa079aa91ea8e60e8b195b50862616eea2423937f781b750"
+      "sha256": "2769cd2ffa416518846dce89f900e2b6d6af002d0ec004d7b795d312049cede5"
     },
     {
       "mode": "100644",
@@ -1142,7 +1155,7 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "ebfd89682619aafde269136578311a1555bc8337970ae6c3531e7c43e043ff64"
+      "sha256": "e3d812e4cd8aeda9dee9af36f455645ab5b0d5b21d970b36555b5880cc2261a3"
     },
     {
       "mode": "100644",
@@ -1437,7 +1450,7 @@
     {
       "mode": "100644",
       "path": "tests/Fixtures/production-test-markers.json",
-      "sha256": "7b914fbbeafef556f584d32d0847f786eed159104b5aa29703ae18e0ea202f71"
+      "sha256": "3dd027168fae192fa3c58a9c6003f62bb8645fe2ab1e3a90e5151c516b19f553"
     }
   ],
   "history": "reviewed snapshot; private history and deployment data excluded",

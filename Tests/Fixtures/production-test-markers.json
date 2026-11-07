@@ -376,6 +376,15 @@
     "m6-installation-transfer-contention-continuity",
     "m6-installation-transfer-inode-substitution",
     "m6-installation-transfer-postflight-failure",
-    "m6-installation-transfer-stale-intent-protection"
+    "m6-installation-transfer-stale-intent-protection",
+    "InstallationReadinessWireFixtures",
+    "m6-installation-readiness-wire-roundtrip",
+    "m6-installation-readiness-wire-canonical-refusals",
+    "m6-installation-readiness-wire-field-refusals",
+    "m6-installation-readiness-wire-persistent-frames",
+    "m6-installation-readiness-wire-bounded-frames",
+    "m6-installation-readiness-wire-eof-empty",
+    "m6-installation-readiness-wire-absolute-deadline",
+    "m6-installation-readiness-wire-legacy-wrappers"
   ]
 }

@@ -464,7 +464,10 @@ public enum HostControlClient {
     }
 }
 
-private enum HostControlIO {
+/// Socket mechanics only. Installation callers must authenticate the retained
+/// peer and supply the SAME absolute session deadline for every frame.
+enum HostControlIO {
+    static let maximumFrameBytes = HostControlTiming.maximumFrameBytes
     static func address(path: String) throws -> sockaddr_un {
         let pathBytes = Array(path.utf8CString)
         var address = sockaddr_un()
@@ -496,13 +499,24 @@ private enum HostControlIO {
     ) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        var data = try encoder.encode(value)
-        data.append(0x0A)
         let deadline = MonotonicDeadline(seconds: HostControlTiming.requestTimeout)
+        try writeFrame(encoder.encode(value), descriptor: descriptor, deadline: deadline)
+    }
+
+    static func writeFrame(_ payload: Data, descriptor: Int32,
+                           deadline: MonotonicDeadline) throws {
+        try requireNonblocking(descriptor)
+        guard !payload.isEmpty, payload.count < maximumFrameBytes,
+              !payload.contains(0x0A) else {
+            throw SecureStateError.unsafePath("host control frame")
+        }
+        var data = payload
+        data.append(0x0A)
         try data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
             var offset = 0
             while offset < raw.count {
+                try requireTime(deadline)
                 let count = Darwin.write(
                     descriptor,
                     base.advanced(by: offset),
@@ -525,6 +539,7 @@ private enum HostControlIO {
                 )
             }
         }
+        try requireTime(deadline)
     }
 
     static func read<T: Decodable>(
@@ -532,42 +547,62 @@ private enum HostControlIO {
         descriptor: Int32
     ) throws -> T {
         let deadline = MonotonicDeadline(seconds: HostControlTiming.requestTimeout)
-        var data = Data()
-        var bytes = [UInt8](repeating: 0, count: 4_096)
-        while true {
-            try wait(
-                descriptor,
-                events: Int16(POLLIN | POLLHUP),
-                deadline: deadline
-            )
-            let count = Darwin.read(descriptor, &bytes, bytes.count)
-            if count > 0 {
-                data.append(contentsOf: bytes.prefix(count))
-                guard data.count <= HostControlTiming.maximumFrameBytes,
-                      let newline = data.firstIndex(of: 0x0A),
-                      newline == data.index(before: data.endIndex) else {
-                    if data.count > HostControlTiming.maximumFrameBytes
-                        || data.contains(0x0A) {
+        var reader = FrameReader()
+        let data = try reader.read(descriptor: descriptor, deadline: deadline)
+        // Existing activation requests remain one frame per connection. The
+        // installation session retains its own reader across multiple frames.
+        guard !reader.hasBufferedBytes else {
+            throw SecureStateError.unsafePath("host control frame")
+        }
+        return try JSONDecoder().decode(type, from: data)
+    }
+
+    struct FrameReader {
+        private var buffered = Data()
+        var hasBufferedBytes: Bool { !buffered.isEmpty }
+
+        mutating func read(descriptor: Int32, deadline: MonotonicDeadline) throws -> Data {
+            try HostControlIO.requireNonblocking(descriptor)
+            var bytes = [UInt8](repeating: 0, count: 4_096)
+            while true {
+                // Buffered data does not renew the shared session budget.
+                try HostControlIO.requireTime(deadline)
+                if let newline = buffered.firstIndex(of: 0x0A) {
+                    let length = buffered.distance(from: buffered.startIndex, to: newline)
+                    guard length > 0, length < HostControlIO.maximumFrameBytes else {
                         throw SecureStateError.unsafePath("host control frame")
                     }
-                    continue
+                    let frame = Data(buffered[..<newline])
+                    buffered.removeSubrange(...newline)
+                    return frame
                 }
-                data.removeLast()
-                guard !data.isEmpty else {
+                guard buffered.count < HostControlIO.maximumFrameBytes else {
                     throw SecureStateError.unsafePath("host control frame")
                 }
-                return try JSONDecoder().decode(type, from: data)
+                // At most one bounded frame plus one fixed read chunk is held.
+                try HostControlIO.wait(descriptor, events: Int16(POLLIN | POLLHUP), deadline: deadline)
+                let count = Darwin.read(descriptor, &bytes, bytes.count)
+                if count > 0 { buffered.append(contentsOf: bytes.prefix(count)); continue }
+                if count < 0, errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
+                if count == 0 { throw SecureStateError.systemCall("read host control", ECONNRESET) }
+                throw SecureStateError.systemCall("read host control", errno)
             }
-            if count < 0, errno == EINTR {
-                continue
-            }
-            if count < 0, errno == EAGAIN || errno == EWOULDBLOCK {
-                continue
-            }
-            if count == 0 {
-                throw SecureStateError.systemCall("read host control", ECONNRESET)
-            }
-            throw SecureStateError.systemCall("read host control", errno)
+        }
+    }
+
+    private static func requireNonblocking(_ descriptor: Int32) throws {
+        let flags = fcntl(descriptor, F_GETFL)
+        guard flags >= 0 else {
+            throw SecureStateError.systemCall("inspect host control", errno)
+        }
+        guard flags & O_NONBLOCK != 0 else {
+            throw SecureStateError.unsafePath("blocking host control descriptor")
+        }
+    }
+
+    private static func requireTime(_ deadline: MonotonicDeadline) throws {
+        guard !deadline.hasExpired else {
+            throw SecureStateError.systemCall("host control timeout", ETIMEDOUT)
         }
     }
 

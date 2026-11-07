@@ -106,6 +106,14 @@ public enum M6SelfTestRunner {
         try run("m6-installation-transfer-inode-substitution") { try InstallationLockTransferFixtures.substitutionAtGap() }
         try run("m6-installation-transfer-postflight-failure") { try InstallationLockTransferFixtures.postflightFailure() }
         try run("m6-installation-transfer-stale-intent-protection") { try InstallationLockTransferFixtures.staleIntentAndProtection() }
+        try run("m6-installation-readiness-wire-roundtrip") { try InstallationReadinessWireFixtures.roundtrip() }
+        try run("m6-installation-readiness-wire-canonical-refusals") { try InstallationReadinessWireFixtures.canonicalRefusals() }
+        try run("m6-installation-readiness-wire-field-refusals") { try InstallationReadinessWireFixtures.fieldRefusals() }
+        try run("m6-installation-readiness-wire-persistent-frames") { try InstallationReadinessWireFixtures.persistentFrames() }
+        try run("m6-installation-readiness-wire-bounded-frames") { try InstallationReadinessWireFixtures.boundedFrames() }
+        try run("m6-installation-readiness-wire-eof-empty") { try InstallationReadinessWireFixtures.eofAndEmpty() }
+        try run("m6-installation-readiness-wire-absolute-deadline") { try InstallationReadinessWireFixtures.sharedDeadline() }
+        try run("m6-installation-readiness-wire-legacy-wrappers") { try InstallationReadinessWireFixtures.legacyWrappers() }
         try run("m6-live-peer-closed-descriptor") { try LivePeerFixtures.invalid("closed") }
         try run("m6-live-peer-non-socket") { try LivePeerFixtures.invalid("regular") }
         try run("m6-live-peer-unconnected-stream") { try LivePeerFixtures.invalid("unconnected") }
