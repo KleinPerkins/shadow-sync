@@ -883,10 +883,9 @@ public struct RepositoryDiscovery: SelectedRepositoryDiscovering {
         inheritedPolicyBlock: RepositoryBlockReason?,
         admission: RepositoryDiscoveryPolicy? = nil
     ) throws -> AccumulatedCandidate? {
-        try admission?.willAccess(representationPath)
         let gitMarker = URL(fileURLWithPath: representationPath)
             .appendingPathComponent(".git").path
-        try admission?.willAccess(gitMarker)
+        try admission?.willAccess([representationPath, gitMarker])
         var markerInfo = stat()
         guard lstat(gitMarker, &markerInfo) == 0 else {
             return nil
@@ -927,9 +926,10 @@ public struct RepositoryDiscovery: SelectedRepositoryDiscovering {
         }
         let presentationLocation = try admission?.presentationLocation(primaryPath)
             ?? (primaryRelative == "." ? "~/dev" : "~/dev/\(primaryRelative)")
-        for name in [".git", ".git/config", ".git/config.worktree", ".git/commondir"] {
-            try admission?.willAccess(primaryPath + "/" + name)
-        }
+        try admission?.willAccess(
+            [".git", ".git/config", ".git/config.worktree", ".git/commondir"].map {
+                primaryPath + "/" + $0
+            })
         var candidate: RepositoryCandidate
         do {
             candidate = try RepositoryHandle.discoveryCandidate(

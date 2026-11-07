@@ -1,0 +1,294 @@
+name: CI
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 10 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+  CI_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+  CI_BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  plan:
+    runs-on: macos-26
+    timeout-minutes: 10
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      quality: ${{ steps.plan.outputs.quality }}
+      compile-package: ${{ steps.plan.outputs.compile-package }}
+      runtime-safety: ${{ steps.plan.outputs.runtime-safety }}
+      native-and-lifecycle: ${{ steps.plan.outputs.native-and-lifecycle }}
+      package-contract: ${{ steps.plan.outputs.package-contract }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CI_REVISION }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record the runtime fixture's default Git selection
+        run: |
+          /usr/bin/xcode-select -p
+          env -u DEVELOPER_DIR /usr/bin/xcrun --find git
+      - id: plan
+        name: Discover and plan every mandatory case
+        run: python3 -I -B scripts/ci-host.py plan
+  quality:
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.quality) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    env:
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CI_REVISION }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Execute the independently owned suite partition
+        env:
+          CI_UNIT: ${{ matrix.id }}
+        run: python3 -I -B scripts/ci-host.py unit --unit "$CI_UNIT"
+      - name: Retain exact case coverage
+        if: always() && env.CI_WORK_ROOT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.id }}-attempt-${{ github.run_attempt }}
+          path: ${{ env.CI_WORK_ROOT }}/receipts/${{ matrix.id }}/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain bounded failure and build evidence
+        if: always() && env.CI_WORK_ROOT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ matrix.id }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.json
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.log
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.raw
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stdout
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stderr
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/expanded/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/Python.framework/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/scratch/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/package/**
+          if-no-files-found: error
+          retention-days: 14
+  compile-package:
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.compile-package) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CI_REVISION }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Execute the independently owned suite partition
+        env:
+          CI_UNIT: ${{ matrix.id }}
+        run: python3 -I -B scripts/ci-host.py unit --unit "$CI_UNIT"
+      - name: Retain exact case coverage
+        if: always() && env.CI_WORK_ROOT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.id }}-attempt-${{ github.run_attempt }}
+          path: ${{ env.CI_WORK_ROOT }}/receipts/${{ matrix.id }}/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain bounded failure and build evidence
+        if: always() && env.CI_WORK_ROOT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ matrix.id }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.json
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.log
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.raw
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stdout
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stderr
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/expanded/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/Python.framework/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/scratch/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/package/**
+          if-no-files-found: error
+          retention-days: 14
+  runtime-safety:
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.runtime-safety) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CI_REVISION }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select the admitted Apple Git fixture on this disposable runner
+        run: |
+          sudo /usr/bin/xcode-select --switch /Library/Developer/CommandLineTools
+          test "$(env -u DEVELOPER_DIR /usr/bin/xcrun --find git)" = /Library/Developer/CommandLineTools/usr/bin/git
+      - name: Execute the independently owned suite partition
+        env:
+          CI_UNIT: ${{ matrix.id }}
+        run: python3 -I -B scripts/ci-host.py unit --unit "$CI_UNIT"
+      - name: Retain exact case coverage
+        if: always() && env.CI_WORK_ROOT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.id }}-attempt-${{ github.run_attempt }}
+          path: ${{ env.CI_WORK_ROOT }}/receipts/${{ matrix.id }}/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain bounded failure and build evidence
+        if: always() && env.CI_WORK_ROOT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ matrix.id }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.json
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.log
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.raw
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stdout
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stderr
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/expanded/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/Python.framework/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/scratch/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/package/**
+          if-no-files-found: error
+          retention-days: 14
+  native-and-lifecycle:
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.native-and-lifecycle) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CI_REVISION }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Execute the independently owned suite partition
+        env:
+          CI_UNIT: ${{ matrix.id }}
+        run: python3 -I -B scripts/ci-host.py unit --unit "$CI_UNIT"
+      - name: Retain exact case coverage
+        if: always() && env.CI_WORK_ROOT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.id }}-attempt-${{ github.run_attempt }}
+          path: ${{ env.CI_WORK_ROOT }}/receipts/${{ matrix.id }}/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain bounded failure and build evidence
+        if: always() && env.CI_WORK_ROOT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ matrix.id }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.json
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.log
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.raw
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stdout
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stderr
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/expanded/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/Python.framework/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/scratch/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/package/**
+          if-no-files-found: error
+          retention-days: 14
+  package-contract:
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.package-contract) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CI_REVISION }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Execute the independently owned suite partition
+        env:
+          CI_UNIT: ${{ matrix.id }}
+        run: python3 -I -B scripts/ci-host.py unit --unit "$CI_UNIT"
+      - name: Retain exact case coverage
+        if: always() && env.CI_WORK_ROOT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.id }}-attempt-${{ github.run_attempt }}
+          path: ${{ env.CI_WORK_ROOT }}/receipts/${{ matrix.id }}/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain bounded failure and build evidence
+        if: always() && env.CI_WORK_ROOT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ matrix.id }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.json
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.log
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.raw
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stdout
+            ${{ env.CI_WORK_ROOT }}/diagnostics/**/*.stderr
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/expanded/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/policy/Python.framework/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/scratch/**
+            !${{ env.CI_WORK_ROOT }}/diagnostics/**/build/*/package/**
+          if-no-files-found: error
+          retention-days: 14
+  ci-required:
+    if: always()
+    needs: [plan, quality, compile-package, runtime-safety, native-and-lifecycle, package-contract]
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CI_REVISION }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download separate receipt directories from this exact run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-*-attempt-${{ github.run_attempt }}
+          path: work/ci-artifacts
+          merge-multiple: false
+      - name: Recompute the plan and require complete actual coverage
+        env:
+          CI_PLAN: ${{ needs.plan.outputs.plan }}
+          CI_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 -I -B scripts/ci-host.py aggregate --artifacts work/ci-artifacts

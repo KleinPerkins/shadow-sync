@@ -647,6 +647,9 @@ public final class RepositoryInventoryDiscovery:
                 setupDurationMilliseconds
             )
             let clones = try card.clones.map {
+                if cancellation.isCancelled {
+                    return try session.retainUninspectedCleanup($0)
+                }
                 try session.validatePhaseCompletion()
                 let clone = try session.inspectCleanup(
                     clone: $0,
@@ -654,7 +657,7 @@ public final class RepositoryInventoryDiscovery:
                     queryPullRequests: card.isWritable,
                     progressUpdate: emit
                 )
-                try session.validatePhaseCompletion()
+                try session.validateRetainedInspectionEvidence()
                 return clone
             }
             let assemblyStarted = Date()
@@ -684,10 +687,7 @@ public final class RepositoryInventoryDiscovery:
                 )
             )
         }
-        try session.validatePhaseCompletion()
-        guard !cancellation.isCancelled, !cancellation.areFutureChildAdmissionsClosed else {
-            throw GitSafetyError.cancelled
-        }
+        try session.validateRetainedInspectionEvidence()
         lifecycleObserver?(
             .finished(childCount: progress.count)
         )
@@ -1548,6 +1548,46 @@ final class RepositoryReadSession: @unchecked Sendable {
         }
     }
 
+    /// Pure result assembly may survive user cancellation after work drains.
+    /// Sticky command failure, closed authority, and non-cancellation admission
+    /// closure still refuse. Repository/child admission uses the strict method.
+    func validateRetainedInspectionEvidence() throws {
+        try configurationProbe?.validateRetainedEvidence(account: account)
+        guard cancellation.isCancelled || !cancellation.areFutureChildAdmissionsClosed else {
+            throw GitSafetyError.cancelled
+        }
+    }
+
+    /// No repository access: preserve the observed topology and history, but
+    /// remove prior cleanup decisions from candidates not reached this time.
+    func retainUninspectedCleanup(_ clone: LocalClone) throws -> LocalClone {
+        try validateRetainedInspectionEvidence()
+        let warning = "Cleanup inspection was cancelled before this clone was inspected; its candidates remain retained."
+        let retained = RemovalPreview(recommendation: .keep, permission: .hardExcluded, explanation: warning)
+        let worktrees = try clone.worktrees.map { value in
+            try Worktree(id: value.id, cloneID: value.cloneID, path: value.path,
+                rootIdentity: value.rootIdentity, registrationIdentity: value.registrationIdentity,
+                attachedBranchRef: value.attachedBranchRef, detachedOID: value.detachedOID,
+                isPrimary: value.isPrimary, isLocked: value.isLocked, locationKind: value.locationKind,
+                verification: value.verification, cleanliness: value.cleanliness,
+                fileState: value.fileState, contentEvidenceDigest: value.contentEvidenceDigest,
+                relationToDefault: value.relationToDefault, tipCommitDate: value.tipCommitDate,
+                awaEvidence: value.awaEvidence, purpose: value.purpose, activity: value.activity,
+                currentSession: value.currentSession, removalPreview: retained, warning: value.warning)
+        }
+        let branches = try clone.branches.map { value in
+            try Branch(cloneID: value.cloneID, fullRef: value.fullRef, tipOID: value.tipOID,
+                claimingWorktreeIDs: value.claimingWorktreeIDs, relationToDefault: value.relationToDefault,
+                upstream: value.upstream, commitDate: value.commitDate, pullRequests: value.pullRequests,
+                pullRequestAvailability: value.pullRequestAvailability, purpose: value.purpose,
+                activity: value.activity, removalPreview: retained)
+        }
+        return try LocalClone(repositoryID: clone.repositoryID, sourceSnapshot: clone.sourceSnapshot,
+            effectiveOrigin: clone.effectiveOrigin, originParityVerified: clone.originParityVerified,
+            policyCategory: clone.policyCategory, kind: clone.kind, worktrees: worktrees,
+            branches: branches, warnings: clone.warnings + [warning])
+    }
+
     func inspectClone(
         _ candidate: RepositoryCandidate,
         category: RepositoryPolicyCategory,
@@ -1677,13 +1717,8 @@ final class RepositoryReadSession: @unchecked Sendable {
             Int64
         ) -> Void)? = nil
     ) throws -> LocalClone {
+        if cancellation.isCancelled { return try retainUninspectedCleanup(clone) }
         try validatePhaseCompletion()
-        guard !cancellation.areFutureChildAdmissionsClosed else {
-            return cloneWithWarning(
-                clone,
-                "Cleanup inspection not started because cancellation stopped new admission."
-            )
-        }
         do {
             progressUpdate?(
                 .topology,
@@ -1768,6 +1803,15 @@ final class RepositoryReadSession: @unchecked Sendable {
             0,
             0
         )
+        var completedBranches: [Branch]?
+        func retainedResult(_ branches: [Branch]) throws -> LocalClone {
+            try validateRetainedInspectionEvidence()
+            return try LocalClone(repositoryID: clone.repositoryID, sourceSnapshot: clone.sourceSnapshot,
+                effectiveOrigin: clone.effectiveOrigin, originParityVerified: clone.originParityVerified,
+                policyCategory: clone.policyCategory, kind: clone.kind, worktrees: clone.worktrees,
+                branches: branches, warnings: clone.warnings + [
+                    "Lifecycle inspection was cancelled; fully proven branch evidence remains visible and incomplete candidates remain retained."])
+        }
         do {
             let handle = try RepositoryHandle.open(
                 clone.sourceSnapshot
@@ -1841,18 +1885,11 @@ final class RepositoryReadSession: @unchecked Sendable {
                 )
             }
             let assemblyStarted = Date()
-            progressUpdate?(
-                .candidateAssembly,
-                0,
-                1,
-                0,
-                pullRequestBatch.maximumActiveChildren,
-                pullRequestBatch.issueCount,
-                0
-            )
             var enrichedBranches: [Branch] = []
+            // lookupPullRequests has joined every worker. Only immutable captured
+            // values are used below; cancellation must not discard completed PRs.
             for branch in clone.branches {
-                try validatePhaseCompletion()
+                try validateRetainedInspectionEvidence()
                 let evidence = branchEvidence[branch.fullRef].flatMap {
                     $0.tipOID == branch.tipOID ? $0 : nil
                 }
@@ -1949,22 +1986,17 @@ final class RepositoryReadSession: @unchecked Sendable {
                     removalPreview: removal
                 ))
             }
-            if cancellation.areFutureChildAdmissionsClosed {
-                return try LocalClone(
-                    repositoryID: clone.repositoryID,
-                    sourceSnapshot: clone.sourceSnapshot,
-                    effectiveOrigin: clone.effectiveOrigin,
-                    originParityVerified:
-                        clone.originParityVerified,
-                    policyCategory: clone.policyCategory,
-                    kind: clone.kind,
-                    worktrees: clone.worktrees,
-                    branches: enrichedBranches,
-                    warnings: clone.warnings + [
-                        "Lifecycle inspection was cancelled; fully proven branch evidence remains visible and incomplete candidates remain retained.",
-                    ]
-                )
-            }
+            completedBranches = enrichedBranches
+            if cancellation.isCancelled { return try retainedResult(enrichedBranches) }
+            progressUpdate?(
+                .candidateAssembly,
+                0,
+                1,
+                0,
+                pullRequestBatch.maximumActiveChildren,
+                pullRequestBatch.issueCount,
+                0
+            )
             let branchByRef = Dictionary(
                 uniqueKeysWithValues: enrichedBranches.map {
                     ($0.fullRef, $0)
@@ -2160,6 +2192,9 @@ final class RepositoryReadSession: @unchecked Sendable {
             )
             return enriched
         } catch {
+            if cancellation.isCancelled, let completedBranches {
+                return try retainedResult(completedBranches)
+            }
             try validatePhaseCompletion()
             return cloneWithWarning(
                 clone,

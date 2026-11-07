@@ -9,6 +9,7 @@ final class LifecyclePublisher {
     static let relativeExecutable = "/Contents/Helpers/ShadowSyncLifecycleCoordinator"
     let releaseSHA256: String
     let account: EffectiveAccount
+    private let release: ReleaseIdentity
     private let app: String
     private let executable: String
     private let owner: uid_t
@@ -17,13 +18,14 @@ final class LifecyclePublisher {
     private let appSnapshot: PublisherExecutableSnapshot
     private let helperSnapshot: PublisherExecutableSnapshot
     private let resources: [PolicyAuthorityFile]
+    private let graphResource: PolicyAuthorityFile
 
     private init(app: String, executable: String, owner: uid_t, account: EffectiveAccount,
                  appIdentity: PublisherCodeVerifier.Identity, helperIdentity: PublisherCodeVerifier.Identity,
-                 resources: [PolicyAuthorityFile], release: String) throws {
+                 resources: [PolicyAuthorityFile], graphs: PolicyAuthorityFile, release: ReleaseIdentity) throws {
         self.app = app; self.executable = executable; self.owner = owner; self.account = account
         self.appIdentity = appIdentity; self.helperIdentity = helperIdentity
-        self.resources = resources; releaseSHA256 = release
+        self.resources = resources; graphResource = graphs; self.release = release; releaseSHA256 = release.releaseContractSHA256
         appSnapshot = try PublisherExecutableSnapshot.capture(path: app + "/Contents/MacOS/ShadowSync", owner: owner)
         helperSnapshot = try PublisherExecutableSnapshot.capture(path: executable, owner: owner)
     }
@@ -45,17 +47,98 @@ final class LifecyclePublisher {
             identifier: identifier, team: publisher.team)
         let info = try PolicyAuthorityFile.read(path: app + "/Contents/Info.plist", owner: owner, maximumBytes: 65_536)
         let contract = try PolicyAuthorityFile.read(path: app + "/Contents/Resources/release-contract.json", owner: owner, maximumBytes: 65_536)
+        let graphs = try PolicyAuthorityFile.read(path: app + "/Contents/Resources/command-graphs.json", owner: owner, maximumBytes: 65_536)
         let seal = try PolicyAuthorityFile.read(path: app + "/Contents/_CodeSignature/CodeResources", owner: owner, maximumBytes: 1_048_576)
         guard let dictionary = try PropertyListSerialization.propertyList(from: info.bytes, format: nil) as? [String: Any] else {
             throw PublisherPolicyError.unavailable
         }
         let release = try ReleaseIdentity(infoDictionary: dictionary); try release.validate(requireProduction: true)
         guard release.releaseContractSHA256 == contract.sha256 else { throw PublisherPolicyError.unavailable }
+        var parser = try PolicyWireParser(contract.bytes, profile: .configuration)
+        guard case let .object(fields) = try parser.parse(),
+              fields["command_graphs_sha256"] == .string(graphs.sha256) else { throw PublisherPolicyError.unavailable }
+        _ = try CommandGraphCatalog.decode(graphs.bytes)
         try PublisherCodeVerifier.sealed(contract, relativePath: "Resources/release-contract.json", code: code)
+        try PublisherCodeVerifier.sealed(graphs, relativePath: "Resources/command-graphs.json", code: code)
         let result = try Self(app: app, executable: executable, owner: owner, account: account,
-            appIdentity: publisher, helperIdentity: helper, resources: [info, contract, seal], release: contract.sha256)
+            appIdentity: publisher, helperIdentity: helper, resources: [info, contract, seal, graphs], graphs: graphs, release: release)
         try result.revalidate(); return result
     }
+    /// Values come only from this verified running coordinator. Keeping the
+    /// publisher in the helper retains its complete distribution binding.
+    func custodianBootstrap() throws -> (path: String, owner: uid_t,
+        identity: PublisherCodeVerifier.Identity, snapshot: PublisherExecutableSnapshot,
+        graphs: PolicyAuthorityFile) {
+        try revalidate()
+        return (executable, owner, helperIdentity, helperSnapshot, graphResource)
+    }
+    /// Immutable evidence from this exact running source. The capsule cannot be
+    /// decoded or constructed from candidate metadata and grants no install right.
+    struct InstallationIdentity: Equatable {
+        let candidate: InstallationCandidate
+        let sourceReleaseDigest: String
+        let coordinatorCode: PublisherCodeVerifier.Identity
+        private let publisher: LifecyclePublisher?
+        private let sourceRoot: String
+
+        private init(publisher: LifecyclePublisher?, sourceRoot: String,
+                     candidate: InstallationCandidate, sourceReleaseDigest: String,
+                     coordinatorCode: PublisherCodeVerifier.Identity) {
+            self.publisher = publisher; self.sourceRoot = sourceRoot; self.candidate = candidate
+            self.sourceReleaseDigest = sourceReleaseDigest; self.coordinatorCode = coordinatorCode
+        }
+        fileprivate static func capture(_ publisher: LifecyclePublisher) throws -> Self {
+            try publisher.revalidate()
+            // inspect deliberately retains its effective-user ownership rule.
+            // A root-owned source accepted by current() is NOT broadened here.
+            let artifact = try BundleArtifactIdentity.inspect(bundlePath: publisher.app, requireProduction: true)
+            let (_, app) = try PublisherCodeVerifier.verifiedStatic(path: publisher.app,
+                identifier: ReleaseIdentity.bundleIdentifier, team: publisher.appIdentity.team)
+            let (_, helper) = try PublisherCodeVerifier.verifiedStatic(path: publisher.executable,
+                identifier: LifecyclePublisher.identifier, team: publisher.appIdentity.team)
+            guard artifact.release == publisher.release, app == publisher.appIdentity,
+                  helper == publisher.helperIdentity else { throw PublisherPolicyError.unavailable }
+            let candidate = InstallationCandidate(release: artifact.release, bundleDigest: artifact.canonicalSHA256,
+                appCDHash: app.codeDirectory.map { String(format: "%02x", $0) }.joined(),
+                coordinatorCDHash: helper.codeDirectory.map { String(format: "%02x", $0) }.joined())
+            try candidate.validate()
+            try publisher.revalidate()
+            return Self(publisher: publisher, sourceRoot: publisher.app, candidate: candidate,
+                sourceReleaseDigest: publisher.releaseSHA256, coordinatorCode: helper)
+        }
+        func captureCoordinator(generation: String) throws -> ProcessIdentity {
+            guard let publisher else { throw CustodyRecordError.fenced }
+            try publisher.revalidate()
+            let process = try ProcessIdentity.capture(processID: getpid(), generation: generation,
+                expectedExecutablePath: publisher.executable)
+            guard process.userID == publisher.account.uid else { throw CustodyRecordError.fenced }
+            return process
+        }
+        func revalidate() throws {
+            guard let publisher, try Self.capture(publisher) == self else { throw CustodyRecordError.fenced }
+        }
+        static func == (a: Self, b: Self) -> Bool {
+            a.publisher === b.publisher && a.sourceRoot == b.sourceRoot && a.candidate == b.candidate
+                && a.sourceReleaseDigest == b.sourceReleaseDigest && a.coordinatorCode == b.coordinatorCode
+        }
+        #if SHADOW_SYNC_TESTING
+        static func testing(root: String, candidate: InstallationCandidate) throws -> Self {
+            let root = try TestIsolation.validateRoot(root)
+            try candidate.validate()
+            let bytes = stride(from: 0, to: candidate.coordinatorCDHash.count, by: 2).map { offset -> UInt8 in
+                let start = candidate.coordinatorCDHash.index(candidate.coordinatorCDHash.startIndex, offsetBy: offset)
+                return UInt8(candidate.coordinatorCDHash[start..<candidate.coordinatorCDHash.index(start, offsetBy: 2)], radix: 16)!
+            }
+            return Self(publisher: nil, sourceRoot: root, candidate: candidate,
+                sourceReleaseDigest: candidate.release.releaseContractSHA256,
+                coordinatorCode: .init(team: ReleaseIdentity.publisherTeamIdentifier,
+                    identifier: LifecyclePublisher.identifier, codeDirectory: Data(bytes)))
+        }
+        #endif
+    }
+    func installationIdentity() throws -> InstallationIdentity { try InstallationIdentity.capture(self) }
+    func installationSourceBundle() throws -> String { try revalidate(); return app }
+
     func revalidate() throws {
         guard account == (try EffectiveAccount.current()), getuid() == account.uid,
               appSnapshot == (try PublisherExecutableSnapshot.capture(path: app + "/Contents/MacOS/ShadowSync", owner: owner)),

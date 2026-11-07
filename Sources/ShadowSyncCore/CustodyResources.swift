@@ -460,11 +460,11 @@ final class CustodyRequestResources: @unchecked Sendable {
     }
     func closeControl() { control.closeWriter() }
     func writeControl(_ data: Data, offset: Int = 0) throws -> Int { try control.write(data, offset: offset) }
-    func readStatus() throws -> CustodyPipeRead { try status.read(maximum: 16_388) }
-    func readOutput(error isError: Bool = false) throws -> CustodyPipeRead { try (isError ? error : output).read(maximum: 16_388) }
-    func readTrace() throws -> CustodyPipeRead {
+    func readStatus(maximum: Int = 16_388) throws -> CustodyPipeRead { try status.read(maximum: maximum) }
+    func readOutput(error isError: Bool = false, maximum: Int = 16_388) throws -> CustodyPipeRead { try (isError ? error : output).read(maximum: maximum) }
+    func readTrace(maximum: Int = 16_388) throws -> CustodyPipeRead {
         guard let trace else { return .end }
-        return try trace.read(maximum: 16_388)
+        return try trace.read(maximum: maximum)
     }
 
     #if SHADOW_SYNC_TESTING

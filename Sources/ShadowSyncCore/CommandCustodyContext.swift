@@ -20,11 +20,13 @@ final class CommandCustodyContext: @unchecked Sendable {
     }
     private enum AdmissionSource {
         case independent
+        case installation(InstallationTransactionOwner)
         case run(WeakRun)
         case observation(WeakObservation)
         var isOpen: Bool {
             switch self {
             case .independent: true
+            case .installation(let owner): owner.commandAdmissionIsOpen
             case .run(let observer): observer.source?.commandAdmissionIsOpen ?? false
             case .observation(let observer): observer.source?.commandAdmissionIsOpen ?? false
             }
@@ -42,22 +44,24 @@ final class CommandCustodyContext: @unchecked Sendable {
     private let account: EffectiveAccount
     private let location: StateLocation
     private let stateIdentity: FileIdentity
+    private let installation: CustodyCatalogStore.InstallationCommandPermit?
 
     private init(leases: CustodyAuthorityLeaseSet, helper: CustodyHelperExecutable,
-                 account: EffectiveAccount, location: StateLocation, admissionSource: AdmissionSource = .independent) throws {
+                 account: EffectiveAccount, location: StateLocation, admissionSource: AdmissionSource = .independent,
+                 installation: CustodyCatalogStore.InstallationCommandPermit? = nil) throws {
         try helper.revalidate()
         guard account.uid == geteuid(), location.uid == account.uid else { throw CustodyRecordError.fenced }
-        self.helper = helper; self.account = account; self.location = location; self.admissionSource = admissionSource
+        self.helper = helper; self.account = account; self.location = location; self.admissionSource = admissionSource; self.installation = installation
         let root = try leases.duplicateStateDirectory()
         var info = stat()
         guard fstat(root.0.value, &info) == 0 else { throw CustodyRecordError.fenced }
         stateIdentity = FileIdentity(info)
         try Self.validateStateBinding(leases: leases, location: location, expected: stateIdentity)
-        let generation = RunIdentity.make()
+        let generation = installation?.generation ?? RunIdentity.make()
         caller = try ProcessIdentity.capture(processID: getpid(), generation: generation)
         // This validates the durable fence under the retained locks. A missing
         // initialized catalog cannot be interpreted as a fresh empty state.
-        scope = try CustodyMetadataScope(leases: leases, releaseSHA256: helper.releaseSHA256, generation: generation)
+        scope = try CustodyMetadataScope(leases: leases, releaseSHA256: helper.releaseSHA256, generation: generation, installation: installation)
         try revalidate()
     }
 
@@ -94,6 +98,24 @@ final class CommandCustodyContext: @unchecked Sendable {
         return try Self(leases: authority.retainCommandLeases(), helper: helper,
                         account: EffectiveAccount.current(), location: StateLocation.production(), admissionSource: .run(WeakRun(authority)))
     }
+    static func borrowing(_ authority: RunAuthority, publisher: LifecyclePublisher) throws -> CommandCustodyContext {
+        let leases = try authority.retainCommandLeases()
+        guard leases.mode == .lifecycleMutation else { throw CustodyRecordError.fenced }
+        return try Self(leases: leases, helper: CustodyHelperExecutable.lifecycle(publisher),
+            account: publisher.account, location: StateLocation.production(), admissionSource: .run(WeakRun(authority)))
+    }
+    /// Only the consumed original owner and its one live journal can borrow.
+    /// Reservation diagnostics do not grant a staged or consequential command.
+    static func borrowing(_ owner: InstallationTransactionOwner,
+                          journal: CustodyCatalogStore.InstallationJournalSession,
+                          deadline: MonotonicDeadline) throws -> CommandCustodyContext {
+        let helper = try owner.installationCommandHelper()
+        let permit = try journal.commandPermit(for: owner, deadline: deadline)
+        try permit.validateOwner(owner)
+        return try Self(leases: owner.retainExclusiveLeases(), helper: helper,
+            account: EffectiveAccount.current(), location: StateLocation.production(),
+            admissionSource: .installation(owner), installation: permit)
+    }
     static func observing(_ authority: RunAuthority) throws -> CommandCustodyContext {
         let helper = try CustodyHelperExecutable.production()
         return try Self(leases: authority.retainObservationLeases(), helper: helper,
@@ -103,6 +125,15 @@ final class CommandCustodyContext: @unchecked Sendable {
         let helper = try CustodyHelperExecutable.production()
         return try Self(leases: authority.retainObservationLeases(), helper: helper,
                         account: EffectiveAccount.current(), location: StateLocation.production(), admissionSource: .observation(WeakObservation(authority)))
+    }
+    /// Uses the caller's actual retained admission locks, never metadata or
+    /// reopened lock paths. Closing that authority closes future admission.
+    static func observing(_ authority: LifecycleAdmissionAuthority,
+                          publisher: LifecyclePublisher) throws -> CommandCustodyContext {
+        let helper = try CustodyHelperExecutable.lifecycle(publisher)
+        return try Self(leases: authority.retainObservationLeases(), helper: helper,
+            account: publisher.account, location: StateLocation.production(),
+            admissionSource: .observation(WeakObservation(authority)))
     }
     static func observation() throws -> CommandCustodyContext {
         let helper = try CustodyHelperExecutable.production()
@@ -141,7 +172,8 @@ final class CommandCustodyContext: @unchecked Sendable {
               caller == (try ProcessIdentity.capture(processID: getpid(), generation: caller.generation)) else {
             throw CustodyRecordError.fenced
         }
-        try helper.revalidate(); try scope.leases.validate()
+        try helper.revalidate(); try scope.leases.validate(); try scope.revalidateInstallation()
+        if let installation { try installation.validatePublisher(caller, helper: helper) }
         try Self.validateStateBinding(leases: scope.leases, location: location, expected: stateIdentity)
         guard !isClosed, admissionSource.isOpen else { throw CustodyRecordError.fenced }
     }
@@ -164,6 +196,8 @@ final class CommandCustodyContext: @unchecked Sendable {
     /// The helper must independently validate its matching fixed adapter before
     /// target admission. Merely preparing this value creates no child/journal.
     func prepare(_ diagnostic: Diagnostic, budget supplied: CustodyBudget? = nil, cancellation: CancellationToken? = nil) throws -> PreparedCustodyCommand {
+        // Reserve has no application mutation or installed-signature authority.
+        guard installation == nil || diagnostic == .serviceStatus else { throw CustodyRecordError.fenced }
         let kind: CustodyCommandKind, arguments: [String]
         switch diagnostic {
         case .serviceStatus:
@@ -182,9 +216,29 @@ final class CommandCustodyContext: @unchecked Sendable {
         let resources = try CustodyRequestResources(scope: scope, kind: kind, arguments: arguments,
             environment: ClosedProcessRunner.environment(account: account), budget: budget,
             stdoutLimit: UInt64(LifecycleCommandRunner.outputLimit), stderrLimit: UInt64(LifecycleCommandRunner.outputLimit),
-            workingDirectory: directory)
+            workingDirectory: directory, input: try installation?.sealedInput())
         try revalidate()
         try budget.validate(kind: kind, permittedWorkSeconds: 10, now: DispatchTime.now().uptimeNanoseconds)
+        return PreparedCustodyCommand(context: self, helper: helper, resources: resources, cancellation: cancellation)
+    }
+
+    func prepareLifecycle(_ operation: LifecycleLaunchCommand.Operation,
+                          cancellation: CancellationToken? = nil) throws -> PreparedCustodyCommand {
+        guard installation == nil, mode == .lifecycleMutation, helper.isLifecycleCoordinator else { throw CustodyRecordError.fenced }
+        let budget = try CustodyBudget.make(kind: .launchctlMutation, workSeconds: 10)
+        try revalidate()
+        let command = LifecycleLaunchCommand(operation: operation, account: account)
+        let raw = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard raw >= 0 else { throw CustodyResourceError.systemCall(errno) }
+        let resources = try CustodyRequestResources(scope: scope, kind: .launchctlMutation,
+            arguments: command.arguments, environment: ClosedProcessRunner.environment(account: account),
+            budget: budget, stdoutLimit: UInt64(LifecycleCommandRunner.outputLimit),
+            stderrLimit: UInt64(LifecycleCommandRunner.outputLimit), workingDirectory: OwnedFileDescriptor(raw))
+        // Refuse unqualified tools or installed input before registry reservation;
+        // the helper reconstructs the same authority independently.
+        _ = try LifecycleLaunchAuthority(request: resources.request, helper: helper, account: account)
+        try revalidate(); try budget.validate(kind: .launchctlMutation, permittedWorkSeconds: 10,
+                                             now: DispatchTime.now().uptimeNanoseconds)
         return PreparedCustodyCommand(context: self, helper: helper, resources: resources, cancellation: cancellation)
     }
 
@@ -277,6 +331,30 @@ final class CommandCustodyContext: @unchecked Sendable {
                         account: EffectiveAccount.isolated(homeDirectory: home), location: location,
                         admissionSource: authority.map { AdmissionSource.run(WeakRun($0)) } ?? observation.map { AdmissionSource.observation(WeakObservation($0)) } ?? .independent)
     }
+    static func testingInstallation(_ owner: InstallationTransactionOwner,
+                                    journal: CustodyCatalogStore.InstallationJournalSession,
+                                    root: String) throws -> CommandCustodyContext {
+        let location = try StateLocation.isolated(root: TestIsolation.validateRoot(root))
+        let permit = try journal.commandPermit(for: owner, deadline: MonotonicDeadline(seconds: 0.750))
+        try permit.validateOwner(owner)
+        let helper = try CustodyHelperExecutable.testingCustodian()
+        try helper.bindTestingInstallationSource(root: root)
+        return try Self(leases: owner.retainExclusiveLeases(), helper: helper,
+            account: EffectiveAccount.isolated(homeDirectory: root + "/home"), location: location,
+            admissionSource: .installation(owner), installation: permit)
+    }
+    func testingInstallationDiagnostic(_ mode: String = "complete", budget: CustodyBudget? = nil) throws -> PreparedCustodyCommand {
+        guard let installation, ["installation-absent", "complete", "resist", "terminal-delay", "after-admit"].contains(mode) else { throw CustodyRecordError.fenced }
+        try revalidate()
+        let raw = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard raw >= 0 else { throw CustodyRecordError.fenced }
+        let resources = try CustodyRequestResources(scope: scope, kind: .launchctlRead, arguments: [mode],
+            environment: ClosedProcessRunner.environment(account: account),
+            budget: budget ?? CustodyBudget.make(kind: .launchctlRead, workSeconds: 10),
+            stdoutLimit: 65_536, stderrLimit: 65_536, workingDirectory: OwnedFileDescriptor(raw),
+            input: installation.sealedInput())
+        return PreparedCustodyCommand(context: self, helper: helper, resources: resources)
+    }
     var testingScope: CustodyMetadataScope { scope }
     func testingRevalidate() throws { try revalidate() }
     static func withTestingReadPhase<Value>(at location: StateLocation, root: String,
@@ -316,7 +394,7 @@ final class PreparedCustodyCommand: @unchecked Sendable {
         guard !admissionClosed else { throw CustodyRecordError.fenced }
         try context.revalidate()
         guard context.owns(resources.scope), resources.request.binding.releaseSHA256 == helper.releaseSHA256,
-              [.launchctlRead, .signatureCheck, .policyClassify, .systemGitConfig, .discoveryGit].contains(resources.request.kind),
+              [.launchctlRead, .launchctlMutation, .signatureCheck, .policyClassify, .systemGitConfig, .discoveryGit].contains(resources.request.kind),
               (resources.request.kind == .policyClassify) == (policy != nil),
               (resources.request.kind == .systemGitConfig) == (graph != nil),
               (resources.request.kind == .discoveryGit) == (discovery != nil) else { throw CustodyRecordError.fenced }

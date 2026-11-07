@@ -5,6 +5,7 @@ import Foundation
 /// migration and update transactions retain their separate admission gates.
 public enum LifecycleCoordinatorMain {
     public static func run(arguments: [String]) -> Int32 {
+        if let result = CommandCustodian.dispatchLifecycle(arguments) { return result }
         guard arguments.count == 2 else { return usage() }
         switch arguments[1] {
         case "--help":

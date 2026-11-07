@@ -8,6 +8,10 @@ public enum M4SelfTestRunner {
     ) throws -> [String] {
         signal(SIGPIPE, SIG_IGN)
         let tests: [(String, () throws -> Void)] = [
+            ("m4-lifecycle-plist-bound-contract", testLifecyclePlistContract),
+            ("m4-lifecycle-plist-unsafe-input", testLifecyclePlistUnsafe),
+            ("m4-lifecycle-plist-read-replacement", testLifecyclePlistReadReplacement),
+            ("m4-lifecycle-plist-parent-replacement", testLifecyclePlistParentReplacement),
             ("m4-custody-request-roundtrip", CustodyProtocolSelfTests.roundTrip),
             ("m4-custody-closed-json", CustodyProtocolSelfTests.closedJSON),
             ("m4-custody-request-bindings", CustodyProtocolSelfTests.bindings),
@@ -30,6 +34,9 @@ public enum M4SelfTestRunner {
             ("m4-custody-held-concurrent-finalizers", CustodyAnchorSelfTests.concurrentFinalizers),
             ("m4-custody-held-ownership-failure", CustodyAnchorSelfTests.ownershipFailure),
             ("m4-custody-held-signal-reap-ordering", CustodyAnchorSelfTests.signalReapOrdering),
+            ("m4-lifecycle-closed-forms", { try testLifecycleLaunchContract("forms") }),
+            ("m4-lifecycle-status-valid", { try testLifecycleLaunchContract("valid") }),
+            ("m4-lifecycle-status-refusals", { try testLifecycleLaunchContract("refusals") }),
             ("m4-lifecycle-command-output", testLifecycleCommandOutput),
             ("m4-lifecycle-command-admission", testLifecycleCommandAdmission),
             ("m4-lifecycle-command-timeout", testLifecycleCommandTimeout),
@@ -66,12 +73,174 @@ public enum M4SelfTestRunner {
     }
 
 
+    private static func testLifecycleLaunchContract(_ mode: String) throws {
+        try withLifecycleAccount { account, _ in
+            func check(_ value: Bool) throws { if !value { throw M4SelfTestError.message("lifecycle closed contract") } }
+            func refuses(_ body: () throws -> Void) throws {
+                do { try body() } catch { return }
+                throw M4SelfTestError.message("unsafe lifecycle input admitted")
+            }
+            let command = LifecycleLaunchCommand(operation: .bootstrap, account: account)
+            if mode == "forms" {
+                for operation in LifecycleLaunchCommand.Operation.allCases {
+                    let value = LifecycleLaunchCommand(operation: operation, account: account)
+                    try check(try LifecycleLaunchCommand(arguments: value.arguments, account: account).operation == operation)
+                    for arguments in [value.arguments + ["-k"], ["sudo"] + value.arguments,
+                        [operation.rawValue, "system/" + InstallationPaths.label],
+                        [operation.rawValue, "gui/0/" + InstallationPaths.label],
+                        [operation.rawValue, "gui/\(account.uid)/com.example.foreign"]] {
+                        try refuses { _ = try LifecycleLaunchCommand(arguments: arguments, account: account) }
+                    }
+                }
+                try refuses { _ = try LifecycleLaunchCommand(arguments: [], account: account) }
+                try refuses { _ = try LifecycleLaunchCommand(arguments: ["enable", command.service], account: account) }
+            } else if mode == "valid" {
+                try check(try command.state(waitStatus: 0, stdout: command.fixtureLoadedOutput, stderr: Data())
+                    == .loaded(program: command.executable, processID: nil))
+                try check(try command.state(waitStatus: 113 << 8, stdout: Data(), stderr: command.fixtureAbsentError) == .absent)
+                try command.validatePreflight(.absent)
+                try command.validatePostflight(.loaded(program: command.executable, processID: nil))
+                try refuses { try command.validatePreflight(.loaded(program: command.executable, processID: nil)) }
+                try refuses { try command.validatePostflight(.absent) }
+            } else {
+                let valid = String(decoding: command.fixtureLoadedOutput, as: UTF8.self)
+                let invalid = [valid + "extra\n", String(valid.dropLast(2)), valid.replacingOccurrences(of: "program = ", with: "program = /foreign\n\tprogram = "),
+                    valid.replacingOccurrences(of: "program = ", with: "program = /foreign"),
+                    valid.replacingOccurrences(of: "LaunchAgent", with: "LaunchDaemon"),
+                    valid.replacingOccurrences(of: "--managed-host", with: "--unsafe"),
+                    valid.replacingOccurrences(of: "arguments = {", with: "arguments = {\nextra"),
+                    valid.replacingOccurrences(of: "type = LaunchAgent", with: "pid = 01\n\ttype = LaunchAgent"),
+                    valid.replacingOccurrences(of: "type = LaunchAgent", with: "pid = 0\n\ttype = LaunchAgent"),
+                    valid.replacingOccurrences(of: "type = LaunchAgent", with: "pid = 22\n\tpid = 23\n\ttype = LaunchAgent"),
+                    valid.replacingOccurrences(of: command.service, with: "gui/0/com.example.foreign"),
+                    valid.replacingOccurrences(of: "path = ", with: "path = /foreign"), valid + "\0"]
+                for value in invalid { try refuses { _ = try command.state(waitStatus: 0, stdout: Data(value.utf8), stderr: Data()) } }
+                for error in [command.fixtureAbsentError + Data("permission denied\n".utf8), Data("service not found".utf8), Data([255]), Data(repeating: 32, count: 65_537)] {
+                    try refuses { _ = try command.state(waitStatus: 113 << 8, stdout: Data(), stderr: error) }
+                }
+                for status: Int32 in [0, 1 << 8, SIGKILL, 113] {
+                    try refuses { _ = try command.state(waitStatus: status, stdout: Data(), stderr: command.fixtureAbsentError) }
+                }
+                try refuses { _ = try command.state(waitStatus: 0, stdout: command.fixtureLoadedOutput, stderr: command.fixtureAbsentError) }
+            }
+        }
+    }
+
     private static func withLifecycleAccount(_ body: (EffectiveAccount, String) throws -> Void) throws {
         let root = try M4TemporaryDirectory()
         let home = root.path + "/home"
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
         try body(EffectiveAccount.isolated(homeDirectory: home), root.path)
+    }
+
+    private static func withLifecyclePlist(
+        _ body: (String, String, [String: Any], Data) throws -> Void
+    ) throws {
+        var template = Array((try RuntimeFixtureSession.fixturePrefix("shadow-sync-m4.") + "XXXXXX").utf8CString)
+        guard let created = mkdtemp(&template) else { throw M4SelfTestError.message("plist fixture create") }
+        let root = String(cString: created), parent = root + "/parent", path = parent + "/fixture.plist"
+        var initial = stat()
+        guard lstat(root, &initial) == 0, initial.st_uid == geteuid(), initial.st_mode & 0o777 == 0o700 else {
+            throw M4SelfTestError.message("plist fixture identity")
+        }
+        let identity = FileIdentity(initial)
+        var failure: Error?
+        do {
+            try check(mkdir(parent, 0o700) == 0, "plist fixture parent")
+            let executable = root + "/ShadowSync.app/Contents/MacOS/ShadowSync"
+            let values: [String: Any] = ["Label": InstallationPaths.label,
+                "ProgramArguments": [executable, InstallationPaths.managedHostArgument],
+                "RunAtLoad": false, "KeepAlive": false, "ProcessType": "Interactive", "LimitLoadToSessionType": "Aqua"]
+            let bytes = try PropertyListSerialization.data(fromPropertyList: values, format: .xml, options: 0)
+            try bytes.write(to: URL(fileURLWithPath: path))
+            try check(chmod(path, 0o600) == 0, "plist fixture mode")
+            try body(path, executable, values, bytes)
+        } catch { failure = error }
+        do {
+            var current = stat()
+            try check(lstat(root, &current) == 0 && FileIdentity(current).matchesStableNode(identity),
+                      "plist cleanup root changed")
+            try FileManager.default.removeItem(atPath: root)
+        } catch { throw M4SelfTestError.message("plist fixture body=\(String(describing: failure)); cleanup=\(error)") }
+        if let failure { throw failure }
+    }
+    private static func refusesLifecyclePlist(_ body: () throws -> Void) throws {
+        do { try body(); throw M4SelfTestError.message("unsafe launch plist accepted") }
+        catch InstallationLifecycleError.invalidLaunchAgent {}
+    }
+    private static func testLifecyclePlistContract() throws {
+        try withLifecyclePlist { path, executable, values, bytes in
+            let snapshot = try InstallationLifecycle.testingCaptureLaunchAgent(path, executable: executable)
+            try check(snapshot.bytes == bytes && snapshot.hasOwnerPrivateMode, "launch plist lost exact captured bytes")
+            try snapshot.revalidate()
+            let binary = try PropertyListSerialization.data(fromPropertyList: values, format: .binary, options: 0)
+            try binary.write(to: URL(fileURLWithPath: path))
+            _ = try InstallationLifecycle.testingCaptureLaunchAgent(path, executable: executable)
+            for change in ["extra", "startup", "arguments", "label"] {
+                var altered = values
+                if change == "extra" { altered["EnvironmentVariables"] = ["PATH": "/bin"] }
+                if change == "startup" { altered["RunAtLoad"] = true }
+                if change == "arguments" { altered["ProgramArguments"] = [executable] }
+                if change == "label" { altered["Label"] = "com.example.unrelated" }
+                try PropertyListSerialization.data(fromPropertyList: altered, format: .xml, options: 0)
+                    .write(to: URL(fileURLWithPath: path))
+                try refusesLifecyclePlist { _ = try InstallationLifecycle.testingCaptureLaunchAgent(path, executable: executable) }
+            }
+        }
+    }
+    private static func testLifecyclePlistUnsafe() throws {
+        for fault in ["readable", "writable", "symlink", "hardlink", "fifo", "oversized", "empty", "malformed"] {
+            try withLifecyclePlist { path, executable, _, _ in
+                switch fault {
+                case "readable": try check(chmod(path, 0o644) == 0, "readable fixture mode")
+                case "writable": try check(chmod(path, 0o622) == 0, "writable fixture mode")
+                case "symlink":
+                    try check(rename(path, path + ".retained") == 0 && symlink("fixture.plist.retained", path) == 0, "plist alias fixture")
+                case "hardlink": try check(link(path, path + ".retained") == 0, "plist hardlink fixture")
+                case "fifo": try check(unlink(path) == 0 && mkfifo(path, 0o600) == 0, "plist fifo fixture")
+                case "oversized": try Data(repeating: 65, count: 65_537).write(to: URL(fileURLWithPath: path))
+                case "empty": try Data().write(to: URL(fileURLWithPath: path))
+                default: try Data("invalid plist".utf8).write(to: URL(fileURLWithPath: path))
+                }
+                try refusesLifecyclePlist { _ = try InstallationLifecycle.testingCaptureLaunchAgent(path, executable: executable) }
+            }
+        }
+    }
+    private static func testLifecyclePlistReadReplacement() throws {
+        for fault in ["same-bytes-new-inode", "changed-bytes", "mode"] {
+            try withLifecyclePlist { path, executable, _, bytes in
+                var changed = false
+                try refusesLifecyclePlist {
+                    _ = try InstallationLifecycle.testingCaptureLaunchAgent(path, executable: executable) {
+                        changed = true
+                        if fault == "same-bytes-new-inode" {
+                            let replacement = path + ".replacement"
+                            try bytes.write(to: URL(fileURLWithPath: replacement))
+                            try check(chmod(replacement, 0o600) == 0 && rename(replacement, path) == 0, "replace captured plist")
+                        } else if fault == "changed-bytes" { try Data("changed".utf8).write(to: URL(fileURLWithPath: path)) }
+                        else { try check(chmod(path, 0o644) == 0, "replace captured mode") }
+                    }
+                }
+                try check(changed, "launch plist post-read replacement was not exercised")
+            }
+        }
+    }
+    private static func testLifecyclePlistParentReplacement() throws {
+        try withLifecyclePlist { path, executable, _, bytes in
+            var changed = false
+            try refusesLifecyclePlist {
+                _ = try InstallationLifecycle.testingCaptureLaunchAgent(path, executable: executable) {
+                    let parent = URL(fileURLWithPath: path).deletingLastPathComponent().path
+                    try check(rename(parent, parent + ".retained") == 0 && mkdir(parent, 0o700) == 0,
+                              "replace captured plist parent")
+                    try bytes.write(to: URL(fileURLWithPath: path))
+                    try check(chmod(path, 0o600) == 0, "replacement parent plist mode")
+                    changed = true
+                }
+            }
+            try check(changed, "launch plist parent replacement was not exercised")
+        }
     }
 
     private static func assertLifecycleChildReaped(_ pid: pid_t) throws {
@@ -1120,7 +1289,7 @@ public enum M4SelfTestRunner {
             && posix_spawnattr_setpgroup(&attributes, 0) == 0
             && posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_START_SUSPENDED | POSIX_SPAWN_CLOEXEC_DEFAULT
                 | POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)) == 0, "group closed flags")
-        let strings = ["/bin/bash", "-c", kind.script, "fixture", ready].map { strdup($0) }
+        let strings = (["/bin/bash", "-c", kind.script, "fixture", ready] as [String]).map { strdup($0) }
         defer { strings.forEach { free($0) } }
         try check(strings.allSatisfy { $0 != nil }, "group argument allocation")
         var argv = strings + [nil]; var env: [UnsafeMutablePointer<CChar>?] = [nil]

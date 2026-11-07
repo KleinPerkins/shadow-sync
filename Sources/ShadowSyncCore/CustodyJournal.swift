@@ -180,10 +180,9 @@ struct CustodyJournal: Equatable, Sendable {
               b.receipt - b.kill <= UInt64(ChildProcessBudget.seconds(1) * 1_000_000_000),
               inputSHA256.map({ CustodyWire.hex($0, bytes: 32) }) ?? true,
               CustodyWire.hex(resourcesSHA256, bytes: 32) else { throw CustodyRecordError.invalidRecord }
-        if authority == .observation && ![CustodyCommandKind.launchctlRead, .signatureCheck].contains(kind) {
+        guard authority.permits(kind: kind), !authority.isInstallationStaged || inputSHA256 != nil else {
             throw CustodyRecordError.invalidRecord
         }
-        if kind == .launchctlMutation && authority != .lifecycleMutation { throw CustodyRecordError.invalidRecord }
         var roles: Set<CustodyDescriptorClaim.Role> = [.state, .namespace, .lifecycle]
         if authority.needsOperation { roles.insert(.operation) }
         if authority == .mutation { roles.insert(.run) }
@@ -282,8 +281,7 @@ struct CustodyCatalogEntry: Equatable, Sendable {
               let mode = CustodyAuthorityMode(rawValue: try CustodyWire.text(v["authority"])) else { throw CustodyRecordError.invalidRecord }
         self.kind = kind; authority = mode
         guard [requestID, scopeID, bootID].allSatisfy(RunIdentity.isValid), CustodyWire.hex(releaseSHA256, bytes: 32),
-              v["journal"] == .string(filename), mode != .observation || [.launchctlRead, .signatureCheck].contains(kind),
-              kind != .launchctlMutation || mode == .lifecycleMutation else { throw CustodyRecordError.invalidRecord }
+              v["journal"] == .string(filename), mode.permits(kind: kind) else { throw CustodyRecordError.invalidRecord }
     }
 }
 

@@ -19,7 +19,8 @@ let package = Package(
         .target(
             name: "ShadowSyncCore",
             dependencies: ["ShadowSyncCatalog"],
-            path: "Sources/ShadowSyncCore"
+            path: "Sources/ShadowSyncCore",
+            linkerSettings: [.linkedLibrary("bsm")]
         ),
         .executableTarget(
             name: "ShadowSyncApp",

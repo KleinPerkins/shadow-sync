@@ -7,6 +7,8 @@ final class CustodyHelperExecutable: @unchecked Sendable {
     let path: String
     let releaseSHA256: String
     private let account: EffectiveAccount
+    private let owner: uid_t
+    private let lifecyclePublisher: LifecyclePublisher?
     private let snapshot: PublisherExecutableSnapshot
     private let publisher: PublisherCodeVerifier.Identity?
     private let files: [PolicyAuthorityFile]
@@ -14,16 +16,19 @@ final class CustodyHelperExecutable: @unchecked Sendable {
     #if SHADOW_SYNC_TESTING
     private let fixture: Bool
     private var custodianFixture = false
+    private var installationFixtureRoot: String?
     private var discoveryFixture = false
     private var discoveryFixtureGraphs: PolicyAuthorityFile?
     #endif
 
     private init(path: String, release: String, account: EffectiveAccount,
                  snapshot: PublisherExecutableSnapshot, publisher: PublisherCodeVerifier.Identity?,
-                 files: [PolicyAuthorityFile], graphResource: PolicyAuthorityFile? = nil) {
+                 files: [PolicyAuthorityFile], graphResource: PolicyAuthorityFile? = nil,
+                 owner: uid_t? = nil, lifecyclePublisher: LifecyclePublisher? = nil) {
         self.path = path; releaseSHA256 = release; self.account = account
         self.snapshot = snapshot; self.publisher = publisher; self.files = files
         self.graphResource = graphResource
+        self.owner = owner ?? account.uid; self.lifecyclePublisher = lifecyclePublisher
         #if SHADOW_SYNC_TESTING
         fixture = publisher == nil
         #endif
@@ -51,6 +56,41 @@ final class CustodyHelperExecutable: @unchecked Sendable {
             publisher: publisher, files: [info, contract, seal, graphs], graphResource: graphs)
         try result.revalidate(); return result
     }
+    /// A separate source-free coordinator role; installed application bootstrap
+    /// keeps its canonical-location requirement. No decoded path grants this role.
+    static func lifecycle(_ publisher: LifecyclePublisher) throws -> CustodyHelperExecutable {
+        let value = try publisher.custodianBootstrap()
+        let result = Self(path: value.path, release: publisher.releaseSHA256, account: publisher.account,
+            snapshot: value.snapshot, publisher: value.identity, files: [], graphResource: value.graphs,
+            owner: value.owner, lifecyclePublisher: publisher)
+        try result.revalidate(); return result
+    }
+    var isLifecycleCoordinator: Bool { lifecyclePublisher != nil }
+    func validateInstallationPublisher(_ transaction: InstallationTransaction) throws {
+        try revalidate()
+        if let lifecyclePublisher {
+            let identity = try lifecyclePublisher.installationIdentity()
+            let code = identity.coordinatorCode
+            guard transaction.sourceReleaseDigest == identity.sourceReleaseDigest,
+                  transaction.candidate == (transaction.intent == .remove ? nil : identity.candidate),
+                  transaction.coordinator.team == code.team,
+                  transaction.coordinator.identifier == code.identifier,
+                  transaction.coordinator.cdHash == code.codeDirectory.map({ String(format: "%02x", $0) }).joined() else {
+                throw CustodyRecordError.fenced
+            }
+        } else {
+            #if SHADOW_SYNC_TESTING
+            // Existing isolated fixture executable, never a production publisher.
+            guard fixture, transaction.sourceReleaseDigest == releaseSHA256,
+                  transaction.candidate == (try testingBoundInstallationCandidate()),
+                  transaction.coordinator.team == ReleaseIdentity.publisherTeamIdentifier,
+                  transaction.coordinator.identifier == LifecyclePublisher.identifier,
+                  transaction.coordinator.cdHash == transaction.candidate?.coordinatorCDHash else { throw CustodyRecordError.fenced }
+            #else
+            throw CustodyRecordError.fenced
+            #endif
+        }
+    }
     func productionGraphResource() throws -> PolicyAuthorityFile {
         guard publisher != nil, let graphResource else { throw PublisherPolicyError.unavailable }
         try revalidate()
@@ -58,12 +98,14 @@ final class CustodyHelperExecutable: @unchecked Sendable {
     }
     func revalidate() throws {
         guard account == (try EffectiveAccount.current()),
-              snapshot == (try PublisherExecutableSnapshot.capture(path: path, owner: account.uid)) else { throw PublisherPolicyError.unavailable }
+              snapshot == (try PublisherExecutableSnapshot.capture(path: path, owner: owner)) else { throw PublisherPolicyError.unavailable }
         for file in files { try file.revalidate() }
         #if SHADOW_SYNC_TESTING
         try discoveryFixtureGraphs?.revalidate()
         #endif
-        if let publisher {
+        if let lifecyclePublisher {
+            try lifecyclePublisher.revalidate()
+        } else if let publisher {
             let app = account.homeDirectory + "/Applications/ShadowSync.app"
             let (_, current) = try PublisherCodeVerifier.verifiedStatic(path: app, identifier: ReleaseIdentity.bundleIdentifier, team: publisher.team)
             guard current == publisher else { throw PublisherPolicyError.unavailable }
@@ -92,6 +134,32 @@ final class CustodyHelperExecutable: @unchecked Sendable {
         return [path, "--shadow-sync-command-custodian"]
     }
     #if SHADOW_SYNC_TESTING
+    func bindTestingInstallationSource(root: String) throws {
+        guard fixture, installationFixtureRoot == nil else { throw CustodyRecordError.fenced }
+        installationFixtureRoot = try TestIsolation.validateRoot(root)
+    }
+    private func testingBoundInstallationCandidate() throws -> InstallationCandidate {
+        let fixed = try Self.testingInstallationCandidate()
+        guard let root = installationFixtureRoot else { return fixed }
+        let path = root + "/candidate/ShadowSync.app"
+        var node = stat()
+        if lstat(path, &node) != 0 {
+            guard errno == ENOENT else { throw CustodyRecordError.fenced }; return fixed
+        }
+        guard try TestIsolation.validateRoot(root) == root else { throw CustodyRecordError.fenced }
+        let artifact = try BundleArtifactIdentity.inspect(bundlePath: path, requireProduction: true)
+        guard artifact.release == fixed.release else { throw CustodyRecordError.fenced }
+        return InstallationCandidate(release: artifact.release, bundleDigest: artifact.canonicalSHA256,
+            appCDHash: fixed.appCDHash, coordinatorCDHash: fixed.coordinatorCDHash)
+    }
+    static func testingInstallationCandidate() throws -> InstallationCandidate {
+        let fixture = try InstallationControlFixtures.transaction().candidate!
+        let release = try ReleaseIdentity(sourceRevision: fixture.release.sourceRevision,
+            sourceInputSHA256: fixture.release.sourceInputSHA256,
+            releaseContractSHA256: String(repeating: "c", count: 64), architecture: "arm64", buildMode: "production")
+        return InstallationCandidate(release: release, bundleDigest: fixture.bundleDigest,
+            appCDHash: fixture.appCDHash, coordinatorCDHash: fixture.coordinatorCDHash)
+    }
     var testingAutomaticAdmission: Bool { custodianFixture }
     static func testingDiscovery(home: String? = nil) throws -> CustodyHelperExecutable {
         let result = try testing(releaseSHA256: String(repeating: "c", count: 64))
@@ -180,15 +248,42 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     static let shared = RetainedCleanupRegistry()
     fileprivate final class ResultCell: @unchecked Sendable {
         private let mutex = NSLock()
+        private var completion = DispatchGroup()
+        private var completionPublished = false
         private var value = CustodyRegistryResult(phase: .starting, reason: nil, journal: nil, stdout: Data(), stderr: Data())
         private var receipt: UInt64 = 0
+        init() { completion.enter() }
         // This lock protects value copies only: no disk I/O, queue waits or callbacks.
         func publish(_ result: CustodyRegistryResult, deadline: UInt64) {
-            mutex.lock(); value = result; receipt = deadline; mutex.unlock()
+            mutex.lock()
+            let terminal = result.phase == .finished || result.phase == .cleanupPending
+            let wake = !completionPublished && (terminal || receipt != deadline) ? completion : nil
+            value = result; receipt = deadline
+            if terminal { completionPublished = true }
+            else if wake != nil {
+                // Cancellation can shorten the receipt while the result is
+                // still nonterminal. Replace the notification under this same
+                // lock, so each waiter captures its deadline and generation.
+                completion = DispatchGroup(); completion.enter()
+            }
+            mutex.unlock()
+            // Pending is caller-terminal while the registry retains the child.
+            // Each captured generation wakes every waiter exactly once.
+            wake?.leave()
         }
-        func read() -> (CustodyRegistryResult, UInt64) {
-            mutex.lock(); defer { mutex.unlock() }; return (value, receipt)
+        func read() -> (CustodyRegistryResult, UInt64, DispatchGroup) {
+            mutex.lock(); defer { mutex.unlock() }; return (value, receipt, completion)
         }
+        #if SHADOW_SYNC_TESTING
+        private var waitBarriers: [CustodyLeaseTestingBarrier] = []
+        func pauseWaiters(_ barriers: [CustodyLeaseTestingBarrier]) {
+            mutex.lock(); waitBarriers = barriers; mutex.unlock()
+        }
+        func takeWaitBarrier() -> CustodyLeaseTestingBarrier? {
+            mutex.lock(); defer { mutex.unlock() }
+            return waitBarriers.isEmpty ? nil : waitBarriers.removeFirst()
+        }
+        #endif
     }
     final class Handle: @unchecked Sendable {
         fileprivate let key: String
@@ -204,7 +299,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         /// A deadline response leaves actual ownership in that registry.
         func wait() -> CustodyRegistryResult {
             while true {
-                let (value, deadline) = cell.read()
+                let (value, deadline, notification) = cell.read()
                 if value.phase == .finished || value.phase == .cleanupPending { return value }
                 if DispatchTime.now().uptimeNanoseconds >= deadline {
                     registry.queue.async {
@@ -213,9 +308,17 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                     return CustodyRegistryResult(phase: .cleanupPending, reason: value.reason ?? .timeout,
                         journal: nil, stdout: value.stdout, stderr: value.stderr, trace: value.trace)
                 }
-                usleep(10_000)
+                // Publication wakes the caller immediately; the original
+                // or shortened monotonic receipt bounds a blocked registry.
+                #if SHADOW_SYNC_TESTING
+                _ = cell.takeWaitBarrier()?.pause()
+                #endif
+                _ = notification.wait(timeout: DispatchTime(uptimeNanoseconds: deadline))
             }
         }
+        #if SHADOW_SYNC_TESTING
+        func testingPauseWaiters(_ barriers: [CustodyLeaseTestingBarrier]) { cell.pauseWaiters(barriers) }
+        #endif
     }
     fileprivate final class Entry {
         let cell = ResultCell()
@@ -249,6 +352,48 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             DiscoveryFixtureDiagnostic.record(.registry, stage: stage,
                 started: diagnosticStarted, deadline: resources.request.budget.work)
         }
+        private var diagnosticFailures: UInt8 = 0
+        func diagnosticFailure(_ error: Error, retiring: Bool) {
+            guard command != nil, resources.request.kind == .policyClassify else { return }
+            let flag: UInt8 = retiring ? 2 : 1
+            guard diagnosticFailures & flag == 0 else { return }
+            diagnosticFailures |= flag
+            // Closed numeric observations only; never format arbitrary errors,
+            // paths, requests or child output. Retained polling emits at most
+            // one start and one retirement failure for this entry.
+            let code: UInt64
+            var systemCode: UInt64 = 0
+            if let error = error as? CustodyRecordError {
+                switch error {
+                case .invalidRecord: code = 1
+                case .invalidTransition: code = 2
+                case .conflict: code = 3
+                case .fenced: code = 4
+                case .busy: code = 5
+                case .unsafeMetadata: code = 6
+                case .persistence(let value): code = 7; systemCode = UInt64(UInt32(bitPattern: value))
+                case .committedCleanupFailure(let value): code = 8; systemCode = UInt64(UInt32(bitPattern: value))
+                case .injectedFailure: code = 9
+                }
+            } else { code = 255 }
+            var bits: UInt64 = retiring ? 64 : 0
+            if metadataAttempted { bits |= 1 }; if metadata != nil { bits |= 2 }
+            if spawnAttempted { bits |= 4 }; if anchor != nil { bits |= 8 }
+            if owner != nil { bits |= 16 }; if resumed { bits |= 32 }
+            if terminal != nil { bits |= 1 << 48 }; if statusEnded { bits |= 1 << 49 }
+            if stdoutEnded { bits |= 1 << 50 }; if stderrEnded { bits |= 1 << 51 }
+            if traceEnded { bits |= 1 << 52 }
+            if let owner {
+                switch owner.observation {
+                case .running: bits |= 1 << 53
+                case .reaped: bits |= 2 << 53
+                case .ownershipFailure: bits |= 3 << 53
+                }
+            }
+            DiscoveryFixtureDiagnostic.record(.registry, stage: .failure,
+                started: diagnosticStarted, deadline: resources.request.budget.work,
+                resultBits: bits | (code << 8) | (systemCode << 16))
+        }
         #endif
         init(_ resources: CustodyRequestResources, _ helper: CustodyHelperExecutable, command: PreparedCustodyCommand?) throws {
             self.resources = resources; self.helper = helper; self.command = command
@@ -262,6 +407,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     }
     private let queue = DispatchQueue(label: "com.kleinperkins.shadow-sync.custody-registry")
     private var timer: DispatchSourceTimer?
+    private var timerMilliseconds: Int?
     private var entries: [String: Entry] = [:]
     private var order: [String] = []
     private var cursor = 0
@@ -275,6 +421,59 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         return !reservedIDs.isEmpty
     }
     private init() {}
+
+    final class InstallationRetirement: @unchecked Sendable {
+        private let registry: RetainedCleanupRegistry
+        private let closed: ClosedInstallationBorrowing
+        fileprivate init(registry: RetainedCleanupRegistry, closed: ClosedInstallationBorrowing) {
+            self.registry = registry; self.closed = closed
+        }
+        func revalidate(for owner: InstallationTransactionOwner) throws {
+            guard closed.belongs(to: owner) else { throw CustodyRecordError.fenced }
+            try registry.validateInstallationRetirement(closed)
+        }
+    }
+    private func validateInstallationRetirement(_ closed: ClosedInstallationBorrowing) throws {
+        // No owner mutex is held while taking the registry's reservation lock.
+        // reservedIDs includes queued admission and remains present until remove.
+        // Conversely the closed family cannot reach zero while any prepared,
+        // registry or inherited-resource parent alias still owns its leases.
+        try validateActualInstallationRetirement { try closed.validate() }
+    }
+    private func validateActualInstallationRetirement(_ validateClosed: () throws -> Void) throws {
+        try validateClosed()
+        reservationMutex.lock()
+        let empty = reservedIDs.isEmpty && outputReserved == 0
+        reservationMutex.unlock()
+        guard empty else { throw CustodyRecordError.fenced }
+        try validateClosed()
+    }
+    func installationRetirement(after closed: ClosedInstallationBorrowing) throws -> InstallationRetirement {
+        try validateInstallationRetirement(closed)
+        return InstallationRetirement(registry: self, closed: closed)
+    }
+
+    final class InstallationStagedStartRetirement: @unchecked Sendable {
+        private let registry: RetainedCleanupRegistry
+        private let closed: ClosedInstallationStagedStarts
+        fileprivate init(registry: RetainedCleanupRegistry, closed: ClosedInstallationStagedStarts) {
+            self.registry = registry; self.closed = closed
+        }
+        func revalidate(for owner: InstallationTransactionOwner) throws {
+            guard closed.belongs(to: owner) else { throw CustodyRecordError.fenced }
+            try registry.validateInstallationStagedStartRetirement(closed)
+        }
+    }
+    private func validateInstallationStagedStartRetirement(_ closed: ClosedInstallationStagedStarts) throws {
+        // The same actual-removal accounting used by exclusive transfer. Public
+        // finished/terminal observations are deliberately not inputs to this API.
+        try validateActualInstallationRetirement { try closed.validate() }
+    }
+    func installationStagedStartRetirement(after closed: ClosedInstallationStagedStarts)
+        throws -> InstallationStagedStartRetirement {
+        try validateInstallationStagedStartRetirement(closed)
+        return InstallationStagedStartRetirement(registry: self, closed: closed)
+    }
 
     func start(_ command: PreparedCustodyCommand) throws -> Handle {
         // One-use claim and reservation are in-memory only. The serial owner
@@ -326,6 +525,9 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                 #endif
                 try self.spawn(entry)
             } catch {
+                #if SHADOW_SYNC_TESTING
+                entry.diagnosticFailure(error, retiring: false)
+                #endif
                 if !entry.metadataAttempted {
                     // No metadata transition or spawn was attempted; no active
                     // transaction can be forgotten by releasing this reservation.
@@ -403,9 +605,26 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         #endif
     }
     private func ensureTimer() {
-        guard timer == nil, !entries.isEmpty else { return }
+        guard !entries.isEmpty else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let interval = entries.values.contains {
+            !$0.cancelled && $0.phase != .cleanupPending && now < $0.state.budget.work
+        } ? 2 : 20
+        if let timer {
+            if timerMilliseconds != interval {
+                timer.schedule(deadline: .now() + .milliseconds(interval), repeating: .milliseconds(interval),
+                    leeway: .milliseconds(interval == 2 ? 1 : 5))
+                timerMilliseconds = interval
+            }
+            return
+        }
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + .milliseconds(20), repeating: .milliseconds(20), leeway: .milliseconds(5))
+        // Active admission uses short bounded polls inside the unchanged 750ms
+        // catalog budget. Draining/pending work keeps the prior 20ms cadence;
+        // an unresolved transaction must not cause indefinite fast polling.
+        timer.schedule(deadline: .now() + .milliseconds(interval), repeating: .milliseconds(interval),
+            leeway: .milliseconds(interval == 2 ? 1 : 5))
+        timerMilliseconds = interval
         timer.setEventHandler { [weak self] in self?.tick() }; self.timer = timer; timer.resume()
     }
     private func killBootstrap(_ entry: Entry) {
@@ -482,80 +701,96 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     }
     private func consume(_ entry: Entry, budget: inout Int) {
         guard entry.resumed else { return }
-        #if SHADOW_SYNC_TESTING
-        let deferStatus = entry.deferredRead == .statusAfterAdmission && entry.state.admitted
-        let deferOutput = entry.deferredRead == .outputUntilReleased
-        #else
-        let deferStatus = false, deferOutput = false
-        #endif
-        // A poisoned status stream cannot starve output drainage or be repaired
-        // by a later valid frame. Continue bounded raw drainage to its real EOF.
-        if !deferStatus, !entry.statusEnded, budget > 0 {
-            do {
-                switch try entry.resources.readStatus() {
-                case .wouldBlock: break
-                case .end:
-                    entry.statusEnded = true
-                    if !entry.statusPoisoned { try entry.decoder.finish() }
-                case .bytes(let bytes):
-                    budget -= bytes.count
-                    if !entry.statusPoisoned {
-                        for frame in try entry.decoder.append(bytes) {
-                            let message = try CustodyMessage.decode(frame, expected: entry.resources.request.binding, channel: .status)
-                            try entry.state.accept(message, now: DispatchTime.now().uptimeNanoseconds)
-                            switch message.event {
-                            case .ready:
-                                #if SHADOW_SYNC_TESTING
-                                entry.diagnostic(.ready)
-                                #endif
-                                if !entry.cancelled && entry.phase != .cleanupPending { entry.phase = .ready; admitIfPrepared(entry) }
-                            case .pending: pending(entry, reason: entry.reason ?? .timeout)
-                            case .terminal:
-                                entry.terminal = message
-                                #if SHADOW_SYNC_TESTING
-                                entry.diagnostic(.terminal)
-                                #endif
-                            default: throw CustodyProtocolError.invalidSequence
+        // Preserve each entry's prior maximum byte entitlement and the shared
+        // tick budget. A second nonblocking sweep observes already-readable EOF
+        // after small terminal/output frames without waiting another timer tick.
+        // At most eight reads prevents a short-byte producer from monopolizing
+        // this queue. EAGAIN, EOF and read errors end that stream's turn.
+        var quantum = 4 * 16_388
+        var statusReadable = true, outputReadable = true, errorReadable = true, traceReadable = true
+        for _ in 0..<2 where budget > 0 && quantum > 0 {
+            #if SHADOW_SYNC_TESTING
+            let deferStatus = entry.deferredRead == .statusAfterAdmission && entry.state.admitted
+            let deferOutput = entry.deferredRead == .outputUntilReleased
+            #else
+            let deferStatus = false, deferOutput = false
+            #endif
+            // A poisoned status stream cannot starve output drainage or be repaired
+            // by a later valid frame. Continue bounded raw drainage to its real EOF.
+            if !deferStatus, statusReadable, !entry.statusEnded, budget > 0, quantum > 0 {
+                do {
+                    switch try entry.resources.readStatus(maximum: min(16_388, budget, quantum)) {
+                    case .wouldBlock: statusReadable = false
+                    case .end:
+                        statusReadable = false; entry.statusEnded = true
+                        if !entry.statusPoisoned { try entry.decoder.finish() }
+                    case .bytes(let bytes):
+                        budget -= bytes.count; quantum -= bytes.count
+                        if !entry.statusPoisoned {
+                            for frame in try entry.decoder.append(bytes) {
+                                let message = try CustodyMessage.decode(frame, expected: entry.resources.request.binding, channel: .status)
+                                try entry.state.accept(message, now: DispatchTime.now().uptimeNanoseconds)
+                                switch message.event {
+                                case .ready:
+                                    #if SHADOW_SYNC_TESTING
+                                    entry.diagnostic(.ready)
+                                    #endif
+                                    if !entry.cancelled && entry.phase != .cleanupPending { entry.phase = .ready; admitIfPrepared(entry) }
+                                case .pending: pending(entry, reason: entry.reason ?? .timeout)
+                                case .terminal:
+                                    entry.terminal = message
+                                    #if SHADOW_SYNC_TESTING
+                                    entry.diagnostic(.terminal)
+                                    #endif
+                                default: throw CustodyProtocolError.invalidSequence
+                                }
                             }
                         }
                     }
+                } catch {
+                    statusReadable = false
+                    entry.statusPoisoned = true; cancel(entry, reason: .protocolFault); pending(entry, reason: .protocolFault)
                 }
-            } catch {
-                entry.statusPoisoned = true; cancel(entry, reason: .protocolFault); pending(entry, reason: .protocolFault)
             }
-        }
-        for isError in [false, true] where budget > 0 && !deferOutput {
-            if isError ? entry.stderrEnded : entry.stdoutEnded { continue }
-            do {
-                switch try entry.resources.readOutput(error: isError) {
-                case .wouldBlock: break
-                case .end: if isError { entry.stderrEnded = true } else { entry.stdoutEnded = true }
-                case .bytes(let bytes):
-                    budget -= bytes.count
-                    let limit = Int(isError ? entry.resources.request.stderrLimit : entry.resources.request.stdoutLimit)
-                    let count = isError ? entry.stderr.count : entry.stdout.count
-                    if count + bytes.count > limit {
-                        entry.outputPoisoned = true; cancel(entry, reason: .outputLimit); pending(entry, reason: .outputLimit)
+            for isError in [false, true] where budget > 0 && quantum > 0 && !deferOutput {
+                if isError ? (entry.stderrEnded || !errorReadable) : (entry.stdoutEnded || !outputReadable) { continue }
+                do {
+                    switch try entry.resources.readOutput(error: isError, maximum: min(16_388, budget, quantum)) {
+                    case .wouldBlock: if isError { errorReadable = false } else { outputReadable = false }
+                    case .end: if isError { errorReadable = false; entry.stderrEnded = true } else { outputReadable = false; entry.stdoutEnded = true }
+                    case .bytes(let bytes):
+                        budget -= bytes.count; quantum -= bytes.count
+                        let limit = Int(isError ? entry.resources.request.stderrLimit : entry.resources.request.stdoutLimit)
+                        let count = isError ? entry.stderr.count : entry.stdout.count
+                        if count + bytes.count > limit {
+                            entry.outputPoisoned = true; cancel(entry, reason: .outputLimit); pending(entry, reason: .outputLimit)
+                        }
+                        let retained = bytes.prefix(max(0, limit - count))
+                        if isError { entry.stderr.append(contentsOf: retained) } else { entry.stdout.append(contentsOf: retained) }
                     }
-                    let retained = bytes.prefix(max(0, limit - count))
-                    if isError { entry.stderr.append(contentsOf: retained) } else { entry.stdout.append(contentsOf: retained) }
+                } catch {
+                    if isError { errorReadable = false } else { outputReadable = false }
+                    entry.outputPoisoned = true; cancel(entry, reason: .ioFailure); pending(entry, reason: .ioFailure)
                 }
-            } catch { entry.outputPoisoned = true; cancel(entry, reason: .ioFailure); pending(entry, reason: .ioFailure) }
-        }
-        if !deferOutput, !entry.traceEnded, budget > 0 {
-            do {
-                switch try entry.resources.readTrace() {
-                case .wouldBlock: break
-                case .end: entry.traceEnded = true
-                case .bytes(let bytes):
-                    budget -= bytes.count
-                    let limit = Int(entry.resources.request.traceLimit)
-                    if entry.trace.count + bytes.count > limit {
-                        entry.outputPoisoned = true; cancel(entry, reason: .outputLimit); pending(entry, reason: .outputLimit)
+            }
+            if !deferOutput, traceReadable, !entry.traceEnded, budget > 0, quantum > 0 {
+                do {
+                    switch try entry.resources.readTrace(maximum: min(16_388, budget, quantum)) {
+                    case .wouldBlock: traceReadable = false
+                    case .end: traceReadable = false; entry.traceEnded = true
+                    case .bytes(let bytes):
+                        budget -= bytes.count; quantum -= bytes.count
+                        let limit = Int(entry.resources.request.traceLimit)
+                        if entry.trace.count + bytes.count > limit {
+                            entry.outputPoisoned = true; cancel(entry, reason: .outputLimit); pending(entry, reason: .outputLimit)
+                        }
+                        entry.trace.append(contentsOf: bytes.prefix(max(0, limit - entry.trace.count)))
                     }
-                    entry.trace.append(contentsOf: bytes.prefix(max(0, limit - entry.trace.count)))
+                } catch {
+                    traceReadable = false
+                    entry.outputPoisoned = true; cancel(entry, reason: .ioFailure); pending(entry, reason: .ioFailure)
                 }
-            } catch { entry.outputPoisoned = true; cancel(entry, reason: .ioFailure); pending(entry, reason: .ioFailure) }
+            }
         }
     }
     private func finish(_ entry: Entry, proof: CustodyRetirementProof) {
@@ -568,7 +803,12 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             entry.publish()
             entry.resources.closeControl(); entry.mapping?.releaseChildCopies()
             remove(entry)
-        } catch { pending(entry, reason: .persistenceFailure) }
+        } catch {
+            #if SHADOW_SYNC_TESTING
+            entry.diagnosticFailure(error, retiring: true)
+            #endif
+            pending(entry, reason: .persistenceFailure)
+        }
     }
     private func tick() {
         let now = DispatchTime.now().uptimeNanoseconds
@@ -634,7 +874,8 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             }
         }
         for entry in entries.values { entry.publish() }
-        if entries.isEmpty { timer?.cancel(); timer = nil; cursor = 0 }
+        if entries.isEmpty { timer?.cancel(); timer = nil; timerMilliseconds = nil; cursor = 0 }
+        else { ensureTimer() }
     }
     #if SHADOW_SYNC_TESTING
     enum TestReadDeferral { case statusAfterAdmission, outputUntilReleased }
@@ -655,10 +896,26 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     func testingReleaseDeferredRead(_ handle: Handle) {
         queue.sync { entries[handle.key]?.deferredRead = nil }
     }
+    /// One serialized observation after bytes and EOF are already available.
+    /// No timer race or elapsed-time threshold can satisfy this fixture proof.
+    func testingReleaseDeferredReadAndTick(_ handle: Handle) -> Bool {
+        queue.sync {
+            guard let entry = entries[handle.key] else { return false }
+            entry.deferredRead = nil
+            tick()
+            return entries[handle.key] == nil && handle.snapshot().phase == .finished
+        }
+    }
     func testingDelayQueue() {
         let entered = DispatchSemaphore(value: 0)
         queue.async { entered.signal(); usleep(1_500_000) }
         _ = entered.wait(timeout: .now() + .seconds(3))
+    }
+    func testingCancelAndPauseQueue(_ handle: Handle, _ barrier: CustodyLeaseTestingBarrier) {
+        queue.async {
+            if let entry = self.entries[handle.key] { self.cancel(entry, reason: .cancelled) }
+            _ = barrier.pause()
+        }
     }
     enum TestCut { case beforeSpawn, afterAnchor, afterOwner }
     private var nextTestCut: TestCut?
@@ -713,7 +970,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             for entry in entries.values {
                 entry.resources.closeControl(); entry.mapping?.releaseChildCopies(); entry.publish()
             }
-            timer?.cancel(); timer = nil
+            timer?.cancel(); timer = nil; timerMilliseconds = nil
             for entry in Array(entries.values) { remove(entry) }
         }
     }

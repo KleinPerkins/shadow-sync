@@ -130,6 +130,22 @@ class AppWorkflowTests(unittest.TestCase):
                  'Sources/ShadowSyncCore/HostControl.swift',
                  'Sources/ShadowSyncCore/RepositoryPolicy.swift',
                  'Sources/ShadowSyncCore/RepositoryAuthorityStore.swift',
+                 'Sources/ShadowSyncCore/InstallationControlRecord.swift',
+                 'Sources/ShadowSyncCore/InstallationFutureJournal.swift',
+                 'Sources/ShadowSyncCore/LifecyclePublisher.swift',
+                 'Sources/ShadowSyncCore/LifecycleCoordinatorMain.swift',
+                 'Sources/ShadowSyncCore/LegacyInstallationRelease.swift',
+                 'Sources/ShadowSyncCore/FreshStateInitialization.swift',
+                 'Sources/ShadowSyncCore/CustodyCatalog.swift',
+                 'Sources/ShadowSyncCore/CommandCustodyContext.swift',
+                 'Sources/ShadowSyncCore/CommandCustodian.swift',
+                 'Sources/ShadowSyncCore/RetainedCleanupRegistry.swift',
+                 'Sources/ShadowSyncCore/PublisherPolicyResources.swift',
+                 'Sources/ShadowSyncCore/PolicyAuthorityFile.swift',
+                 'Sources/ShadowSyncCore/HostPolicyBinding.swift',
+                 'Resources/source-export.json', 'config/ci-suites.json',
+                 'Tests/ShadowSyncSelfTests/CISuites.swift',
+                 'Tests/Fixtures/production-test-markers.json',
                  'Sources/ShadowSyncApp/AppLifecycleRouter.swift',
                  'Sources/ShadowSyncLifecycleCoordinator/main.swift',
                  'Resources/PolicyAdapter.py', 'Resources/awa-contract.json',
@@ -138,6 +154,9 @@ class AppWorkflowTests(unittest.TestCase):
         for path in paths:
             with self.subTest(path=path):
                 self.assertEqual(self.exercise(file_entries=[{'filename': path}]), (0, [], []))
+                self.assertEqual(self.exercise(file_entries=[{
+                    'filename': 'Tests/test_moved.py', 'previous_filename': path,
+                }]), (0, [], []))
 
     def test_full_file_roster_includes_both_names_of_a_rename(self):
         self.assertEqual(app.complete_changed_files({'changed_files': 2}, [

@@ -26,7 +26,27 @@ enum CustodyCommandKind: String, CaseIterable, Sendable {
 enum CustodyAuthorityMode: String, Sendable {
     case read, mutation, lifecycleMutation = "lifecycle-mutation"
     case observation
+    case installationStagedStart = "installation-staged-start"
+    case installationStagedStop = "installation-staged-stop"
     var needsOperation: Bool { self != .observation }
+    var isInstallationStaged: Bool {
+        self == .installationStagedStart || self == .installationStagedStop
+    }
+    // Representation only. Actual admission still needs the live owner, durable
+    // action binding and independently reconstructed fixed candidate adapter.
+    func permits(kind: CustodyCommandKind) -> Bool {
+        if self == .observation { return [.launchctlRead, .signatureCheck].contains(kind) }
+        if isInstallationStaged { return [.launchctlRead, .signatureCheck, .launchctlMutation].contains(kind) }
+        return kind != .launchctlMutation || self == .lifecycleMutation
+    }
+    func permits(operation: LifecycleLaunchCommand.Operation) -> Bool {
+        switch self {
+        case .installationStagedStart: return operation == .bootstrap || operation == .kickstart
+        case .installationStagedStop: return operation == .bootout
+        case .lifecycleMutation: return true
+        default: return false
+        }
+    }
 }
 
 struct CustodyBinding: Equatable, Sendable {
@@ -109,6 +129,19 @@ struct CustodyBudget: Equatable, Sendable {
               receipt - kill <= (try Self.cleanupDuration(permittedReceiptSeconds, maximum: 1)) else {
             throw CustodyProtocolError.invalidBudget
         }
+    }
+
+    /// Preserve an existing caller's absolute ceiling through preparation,
+    /// target execution, cleanup and receipt waiting. A short caller may leave
+    /// cleanup pending; clipping never invents successful retirement.
+    func clipped(to deadline: MonotonicDeadline, kind: CustodyCommandKind,
+                 permittedWorkSeconds: TimeInterval) throws -> Self {
+        let limit = deadline.absoluteUptimeNanoseconds
+        let bounded = Self(issued: issued, work: min(work, limit), term: min(term, limit),
+            kill: min(kill, limit), receipt: min(receipt, limit))
+        try bounded.validate(kind: kind, permittedWorkSeconds: permittedWorkSeconds,
+            now: DispatchTime.now().uptimeNanoseconds)
+        return bounded
     }
 
     /// Early cancellation clips all subsequent deadlines. Repeated calls never extend them.
@@ -310,10 +343,20 @@ struct UnvalidatedCustodyRequest: Equatable, Sendable {
               roles.map(\.number) == roles.map(\.number).sorted(),
               Set(roles).contains(.operation) == authority.needsOperation,
               !roles.contains(.run) || authority == .mutation,
-              authority != .observation || [.launchctlRead, .signatureCheck].contains(kind),
-              kind != .launchctlMutation || authority == .lifecycleMutation,
+              authority.permits(kind: kind),
               !roles.contains(.traceOutput) || kind == .discoveryGit,
               descriptors.allSatisfy({ $0.mode <= 0xffff }) else { throw CustodyProtocolError.invalidMessage }
+        if authority.isInstallationStaged {
+            // No code, Git, run, trace or caller-liveness descriptor can be
+            // smuggled through an otherwise well-formed staged observation.
+            let expected = required.union([.operation, .input])
+            guard Set(roles) == expected, inputSHA256 != nil else { throw CustodyProtocolError.invalidMessage }
+            if kind == .launchctlMutation {
+                guard let first = arguments.first,
+                      let operation = LifecycleLaunchCommand.Operation(rawValue: first),
+                      authority.permits(operation: operation) else { throw CustodyProtocolError.invalidMessage }
+            }
+        }
         // File types, ownership, ACLs, link policy, standard streams, exact allowed
         // roles and per-kind limits are authenticated by the adapter, not this parser.
     }
@@ -564,6 +607,13 @@ enum CustodyWire {
                 try put("["); for (i, v) in a.enumerated() { if i > 0 { try put(",") }; try render(v) }; try put("]")
             case let .string(s):
                 try put("\"")
+                // Canonical receipt keys and digests usually need no escaping.
+                // Append their exact UTF-8 once instead of allocating a String
+                // and extending Data for every scalar. Quotes, backslashes and
+                // ASCII controls still take the existing canonical escape path.
+                if !s.utf8.contains(where: { $0 < 32 || $0 == 34 || $0 == 92 }) {
+                    try put(s); try put("\""); return
+                }
                 for scalar in s.unicodeScalars {
                     switch scalar.value {
                     case 34: try put("\\\""); case 92: try put("\\\\")

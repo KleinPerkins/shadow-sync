@@ -27,8 +27,8 @@ InvalidEvidence = coverage.InvalidEvidence
 MAX_FILES = 8192
 MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_SOURCE_BYTES = 256 * 1024 * 1024
-RUNNERS = {job: ('ubuntu-latest' if job == 'quality' else 'macos-26')
-           for job in coverage.JOBS}
+# Tooling includes native executable/custody fixtures; every job is macOS arm64.
+RUNNERS = {job: 'macos-26' for job in coverage.JOBS}
 
 
 def encode(value):
@@ -244,12 +244,12 @@ def make_plan(head_bytes, base_bytes, *, revision, run_id, run_attempt, source_s
         count = head['shards'][job]
         for index in range(count):
             units.append({'id': f'{job}-{index}', 'job': job, 'runner': RUNNERS[job],
-                          'architecture': 'arm64' if job != 'quality' else 'x64',
+                          'architecture': 'arm64',
                           'index': index, 'count': count, 'mode': 'shard',
                           'suites': partition(suites, index, count)})
         if mode == 'transition':
             units.append({'id': f'{job}-full', 'job': job, 'runner': RUNNERS[job],
-                          'architecture': 'arm64' if job != 'quality' else 'x64',
+                          'architecture': 'arm64',
                           'index': 0, 'count': 1, 'mode': 'full', 'suites': suites})
     return {'schema': 'shadow-sync-ci-shard-plan/v1', 'mode': mode,
             'revision': revision, 'run_id': run_id, 'run_attempt': run_attempt,

@@ -12,6 +12,16 @@ final class CustodyInheritedCommand {
     let account: EffectiveAccount
     let policy: PolicyCommandAuthority?
     let discovery: InheritedDiscoveryResources?
+    let installation: InstallationCommandBinding?
+    private var installationStore: CustodyCatalogStore?
+    private(set) var lifecycle: LifecycleLaunchAuthority?
+    var lifecycleCommand: LifecycleLaunchCommand? {
+        #if SHADOW_SYNC_TESTING
+        if let fixtureMode { return LifecycleLaunchCommand.fixture(mode: fixtureMode, account: account) }
+        #endif
+        return lifecycle?.command
+    }
+
     private(set) var frozenConfiguration: CustodyInheritedFrozenConfiguration?
     let statePath: String
     let descriptors: [CustodyDescriptorClaim.Role: OwnedFileDescriptor]
@@ -104,7 +114,20 @@ final class CustodyInheritedCommand {
         // ten-second ceiling is invalid for the two-second policy contract.
         let request = try UnvalidatedCustodyRequest.decode(raw, expected: binding,
             permittedWorkSeconds: kind == .discoveryGit ? DiscoveryGitCommand.maximumWorkSeconds : min(10, kind.maximumWorkSeconds))
+        // The wire and lease modes do not supply a durable staged command permit.
+        // Keep helper admission closed until the same-owner journal continuation,
+        // full sealed action chain and authenticated candidate stop are joined.
+        guard !request.authority.isInstallationStaged else { throw CustodyRecordError.fenced }
         let hasFrozenConfiguration = request.descriptors.contains { $0.role == .gitFile }
+        let installationInput = request.authority == .lifecycleMutation && request.kind == .launchctlRead && request.inputSHA256 != nil
+        // Coordinator roles cannot borrow repository authority. Mutation needs
+        // actual lifecycle leases and the independently validated closed adapter.
+        if helper.isLifecycleCoordinator {
+            guard (request.authority == .observation && [.launchctlRead, .signatureCheck].contains(request.kind))
+                || (request.authority == .lifecycleMutation && [.launchctlRead, .signatureCheck, .launchctlMutation].contains(request.kind)) else {
+                throw CustodyResourceError.invalidResource
+            }
+        }
         if discoveryFixture {
             guard fixture, !hasFrozenConfiguration,
                   request.kind == .policyClassify || request.kind == .discoveryGit else {
@@ -113,14 +136,14 @@ final class CustodyInheritedCommand {
         }
         // Production discovery v2 carries only sealed intent. Frozen resources
         // are created by this helper after policy; inherited 195/196 refuse.
-        var permittedKind = [.launchctlRead, .signatureCheck, .policyClassify, .systemGitConfig].contains(request.kind)
+        var permittedKind = [.launchctlRead, .launchctlMutation, .signatureCheck, .policyClassify, .systemGitConfig].contains(request.kind)
             || (request.kind == .discoveryGit && !hasFrozenConfiguration)
         #if SHADOW_SYNC_TESTING
         if fixture, !discoveryFixture, request.kind == .discoveryGit, request.traceLimit > 0 || hasFrozenConfiguration || request.arguments.first?.hasPrefix("serial-") == true { permittedKind = true }
         if fixture, request.kind == .policyClassify { permittedKind = true }
         #endif
         guard permittedKind, (request.inputSHA256 != nil) == (request.kind == .policyClassify
-                || hasFrozenConfiguration || (usesRealWire && request.kind == .discoveryGit)),
+                || hasFrozenConfiguration || installationInput || (usesRealWire && request.kind == .discoveryGit)),
               !hasFrozenConfiguration || request.kind == .discoveryGit,
               request.stdoutLimit <= (request.kind == .discoveryGit ? UInt64(DiscoveryGitCommand.stdoutLimit) : UInt64(LifecycleCommandRunner.outputLimit)),
               request.stderrLimit <= (request.kind == .discoveryGit ? UInt64(DiscoveryGitCommand.stderrLimit) : UInt64(LifecycleCommandRunner.outputLimit)) else {
@@ -132,6 +155,7 @@ final class CustodyInheritedCommand {
         if request.traceLimit > 0 { roles.insert(.traceOutput) }
         if request.kind == .policyClassify { roles.formUnion([.input, .code]) }
         if usesRealWire, request.kind == .discoveryGit { roles.insert(.input) }
+        if installationInput { roles.insert(.input) }
         if hasFrozenConfiguration { roles.formUnion([.input, .gitDirectory, .gitFile]) }
         guard Set(request.descriptors.map(\.role)) == roles,
               actual == Set(roles.map { Int32($0.number) }).union([0,1,2]) else {
@@ -141,6 +165,10 @@ final class CustodyInheritedCommand {
         // resources. Decoded metadata alone cannot authenticate input or code.
         sealedInput = request.inputSHA256 != nil ? try Self.readSealed(8, role: .input) : nil
         sealedCode = request.kind == .policyClassify ? try Self.readSealed(9, role: .code) : nil
+        if installationInput {
+            guard let sealedInput else { throw CustodyRecordError.fenced }
+            installation = try InstallationCommandBinding.decode(sealedInput)
+        } else { installation = nil }
         let inputHash = sealedInput.map(CustodyRecordBinding.digest), codeHash = sealedCode.map(CustodyRecordBinding.digest)
         guard request.inputSHA256 == inputHash,
               try CustodyRequestResources.resourceDigest(request.descriptors, input: inputHash, code: codeHash) == request.resourcesSHA256 else {
@@ -179,14 +207,15 @@ final class CustodyInheritedCommand {
                 fixtureMode = nil
             } else {
                 guard request.arguments.count == 1,
-                  ["complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay","deadline-before-control",
+                  ["installation-absent","complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay","deadline-before-control",
                    "trace-complete","trace-overflow","trace-resist","policy-echo","policy-resist",
                     "system-complete","system-missing","system-faildata","system-resist","system-overflow",
-                    "config-complete","config-resist", "serial-complete", "serial-system-failure", "serial-policy-failure",
+                    "config-complete","config-resist-sigterm-fixture", "serial-complete", "serial-system-failure", "serial-policy-failure",
                     "serial-system-cancel", "serial-policy-cancel", "serial-command-cancel", "serial-between-cancel",
                     "serial-next-before-spawn", "serial-next-after-spawn", "serial-next-before-record",
                     "serial-system-missing-next-before-spawn", "serial-system-missing-next-after-spawn", "serial-system-missing-next-before-record",
-                    "serial-policy-timeout", "serial-system-overflow", "serial-policy-overflow", "serial-policy-protected", "serial-policy-malformed", "serial-policy-wrong-nonce", "serial-policy-wrong-binding", "serial-policy-multiple-batches", "serial-system-missing", "serial-policy-code-batches", "serial-postflight-cancel", "serial-postflight-eof", "serial-postflight-timeout"].contains(request.arguments[0]),
+                    "serial-policy-timeout", "serial-system-overflow", "serial-policy-overflow", "serial-policy-protected", "serial-policy-malformed", "serial-policy-wrong-nonce", "serial-policy-wrong-binding", "serial-policy-multiple-batches", "serial-system-missing", "serial-policy-code-batches", "serial-postflight-cancel", "serial-postflight-eof", "serial-postflight-timeout"].contains(request.arguments[0]) || LifecycleLaunchCommand.fixtureModes.contains(request.arguments[0]),
+                  request.arguments[0].hasPrefix("lifecycle-") == (request.kind == .launchctlMutation),
                   (request.arguments[0].hasPrefix("trace-") || request.arguments[0].hasPrefix("config-") || request.arguments[0].hasPrefix("serial-")) == (request.kind == .discoveryGit),
                   request.arguments[0].hasPrefix("policy-") == (request.kind == .policyClassify),
                    request.arguments[0].hasPrefix("system-") == (request.kind == .systemGitConfig),
@@ -239,6 +268,8 @@ final class CustodyInheritedCommand {
             policy = nil; discovery = nil
             if !fixture, request.kind == .systemGitConfig {
                 try SystemGitConfigurationCommand.validate(request, account: account)
+            } else if !fixture, request.kind == .launchctlMutation {
+                lifecycle = try LifecycleLaunchAuthority(request: request, helper: helper, account: account)
             } else if !fixture {
                 let expected = request.kind == .launchctlRead
                     ? ["print", "gui/\(account.uid)/\(InstallationPaths.label)"]
@@ -262,10 +293,20 @@ final class CustodyInheritedCommand {
         // No inherited original survives into a target. The retained duplicates
         // describe the same held locks; none is unlocked or reacquired.
         for fd in actual where fd > 2 { close(fd) }
+        if let installation {
+            #if SHADOW_SYNC_TESTING
+            if fixture { try helper.bindTestingInstallationSource(root: URL(fileURLWithPath: account.homeDirectory).deletingLastPathComponent().path) }
+            #endif
+            try installation.validateParent(parent, helper: helper)
+            installationStore = try CustodyCatalogStore(leases: CustodyAuthorityLeaseSet.importing(self))
+        }
         try revalidateResources()
         try revalidateParent()
     }
     static func production() throws -> CustodyInheritedCommand { try Self(helper: CustodyHelperExecutable.production(), fixture: false) }
+    static func lifecycle() throws -> CustodyInheritedCommand {
+        try Self(helper: CustodyHelperExecutable.lifecycle(LifecyclePublisher.current()), fixture: false)
+    }
     #if SHADOW_SYNC_TESTING
     static func testing() throws -> CustodyInheritedCommand {
         try Self(helper: CustodyHelperExecutable.testing(releaseSHA256: String(repeating: "c", count: 64)), fixture: true)
@@ -280,7 +321,9 @@ final class CustodyInheritedCommand {
     }
     func revalidateResources() throws {
         try revalidatePersistenceResources()
+        try installationStore?.checkInheritedInstallation(self)
         try discovery?.revalidate()
+        try lifecycle?.revalidate()
         try frozenConfiguration?.revalidate()
     }
     func revalidatePersistenceResources() throws {

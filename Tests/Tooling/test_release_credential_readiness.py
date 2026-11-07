@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -39,6 +40,9 @@ def configuration():
 
 class ReadinessTests(unittest.TestCase):
     def setUp(self):
+        # main() hardens its command process; keep those changes test-local.
+        self.addCleanup(os.umask, os.umask(0o077))
+        self.addCleanup(signal.signal, signal.SIGTERM, signal.getsignal(signal.SIGTERM))
         self.tmp = tempfile.TemporaryDirectory(prefix='shadow-sync-credential-fixture-')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

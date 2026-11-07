@@ -329,12 +329,17 @@ final class RepositoryDiscoveryPolicy {
         return record(original)
     }
 
-    func willAccess(_ path: String) throws {
+    func willAccess(_ path: String) throws { try willAccess([path]) }
+
+    /// Consecutive lexical admissions may share one boundary only when no
+    /// candidate I/O intervenes. Preserve each ordered hook and complete fresh
+    /// validation after all hooks, immediately before the caller's candidate I/O.
+    func willAccess(_ paths: [String]) throws {
         try validateLocalAuthority()
         do {
-            try classifyAccessPrefixes([path])
+            try classifyAccessPrefixes(paths)
             #if SHADOW_SYNC_TESTING
-            testingBeforeAccess?(path)
+            for path in paths { testingBeforeAccess?(path) }
             #endif
             try validate()
         } catch { throw preparationFailure(error) }
@@ -537,6 +542,11 @@ public final class SelectedRepositoryScopeBinder:
     private let setupDeadline: UInt64?
     private let revalidatePhase: @Sendable () throws -> Void
 
+    #if SHADOW_SYNC_TESTING
+    // Per-binder, synchronous seam; never a production source of authority.
+    var testingAfterRebindCatalog: (() throws -> Void)?
+    #endif
+
     public static func withProductionReadPhase<Value>(cancellation: CancellationToken,
         _ body: (SelectedRepositoryScopeBinder) throws -> Value
     ) throws -> Value {
@@ -700,7 +710,7 @@ public final class SelectedRepositoryScopeBinder:
     private func processFreeCatalogBound(preferences: RepositorySelectionPreferenceDocument?,
         canonicalLocators: [String: RepositorySelectionLocator] = [:],
         sessionEntries: [RepositorySelectionPreferenceEntry] = [], generation: UInt64,
-        deadlineLimit: UInt64?
+        deadlineLimit: UInt64?, firstAdmissionHints: [RepositorySelectionLocator] = []
     ) throws -> RepositorySelectionCatalogResult {
         let deadline = boundedMetadataDeadline(deadlineLimit)
         #if SHADOW_SYNC_TESTING
@@ -712,7 +722,7 @@ public final class SelectedRepositoryScopeBinder:
                 started: diagnosticStart, deadline: deadline, succeeded: diagnosticPassed)
         }
         #endif
-        let root = try openRoot(deadline: deadline)
+        let root = try openRoot(deadline: deadline, lexicalHints: firstAdmissionHints)
         defer { close(root.descriptor) }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .projection
@@ -766,8 +776,9 @@ public final class SelectedRepositoryScopeBinder:
         return setupDeadline ?? fresh
     }
 
-    private func bindBound(intent: RepositorySelectionIntent,
-                           deadlineLimit: UInt64?) throws -> ValidatedSelectedRepositoryScope {
+    private func bindBound(intent: RepositorySelectionIntent, deadlineLimit: UInt64?,
+                           completedCatalog: RepositorySelectionCatalogResult? = nil)
+        throws -> ValidatedSelectedRepositoryScope {
         guard !intent.entries.isEmpty else {
             throw SelectedRepositoryScopeError.invalidIntent
         }
@@ -807,23 +818,31 @@ public final class SelectedRepositoryScopeBinder:
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .metadata
         #endif
-        let catalog = RepositorySelectionCatalogDiscovery.discoverCatalog(
-            configuration: RepositorySelectionCatalogConfiguration(
-                roots: [catalogRoot],
-                policy: projection,
-                preferences: nil,
-                canonicalLocators: Dictionary(
-                    uniqueKeysWithValues: intent.entries.map {
-                        ($0.repositoryID, $0.locator)
-                    }
-                ),
-                generation: intent.generation,
-                limits: catalogLimits,
-                deadlineUptimeNanoseconds: deadline,
-                admission: admission,
-                inspectRootRepository: snapshot == nil
+        let catalog: RepositorySelectionCatalogResult
+        if let completedCatalog {
+            // Rebind alone supplies its immediately completed catalog. This is
+            // advisory metadata from this call, never a saved access grant.
+            // Live root/policy checks above and exact traversal below still run.
+            catalog = completedCatalog
+        } else {
+            catalog = RepositorySelectionCatalogDiscovery.discoverCatalog(
+                configuration: RepositorySelectionCatalogConfiguration(
+                    roots: [catalogRoot],
+                    policy: projection,
+                    preferences: nil,
+                    canonicalLocators: Dictionary(
+                        uniqueKeysWithValues: intent.entries.map {
+                            ($0.repositoryID, $0.locator)
+                        }
+                    ),
+                    generation: intent.generation,
+                    limits: catalogLimits,
+                    deadlineUptimeNanoseconds: deadline,
+                    admission: admission,
+                    inspectRootRepository: snapshot == nil
+                )
             )
-        )
+        }
         guard catalog.isComplete else {
             if catalog.degradedReason == .cleanupPending { throw SelectedRepositoryScopeError.cleanupPending }
             throw SelectedRepositoryScopeError.catalogDegraded(
@@ -831,7 +850,8 @@ public final class SelectedRepositoryScopeBinder:
                     ?? "catalog incomplete"
             )
         }
-        guard catalog.catalog.policyDigest == intent.policyDigest,
+        guard catalog.catalog.generation == intent.generation,
+              catalog.catalog.policyDigest == intent.policyDigest,
               catalog.catalog.rootIdentities
                 == intent.rootIdentities else {
             throw SelectedRepositoryScopeError.changed
@@ -944,7 +964,9 @@ public final class SelectedRepositoryScopeBinder:
     /// identity before handing it to repository inspection.
     func rebind(_ scope: ValidatedSelectedRepositoryScope,
                 deadlineLimit: UInt64? = nil) throws -> ValidatedSelectedRepositoryScope {
-        let stageDeadline = deadlineLimit.map { boundedMetadataDeadline($0) }
+        // Catalog discovery and binding share one ceiling, including ordinary
+        // reads with no enclosing command limit. Neither phase renews it.
+        let stageDeadline = boundedMetadataDeadline(deadlineLimit)
         #if SHADOW_SYNC_TESTING
         let diagnosticStart = DispatchTime.now().uptimeNanoseconds
         var diagnosticStage = DiscoveryFixtureDiagnostic.Stage.prepare
@@ -970,7 +992,8 @@ public final class SelectedRepositoryScopeBinder:
         #endif
         let catalog = try processFreeCatalogBound(preferences: nil,
             canonicalLocators: Dictionary(uniqueKeysWithValues: entries.map { ($0.repositoryID, $0.locator) }),
-            generation: scope.selectionGeneration, deadlineLimit: stageDeadline)
+            generation: scope.selectionGeneration, deadlineLimit: stageDeadline,
+            firstAdmissionHints: Array(entries.prefix(63).map(\.locator)))
         guard catalog.isComplete else {
             if catalog.degradedReason == .cleanupPending { throw SelectedRepositoryScopeError.cleanupPending }
             throw SelectedRepositoryScopeError.catalogDegraded(
@@ -982,7 +1005,10 @@ public final class SelectedRepositoryScopeBinder:
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .decisions
         #endif
-        let rebound = try bindBound(intent: intent, deadlineLimit: stageDeadline)
+        #if SHADOW_SYNC_TESTING
+        try testingAfterRebindCatalog?()
+        #endif
+        let rebound = try bindBound(intent: intent, deadlineLimit: stageDeadline, completedCatalog: catalog)
         guard rebound == scope else { throw SelectedRepositoryScopeError.changed }
         #if SHADOW_SYNC_TESTING
         diagnosticPassed = true
@@ -1149,11 +1175,36 @@ public final class SelectedRepositoryScopeBinder:
         let identity: FileIdentity
     }
 
-    private func openRoot(deadline: UInt64) throws -> OpenedRoot {
+    /// Hints are bounded lexical input only. Reserve the first slot for root
+    /// admission and preserve exact bytes when filtering and deduplicating.
+    /// Inspect at most 63 hints, even when duplicates or unrelated roots occur.
+    static func firstRootAdmissionPaths(root: String, projectionRoot: [String],
+                                        lexicalHints: [RepositorySelectionLocator]) throws
+        -> [RepositorySelectionAdmissionPath] {
+        var paths = [try RepositorySelectionAdmissionPath(root: root, components: [])]
+        var seen = Set<Data>()
+        let prefix = projectionRoot.map { Data($0.utf8) }
+        for hint in lexicalHints.prefix(63) {
+            guard hint.governedRoot.utf8.elementsEqual(root.utf8),
+                  hint.components.map({ Data($0.utf8) }).starts(with: prefix),
+                  seen.insert(Data(hint.relativePath.utf8)).inserted else { continue }
+            paths.append(try RepositorySelectionAdmissionPath(root: root, components: hint.components))
+        }
+        return paths
+    }
+
+    private func openRoot(deadline: UInt64, lexicalHints: [RepositorySelectionLocator] = []) throws -> OpenedRoot {
         try revalidatePhase()
         do {
-            try admission.requireAllowed(
-                RepositorySelectionAdmissionPath(root: logicalRoot, components: []), deadline: deadline)
+            // Only rebind supplies hints. Classify them with the required root
+            // in this invocation's first batch, before any root filesystem I/O.
+            // Hint decisions never grant access; later exact admissions and
+            // physical identity checks remain mandatory, including for root.
+            let paths = try Self.firstRootAdmissionPaths(root: logicalRoot,
+                projectionRoot: snapshot?.projection.rootComponents ?? [], lexicalHints: lexicalHints)
+            guard case .allowed = try admission.classify(paths, deadline: deadline)[0] else {
+                throw RepositorySelectionAdmissionError.unavailable
+            }
         } catch { throw Self.policyFailure(error) }
         let descriptor = Darwin.open(
             governedRootPath,

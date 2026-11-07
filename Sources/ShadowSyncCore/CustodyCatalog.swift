@@ -1,6 +1,83 @@
 import Darwin
 import Foundation
 
+// Descriptor observations only. No path, PID, decoded record or opened file
+// grants a lease. Callers must retain their original typed authority separately.
+extension InstallationStateBinding {
+    private struct ObservedNode {
+        let descriptor: OwnedFileDescriptor
+        let identity: InstallationNodeIdentity
+        let parent: Int32?
+        let name: String?
+    }
+    private static func identity(_ fd: Int32, uid: uid_t, directory: Bool) throws -> InstallationNodeIdentity {
+        var value = stat()
+        guard fstat(fd, &value) == 0, value.st_uid == uid,
+              value.st_mode == (directory ? S_IFDIR | 0o700 : S_IFREG | 0o600),
+              directory ? value.st_nlink > 0 : value.st_nlink == 1 else {
+            throw CustodyRecordError.unsafeMetadata
+        }
+        let result = InstallationNodeIdentity(device: UInt64(value.st_dev), inode: UInt64(value.st_ino),
+            type: directory ? .directory : .regular, uid: value.st_uid, mode: UInt32(value.st_mode),
+            links: UInt64(value.st_nlink),
+            aclDigest: CustodyRecordBinding.digest(Data(try PolicyAuthorityFile.privateStateACL(fd).utf8)))
+        try result.validate(); return result
+    }
+    private static func open(_ parent: Int32, _ name: String, uid: uid_t, directory: Bool) throws -> ObservedNode {
+        let raw = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | (directory ? O_DIRECTORY : 0))
+        guard raw >= 0 else { throw CustodyRecordError.unsafeMetadata }
+        let owner = OwnedFileDescriptor(raw)
+        return try ObservedNode(descriptor: owner, identity: identity(raw, uid: uid, directory: directory), parent: parent, name: name)
+    }
+    static func capture(stateDescriptor: Int32, uid: uid_t) throws -> Self {
+        let state = try identity(stateDescriptor, uid: uid, directory: true)
+        let custody = try open(stateDescriptor, "custody", uid: uid, directory: true)
+        let namespace = try open(stateDescriptor, "latest.log", uid: uid, directory: false)
+        let lifecycle = try open(stateDescriptor, "lifecycle.lock", uid: uid, directory: false)
+        let operation = try open(stateDescriptor, "operation.lock", uid: uid, directory: false)
+        let run = try open(stateDescriptor, "run.lock", uid: uid, directory: false)
+        let launcher = try open(stateDescriptor, "launcher.lock", uid: uid, directory: false)
+        let catalog = try open(custody.descriptor.value, "catalog.lock", uid: uid, directory: false)
+        // Keep every opened description alive until the entire named set has
+        // been rechecked; an earlier close could hide inode substitution.
+        for node in [custody, namespace, lifecycle, operation, run, launcher, catalog] {
+            let current = try identity(node.descriptor.value, uid: uid, directory: node.identity.type == .directory)
+            var named = stat()
+            guard current == node.identity, let parent = node.parent, let name = node.name,
+                  fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  UInt64(named.st_dev) == current.device, UInt64(named.st_ino) == current.inode,
+                  named.st_uid == current.uid, UInt32(named.st_mode) == current.mode,
+                  UInt64(named.st_nlink) == current.links else { throw CustodyRecordError.unsafeMetadata }
+        }
+        guard try identity(stateDescriptor, uid: uid, directory: true) == state else { throw CustodyRecordError.unsafeMetadata }
+        let result = Self(directory: state, namespace: namespace.identity, lifecycle: lifecycle.identity,
+            operation: operation.identity, run: run.identity, launcher: launcher.identity, catalogGuard: catalog.identity)
+        try result.validate(); return result
+    }
+    func validateLive(stateDescriptor: Int32, uid: uid_t, leases: CustodyAuthorityLeaseSet) throws {
+        try validate()
+        let current = try Self.capture(stateDescriptor: stateDescriptor, uid: uid)
+        // Directory link counts may change when valid child directories appear.
+        // Both observations must be live/private; only this count is not stable.
+        let a = directory, b = current.directory
+        guard a.device == b.device, a.inode == b.inode, a.type == b.type, a.uid == b.uid,
+              a.mode == b.mode, a.aclDigest == b.aclDigest, a.links > 0, b.links > 0,
+              namespace == current.namespace, lifecycle == current.lifecycle, operation == current.operation,
+              run == current.run, launcher == current.launcher, catalogGuard == current.catalogGuard else {
+            throw CustodyRecordError.fenced
+        }
+        let expected: [CustodyDescriptorClaim.Role: InstallationNodeIdentity] = [
+            .state: directory, .namespace: namespace, .lifecycle: lifecycle, .operation: operation, .run: run]
+        for held in try leases.descriptorClaims() {
+            guard let node = expected[held.role], held.device == node.device, held.inode == node.inode,
+                  held.uid == node.uid, held.mode == node.mode,
+                  held.role == .state ? held.links > 0 : held.links == node.links else {
+                throw CustodyRecordError.fenced
+            }
+        }
+    }
+}
+
 /// Live, reference-bound metadata scope. Its random UUID cannot be supplied from
 /// disk. It owns actual leases but grants no executable/publisher/candidate trust.
 /// The command context will add those checks before any helper spawn.
@@ -16,16 +93,22 @@ final class CustodyMetadataScope: @unchecked Sendable {
     private var state: State = .open
     private var liveRequests: Set<String> = []
     private let store: CustodyCatalogStore
+    private let installation: CustodyCatalogStore.InstallationCommandPermit?
 
-    init(leases: CustodyAuthorityLeaseSet, releaseSHA256: String, generation: String) throws {
+    init(leases: CustodyAuthorityLeaseSet, releaseSHA256: String, generation: String, installation: CustodyCatalogStore.InstallationCommandPermit? = nil) throws {
         guard CustodyWire.hex(releaseSHA256, bytes: 32), RunIdentity.isValid(generation) else { throw CustodyRecordError.invalidRecord }
-        self.leases = leases; self.releaseSHA256 = releaseSHA256; self.generation = generation
+        // Staged lease custody is not installation command authority. No generic
+        // scope may open this mode before an exact durable continuation exists.
+        guard !leases.mode.isInstallationStaged else { throw CustodyRecordError.fenced }
+        self.leases = leases; self.releaseSHA256 = releaseSHA256; self.generation = generation; self.installation = installation
         bootID = try CustodyBootIdentity.current(); uid = geteuid()
         store = try CustodyCatalogStore(leases: leases)
         // Validate all evidence now, then again in the same guarded transition
         // as every reservation. This initial read is never cached admission.
-        try store.checkFence(ownRequests: [], scope: id, mode: leases.mode)
+        try installation?.revalidate()
+        try store.checkFence(ownRequests: [], scope: id, mode: leases.mode, installation: installation)
     }
+    func revalidateInstallation() throws { try installation?.revalidate() }
     var observation: State { mutex.lock(); defer { mutex.unlock() }; return state }
     func close() {
         mutex.lock(); defer { mutex.unlock() }
@@ -38,6 +121,7 @@ final class CustodyMetadataScope: @unchecked Sendable {
         try result.validate(); return result
     }
     func prepare(_ request: UnvalidatedCustodyRequest) throws -> PreparedCustodyMetadata {
+        try installation?.revalidate()
         mutex.lock(); defer { mutex.unlock() }
         guard state == .open, request.binding.scopeID == id, request.binding.bootID == bootID,
               request.binding.releaseSHA256 == releaseSHA256, request.binding.callerGeneration == generation,
@@ -47,7 +131,11 @@ final class CustodyMetadataScope: @unchecked Sendable {
                                     now: DispatchTime.now().uptimeNanoseconds)
         let journal = try CustodyJournal(prepared: request, leases: leases.descriptorClaims())
         do {
-            try store.reserveAndPrepare(journal, ownRequests: liveRequests, scope: id)
+            if let installation {
+                guard request.kind == .launchctlRead,
+                      request.inputSHA256 == CustodyRecordBinding.digest(try installation.observation.encode()) else { throw CustodyRecordError.fenced }
+            }
+            try store.reserveAndPrepare(journal, ownRequests: liveRequests, scope: id, installation: installation)
             liveRequests.insert(journal.binding.requestID)
             return PreparedCustodyMetadata(scope: self, journal: journal)
         } catch {
@@ -200,16 +288,27 @@ final class CustodyRecoveryContext {
     #endif
 }
 
+// Actual receipt descriptions retained by the live capture. Metadata-equivalent
+// replacement files cannot replace durability proof, even with identical bytes.
+final class InstallationDocumentRetention {
+    fileprivate let descriptor: OwnedFileDescriptor
+    fileprivate let identity: FileIdentity
+    fileprivate let acl: String
+    fileprivate init(_ descriptor: OwnedFileDescriptor, identity: FileIdentity, acl: String) {
+        self.descriptor = descriptor; self.identity = identity; self.acl = acl
+    }
+}
+
 /// Descriptor-relative, app-owned metadata only. Its stable guard is acquired
 /// last, held only for bounded metadata transitions, and never grants operation
 /// authority. No public callbacks run while it is held.
 final class CustodyCatalogStore: @unchecked Sendable {
-    private struct Node {
+    fileprivate struct Node {
         let descriptor: OwnedFileDescriptor
         let identity: FileIdentity
         let acl: String
     }
-    private struct File {
+    fileprivate struct File {
         let identity: FileIdentity
         let acl: String
         let bytes: Data
@@ -222,6 +321,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
     private let receipts: Node
     private let mutex = NSLock()
     private var poisoned = false
+    private var installationCommandPins: [String: Node] = [:]
 
     init(leases: CustodyAuthorityLeaseSet) throws {
         self.leases = leases
@@ -316,12 +416,226 @@ final class CustodyCatalogStore: @unchecked Sendable {
         }
         return result.sorted()
     }
+    private func installationSnapshot(pendingPreimages: [String: InstallationDocumentPreimage] = [:],
+                                      pendingStep: InstallationStepReceipt.CanonicalObservation? = nil,
+                                      pendingControl: InstallationControlRecord? = nil) throws -> (File, InstallationControlRecord) {
+        let file = try read(InstallationControlRecord.filename, maximum: InstallationControlRecord.maximumBytes)
+        let record = try InstallationControlRecord.decode(file.bytes)
+        try record.state.validateLive(stateDescriptor: root.value, uid: uid, leases: leases)
+        let fd = openat(receipts.descriptor.value, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw CustodyRecordError.unsafeMetadata }
+        guard let stream = fdopendir(fd) else { close(fd); throw CustodyRecordError.unsafeMetadata }
+        defer { closedir(stream) }
+        var chain: [InstallationStepReceipt.CanonicalObservation] = []
+        var documents: [String: InstallationDocumentPreimage] = [:]
+        // A local metadata ceiling consumes caller time; it never renews a
+        // command's absolute admission/work deadline. Historical command receipt
+        // count is not a new retention/deletion policy.
+        let scanLimit = MonotonicDeadline(seconds: 0.250)
+        while true {
+            guard !scanLimit.hasExpired else { throw CustodyRecordError.busy }
+            errno = 0
+            guard let row = readdir(stream) else {
+                guard errno == 0 else { throw CustodyRecordError.persistence(errno) }; break
+            }
+            let name = withUnsafePointer(to: row.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(row.pointee.d_namlen) + 1) { String(cString: $0) }
+            }
+            if name == "." || name == ".." { continue }
+            if name.hasPrefix(InstallationDocumentPreimage.prefix) {
+                guard documents.count < 1024 else { throw CustodyRecordError.fenced }
+                let observation = try InstallationDocumentPreimage.CanonicalObservation(decoding: read(name, at: receipts.descriptor.value,
+                    maximum: InstallationDocumentPreimage.maximumBytes).bytes, uid: uid)
+                let document = observation.receipt, digest = observation.digest
+                guard name == observation.filename, documents.updateValue(document, forKey: digest) == nil else {
+                    throw CustodyRecordError.fenced
+                }
+            } else if name.hasPrefix(InstallationStepReceipt.prefix) {
+                guard chain.count < 256 else { throw CustodyRecordError.fenced }
+                let observation = try InstallationStepReceipt.CanonicalObservation(decoding: read(name, at: receipts.descriptor.value,
+                    maximum: InstallationStepReceipt.maximumBytes).bytes, uid: uid)
+                guard observation.filename == name,
+                      observation.receipt.transactionID == record.transaction?.id
+                        || (observation.filename == pendingStep?.filename && observation.receipt == pendingStep?.receipt) else {
+                    throw CustodyRecordError.fenced
+                }
+                chain.append(observation)
+            } else {
+                // Preserve existing command archives. Unknown names, including
+                // incomplete atomic-write temporaries, are evidence of uncertainty.
+                let uuid: String
+                if name.hasPrefix("discovery-resource-"), name.hasSuffix(".json") {
+                    uuid = String(name.dropFirst("discovery-resource-".count).dropLast(5))
+                } else if name.hasSuffix(".caller.json") { uuid = String(name.dropLast(12)) }
+                else if name.hasSuffix(".recovery.json") { uuid = String(name.dropLast(14)) }
+                else if name.hasSuffix(".json") { uuid = String(name.dropLast(5)) }
+                else { throw CustodyRecordError.fenced }
+                guard RunIdentity.isValid(uuid) else { throw CustodyRecordError.fenced }
+                let node = try Self.openNode(receipts.descriptor.value, name, uid: uid, directory: false)
+                try validate(node, at: receipts.descriptor.value, name: name, isDirectory: false)
+            }
+        }
+        chain.sort { a, b in
+            let a = a.receipt, b = b.receipt
+            return a.ordinal == b.ordinal ? a.status == .intent && b.status == .complete : a.ordinal < b.ordinal
+        }
+        // Only a retained live session supplies this exact single successor.
+        // Validate the old referenced prefix independently before the next edge.
+        if let pendingStep, record.latestReceiptDigest != pendingStep.digest,
+           let index = chain.firstIndex(where: { $0.digest == pendingStep.digest }) {
+            guard index == chain.count - 1, chain[index].receipt == pendingStep.receipt,
+                  let pendingControl else { throw CustodyRecordError.fenced }
+            try record.validateReceiptChain(observations: Array(chain.dropLast()))
+            try record.validateReplacement(pendingControl, receipts: chain.map(\.receipt))
+        } else { try record.validateReceiptChain(observations: chain) }
+        // Every referenced document must resolve to complete recoverable bytes,
+        // in the exact transaction/namespace/document slot. Unreferenced bytes
+        // are permitted ONLY for the same live factory's pending capture.
+        var referenced = Set<String>()
+        var snapshots = chain.flatMap { [$0.receipt.preimage, $0.receipt.postimage].compactMap { $0 } }
+        if let current = record.transaction?.slots { snapshots.append(current) }
+        for snapshot in snapshots {
+            for slot in [InstallationSlot.stateSource, .stateDestination] {
+                guard let image = snapshot.images[slot], let node = image.node else { continue }
+                guard let refs = image.documentReceipts else { throw CustodyRecordError.fenced }
+                for document in InstallationDocument.allCases {
+                    guard let digest = refs[document] ?? nil else { continue }
+                    guard let receipt = documents[digest], receipt.transactionID == (record.transaction?.id ?? pendingControl?.transaction?.id),
+                          receipt.slot == slot, receipt.document == document, receipt.namespace == node else {
+                        throw CustodyRecordError.fenced
+                    }
+                    referenced.insert(digest)
+                }
+            }
+        }
+        for (digest, document) in documents where !referenced.contains(digest) {
+            guard pendingPreimages[digest] == document else { throw CustodyRecordError.fenced }
+        }
+        return (file, record)
+    }
+    /// A privately minted live capture selects a closed set of document receipts;
+    /// callers cannot supply a filename, bytes, fd or arbitrary replacement.
+    /// Original owner validation and bundle/code work stay OUTSIDE catalog.lock.
+    func validateInstallationPreimages(_ capture: InstallationCapturedSlots) throws {
+        try capture.validateSource()
+        let pending = Dictionary(uniqueKeysWithValues: capture.canonicalPreimages.map { ($0.digest, $0.receipt) })
+        try locked {
+            let record = try installationSnapshot(pendingPreimages: pending).1
+            guard record.state == capture.stateBinding else { throw CustodyRecordError.fenced }
+            try validateRetainedInstallationPreimages(capture)
+            try validateBindings()
+        }
+        try capture.validateSource()
+    }
+    private func validateRetainedInstallationPreimages(_ capture: InstallationCapturedSlots) throws {
+            guard Set(capture.retainedPreimages.keys) == Set(capture.canonicalPreimages.map(\.filename)) else {
+                throw CustodyRecordError.fenced
+            }
+            for observation in capture.canonicalPreimages {
+                guard let retained = capture.retainedPreimages[observation.filename] else { throw CustodyRecordError.fenced }
+                let held = try Self.node(retained.descriptor, uid: uid, directory: false)
+                let current = try read(observation.filename, at: receipts.descriptor.value, maximum: InstallationDocumentPreimage.maximumBytes)
+                guard held.identity == retained.identity, held.acl == retained.acl,
+                      current.identity == held.identity, current.acl == held.acl,
+                      current.bytes == observation.bytes else { throw CustodyRecordError.fenced }
+            }
+    }
+    func persistInstallationPreimages(_ capture: InstallationCapturedSlots) throws -> [String: InstallationDocumentRetention] {
+        try capture.validateSource()
+        var retained: [String: InstallationDocumentRetention] = [:]
+        let pending = Dictionary(uniqueKeysWithValues: capture.canonicalPreimages.map { ($0.digest, $0.receipt) })
+        try locked {
+            do {
+                guard leases.mode == .lifecycleMutation else { throw CustodyRecordError.fenced }
+                let record = try installationSnapshot(pendingPreimages: pending).1
+                // Historical committed rollover requires its separate full-chain
+                // retention design. Capture cannot silently start that migration.
+                guard record.phase == .initial || record.transaction?.id == capture.transactionID,
+                      record.state == capture.stateBinding, record.phase != .committed,
+                      try snapshot().1.entries.isEmpty else { throw CustodyRecordError.fenced }
+                for observation in capture.canonicalPreimages {
+                    let name = observation.filename, bytes = observation.bytes
+                    var info = stat()
+                    if fstatat(receipts.descriptor.value, name, &info, AT_SYMLINK_NOFOLLOW) == 0 {
+                        let existing = try read(name, at: receipts.descriptor.value, maximum: InstallationDocumentPreimage.maximumBytes)
+                        guard existing.bytes == bytes else { throw CustodyRecordError.conflict }
+                        let raw = openat(receipts.descriptor.value, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                        guard raw >= 0 else { throw CustodyRecordError.unsafeMetadata }
+                        let retained = OwnedFileDescriptor(raw)
+                        let node = try Self.node(retained, uid: uid, directory: false)
+                        guard node.identity == existing.identity, node.acl == existing.acl,
+                              fsync(raw) == 0, fsync(receipts.descriptor.value) == 0 else { throw CustodyRecordError.persistence(errno) }
+                        let after = try read(name, at: receipts.descriptor.value, maximum: InstallationDocumentPreimage.maximumBytes)
+                        guard after.identity == existing.identity, after.acl == existing.acl, after.bytes == bytes else {
+                            throw CustodyRecordError.conflict
+                        }
+                    } else {
+                        guard errno == ENOENT else { throw CustodyRecordError.unsafeMetadata }
+                        try write(name, at: receipts.descriptor.value, bytes: bytes, expected: nil)
+                    }
+                }
+                _ = try installationSnapshot(pendingPreimages: pending)
+                for observation in capture.canonicalPreimages {
+                    let raw = openat(receipts.descriptor.value, observation.filename, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                    guard raw >= 0 else { throw CustodyRecordError.unsafeMetadata }
+                    let owned = OwnedFileDescriptor(raw), held = try Self.node(owned, uid: uid, directory: false)
+                    let named = try read(observation.filename, at: receipts.descriptor.value, maximum: InstallationDocumentPreimage.maximumBytes)
+                    guard named.identity == held.identity, named.acl == held.acl, named.bytes == observation.bytes,
+                          fsync(raw) == 0, fsync(receipts.descriptor.value) == 0 else { throw CustodyRecordError.fenced }
+                    try validate(held, at: receipts.descriptor.value, name: observation.filename, isDirectory: false)
+                    retained[observation.filename] = InstallationDocumentRetention(owned, identity: held.identity, acl: held.acl)
+                }
+                try validateBindings()
+            } catch { poisoned = true; throw error }
+        }
+        try capture.validateSource()
+        return retained
+    }
+    private func installationFence(mode: CustodyAuthorityMode) throws {
+        let record = try installationSnapshot().1
+        switch record.phase {
+        case .committed: break // Exact installed residual slots remain a separate live installation gate.
+        case .active, .recovery:
+            guard mode == .observation else { throw CustodyRecordError.fenced }
+        case .initial:
+            // Initial diagnostics use the initializer's typed inspection below;
+            // they cannot spawn an ordinary lifecycle observation command.
+            throw CustodyRecordError.fenced
+        }
+    }
+    func checkFreshInitializationFence(_ proof: FreshStateInitialization.ControlInspection) throws {
+        try locked {
+            guard proof.leases === leases, leases.mode == .mutation else { throw CustodyRecordError.fenced }
+            let record = try installationSnapshot().1
+            guard record.phase == .initial,
+                  Set(try names()) == ["catalog.lock", "catalog.json", "receipts", InstallationControlRecord.filename],
+                  try CustodyCatalog.decode(read("catalog.json", maximum: CustodyCatalog.maximumBytes).bytes) == .initialized else {
+                throw CustodyRecordError.fenced
+            }
+            // Fresh state has no command or installation history at all.
+            let fd = openat(receipts.descriptor.value, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw CustodyRecordError.unsafeMetadata }
+            guard let stream = fdopendir(fd) else { close(fd); throw CustodyRecordError.unsafeMetadata }
+            defer { closedir(stream) }
+            while true {
+                errno = 0
+                guard let row = readdir(stream) else {
+                    guard errno == 0 else { throw CustodyRecordError.persistence(errno) }; break
+                }
+                let name = withUnsafePointer(to: row.pointee.d_name) { pointer in
+                    pointer.withMemoryRebound(to: CChar.self, capacity: Int(row.pointee.d_namlen) + 1) { String(cString: $0) }
+                }
+                guard name == "." || name == ".." else { throw CustodyRecordError.fenced }
+            }
+        }
+    }
+
     private func snapshot() throws -> (File, CustodyCatalog, [String: CustodyJournal]) {
         let file = try read("catalog.json", maximum: CustodyCatalog.maximumBytes), catalog = try CustodyCatalog.decode(file.bytes)
         var journals: [String: CustodyJournal] = [:]
         let expected = Set(catalog.entries.map(\.filename)), all = Set(try names())
         guard expected.isSubset(of: all), all.contains("catalog.lock"), all.contains("receipts") else { throw CustodyRecordError.fenced }
-        for name in all.subtracting(["catalog.json", "catalog.lock", "receipts"]) {
+        for name in all.subtracting(["catalog.json", "catalog.lock", "receipts", InstallationControlRecord.filename]) {
             guard name.hasSuffix(".json"), RunIdentity.isValid(String(name.dropLast(5))) else { throw CustodyRecordError.fenced }
             let bytes = try read(name, maximum: CustodyJournal.maximumBytes).bytes
             let journal = try CustodyJournal.decode(bytes)
@@ -373,13 +687,20 @@ final class CustodyCatalogStore: @unchecked Sendable {
             throw CustodyRecordError.fenced
         }
     }
-    func checkFence(ownRequests: Set<String>, scope: String, mode: CustodyAuthorityMode) throws {
-        try locked { let s = try snapshot(); try fence(s.1, journals: s.2, ownRequests: ownRequests, scope: scope, mode: mode) }
+    func checkFence(ownRequests: Set<String>, scope: String, mode: CustodyAuthorityMode, installation: InstallationCommandPermit? = nil) throws {
+        try locked {
+            guard mode == leases.mode else { throw CustodyRecordError.fenced }
+            if let installation { try validateInstallationCommand(installation.observation) }
+            else { try installationFence(mode: mode) }
+            let s = try snapshot(); try fence(s.1, journals: s.2, ownRequests: ownRequests, scope: scope, mode: mode)
+        }
     }
-    fileprivate func reserveAndPrepare(_ journal: CustodyJournal, ownRequests: Set<String>, scope: String) throws {
+    fileprivate func reserveAndPrepare(_ journal: CustodyJournal, ownRequests: Set<String>, scope: String, installation: InstallationCommandPermit? = nil) throws {
         try locked {
             guard journal.authority == leases.mode, journal.binding.scopeID == scope,
                   journal.binding.uid == uid, journal.phase == .prepared else { throw CustodyRecordError.fenced }
+            if let installation { try validateInstallationCommand(installation.observation) }
+            else { try installationFence(mode: journal.authority) }
             let s = try snapshot(); try fence(s.1, journals: s.2, ownRequests: ownRequests, scope: scope, mode: journal.authority)
             guard s.2[journal.binding.requestID] == nil else { throw CustodyRecordError.conflict }
             var archivedInfo = stat()
@@ -428,6 +749,8 @@ final class CustodyCatalogStore: @unchecked Sendable {
     }
     fileprivate func claimHelper(_ inherited: CustodyInheritedCommand) throws -> CustodyJournal {
         try locked {
+            if let installation = inherited.installation { try validateInstallationCommand(installation) }
+            else { try installationFence(mode: inherited.request.authority) }
             let s = try snapshot(), request = inherited.request
             let expected = try CustodyJournal(prepared: request, leases: leases.descriptorClaims())
             guard s.1.entries.contains(CustodyCatalogEntry(expected)),
@@ -744,6 +1067,44 @@ final class CustodyCatalogStore: @unchecked Sendable {
     private var testingCut: Fault?
     func testingFault(_ cut: Fault?) { mutex.lock(); testingCut = cut; mutex.unlock() }
     func testingRead() throws -> CustodyCatalog { try locked { try snapshot().1 } }
+    func testingInstallationRecord() throws -> InstallationControlRecord {
+        try locked { _ = try snapshot(); return try installationSnapshot().1 }
+    }
+    // Synthetic metadata for isolated command/lease tests, never an installer
+    // completion receipt or evidence of authenticated readiness. Only testing
+    // builds can seed it; production has no corresponding bypass or path API.
+    static func testingSeedCommittedInstallation(leases: CustodyAuthorityLeaseSet, root fixtureRoot: String) throws {
+        let fixture = try TestIsolation.validateRoot(fixtureRoot)
+        let state = try leases.duplicateStateDirectory()
+        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(state.0.value, F_GETPATH, &path) == 0, String(cString: path).hasPrefix(fixture + "/"),
+              leases.mode == .mutation || leases.mode == .lifecycleMutation else { throw CustodyRecordError.unsafeMetadata }
+        let store = try Self(leases: leases)
+        try store.locked {
+            guard try store.names().allSatisfy({ ["catalog.lock", "catalog.json", "receipts", InstallationControlRecord.filename].contains($0) }),
+                  try CustodyCatalog.decode(store.read("catalog.json", maximum: CustodyCatalog.maximumBytes).bytes) == .initialized else {
+                throw CustodyRecordError.fenced
+            }
+            let binding = try InstallationStateBinding.capture(stateDescriptor: state.0.value, uid: state.1)
+            let expected: File?
+            var existing = stat()
+            if fstatat(store.directory.descriptor.value, InstallationControlRecord.filename, &existing, AT_SYMLINK_NOFOLLOW) == 0 {
+                expected = try store.read(InstallationControlRecord.filename, maximum: InstallationControlRecord.maximumBytes)
+                guard expected!.bytes == (try InstallationControlRecord.initial(state: binding).encode()) else { throw CustodyRecordError.fenced }
+            } else {
+                guard errno == ENOENT else { throw CustodyRecordError.unsafeMetadata }; expected = nil
+            }
+            var harness = try InstallationControlFixtures.Harness(state: binding)
+            try harness.throughReady(); try harness.commitReady()
+            for action in [InstallationAction.cleanupCoordination, .cleanupBackups, .cleanupIncoming, .finish] { try harness.pair(action) }
+            try harness.record.validateReceiptChain(harness.receipts)
+            for receipt in harness.receipts {
+                try store.write(receipt.filename(uid: state.1), at: store.receipts.descriptor.value,
+                                bytes: receipt.encode(uid: state.1), expected: nil)
+            }
+            try store.write(InstallationControlRecord.filename, bytes: harness.record.encode(), expected: expected)
+        }
+    }
     static func testingInitialize(leases: CustodyAuthorityLeaseSet, root fixtureRoot: String) throws {
         let root = try TestIsolation.validateRoot(fixtureRoot)
         let state = try leases.duplicateStateDirectory()
@@ -762,6 +1123,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
             guard fsync(fd) == 0 else { throw CustodyRecordError.persistence(errno) }
         }
         guard fsync(directory.descriptor.value) == 0, fsync(state.0.value) == 0 else { throw CustodyRecordError.persistence(errno) }
+        try testingSeedCommittedInstallation(leases: leases, root: fixtureRoot)
     }
     #endif
 }
@@ -803,7 +1165,7 @@ final class CustodyHelperJournal {
         try replace(current.advancing(to: .admitted, custodian: helperObservation))
     }
     private func recordSerialRetirement(_ owner: OwnedDirectChild, streamsDrained: Bool) throws -> Int32 {
-        guard inherited.request.kind == .discoveryGit, current.phase == .executing,
+        guard [.discoveryGit, .launchctlMutation].contains(inherited.request.kind), current.phase == .executing,
               serialRetirement == nil, recordedOwner === owner,
               owner.graphRetirementPermitted, streamsDrained,
               case .reaped(let raw) = owner.observation, raw >= 0,
@@ -821,6 +1183,15 @@ final class CustodyHelperJournal {
             stdout: stdout, stderr: stderr, account: inherited.account)
         guard try recordSerialRetirement(owner, streamsDrained: streamsDrained) == raw else { throw CustodyRecordError.fenced }
         return preflight
+    }
+    func retireLifecyclePreflightChild(_ owner: OwnedDirectChild, stdout: Data,
+                                      stderr: Data, streamsDrained: Bool) throws -> LaunchAgentState {
+        guard current.ordinal == 2, inherited.request.kind == .launchctlMutation,
+              let command = inherited.lifecycleCommand, case .reaped(let raw) = owner.observation else { throw CustodyRecordError.fenced }
+        let state = try command.state(waitStatus: raw, stdout: stdout, stderr: stderr)
+        try command.validatePreflight(state)
+        guard try recordSerialRetirement(owner, streamsDrained: streamsDrained) == raw else { throw CustodyRecordError.fenced }
+        return state
     }
     func retireSerialChild(_ owner: OwnedDirectChild, streamsDrained: Bool) throws {
         guard current.ordinal > 2, case .reaped(0) = owner.observation else { throw CustodyRecordError.fenced }
@@ -950,5 +1321,778 @@ final class CustodyHelperJournal {
         try replace(current.advancing(to: .terminal, custodian: helperObservation,
             outcome: outcome, reason: reason, waitStatus: status))
         return current
+    }
+}
+
+extension InstallationTransactionOwner {
+    /// The consumed original owner is the sole factory. No decoded transaction,
+    /// caller UUID, slot map or arbitrary control proposal is accepted here.
+    func installationJournal(intent: InstallationTransactionIntent,
+                             lifecycle: InstallationLifecycle) throws -> CustodyCatalogStore.InstallationJournalSession {
+        try claimInstallationJournal()
+        return try CustodyCatalogStore.InstallationJournalSession(owner: self, intent: intent, lifecycle: lifecycle)
+    }
+}
+
+extension CustodyCatalogStore {
+    /// One retained live owner/session, not restart or historical recovery.
+    /// Command permits remain limited to reserve and exact drain-prior intent.
+    final class InstallationCommandPermit {
+        fileprivate let observation: InstallationCommandBinding
+        private let session: InstallationJournalSession
+        fileprivate init(session: InstallationJournalSession, observation: InstallationCommandBinding) {
+            self.session = session; self.observation = observation
+        }
+        var generation: String { observation.control.transaction!.coordinator.process.generation }
+        func revalidate() throws { try session.validateCommandPermit(self) }
+        func validateOwner(_ owner: InstallationTransactionOwner) throws {
+            guard session.owner === owner else { throw CustodyRecordError.fenced }; try revalidate()
+        }
+        func validatePublisher(_ caller: ProcessIdentity, helper: CustodyHelperExecutable) throws {
+            try observation.validateParent(caller, helper: helper)
+        }
+        func sealedInput() throws -> Data { try revalidate(); return try observation.encode() }
+    }
+    /// Constructed only by the live journal after publishing its exact intent.
+    /// A caller cannot supply an action, slots, path or postimage to mint one.
+    final class InstallationExclusiveActionPermit {
+        fileprivate let session: InstallationJournalSession
+        fileprivate let capture: InstallationCapturedSlots
+        let action: InstallationAction
+        fileprivate let control: InstallationControlRecord
+        fileprivate init(session: InstallationJournalSession, capture: InstallationCapturedSlots,
+                         action: InstallationAction, control: InstallationControlRecord) {
+            self.session = session; self.capture = capture; self.action = action; self.control = control
+        }
+        func revalidate(for capture: InstallationCapturedSlots) throws {
+            guard self.capture === capture else { throw CustodyRecordError.fenced }
+            try session.validateExclusivePermit(self)
+        }
+    }
+    final class InstallationJournalSession {
+        fileprivate let owner: InstallationTransactionOwner
+        private let binding: InstallationLiveBinding
+        private let capture: InstallationCapturedSlots
+        private let store: CustodyCatalogStore
+        private let transaction: InstallationTransaction
+        private let mutex = NSLock()
+        private var anchor: File
+        private var current: InstallationControlRecord
+        private var chain: [InstallationStepReceipt] = []
+        private struct Pending {
+            let control: InstallationControlRecord
+            let receipt: InstallationStepReceipt.CanonicalObservation
+        }
+        private var pending: Pending?
+        private var commandsClaimed = false
+        private var preparationClaimed = false
+        private var stagedIntentClaimed = false
+        private var exclusivePermit: InstallationExclusiveActionPermit?
+        private var exclusiveDeadline: MonotonicDeadline?
+        fileprivate func validateExclusivePermit(_ permit: InstallationExclusiveActionPermit) throws {
+            // The private permit never escapes the serialized action call. No
+            // callback, arbitrary closure or caller-provided writer is involved.
+            guard exclusivePermit === permit, permit.control == current, pending == nil,
+                  current.phase == .active, current.step?.action == permit.action,
+                  current.step?.status == .intent, let deadline = exclusiveDeadline else { throw CustodyRecordError.fenced }
+            try validateSource(deadline)
+            try store.locked { try validateLocked(deadline) }
+        }
+        func commandPermit(for candidate: InstallationTransactionOwner, deadline: MonotonicDeadline) throws -> InstallationCommandPermit {
+            try serialized(deadline: deadline) { deadline in
+                guard owner === candidate, owner.commandAdmissionIsOpen, !commandsClaimed, pending == nil else { throw CustodyRecordError.fenced }
+                return try store.locked {
+                    try validateLocked(deadline)
+                    var nodes = try retainedSteps.mapValues { try store.installationCommandNode($0.identity, acl: $0.acl) }
+                    for (name, retained) in capture.retainedPreimages {
+                        nodes[name] = try store.installationCommandNode(retained.identity, acl: retained.acl)
+                    }
+                    let observation = try InstallationCommandBinding(control: current,
+                        controlNode: store.installationCommandNode(anchor.identity, acl: anchor.acl), receiptNodes: nodes)
+                    try observation.validate(); try store.validateInstallationCommand(observation)
+                    commandsClaimed = true
+                    return InstallationCommandPermit(session: self, observation: observation)
+                }
+            }
+        }
+        fileprivate func validateCommandPermit(_ permit: InstallationCommandPermit) throws {
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard commandsClaimed, owner.commandAdmissionIsOpen, pending == nil,
+                  current == permit.observation.control else { throw CustodyRecordError.fenced }
+            try binding.revalidate(for: owner); try capture.validateSource()
+            try store.locked { try store.validateInstallationCommand(permit.observation) }
+        }
+        // Pin exact receipt descriptions across a cut. Identical replacement
+        // bytes/inode metadata cannot substitute for this live durability proof.
+        private var retainedSteps: [String: Node] = [:]
+        #if SHADOW_SYNC_TESTING
+        enum Cut { case afterReceipt, beforeControl }
+        private var cut: Cut?
+        private var receiptFault: CustodyCatalogStore.Fault?
+        private var controlFault: CustodyCatalogStore.Fault?
+        func testingCut(_ value: Cut?) { mutex.lock(); cut = value; mutex.unlock() }
+        func testingWriteFault(receipt: CustodyCatalogStore.Fault? = nil, control: CustodyCatalogStore.Fault? = nil) {
+            mutex.lock(); receiptFault = receipt; controlFault = control; mutex.unlock()
+        }
+        #endif
+
+        fileprivate init(owner: InstallationTransactionOwner, intent: InstallationTransactionIntent,
+                         lifecycle: InstallationLifecycle) throws {
+            self.owner = owner
+            let binding = try owner.installationBinding()
+            let capture = try lifecycle.captureInstallationSlots(owner: owner, binding: binding, transactionID: RunIdentity.make())
+            let store = try CustodyCatalogStore(leases: owner.retainExclusiveLeases())
+            let observed = try store.locked {
+                let value = try store.installationSnapshot(pendingPreimages: Self.documents(capture))
+                guard value.1.phase == .initial, value.1.state == binding.state,
+                      try store.snapshot().1.entries.isEmpty else { throw CustodyRecordError.fenced }
+                try store.validateRetainedInstallationPreimages(capture)
+                return value
+            }
+            self.binding = binding; self.capture = capture; self.store = store
+            anchor = observed.0; current = observed.1
+            transaction = InstallationTransaction(id: capture.transactionID, boot: binding.boot, intent: intent,
+                coordinator: binding.coordinator, sourceReleaseDigest: binding.sourceReleaseDigest,
+                candidate: intent == .remove ? nil : binding.candidate, priorCommitDigest: nil, slots: try capture.snapshot)
+            try transaction.validate(state: binding.state)
+            try capture.validateSource()
+        }
+        private static func documents(_ capture: InstallationCapturedSlots) -> [String: InstallationDocumentPreimage] {
+            Dictionary(uniqueKeysWithValues: capture.canonicalPreimages.map { ($0.digest, $0.receipt) })
+        }
+        private func serialized<T>(deadline: MonotonicDeadline, _ action: (MonotonicDeadline) throws -> T) throws -> T {
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            try validateSource(deadline)
+            let result = try action(deadline)
+            try validateSource(deadline)
+            return result
+        }
+        private func validateSource(_ deadline: MonotonicDeadline) throws {
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            try binding.revalidate(for: owner); try capture.validateSource()
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+        }
+        private func validateLocked(_ deadline: MonotonicDeadline) throws {
+            guard !deadline.hasExpired, store.leases.mode == .lifecycleMutation else { throw CustodyRecordError.busy }
+            let value = try store.installationSnapshot(pendingPreimages: Self.documents(capture),
+                pendingStep: pending?.receipt, pendingControl: pending?.control)
+            guard value.0.identity == anchor.identity, value.0.acl == anchor.acl,
+                  value.0.bytes == anchor.bytes, value.1 == current,
+                  try store.snapshot().1.entries.isEmpty else { throw CustodyRecordError.conflict }
+            try store.validateRetainedInstallationPreimages(capture)
+            for (name, node) in retainedSteps {
+                try store.validate(node, at: store.receipts.descriptor.value, name: name, isDirectory: false)
+            }
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            try store.validateBindings()
+        }
+        private func proposal(status: InstallationStepStatus, action: InstallationAction = .reserve,
+                              postimage: InstallationSlotSnapshot? = nil) throws -> Pending {
+            let prior = current.transaction?.slots ?? transaction.slots
+            let preimage = status == .complete ? (chain.last?.preimage ?? prior) : prior
+            let ordinal: UInt64 = action == .reserve ? 1 : status == .complete ? current.step!.ordinal : current.step!.ordinal + 1
+            let after = status == .complete ? (postimage ?? prior) : nil
+            let nextTransaction = InstallationTransaction(id: transaction.id, boot: transaction.boot, intent: transaction.intent,
+                coordinator: transaction.coordinator, sourceReleaseDigest: transaction.sourceReleaseDigest,
+                candidate: transaction.candidate, priorCommitDigest: transaction.priorCommitDigest, slots: after ?? prior)
+            let receipt = InstallationStepReceipt(transactionID: transaction.id, ordinal: ordinal,
+                previousReceiptDigest: current.latestReceiptDigest, action: action, status: status,
+                preimage: preimage, postimage: after,
+                bindingDigest: try transaction.bindingDigest(state: binding.state))
+            let canonical = try InstallationStepReceipt.CanonicalObservation(validating: receipt, uid: binding.state.directory.uid)
+            guard current.revision < UInt64.max else { throw InstallationRecordError.limit }
+            let next = InstallationControlRecord(revision: current.revision + 1, phase: current.phase == .initial ? .active : current.phase,
+                state: binding.state, transaction: nextTransaction, step: try receipt.step(), latestReceiptDigest: canonical.digest,
+                readinessCommit: nil, recoveryReason: current.recoveryReason)
+            try current.validateReplacement(next, receipts: chain + [receipt])
+            return Pending(control: next, receipt: canonical)
+        }
+        func begin(deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            try serialized(deadline: deadline) { deadline in
+                guard pending == nil, current.phase == .initial else { throw CustodyRecordError.fenced }
+                return try publish(proposal(status: .intent), deadline: deadline)
+            }
+        }
+        func completeReservation(deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            try serialized(deadline: deadline) { deadline in
+                guard pending == nil, current.phase == .active, current.step?.action == .reserve,
+                      current.step?.ordinal == 1, current.step?.status == .intent else { throw CustodyRecordError.fenced }
+                // validateSource recaptures every fixed slot/document. Reserve
+                // has no action, so its only legal completion is exact equality.
+                return try publish(proposal(status: .complete), deadline: deadline)
+            }
+        }
+        /// One fixed attempt through exclusive preparation. Failure preserves
+        /// the latest durable intent and any real partial effect; it is never
+        /// replayed or silently turned into completion by a fresh observation.
+        func prepareExclusive(deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            _ = try serialized(deadline: deadline) { deadline in
+                guard !preparationClaimed, !commandsClaimed, pending == nil,
+                      current.phase == .active, current.step?.action == .reserve,
+                      current.step?.status == .complete,
+                      transaction.intent == .install || transaction.intent == .repair else { throw CustodyRecordError.fenced }
+                try capture.requireExclusiveEmptyInstall()
+                preparationClaimed = true
+                return try publish(proposal(status: .intent, action: .drainPrior), deadline: deadline)
+            }
+            // No journal mutex/catalog guard spans command execution/retirement.
+            try capture.observeExclusiveServiceAbsence(journal: self, deadline: deadline)
+            _ = try serialized(deadline: deadline) { deadline in
+                guard commandsClaimed, pending == nil, current.step?.action == .drainPrior,
+                      current.step?.status == .intent else { throw CustodyRecordError.fenced }
+                return try publish(proposal(status: .complete, action: .drainPrior), deadline: deadline)
+            }
+            for action: InstallationAction in [.stageApplication, .stagePlist, .retireApplication, .retirePlist,
+                .retireCoordination, .translateState, .moveStateForward, .promoteApplication, .promotePlist] {
+                _ = try serialized(deadline: deadline) { deadline in
+                    guard pending == nil, current.phase == .active, current.step?.status == .complete else { throw CustodyRecordError.fenced }
+                    _ = try publish(proposal(status: .intent, action: action), deadline: deadline)
+                    try validateSource(deadline)
+                    try store.locked { try validateLocked(deadline) }
+                    let permit = InstallationExclusiveActionPermit(session: self, capture: capture, action: action, control: current)
+                    exclusivePermit = permit; exclusiveDeadline = deadline
+                    defer { exclusivePermit = nil; exclusiveDeadline = nil }
+                    let after = try capture.executeExclusive(permit)
+                    try validateSource(deadline)
+                    return try publish(proposal(status: .complete, action: action, postimage: after), deadline: deadline)
+                }
+            }
+            // Staged admission needs the separately authenticated transfer and
+            // readiness protocol. The original exclusive owner remains retained.
+            return current
+        }
+
+        /// Mint only after this live session completed the real fixed actions.
+        /// Releasing this journal removes its borrowed admission descriptions;
+        /// the returned proof cannot borrow, execute or publish completion.
+        func stagedAdmissionIntent(deadline: MonotonicDeadline) throws -> InstallationStagedAdmissionIntent {
+            try serialized(deadline: deadline) { deadline in
+                guard preparationClaimed, !stagedIntentClaimed, pending == nil,
+                      current.phase == .active, current.step?.action == .promotePlist,
+                      current.step?.status == .complete, current.step?.ordinal == 11 else { throw CustodyRecordError.fenced }
+                stagedIntentClaimed = true
+                _ = try publish(proposal(status: .intent, action: .openStagedAdmission), deadline: deadline)
+                let slots = try capture.preparedSlotObservation()
+                let intent = try store.locked {
+                    try validateLocked(deadline)
+                    return try InstallationStagedAdmissionIntent(owner: owner, slots: slots, store: store, expected: current)
+                }
+                try intent.revalidate(for: owner, deadline: deadline)
+                return intent
+            }
+        }
+
+        private func publish(_ proposed: Pending, deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            try store.locked {
+                try validateLocked(deadline)
+                pending = proposed
+                #if SHADOW_SYNC_TESTING
+                store.testingCut = receiptFault; receiptFault = nil
+                #endif
+                let receipt = proposed.receipt
+                try store.write(receipt.filename, at: store.receipts.descriptor.value,
+                                bytes: receipt.receipt.encode(uid: receipt.uid), expected: nil)
+                let node = try Self.retainReceipt(store, receipt)
+                retainedSteps[receipt.filename] = node
+                // Re-read the complete old-prefix + one exact successor and all
+                // documents before leaving this guard interval.
+                try validateLocked(deadline)
+                #if SHADOW_SYNC_TESTING
+                if cut == .afterReceipt { cut = nil; throw CustodyRecordError.injectedFailure }
+                #endif
+            }
+            try validateSource(deadline)
+            return try finishPending(deadline)
+        }
+        fileprivate static func retainReceipt(_ store: CustodyCatalogStore,
+                                          _ receipt: InstallationStepReceipt.CanonicalObservation) throws -> Node {
+            let node = try CustodyCatalogStore.openNode(store.receipts.descriptor.value, receipt.filename, uid: store.uid, directory: false)
+            let file = try store.read(receipt.filename, at: store.receipts.descriptor.value, maximum: InstallationStepReceipt.maximumBytes)
+            guard file.identity == node.identity, file.acl == node.acl,
+                  file.bytes == (try receipt.receipt.encode(uid: receipt.uid)),
+                  fsync(node.descriptor.value) == 0, fsync(store.receipts.descriptor.value) == 0 else {
+                throw CustodyRecordError.fenced
+            }
+            try store.validate(node, at: store.receipts.descriptor.value, name: receipt.filename, isDirectory: false)
+            return node
+        }
+        /// Exact receipt-before-control interruption only. No discovery/adoption
+        /// of a next receipt and no reconstruction from a persisted transaction.
+        func reconcileNextReceipt(deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            try serialized(deadline: deadline) { deadline in
+                guard let pending, retainedSteps[pending.receipt.filename] != nil else { throw CustodyRecordError.fenced }
+                return try finishPending(deadline)
+            }
+        }
+        private func finishPending(_ deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            try store.locked {
+                guard let pending, let held = retainedSteps[pending.receipt.filename] else { throw CustodyRecordError.fenced }
+                try validateLocked(deadline)
+                let file = try store.read(pending.receipt.filename, at: store.receipts.descriptor.value,
+                                          maximum: InstallationStepReceipt.maximumBytes)
+                guard file.identity == held.identity, file.acl == held.acl,
+                      file.bytes == (try pending.receipt.receipt.encode(uid: pending.receipt.uid)),
+                      fsync(held.descriptor.value) == 0, fsync(store.receipts.descriptor.value) == 0 else {
+                    throw CustodyRecordError.fenced
+                }
+                try current.validateReplacement(pending.control, receipts: chain + [pending.receipt.receipt])
+                #if SHADOW_SYNC_TESTING
+                if cut == .beforeControl { cut = nil; throw CustodyRecordError.injectedFailure }
+                store.testingCut = controlFault; controlFault = nil
+                #endif
+                guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+                try store.write(InstallationControlRecord.filename, bytes: pending.control.encode(), expected: anchor)
+                let after = try store.installationSnapshot()
+                guard after.1 == pending.control else { throw CustodyRecordError.conflict }
+                try store.validateRetainedInstallationPreimages(capture); try store.validateBindings()
+                anchor = after.0; current = after.1; chain.append(pending.receipt.receipt); self.pending = nil
+                return current
+            }
+        }
+        func recordFailure(_ reason: InstallationRecoveryReason, deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            try serialized(deadline: deadline) { deadline in
+                guard pending == nil, current.phase == .active || current.phase == .recovery,
+                      current.step?.action == .reserve, reason != .restoredStopped,
+                      current.revision < UInt64.max else { throw CustodyRecordError.fenced }
+                let next = InstallationControlRecord(revision: current.revision + 1, phase: .recovery,
+                    state: current.state, transaction: current.transaction, step: current.step,
+                    latestReceiptDigest: current.latestReceiptDigest, readinessCommit: current.readinessCommit, recoveryReason: reason)
+                try current.validateReplacement(next, receipts: chain)
+                return try store.locked {
+                    try validateLocked(deadline)
+                    #if SHADOW_SYNC_TESTING
+                    store.testingCut = controlFault; controlFault = nil
+                    #endif
+                    try store.write(InstallationControlRecord.filename, bytes: next.encode(), expected: anchor)
+                    let after = try store.installationSnapshot()
+                    guard after.1 == next else { throw CustodyRecordError.conflict }
+                    try store.validateRetainedInstallationPreimages(capture); try store.validateBindings()
+                    anchor = after.0; current = next
+                    return next
+                }
+            }
+        }
+    }
+}
+
+
+extension CustodyCatalogStore {
+    private func installationCommandNode(_ identity: FileIdentity, acl: String) throws -> InstallationNodeIdentity {
+        let node = InstallationNodeIdentity(device: identity.device, inode: identity.inode, type: .regular,
+            uid: identity.owner, mode: UInt32(identity.mode), links: UInt64(identity.linkCount),
+            aclDigest: CustodyRecordBinding.digest(Data(acl.utf8)))
+        try node.validate(); return node
+    }
+    private func validateInstallationCommand(_ binding: InstallationCommandBinding) throws {
+        try binding.validate()
+        guard leases.mode == (binding.stagedMode ?? .lifecycleMutation) else { throw CustodyRecordError.fenced }
+        let value = try installationSnapshot()
+        let receiptNames = try InstallationStagedAdmissionIntent.names(receipts.descriptor.value).filter {
+            $0.hasPrefix(InstallationStepReceipt.prefix) || $0.hasPrefix(InstallationDocumentPreimage.prefix)
+        }
+        guard Set(receiptNames) == Set(binding.receiptNodes.keys) else { throw CustodyRecordError.fenced }
+        guard value.1 == binding.control,
+              try installationCommandNode(value.0.identity, acl: value.0.acl) == binding.controlNode else { throw CustodyRecordError.fenced }
+        try binding.control.state.validateLive(stateDescriptor: root.value, uid: uid, leases: leases)
+        // Retain actual control/receipt descriptions too. Matching bytes and
+        // recycled inode numbers cannot replace this live validation family.
+        let expectedNodes = binding.receiptNodes.merging([InstallationControlRecord.filename: binding.controlNode]) { _, _ in binding.controlNode }
+        if !installationCommandPins.isEmpty {
+            guard Set(installationCommandPins.keys) == Set(expectedNodes.keys) else { throw CustodyRecordError.fenced }
+        }
+        for (name, expected) in expectedNodes {
+            let parent = name == InstallationControlRecord.filename ? directory.descriptor.value : receipts.descriptor.value
+            let node: Node
+            if let retained = installationCommandPins[name] { node = retained }
+            else { node = try Self.openNode(parent, name, uid: uid, directory: false) }
+            try validate(node, at: parent, name: name, isDirectory: false)
+            guard try installationCommandNode(node.identity, acl: node.acl) == expected else { throw CustodyRecordError.fenced }
+            installationCommandPins[name] = node
+        }
+    }
+    func checkInheritedInstallation(_ inherited: CustodyInheritedCommand) throws {
+        guard let binding = inherited.installation else { return }
+        try binding.validateParent(inherited.parent, helper: inherited.helper)
+        try locked {
+            try validateInstallationCommand(binding)
+            let s = try snapshot()
+            try fence(s.1, journals: s.2, ownRequests: [inherited.request.binding.requestID],
+                      scope: inherited.request.binding.scopeID, mode: leases.mode)
+        }
+    }
+}
+
+extension CustodyCatalogStore {
+    /// Live one-owner evidence, never decoded/adopted. Its descriptions are
+    /// metadata/state pins only; it intentionally retains no store or journal.
+    final class InstallationStagedAdmissionIntent {
+        fileprivate let owner: InstallationTransactionOwner
+        fileprivate let slots: InstallationPreparedSlotObservation
+        private let root: OwnedFileDescriptor
+        fileprivate let directory: Node
+        fileprivate let receipts: Node
+        fileprivate let guardFile: Node
+        fileprivate let uid: uid_t
+        fileprivate struct Evidence { let node: Node; let bytes: Data }
+        fileprivate let control: Evidence
+        fileprivate let catalog: Evidence
+        fileprivate let receiptFiles: [String: Evidence]
+        private let mutex = NSLock()
+        private var continuationClaimed = false
+        func continueJournal(admission: InstallationStagedAdmission, deadline: MonotonicDeadline) throws -> InstallationStagedJournal {
+            try admission.validateOwner(owner, intent: self)
+            do { try revalidate(for: owner, deadline: deadline) }
+            catch { _ = try? admission.closeStarts(); throw error }
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard !continuationClaimed else { throw CustodyRecordError.fenced }
+            continuationClaimed = true
+            do { return try InstallationStagedJournal(intent: self, admission: admission, deadline: deadline) }
+            catch { _ = try? admission.closeStarts(); throw error }
+        }
+        fileprivate init(owner: InstallationTransactionOwner, slots: InstallationPreparedSlotObservation,
+                         store: CustodyCatalogStore, expected: InstallationControlRecord) throws {
+            self.owner = owner; self.slots = slots; root = store.root; directory = store.directory
+            receipts = store.receipts; uid = store.uid
+            // A NEW open description for this metadata guard. Never duplicate or
+            // unlock another owner's held metadata guard description.
+            guardFile = try CustodyCatalogStore.openNode(directory.descriptor.value, "catalog.lock", uid: uid, directory: false)
+            func pin(_ name: String, parent: Int32, maximum: Int) throws -> Evidence {
+                let node = try CustodyCatalogStore.openNode(parent, name, uid: store.uid, directory: false)
+                let file = try store.read(name, at: parent, maximum: maximum)
+                guard node.identity == file.identity, node.acl == file.acl, fsync(node.descriptor.value) == 0 else { throw CustodyRecordError.fenced }
+                return Evidence(node: node, bytes: file.bytes)
+            }
+            control = try pin(InstallationControlRecord.filename, parent: directory.descriptor.value, maximum: InstallationControlRecord.maximumBytes)
+            guard control.bytes == (try expected.encode()), expected.phase == .active,
+                  expected.step?.action == .openStagedAdmission, expected.step?.status == .intent,
+                  expected.step?.ordinal == 12, expected.readinessCommit == nil else { throw CustodyRecordError.fenced }
+            catalog = try pin("catalog.json", parent: directory.descriptor.value, maximum: CustodyCatalog.maximumBytes)
+            guard try CustodyCatalog.decode(catalog.bytes).entries.isEmpty else { throw CustodyRecordError.fenced }
+            var files: [String: Evidence] = [:]
+            for name in try Self.names(receipts.descriptor.value) {
+                files[name] = try pin(name, parent: receipts.descriptor.value, maximum: InstallationDocumentPreimage.maximumBytes)
+            }
+            receiptFiles = files
+            guard fsync(directory.descriptor.value) == 0, fsync(receipts.descriptor.value) == 0 else { throw CustodyRecordError.fenced }
+        }
+        fileprivate static func names(_ parent: Int32) throws -> Set<String> {
+            let fd = openat(parent, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0, let stream = fdopendir(fd) else { if fd >= 0 { close(fd) }; throw CustodyRecordError.fenced }
+            defer { closedir(stream) }
+            var names = Set<String>(); let scan = MonotonicDeadline(seconds: 0.250)
+            while true {
+                guard !scan.hasExpired else { throw CustodyRecordError.busy }
+                errno = 0
+                guard let row = readdir(stream) else { guard errno == 0 else { throw CustodyRecordError.persistence(errno) }; return names }
+                let name = withUnsafePointer(to: row.pointee.d_name) { p in
+                    p.withMemoryRebound(to: CChar.self, capacity: Int(row.pointee.d_namlen) + 1) { String(cString: $0) }
+                }
+                if name == "." || name == ".." { continue }
+                guard names.count < 1_280, names.insert(name).inserted else { throw CustodyRecordError.fenced }
+            }
+        }
+        private func validate(_ node: Node, parent: Int32, name: String, isDirectory: Bool) throws {
+            let current = try CustodyCatalogStore.node(node.descriptor, uid: uid, directory: isDirectory)
+            var named = stat()
+            guard current.identity.matchesStableNode(node.identity), current.acl == node.acl,
+                  fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  FileIdentity(named).matchesStableNode(node.identity), isDirectory || named.st_nlink == 1 else { throw CustodyRecordError.conflict }
+        }
+        private func validate(_ evidence: Evidence, parent: Int32, name: String) throws {
+            try validate(evidence.node, parent: parent, name: name, isDirectory: false)
+            var before = stat(); let fd = evidence.node.descriptor.value
+            guard fstat(fd, &before) == 0, before.st_size == evidence.bytes.count else { throw CustodyRecordError.conflict }
+            var bytes = Data(count: evidence.bytes.count)
+            try bytes.withUnsafeMutableBytes { p in
+                var offset = 0
+                while offset < p.count {
+                    let count = pread(fd, p.baseAddress!.advanced(by: offset), p.count - offset, off_t(offset))
+                    if count < 0 && errno == EINTR { continue }
+                    guard count > 0 else { throw CustodyRecordError.fenced }; offset += count
+                }
+            }
+            var after = stat()
+            guard fstat(fd, &after) == 0, before.st_size == after.st_size,
+                  before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+                  before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+                  bytes == evidence.bytes else { throw CustodyRecordError.conflict }
+            try validate(evidence.node, parent: parent, name: name, isDirectory: false)
+        }
+        func revalidate(for owner: InstallationTransactionOwner, deadline: MonotonicDeadline) throws {
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard self.owner === owner, !deadline.hasExpired else { throw CustodyRecordError.fenced }
+            try owner.revalidate(); try slots.revalidate(for: owner)
+            try validate(directory, parent: root.value, name: "custody", isDirectory: true)
+            try validate(guardFile, parent: directory.descriptor.value, name: "catalog.lock", isDirectory: false)
+            guard flock(guardFile.descriptor.value, LOCK_EX | LOCK_NB) == 0 else { throw CustodyRecordError.busy }
+            do {
+                defer { _ = flock(guardFile.descriptor.value, LOCK_UN) }
+                try validate(guardFile, parent: directory.descriptor.value, name: "catalog.lock", isDirectory: false)
+                try validate(receipts, parent: directory.descriptor.value, name: "receipts", isDirectory: true)
+                guard try Self.names(directory.descriptor.value) == ["catalog.lock", "catalog.json", "receipts", InstallationControlRecord.filename],
+                      try Self.names(receipts.descriptor.value) == Set(receiptFiles.keys) else { throw CustodyRecordError.conflict }
+                try validate(control, parent: directory.descriptor.value, name: InstallationControlRecord.filename)
+                try validate(catalog, parent: directory.descriptor.value, name: "catalog.json")
+                for (name, evidence) in receiptFiles {
+                    guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+                    try validate(evidence, parent: receipts.descriptor.value, name: name)
+                }
+                try validate(directory, parent: root.value, name: "custody", isDirectory: true)
+            }
+            try slots.revalidate(for: owner); try owner.revalidate()
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+        }
+    }
+}
+
+
+extension CustodyCatalogStore {
+    /// Observation permit only. No context/helper accepts this type yet. A future
+    /// command join must consume it and add semantic postflight plus actual
+    /// registry retirement; this value cannot publish command completion.
+    final class InstallationStagedCommandObservation {
+        let binding: InstallationCommandBinding
+        private let session: InstallationStagedJournal
+        fileprivate init(session: InstallationStagedJournal, binding: InstallationCommandBinding) {
+            self.session = session; self.binding = binding
+        }
+        func revalidate(deadline: MonotonicDeadline) throws { try session.validate(self, deadline: deadline) }
+        func sealedInput(deadline: MonotonicDeadline) throws -> Data {
+            try revalidate(deadline: deadline); return try binding.encode()
+        }
+    }
+
+    /// Continuation of the original detached intent. Only metadata descriptions
+    /// are retained between calls; a temporary store borrows the SAME live staged
+    /// owner's leases for each bounded write. No old exclusive aliases survive.
+    final class InstallationStagedJournal {
+        private let owner: InstallationTransactionOwner
+        private let admission: InstallationStagedAdmission
+        private let intent: InstallationStagedAdmissionIntent
+        private let slots: InstallationPreparedSlotObservation
+        private let directory: Node
+        private let receipts: Node
+        private let guardFile: Node
+        private var controlPin: Node
+        private let catalogPin: InstallationStagedAdmissionIntent.Evidence
+        private var receiptPins: [String: InstallationStagedAdmissionIntent.Evidence]
+        private var anchor: File
+        private var current: InstallationControlRecord
+        private var chain: [InstallationStepReceipt]
+        private var stop: InstallationStagedStopAdmission?
+        private let mutex = NSLock()
+        private var failed = false
+        private struct Pending {
+            let control: InstallationControlRecord
+            let receipt: InstallationStepReceipt.CanonicalObservation
+        }
+        private var pending: Pending?
+        #if SHADOW_SYNC_TESTING
+        enum Cut { case afterReceipt, beforeControl }
+        private var cut: Cut?
+        private var receiptFault: CustodyCatalogStore.Fault?
+        private var controlFault: CustodyCatalogStore.Fault?
+        func testingCut(_ value: Cut) { mutex.lock(); cut = value; mutex.unlock() }
+        func testingWriteFault(receipt: CustodyCatalogStore.Fault? = nil, control: CustodyCatalogStore.Fault? = nil) {
+            mutex.lock(); receiptFault = receipt; controlFault = control; mutex.unlock()
+        }
+        var testingHasPending: Bool { mutex.lock(); defer { mutex.unlock() }; return pending != nil }
+        #endif
+
+        fileprivate init(intent: InstallationStagedAdmissionIntent, admission: InstallationStagedAdmission,
+                         deadline: MonotonicDeadline) throws {
+            self.intent = intent; self.admission = admission; owner = intent.owner; slots = intent.slots
+            directory = intent.directory; receipts = intent.receipts; guardFile = intent.guardFile
+            controlPin = intent.control.node; catalogPin = intent.catalog; receiptPins = intent.receiptFiles
+            anchor = File(identity: intent.control.node.identity, acl: intent.control.node.acl, bytes: intent.control.bytes)
+            current = try InstallationControlRecord.decode(anchor.bytes)
+            chain = try intent.receiptFiles.filter { $0.key.hasPrefix(InstallationStepReceipt.prefix) }.values.map {
+                try InstallationStepReceipt.decode($0.bytes, uid: intent.uid)
+            }.sorted { a, b in a.ordinal == b.ordinal ? a.status == .intent && b.status == .complete : a.ordinal < b.ordinal }
+            try admission.validateOwner(owner, intent: intent)
+            try current.validateReceiptChain(chain)
+            try withStore(deadline: deadline) { store in try store.locked { try validateLocked(store, deadline) } }
+        }
+        private func validateSource(_ deadline: MonotonicDeadline) throws {
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            if let stop { try stop.validateOwner(owner) }
+            else { try admission.validateOwner(owner, intent: intent) }
+            try slots.revalidate(for: owner); try owner.revalidate()
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+        }
+        private func withStore<T>(deadline: MonotonicDeadline, _ body: (CustodyCatalogStore) throws -> T) throws -> T {
+            try validateSource(deadline)
+            let leases = try stop.map { try $0.retainStopLeases() } ?? admission.retainStartLeases()
+            let store = try CustodyCatalogStore(leases: leases)
+            let result = try body(store)
+            try validateSource(deadline)
+            return result
+        }
+        private func serialized<T>(deadline: MonotonicDeadline,
+                                   _ body: (CustodyCatalogStore) throws -> T) throws -> T {
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard !failed, pending == nil else { throw CustodyRecordError.fenced }
+            do { return try withStore(deadline: deadline, body) }
+            catch {
+                // Temporary stores/lease descendants have unwound before this
+                // one-way closure. Keep pending receipt/control and every pin.
+                failed = true
+                if stop == nil { _ = try? admission.closeStarts() }
+                throw error
+            }
+        }
+        private func validateLocked(_ store: CustodyCatalogStore, _ deadline: MonotonicDeadline) throws {
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            try store.validate(directory, at: store.root.value, name: "custody", isDirectory: true)
+            try store.validate(guardFile, at: directory.descriptor.value, name: "catalog.lock", isDirectory: false)
+            try store.validate(receipts, at: directory.descriptor.value, name: "receipts", isDirectory: true)
+            try store.validate(controlPin, at: directory.descriptor.value, name: InstallationControlRecord.filename, isDirectory: false)
+            let actual = try store.installationSnapshot(pendingStep: pending?.receipt, pendingControl: pending?.control)
+            let catalog = try store.snapshot()
+            try store.validate(catalogPin.node, at: directory.descriptor.value, name: "catalog.json", isDirectory: false)
+            guard catalog.0.identity == catalogPin.node.identity, catalog.0.acl == catalogPin.node.acl,
+                  catalog.0.bytes == catalogPin.bytes, catalog.1.entries.isEmpty,
+                  actual.0.identity == anchor.identity, actual.0.acl == anchor.acl,
+                  actual.0.bytes == anchor.bytes, actual.1 == current,
+                  try InstallationStagedAdmissionIntent.names(receipts.descriptor.value) == Set(receiptPins.keys) else {
+                throw CustodyRecordError.conflict
+            }
+            for (name, pin) in receiptPins {
+                guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+                try store.validate(pin.node, at: receipts.descriptor.value, name: name, isDirectory: false)
+                let bytes = try store.read(name, at: receipts.descriptor.value, maximum: InstallationDocumentPreimage.maximumBytes)
+                guard bytes.identity == pin.node.identity, bytes.acl == pin.node.acl, bytes.bytes == pin.bytes else {
+                    throw CustodyRecordError.conflict
+                }
+            }
+            try store.validateBindings()
+        }
+        private func proposal(_ action: InstallationAction, status: InstallationStepStatus) throws -> Pending {
+            guard let transaction = current.transaction, let step = current.step,
+                  current.revision < UInt64.max else { throw CustodyRecordError.fenced }
+            let receipt = InstallationStepReceipt(transactionID: transaction.id,
+                ordinal: status == .complete ? step.ordinal : step.ordinal + 1,
+                previousReceiptDigest: current.latestReceiptDigest, action: action, status: status,
+                preimage: transaction.slots, postimage: status == .complete ? transaction.slots : nil,
+                bindingDigest: try transaction.bindingDigest(state: current.state))
+            let canonical = try InstallationStepReceipt.CanonicalObservation(validating: receipt, uid: current.state.directory.uid)
+            let next = InstallationControlRecord(revision: current.revision + 1, phase: current.phase,
+                state: current.state, transaction: transaction, step: try receipt.step(), latestReceiptDigest: canonical.digest,
+                readinessCommit: nil, recoveryReason: current.recoveryReason)
+            try current.validateReplacement(next, receipts: chain + [receipt])
+            return Pending(control: next, receipt: canonical)
+        }
+        private func replaceControl(_ next: InstallationControlRecord, store: CustodyCatalogStore,
+                                    deadline: MonotonicDeadline) throws {
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            #if SHADOW_SYNC_TESTING
+            if cut == .beforeControl { cut = nil; throw CustodyRecordError.injectedFailure }
+            store.testingCut = controlFault; controlFault = nil
+            #endif
+            try store.write(InstallationControlRecord.filename, bytes: next.encode(), expected: anchor)
+            let after = try store.installationSnapshot()
+            let pin = try CustodyCatalogStore.openNode(directory.descriptor.value, InstallationControlRecord.filename,
+                uid: store.uid, directory: false)
+            guard after.1 == next, pin.identity == after.0.identity, pin.acl == after.0.acl,
+                  fsync(pin.descriptor.value) == 0, fsync(directory.descriptor.value) == 0 else { throw CustodyRecordError.conflict }
+            try store.validate(pin, at: directory.descriptor.value, name: InstallationControlRecord.filename, isDirectory: false)
+            try store.validateBindings()
+            anchor = after.0; current = next; controlPin = pin
+        }
+        private func publish(_ proposed: Pending, store: CustodyCatalogStore,
+                             deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            try store.locked {
+                try validateLocked(store, deadline); pending = proposed
+                #if SHADOW_SYNC_TESTING
+                store.testingCut = receiptFault; receiptFault = nil
+                #endif
+                let receipt = proposed.receipt
+                let bytes = try receipt.receipt.encode(uid: receipt.uid)
+                try store.write(receipt.filename, at: receipts.descriptor.value, bytes: bytes, expected: nil)
+                let pin = try InstallationJournalSession.retainReceipt(store, receipt)
+                receiptPins[receipt.filename] = InstallationStagedAdmissionIntent.Evidence(node: pin, bytes: bytes)
+                try validateLocked(store, deadline)
+                #if SHADOW_SYNC_TESTING
+                if cut == .afterReceipt { cut = nil; throw CustodyRecordError.injectedFailure }
+                #endif
+            }
+            try validateSource(deadline)
+            return try store.locked {
+                try validateLocked(store, deadline)
+                guard let pending, let pin = receiptPins[pending.receipt.filename],
+                      fsync(pin.node.descriptor.value) == 0, fsync(receipts.descriptor.value) == 0 else { throw CustodyRecordError.fenced }
+                try current.validateReplacement(pending.control, receipts: chain + [pending.receipt.receipt])
+                try replaceControl(pending.control, store: store, deadline: deadline)
+                chain.append(pending.receipt.receipt); self.pending = nil
+                return current
+            }
+        }
+        func completeAdmission(deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            try serialized(deadline: deadline) { store in
+                guard stop == nil, current.phase == .active, current.step?.action == .openStagedAdmission,
+                      current.step?.ordinal == 12, current.step?.status == .intent else { throw CustodyRecordError.fenced }
+                // The actual admission capability, original owner, source/slots,
+                // complete chain and retained identities were revalidated above.
+                return try publish(proposal(.openStagedAdmission, status: .complete), store: store, deadline: deadline)
+            }
+        }
+        private func observation(_ store: CustodyCatalogStore, deadline: MonotonicDeadline) throws -> InstallationStagedCommandObservation {
+            try store.locked {
+                try validateLocked(store, deadline)
+                var nodes: [String: InstallationNodeIdentity] = [:]
+                for (name, pin) in receiptPins where name.hasPrefix(InstallationStepReceipt.prefix) || name.hasPrefix(InstallationDocumentPreimage.prefix) {
+                    nodes[name] = try store.installationCommandNode(pin.node.identity, acl: pin.node.acl)
+                }
+                let binding = try InstallationCommandBinding(control: current,
+                    controlNode: store.installationCommandNode(anchor.identity, acl: anchor.acl), receiptNodes: nodes)
+                try store.validateInstallationCommand(binding)
+                return InstallationStagedCommandObservation(session: self, binding: binding)
+            }
+        }
+        private func startIntent(_ action: InstallationAction, after previous: InstallationAction,
+                                 deadline: MonotonicDeadline) throws -> InstallationStagedCommandObservation {
+            try serialized(deadline: deadline) { store in
+                guard stop == nil, current.phase == .active, current.step?.action == previous,
+                      current.step?.status == .complete else { throw CustodyRecordError.fenced }
+                _ = try publish(proposal(action, status: .intent), store: store, deadline: deadline)
+                return try observation(store, deadline: deadline)
+            }
+        }
+        func bootstrapCandidateIntent(deadline: MonotonicDeadline) throws -> InstallationStagedCommandObservation {
+            try startIntent(.bootstrapCandidate, after: .openStagedAdmission, deadline: deadline)
+        }
+        func kickstartCandidateIntent(deadline: MonotonicDeadline) throws -> InstallationStagedCommandObservation {
+            try startIntent(.kickstartCandidate, after: .bootstrapCandidate, deadline: deadline)
+        }
+        func candidateStopIntent(admission stop: InstallationStagedStopAdmission,
+                                 deadline: MonotonicDeadline) throws -> InstallationStagedCommandObservation {
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            do {
+                guard !failed, pending == nil, self.stop == nil, current.phase == .active,
+                      current.step?.status == .complete,
+                      [.openStagedAdmission, .bootstrapCandidate, .kickstartCandidate].contains(current.step!.action) else { throw CustodyRecordError.fenced }
+                try stop.validateOwner(owner)
+                self.stop = stop
+                mutex.unlock()
+            } catch { mutex.unlock(); throw error }
+            return try serialized(deadline: deadline) { store in
+                let recovery = InstallationControlRecord(revision: current.revision + 1, phase: .recovery,
+                    state: current.state, transaction: current.transaction, step: current.step,
+                    latestReceiptDigest: current.latestReceiptDigest, readinessCommit: nil, recoveryReason: .readinessFailed)
+                try current.validateReplacement(recovery, receipts: chain)
+                try store.locked { try validateLocked(store, deadline); try replaceControl(recovery, store: store, deadline: deadline) }
+                _ = try publish(proposal(.candidateStop, status: .intent), store: store, deadline: deadline)
+                return try observation(store, deadline: deadline)
+            }
+        }
+        fileprivate func validate(_ observation: InstallationStagedCommandObservation, deadline: MonotonicDeadline) throws {
+            try serialized(deadline: deadline) { store in
+                guard current == observation.binding.control else { throw CustodyRecordError.fenced }
+                try store.locked { try validateLocked(store, deadline); try store.validateInstallationCommand(observation.binding) }
+            }
+        }
+        // Deliberately no bootstrap/kickstart/stop completion API. Existing
+        // ordinary lifecycle results and stop-only leases do not prove staged
+        // candidate semantics, authentication or actual command retirement.
     }
 }

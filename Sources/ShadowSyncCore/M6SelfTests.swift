@@ -30,6 +30,108 @@ public enum M6SelfTestRunner {
             record(name)
         }
 
+        try run("m6-installation-initial-fenced-roundtrip") { try InstallationControlFixtures.initial() }
+        try run("m6-installation-first-reserve-intent") { try InstallationControlFixtures.firstIntent() }
+        try run("m6-installation-canonical-refusals") { try InstallationControlFixtures.malformed() }
+        try run("m6-installation-canonical-observation-binding") { try InstallationControlFixtures.canonicalObservations() }
+        try run("m6-installation-fixed-slots-and-documents") { try InstallationControlFixtures.fixedSlots() }
+        try run("m6-installation-phase-combinations") { try InstallationControlFixtures.phases() }
+        try run("m6-installation-closed-transitions") { try InstallationControlFixtures.transitions() }
+        try run("m6-installation-completion-not-skippable") { try InstallationControlFixtures.intentIsNotCompletion() }
+        try run("m6-installation-receipt-chain-integrity") { try InstallationControlFixtures.chain() }
+        try run("m6-installation-commit-not-circular") { try InstallationControlFixtures.commitReference() }
+        try run("m6-installation-postcommit-forward-only") { try InstallationControlFixtures.forwardOnly() }
+        try run("m6-installation-precommit-stopped-recovery") { try InstallationControlFixtures.rollback() }
+        try run("m6-installation-committed-process-history") { try InstallationControlFixtures.history() }
+        try run("m6-installation-removal-fenced-tombstone") { try InstallationControlFixtures.removal() }
+        try run("m6-installation-revision-ordinal-overflow") { try InstallationControlFixtures.bounds() }
+
+        try run("m6-installation-storage-initial-admission") { try InstallationStorageFixtures.initial() }
+        try run("m6-installation-storage-complete-chain") { try InstallationStorageFixtures.committed() }
+        try run("m6-installation-storage-published-control-replacement") { try InstallationStorageFixtures.publishedReplacement() }
+        try run("m6-installation-storage-control-write-cuts") { try InstallationStorageFixtures.writeCuts() }
+
+        try run("m6-installation-owner-old-aliases") { try InstallationOwnershipFixtures.oldAliases() }
+        try run("m6-installation-owner-borrowed-lifetime") { try InstallationOwnershipFixtures.borrowedLifetime() }
+        try run("m6-installation-owner-closed-borrowing") { try InstallationOwnershipFixtures.closedBorrowing() }
+        try run("m6-installation-owner-busy-transfer") { try InstallationOwnershipFixtures.busyTransfer() }
+        try run("m6-installation-owner-protection-drift") { try InstallationOwnershipFixtures.protectionChanges() }
+        try run("m6-installation-owner-acl-drift") { try InstallationOwnershipFixtures.aclChanges() }
+        try run("m6-installation-owner-state-replacement") { try InstallationOwnershipFixtures.stateReplacement() }
+        try run("m6-installation-owner-wrong-capsule") { try InstallationOwnershipFixtures.wrongOwner() }
+        try run("m6-installation-live-binding-stable") { try InstallationOwnershipFixtures.liveBindingStable() }
+        try run("m6-installation-live-binding-owner-source-mismatch") { try InstallationOwnershipFixtures.liveBindingMismatch() }
+        try run("m6-installation-live-binding-observation-drift") { try InstallationOwnershipFixtures.liveBindingDrift() }
+        try run("m6-installation-live-binding-state-drift") { try InstallationOwnershipFixtures.liveBindingStateDrift() }
+        try run("m6-installation-slot-durable-fixed-capture") { try InstallationSlotCaptureFixtures.completeDurableCapture() }
+        try run("m6-installation-slot-unsafe-documents-refuse") { try InstallationSlotCaptureFixtures.unsafeDocuments() }
+        try run("m6-installation-slot-source-parent-drift-refuse") { try InstallationSlotCaptureFixtures.sourceAndParentDrift() }
+        try run("m6-installation-slot-orphan-endpoints-names-refuse") { try InstallationSlotCaptureFixtures.unknownEndpointsAndNames() }
+        try run("m6-installation-slot-preimage-write-cuts") { try InstallationSlotCaptureFixtures.preimageCuts() }
+        try run("m6-installation-slot-existing-maximum-documents") { try InstallationSlotCaptureFixtures.maximumDocuments() }
+        try run("m6-installation-slot-retained-identity-owner") { try InstallationSlotCaptureFixtures.retainedIdentityAndOwner() }
+        try run("m6-installation-slot-orphan-preimage-admission") { try InstallationSlotCaptureFixtures.orphanPreimageAdmission() }
+        try run("m6-installation-journal-reservation-failure") { try InstallationJournalFixtures.reservationAndFailure() }
+        try run("m6-installation-journal-receipt-cuts") { try InstallationJournalFixtures.receiptCuts() }
+        try run("m6-installation-journal-tampered-successors") { try InstallationJournalFixtures.tamperedSuccessors() }
+        try run("m6-installation-journal-source-owner-drift") { try InstallationJournalFixtures.sourceAndOwnerDrift() }
+        try run("m6-installation-journal-uncertain-write-cuts") { try InstallationJournalFixtures.uncertainWriteCuts() }
+        try run("m6-installation-journal-retained-identities") { try InstallationJournalFixtures.controlAndReceiptIdentity() }
+        try run("m6-installation-journal-history-refusal") { try InstallationJournalFixtures.committedRollover() }
+        try run("m6-installation-journal-maximum-documents") { try InstallationJournalFixtures.maximumDocuments() }
+        try run("m6-installation-command-completed-command") { try InstallationCommandBridgeFixtures.completedCommand() }
+        try run("m6-installation-command-owner-publisher") { try InstallationCommandBridgeFixtures.wrongOwnerAndPublisher() }
+        try run("m6-installation-command-durable-substitution") { try InstallationCommandBridgeFixtures.durableSubstitution() }
+        try run("m6-installation-command-helper-control-substitution") { try InstallationCommandBridgeFixtures.helperRejectsChangedControl() }
+        try run("m6-installation-command-closure-pending") { try InstallationCommandBridgeFixtures.closureAndPending() }
+        try run("m6-installation-command-terminal-not-retirement") { try InstallationCommandBridgeFixtures.terminalIsNotRetirement() }
+        try run("m6-installation-command-retirement-after-release") { try InstallationCommandBridgeFixtures.retirementAfterRelease() }
+        try run("m6-installation-command-sealed-shape") { try InstallationCommandBridgeFixtures.sealedShape() }
+        try run("m6-installation-exclusive-positive-preparation") { try InstallationExclusivePreparationFixtures.positivePreparation() }
+        try run("m6-installation-exclusive-action-cuts") { try InstallationExclusivePreparationFixtures.actionCuts() }
+        try run("m6-installation-exclusive-slot-substitution") { try InstallationExclusivePreparationFixtures.substitutionRefuses() }
+        try run("m6-installation-exclusive-promotion-source-replacement") { try InstallationExclusivePreparationFixtures.promotionSourceReplacementRefuses() }
+        try run("m6-installation-exclusive-short-caller-deadline") { try InstallationExclusivePreparationFixtures.shortCallerDeadline() }
+        try run("m6-installation-exclusive-diagnostic-failure") { try InstallationExclusivePreparationFixtures.diagnosticFailureRefuses() }
+        try run("m6-installation-exclusive-order-and-deadline") { try InstallationExclusivePreparationFixtures.orderAndDeadlineRefuse() }
+        try run("m6-installation-exclusive-prior-and-source-drift") { try InstallationExclusivePreparationFixtures.priorAndSourceDriftRefuse() }
+        try run("m6-installation-exclusive-durable-intent-cut") { try InstallationExclusivePreparationFixtures.durableIntentCut() }
+        try run("m6-installation-exclusive-staged-intent-release-substitution") { try InstallationExclusivePreparationFixtures.stagedIntentReleaseAndSubstitution() }
+        try run("m6-installation-transfer-positive-and-repeated") { try InstallationLockTransferFixtures.positiveAndRepeated() }
+        try run("m6-installation-transfer-publication-aliases") { try InstallationLockTransferFixtures.publicationAliases() }
+        try run("m6-installation-transfer-borrowed-aliases") { try InstallationLockTransferFixtures.borrowedAliases() }
+        try run("m6-installation-transfer-wrong-proofs-deadline") { try InstallationLockTransferFixtures.wrongProofsAndDeadline() }
+        try run("m6-installation-transfer-synchronous-deadline-cleanup") { try InstallationLockTransferFixtures.synchronousDeadlineCleanup() }
+        try run("m6-installation-transfer-contention-continuity") { try InstallationLockTransferFixtures.contentionAndContinuity() }
+        try run("m6-installation-transfer-inode-substitution") { try InstallationLockTransferFixtures.substitutionAtGap() }
+        try run("m6-installation-transfer-postflight-failure") { try InstallationLockTransferFixtures.postflightFailure() }
+        try run("m6-installation-transfer-stale-intent-protection") { try InstallationLockTransferFixtures.staleIntentAndProtection() }
+        try run("m6-installation-staged-lease-continuity") { try InstallationStagedCustodyFixtures.leaseContinuity() }
+        try run("m6-installation-staged-one-way-closure") { try InstallationStagedCustodyFixtures.oneWayClosure() }
+        try run("m6-installation-staged-owner-drift-refusals") { try InstallationStagedCustodyFixtures.wrongOwnerAndDrift() }
+        try run("m6-installation-staged-wire-roundtrip") { try InstallationStagedCustodyFixtures.wireRoundtrip() }
+        try run("m6-installation-staged-wire-refusals") { try InstallationStagedCustodyFixtures.wireRefusals() }
+        try run("m6-installation-staged-journal-continuation") { try InstallationStagedJournalFixtures.continuation() }
+        try run("m6-installation-staged-journal-order-owner-refusals") { try InstallationStagedJournalFixtures.orderAndOwners() }
+        try run("m6-installation-staged-journal-stop-intent") { try InstallationStagedJournalFixtures.stopIntent() }
+        try run("m6-installation-staged-journal-binding-refusals") { try InstallationStagedJournalFixtures.bindingRefusals() }
+        try run("m6-installation-staged-journal-substitution-refusals") { try InstallationStagedJournalFixtures.substitutionRefusals() }
+        try run("m6-installation-staged-journal-persistence-cuts") { try InstallationStagedJournalFixtures.persistenceCuts() }
+        try run("m6-installation-readiness-wire-roundtrip") { try InstallationReadinessWireFixtures.roundtrip() }
+        try run("m6-installation-readiness-wire-canonical-refusals") { try InstallationReadinessWireFixtures.canonicalRefusals() }
+        try run("m6-installation-readiness-wire-field-refusals") { try InstallationReadinessWireFixtures.fieldRefusals() }
+        try run("m6-installation-readiness-wire-persistent-frames") { try InstallationReadinessWireFixtures.persistentFrames() }
+        try run("m6-installation-readiness-wire-bounded-frames") { try InstallationReadinessWireFixtures.boundedFrames() }
+        try run("m6-installation-readiness-wire-eof-empty") { try InstallationReadinessWireFixtures.eofAndEmpty() }
+        try run("m6-installation-readiness-wire-absolute-deadline") { try InstallationReadinessWireFixtures.sharedDeadline() }
+        try run("m6-installation-readiness-wire-legacy-wrappers") { try InstallationReadinessWireFixtures.legacyWrappers() }
+        try run("m6-live-peer-closed-descriptor") { try LivePeerFixtures.invalid("closed") }
+        try run("m6-live-peer-non-socket") { try LivePeerFixtures.invalid("regular") }
+        try run("m6-live-peer-unconnected-stream") { try LivePeerFixtures.invalid("unconnected") }
+        try run("m6-live-peer-datagram") { try LivePeerFixtures.pair(datagram: true) }
+        try run("m6-live-peer-wrong-uid") { try LivePeerFixtures.pair(datagram: false, wrongUID: true) }
+        try run("m6-live-peer-unsigned-identity") { try LivePeerFixtures.pair(datagram: false) }
+
         try run("m6-command-graph-valid") { try CommandGraphSelfTests.run("valid") }
         try run("m6-command-graph-empty") { try CommandGraphSelfTests.run("empty") }
         try run("m6-command-graph-unknown-build") { try CommandGraphSelfTests.run("unknown-build") }
@@ -321,6 +423,13 @@ public enum M6SelfTestRunner {
         try run("m6-recovery-interrupted-journal-swap") { try CustodyRecoverySelfTests.interruptedSwap() }
         try run("m6-recovery-old-lock-binding-refusal") { try CustodyRecoverySelfTests.bindingMismatch() }
         try run("m6-initialization-publication-and-retained-locks") { try FreshStateSelfTests.publication() }
+        try run("m6-initialization-handoff-ownership-and-staging") { try FreshStateSelfTests.handoffOwnership() }
+        try run("m6-initialization-handoff-concurrent-exclusion") { try FreshStateSelfTests.handoffConcurrent() }
+        try run("m6-initialization-handoff-root-refusal") { try FreshStateSelfTests.handoffRootRefusal() }
+        try run("m6-initialization-handoff-receipt-control-refusal") { try FreshStateSelfTests.handoffProofRefusal() }
+        try run("m6-initialization-handoff-custody-fence-refusal") { try FreshStateSelfTests.handoffFenceRefusal() }
+        try run("m6-initialization-handoff-copy-failure-retention") { try FreshStateSelfTests.handoffCopyFailure() }
+        try run("m6-initialization-handoff-retained-child") { try FreshStateSelfTests.handoffRetainedChild() }
         try run("m6-initialization-ordinary-executable-refusal") { try FreshStateSelfTests.publisherRefusal() }
         try run("m6-initialization-existing-state-refusal") { try FreshStateSelfTests.existingState() }
         try run("m6-initialization-legacy-state-refusal") { try FreshStateSelfTests.legacyState() }
@@ -388,6 +497,7 @@ public enum M6SelfTestRunner {
         try run("m6-registry-deadline-independent-of-queue") { try CustodyRegistrySelfTests.boundedWait() }
         try run("m6-registry-aggregate-output-reservation") { try CustodyRegistrySelfTests.outputReservation() }
         try run("m6-registry-queued-start-deadline") { try CustodyRegistrySelfTests.queuedStartDeadline() }
+        try run("m6-registry-cancel-shortens-waiters") { try CustodyRegistrySelfTests.shortenedWaiters() }
         try run("m6-context-unbundled-publisher-refusal") { try CustodyContextSelfTests.unsignedFactory() }
         try run("m6-context-read-scope-exclusion") { try CustodyContextSelfTests.readScopes() }
         try run("m6-context-read-phase-return-release") { try CustodyContextSelfTests.phaseReturn() }
@@ -430,6 +540,22 @@ public enum M6SelfTestRunner {
         try run("m6-helper-serial-postflight-cancel") { try CustodyHelperSelfTests.serial("serial-postflight-cancel", cancelAt: 2) }
         try run("m6-helper-serial-postflight-eof") { try CustodyHelperSelfTests.serial("serial-postflight-eof", cancelAt: 2, eof: true) }
         try run("m6-helper-serial-postflight-timeout") { try CustodyHelperSelfTests.serial("serial-postflight-timeout") }
+        try run("m6-helper-lifecycle-next-before-spawn") { try CustodyHelperSelfTests.lifecycle("lifecycle-next-before-spawn") }
+        try run("m6-helper-lifecycle-next-after-spawn") { try CustodyHelperSelfTests.lifecycle("lifecycle-next-after-spawn") }
+        try run("m6-helper-lifecycle-preflight-overflow") { try CustodyHelperSelfTests.lifecycle("lifecycle-preflight-overflow") }
+        try run("m6-helper-lifecycle-postflight-overflow") { try CustodyHelperSelfTests.lifecycle("lifecycle-postflight-overflow") }
+        try run("m6-helper-lifecycle-bootstrap") { try CustodyHelperSelfTests.lifecycle("lifecycle-bootstrap") }
+        try run("m6-helper-lifecycle-kickstart") { try CustodyHelperSelfTests.lifecycle("lifecycle-kickstart") }
+        try run("m6-helper-lifecycle-bootout") { try CustodyHelperSelfTests.lifecycle("lifecycle-bootout") }
+        try run("m6-helper-lifecycle-preflight-foreign") { try CustodyHelperSelfTests.lifecycle("lifecycle-preflight-foreign") }
+        try run("m6-helper-lifecycle-mutation-failure") { try CustodyHelperSelfTests.lifecycle("lifecycle-mutation-failure") }
+        try run("m6-helper-lifecycle-postflight-absent") { try CustodyHelperSelfTests.lifecycle("lifecycle-postflight-absent") }
+        try run("m6-helper-lifecycle-preflight-cancel") { try CustodyHelperSelfTests.lifecycle("lifecycle-preflight-cancel", cancelAt: 0) }
+        try run("m6-helper-lifecycle-mutation-cancel") { try CustodyHelperSelfTests.lifecycle("lifecycle-mutation-cancel", cancelAt: 1) }
+        try run("m6-helper-lifecycle-postflight-cancel") { try CustodyHelperSelfTests.lifecycle("lifecycle-postflight-cancel", cancelAt: 2) }
+        try run("m6-helper-lifecycle-between-cancel") { try CustodyHelperSelfTests.lifecycle("lifecycle-between-cancel", cancelAt: 0, eof: true) }
+        try run("m6-helper-lifecycle-next-before-record") { try CustodyHelperSelfTests.lifecycle("lifecycle-next-before-record") }
+        try run("m6-helper-lifecycle-postflight-timeout") { try CustodyHelperSelfTests.lifecycle("lifecycle-postflight-timeout") }
         try run("m6-helper-serial-complete") { try CustodyHelperSelfTests.serial("serial-complete") }
         try run("m6-helper-serial-system-failure") { try CustodyHelperSelfTests.serial("serial-system-failure") }
         try run("m6-helper-serial-policy-failure") { try CustodyHelperSelfTests.serial("serial-policy-failure") }
@@ -461,6 +587,11 @@ public enum M6SelfTestRunner {
         try run("m6-system-config-pending-after-fallback-return") { try SystemConfigCommandSelfTests.pendingCompletion(throwAfter: false) }
         try run("m6-system-config-pending-after-fallback-throw") { try SystemConfigCommandSelfTests.pendingCompletion(throwAfter: true) }
         try run("m6-system-config-unrelated-error-preserved") { try SystemConfigCommandSelfTests.unrelatedCompletion() }
+        try run("m6-inspection-completion-cancelled-evidence") { try SystemConfigCommandSelfTests.retainedCompletion("cancelled") }
+        try run("m6-inspection-completion-closed-phase") { try SystemConfigCommandSelfTests.retainedCompletion("closed") }
+        try run("m6-inspection-completion-pending-wins") { try SystemConfigCommandSelfTests.retainedCompletion("pending") }
+        try run("m6-inspection-completion-failure-wins") { try SystemConfigCommandSelfTests.retainedCompletion("failure") }
+        try run("m6-inspection-completion-account-refusal") { try SystemConfigCommandSelfTests.retainedCompletion("account") }
         try run("m6-config-caller-capture-postflight") { try SystemConfigCommandSelfTests.configurationCapture("roundtrip") }
         try run("m6-config-caller-absent-system") { try SystemConfigCommandSelfTests.configurationCapture("absent") }
         try run("m6-config-caller-changed-origin-refusal") { try SystemConfigCommandSelfTests.configurationCapture("origin") }
@@ -1008,6 +1139,7 @@ private enum CustodyCatalogSelfTests {
         do { try body() } catch is CustodyRecordError { return }
         catch is CustodyProtocolError { return } catch is PolicyProtocolError { return }
         catch is SecureStateError { return } catch is PolicyAuthorityFileError { return }
+        catch is InstallationRecordError { return }
         throw Failure(message: "custody metadata unexpectedly accepted")
     }
     static func fixture(initialized: Bool = true, _ body: (StateLocation, String) throws -> Void) throws {
@@ -1992,7 +2124,7 @@ private enum FreshStateSelfTests {
             }
             try H.check(try initializer!.publish() == result, "same-object retry")
             initializer = nil
-            _ = try H.scope(location)
+            try H.refuses { _ = try H.scope(location) }
             try H.check(try attempt(root) == result, "reopened transaction changed publication")
             try H.check(!FileManager.default.fileExists(atPath: parent + "/.shadow-sync-initialization." + result.transaction), "stage remains after publication")
         }
@@ -2001,6 +2133,231 @@ private enum FreshStateSelfTests {
         do { _ = try FreshStateInitialization.production() }
         catch is PublisherPolicyError { return }
         throw H.Failure(message: "ordinary app acquired initializer publisher identity")
+    }
+    private static let handoffLocks = ["latest.log", "lifecycle.lock", "operation.lock", "run.lock"]
+    private static func lockProbe(_ path: String, shared: Bool = false, busy: Bool) throws {
+        let fd = open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        try H.check(fd >= 0, "handoff lock probe open"); defer { close(fd) }
+        let result = flock(fd, (shared ? LOCK_SH : LOCK_EX) | LOCK_NB), code = errno
+        try H.check(busy ? result == -1 && code == EWOULDBLOCK : result == 0, "handoff lock exclusion changed")
+    }
+    private static func held(_ location: StateLocation) throws {
+        for name in handoffLocks { try lockProbe(location.path + "/" + name, shared: true, busy: true) }
+    }
+    static func handoffOwnership() throws {
+        try fixture { root, location, _ in
+            let initializer = try FreshStateInitialization.testing(root: root)
+            try H.refuses { _ = try initializer.takeInstallationAuthority() }
+            let published = try initializer.publish()
+            try held(location)
+            let authority = try initializer.takeInstallationAuthority(); defer { authority.release() }
+            try H.check(authority.stateDirectory.path == location.path, "handoff retained obsolete staging path")
+            var state = stat(); try H.check(fstat(authority.stateDirectory.descriptor.value, &state) == 0
+                && UInt64(state.st_ino) == published.stateInode && UInt64(state.st_dev) == published.stateDevice, "handoff root identity")
+            try held(location)
+            try H.refuses { _ = try initializer.takeInstallationAuthority() }
+            try H.refuses { _ = try initializer.publish() }
+            var first: CustodyAuthorityLeaseSet? = try authority.retainCommandLeases()
+            var last: CustodyAuthorityLeaseSet? = try first!.duplicate()
+            try H.check(first!.mode == .lifecycleMutation
+                && Set(try first!.descriptorClaims().map(\.role)) == [.state, .namespace, .lifecycle, .operation], "fresh lifecycle command roles")
+            let names: [CustodyDescriptorClaim.Role: String] = [.namespace: "latest.log", .lifecycle: "lifecycle.lock", .operation: "operation.lock"]
+            for claim in try first!.descriptorClaims() where claim.role != .state {
+                var named = stat(); try H.check(lstat(location.path + "/" + names[claim.role]!, &named) == 0
+                    && claim.device == UInt64(named.st_dev) && claim.inode == UInt64(named.st_ino), "handoff changed a lock inode")
+            }
+            first = nil
+            try H.refuses { try authority.permitStagedHostAdmission() }
+            try H.check(!authority.commandAdmissionIsOpen, "failed staging reopened admission")
+            try held(location)
+            try last!.validate(); last = nil
+            try authority.permitStagedHostAdmission()
+            for name in ["latest.log", "lifecycle.lock", "run.lock"] { try lockProbe(location.path + "/" + name, busy: false) }
+            try lockProbe(location.path + "/operation.lock", busy: true)
+            let observation = try LifecycleAdmissionAuthority.acquire(at: location); observation.release()
+            try H.refuses { _ = try authority.retainCommandLeases() }
+            try H.refuses { _ = try RunAuthority.acquireRun(at: location) }
+            authority.release()
+            let next = try RunAuthority.acquireRun(at: location); next.release()
+            try H.refuses { _ = try initializer.takeInstallationAuthority() }
+        }
+    }
+    private final class HandoffAttempt: @unchecked Sendable {
+        let initializer: FreshStateInitialization
+        private let mutex = NSLock()
+        private var value: RunAuthority?
+        private var failure: Error?
+        init(_ initializer: FreshStateInitialization) { self.initializer = initializer }
+        func take() {
+            do { let owner = try initializer.takeInstallationAuthority(); mutex.lock(); value = owner; mutex.unlock() }
+            catch { mutex.lock(); failure = error; mutex.unlock() }
+        }
+        func result() throws -> RunAuthority {
+            mutex.lock(); defer { mutex.unlock() }
+            if let failure { throw failure }
+            guard let value else { throw H.Failure(message: "handoff attempt returned no owner") }; return value
+        }
+        func release() { mutex.lock(); let owner = value; value = nil; mutex.unlock(); owner?.release() }
+    }
+    static func handoffConcurrent() throws {
+        for replaceAfterCopy in [false, true] {
+        try fixture { root, location, _ in
+            let initializer = try FreshStateInitialization.testing(root: root); _ = try initializer.publish()
+            let barrier = CustodyLeaseTestingBarrier(), attempt = HandoffAttempt(initializer), joined = DispatchGroup()
+            initializer.testingPauseInstallationHandoff(barrier)
+            joined.enter(); DispatchQueue.global().async { attempt.take(); joined.leave() }
+            defer { barrier.release(); joined.wait(); attempt.release() }
+            try H.check(barrier.waitUntilEntered(), "handoff did not reach duplicate/consume boundary")
+            try held(location)
+            try H.refuses { _ = try initializer.takeInstallationAuthority() }
+            try H.refuses { _ = try initializer.publish() }
+            let saved = location.path + ".saved"
+            if replaceAfterCopy {
+                try H.check(rename(location.path, saved) == 0 && mkdir(location.path, 0o700) == 0,
+                            "handoff final-validation replacement")
+            }
+            barrier.release(); joined.wait()
+            let owner: RunAuthority
+            if replaceAfterCopy {
+                try H.refuses { _ = try attempt.result() }
+                for name in handoffLocks { try lockProbe(saved + "/" + name, shared: true, busy: true) }
+                try H.check(rmdir(location.path) == 0 && rename(saved, location.path) == 0,
+                            "restore final-validation fixture")
+                owner = try initializer.takeInstallationAuthority()
+            } else { owner = try attempt.result() }
+            defer { owner.release() }
+            try held(location)
+            try owner.permitStagedHostAdmission()
+            try lockProbe(location.path + "/operation.lock", busy: true)
+            try H.refuses { _ = try initializer.takeInstallationAuthority() }
+        }
+        }
+    }
+    static func handoffRootRefusal() throws {
+        for alias in [false, true] {
+            try fixture { root, location, _ in
+                let initializer = try FreshStateInitialization.testing(root: root); _ = try initializer.publish()
+                let saved = location.path + ".saved"
+                try H.check(rename(location.path, saved) == 0, "handoff root replacement")
+                if alias { try H.check(symlink(saved, location.path) == 0, "handoff root alias") }
+                else { try H.check(mkdir(location.path, 0o700) == 0, "handoff replacement directory") }
+                try H.refuses { _ = try initializer.takeInstallationAuthority() }
+                for name in handoffLocks { try lockProbe(saved + "/" + name, shared: true, busy: true) }
+                if alias { try H.check(unlink(location.path) == 0, "remove fixture alias") }
+                else { try H.check(rmdir(location.path) == 0, "remove empty fixture replacement") }
+                try H.check(rename(saved, location.path) == 0, "restore fixture root")
+                let owner = try initializer.takeInstallationAuthority(); owner.release()
+            }
+        }
+    }
+    static func handoffProofRefusal() throws {
+        for phase in ["manifest", "created", "ready", "published", "control"] {
+            for missing in [false, true] {
+                try fixture { root, location, parent in
+                    let initializer = try FreshStateInitialization.testing(root: root); let result = try initializer.publish()
+                    let path = phase == "manifest" ? parent + "/.shadow-sync-initialization.json"
+                        : phase == "control" ? location.path + "/launcher.lock"
+                        : parent + "/.shadow-sync-initialization." + result.transaction + "." + phase + ".json"
+                    // Keep the saved control outside the exact state roster;
+                    // an extra child must not mask the intended inode refusal.
+                    let saved = root + "/handoff-proof.saved"
+                    try H.check(rename(path, saved) == 0, "handoff proof fixture save")
+                    if !missing { try H.write(phase == "control" ? Data() : Data("changed".utf8), path) }
+                    try H.refuses { _ = try initializer.takeInstallationAuthority() }
+                    try held(location)
+                    if !missing {
+                        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+                        try H.check(bytes == (phase == "control" ? Data() : Data("changed".utf8)), "handoff rewrote refused evidence")
+                        try H.check(unlink(path) == 0, "remove changed fixture proof")
+                    }
+                    try H.check(rename(saved, path) == 0, "restore fixture proof")
+                    let owner = try initializer.takeInstallationAuthority(); owner.release()
+                }
+            }
+        }
+    }
+    static func handoffFenceRefusal() throws {
+        var outstanding = Data()
+        try H.fixture { location, _ in
+            let scope = try H.scope(location)
+            outstanding = try CustodyCatalog.initialized.reserving(H.journal(scope)).encode()
+        }
+        for kind in ["missing", "malformed", "outstanding"] {
+            try fixture { root, location, _ in
+                let initializer = try FreshStateInitialization.testing(root: root); _ = try initializer.publish()
+                let path = location.path + "/custody/catalog.json"
+                try H.check(rename(path, root + "/handoff-catalog.saved") == 0, "save fixture catalog")
+                if kind != "missing" { try H.write(kind == "outstanding" ? outstanding : Data("changed".utf8), path) }
+                try H.refuses { _ = try initializer.takeInstallationAuthority() }
+                try held(location)
+                if kind != "missing" {
+                    try H.check(try Data(contentsOf: URL(fileURLWithPath: path)) == (kind == "outstanding" ? outstanding : Data("changed".utf8)), "handoff reset custody fence")
+                } else { try H.check(!FileManager.default.fileExists(atPath: path), "handoff recreated missing catalog") }
+            }
+        }
+    }
+    static func handoffCopyFailure() throws {
+        for count in 1...4 {
+            try fixture { root, location, _ in
+                let initializer = try FreshStateInitialization.testing(root: root); _ = try initializer.publish()
+                initializer.testingFailInstallationCopy(after: count)
+                try H.refuses { _ = try initializer.takeInstallationAuthority() }
+                try held(location)
+                let owner = try initializer.takeInstallationAuthority(); owner.release()
+                for name in handoffLocks { try lockProbe(location.path + "/" + name, busy: false) }
+            }
+        }
+    }
+    static func handoffRetainedChild() throws {
+        try fixture { root, location, _ in
+            let initializer = try FreshStateInitialization.testing(root: root); _ = try initializer.publish()
+            let owner = try initializer.takeInstallationAuthority(); defer { owner.release() }
+            // Publication alone must refuse ordinary commands. The remainder
+            // exercises actual inherited-description/registry retention against
+            // synthetic committed fixture metadata; it is NOT authenticated
+            // installation/readiness qualification.
+            do {
+                let leases = try owner.retainCommandLeases()
+                let store = try CustodyCatalogStore(leases: leases)
+                try H.refuses { try store.checkFence(ownRequests: [], scope: RunIdentity.make(), mode: .lifecycleMutation) }
+                try CustodyCatalogStore.testingSeedCommittedInstallation(leases: leases, root: root)
+            }
+            let registry = RetainedCleanupRegistry.testingInstance()
+            var failure: Error?
+            do {
+                var resources: CustodyRequestResources? = try CustodyHelperSelfTests.resources(location,
+                    mode: "lifecycle-preflight-cancel", work: 5, lifecycleOwner: owner)
+                weak var retained = resources
+                let handle = try registry.start(resources: resources!, helper: CustodyHelperExecutable.testingCustodian())
+                resources = nil
+                try CustodyHelperSelfTests.until {
+                    String(decoding: handle.snapshot().stderr, as: UTF8.self).contains("shadow-sync-fixture-serial:0:ready:")
+                }
+                try H.check(retained != nil && registry.testingCount == 1, "fresh child lost retained owner")
+                try H.refuses { try owner.permitStagedHostAdmission() }
+                try held(location)
+                handle.cancel()
+                try CustodyHelperSelfTests.until { handle.snapshot().phase == .finished && registry.testingCount == 0 && retained == nil }
+                try H.check(handle.snapshot().journal?.authority == .lifecycleMutation
+                    && handle.snapshot().journal?.reason == .cancelled, "fresh child authority or cancellation changed")
+                try owner.permitStagedHostAdmission()
+                let observation = try LifecycleAdmissionAuthority.acquire(at: location); observation.release()
+                try lockProbe(location.path + "/operation.lock", busy: true)
+            } catch { failure = error }
+            registry.testingRequestCancellation()
+            let diagnostic = MonotonicDeadline(seconds: 5)
+            var reported = false
+            while true {
+                do { try registry.testingDispose(); break }
+                catch {
+                    if diagnostic.hasExpired && !reported {
+                        fputs("M6 HANDOFF CLEANUP PENDING\n", stderr); fflush(stderr); reported = true
+                    }
+                    usleep(5_000)
+                }
+            }
+            if let failure { throw failure }
+        }
     }
     static func existingState() throws {
         try fixture { root, location, parent in
@@ -2118,7 +2475,7 @@ private enum FreshStateSelfTests {
         }
     }
     static func readyControls(replace: Bool) throws {
-        for name in ["latest.log", "lifecycle.lock", "operation.lock", "run.lock", "launcher.lock", "custody/catalog.lock", "custody/catalog.json"] {
+        for name in ["latest.log", "lifecycle.lock", "operation.lock", "run.lock", "launcher.lock", "custody/catalog.lock", "custody/catalog.json", "custody/installation.json"] {
             try fixture { root, location, parent in
                 try H.refuses { _ = try attempt(root, cut: .afterReady) }
                 let path = parent + "/.shadow-sync-initialization." + (try transaction(parent)) + "/" + name
@@ -2147,17 +2504,17 @@ private enum FreshStateSelfTests {
         }
     }
     static func writeRetry(partial: Bool) throws {
-        for name in (partial ? [".shadow-sync-initialization.json", "catalog.json"] : [".shadow-sync-initialization.json", "operation.lock", "catalog.json"]) {
+        for name in (partial ? [".shadow-sync-initialization.json", "catalog.json", "installation.json"] : [".shadow-sync-initialization.json", "operation.lock", "catalog.json", "installation.json"]) {
             try fixture { root, location, _ in
                 try H.refuses { _ = try attempt(root, cut: partial ? .partialWrite(name) : .temporaryCreated(name)) }
                 try H.check(!FileManager.default.fileExists(atPath: location.path), "partial write published")
                 _ = try attempt(root)
-                _ = try H.scope(location)
+                try H.refuses { _ = try H.scope(location) }
             }
         }
     }
     static func crashWorker(root: String, target: String, partial: String) -> Int32 {
-        guard [".shadow-sync-initialization.json", "catalog.json"].contains(target), ["yes", "no"].contains(partial) else { return 64 }
+        guard [".shadow-sync-initialization.json", "catalog.json", "installation.json"].contains(target), ["yes", "no"].contains(partial) else { return 64 }
         do {
             let initializer = try FreshStateInitialization.testing(root: root)
             initializer.testingCrash(partial == "yes" ? .partialWrite(target) : .temporaryCreated(target))
@@ -2165,7 +2522,7 @@ private enum FreshStateSelfTests {
         } catch { return 66 }
     }
     static func processDeath() throws {
-        for target in [".shadow-sync-initialization.json", "catalog.json"] {
+        for target in [".shadow-sync-initialization.json", "catalog.json", "installation.json"] {
             for partial in ["yes", "no"] {
                 try fixture { root, location, _ in
                     var actions: posix_spawn_file_actions_t?, attr: posix_spawnattr_t?
@@ -2174,7 +2531,7 @@ private enum FreshStateSelfTests {
                     let flags = Int16(POSIX_SPAWN_START_SUSPENDED | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETPGROUP)
                     try H.check(posix_spawnattr_setflags(&attr, flags) == 0 && posix_spawnattr_setpgroup(&attr, 0) == 0, "initializer crash flags")
                     let executable = try ProcessIdentity.capture(processID: getpid(), generation: RunIdentity.make()).executablePath
-                    let strings = [executable, "--shadow-sync-initialization-crash-fixture", root, target, partial].map { strdup($0) }
+                    let strings = ([executable, "--shadow-sync-initialization-crash-fixture", root, target, partial] as [String]).map { strdup($0) }
                     defer { strings.forEach { free($0) } }
                     try H.check(strings.allSatisfy { $0 != nil }, "crash fixture argv")
                     var argv = strings + [nil], env: [UnsafeMutablePointer<CChar>?] = [nil]
@@ -2200,7 +2557,7 @@ private enum FreshStateSelfTests {
                     try H.check(clean && waitpid(anchor.processID, &status, WNOHANG) == -1 && errno == ECHILD, "crash child reaping")
                     if let failure { throw failure }
                     try H.check(!FileManager.default.fileExists(atPath: location.path), "crash published incomplete state")
-                    _ = try attempt(root); _ = try H.scope(location)
+                    _ = try attempt(root); try H.refuses { _ = try H.scope(location) }
                 }
             }
         }
@@ -2214,7 +2571,7 @@ private enum FreshStateSelfTests {
             let result = try attempt(root)
             try H.check(result.transaction == tx && (!exists || result.stateInode == UInt64(before.st_ino)), "retry replaced transaction or state inode")
             try H.check(try CustodyCatalog.decode(H.bytes(location, "catalog.json")) == CustodyCatalog.initialized, "retry catalog mismatch")
-            _ = try H.scope(location)
+            try H.refuses { _ = try H.scope(location) }
         }
     }
 }
@@ -2454,7 +2811,7 @@ private enum CustodyResourcesSelfTests {
             try check(posix_spawnattr_setflags(&attr, flags) == 0 && posix_spawnattr_setpgroup(&attr, 0) == 0, "native fixture flags")
             let executable = try ProcessIdentity.capture(processID: getpid(), generation: UUID().uuidString.lowercased()).executablePath
             let absent = mapping.testingSourceDescriptors.map(String.init).joined(separator: ",")
-            let strings = ([executable, "--shadow-sync-custody-resource-fixture", absent]).map { strdup($0) }; defer { strings.forEach { free($0) } }
+            let strings = ([executable, "--shadow-sync-custody-resource-fixture", absent] as [String]).map { strdup($0) }; defer { strings.forEach { free($0) } }
             try check(strings.allSatisfy { $0 != nil }, "native fixture allocation")
             var argv = strings + [nil], env: [UnsafeMutablePointer<CChar>?] = [nil]
             let drained = NativeStreamDrain()
@@ -2629,14 +2986,27 @@ private enum CustodyRegistrySelfTests {
             stdoutLimit: output, stderrLimit: output, workingDirectory: scope.leases.duplicateStateDirectory().0)
     }
     static func native(_ mode: String, pending: Bool = false, cancel: Bool = false, eof: Bool = false) throws {
+        var stage = "fixture-setup"
+        var stageStarted = DispatchTime.now().uptimeNanoseconds
+        var stageElapsed: UInt64 = 0
+        func entering(_ value: String) {
+            stage = value; stageStarted = DispatchTime.now().uptimeNanoseconds
+        }
+        do {
         try fixture { location, registry in
+            do {
+            entering("scope")
             var scope: CustodyMetadataScope? = try CustodyCatalogSelfTests.scope(location)
+            entering("resources")
             var resources: CustodyRequestResources? = try make(scope!, mode: mode)
             weak var retainedResources = resources
             weak var retainedScope = scope
             let id = resources!.request.binding.requestID
             let workDeadline = resources!.request.budget.work
-            let handle = try registry.start(resources: resources!, helper: CustodyHelperExecutable.testing(releaseSHA256: scope!.releaseSHA256))
+            entering("helper")
+            let helper = try CustodyHelperExecutable.testing(releaseSHA256: scope!.releaseSHA256)
+            entering("registry-start")
+            let handle = try registry.start(resources: resources!, helper: helper)
             resources = nil; scope = nil
             if mode == "early-cancel" { handle.cancel() }
             if cancel || eof || mode == "delayed-exit" {
@@ -2652,10 +3022,12 @@ private enum CustodyRegistrySelfTests {
                     "terminal receipt released an unreaped helper")
             }
             if pending {
+                entering("pending-reap")
                 try until {
                     if case .reaped = registry.testingPoll(handle) { return handle.snapshot().phase == .cleanupPending }
                     return false
                 }
+                entering("pending-assertions")
                 try check(handle.snapshot().phase == .cleanupPending && registry.testingCount == 1 && retainedResources != nil && retainedScope != nil,
                     "unverified exit released registry authority")
                 try check(!FileManager.default.fileExists(atPath: location.path + "/custody/receipts/" + id + ".caller.json"), "invalid terminal was archived")
@@ -2669,8 +3041,10 @@ private enum CustodyRegistrySelfTests {
                               "missing terminal was detected only by timeout")
                 }
                 if mode == "malformed" { try check(handle.snapshot().stdout.count == 4096, "poisoned status starved bounded output drainage") }
+                entering("pending-dispose")
                 try registry.testingDispose()
             } else {
+                entering("terminal-retirement")
                 try until { handle.snapshot().phase == .finished }
                 try check(registry.testingCount == 0 && handle.snapshot().journal?.outcome == .admissionRefused,
                     "fixture refusal did not retire")
@@ -2683,9 +3057,29 @@ private enum CustodyRegistrySelfTests {
                 try check(!FileManager.default.fileExists(atPath: location.path + "/custody/" + id + ".json"), "active terminal not retired")
                 try until { retainedResources == nil && retainedScope == nil }
                 // Retaining the result handle cannot retain authority after completion.
+                entering("retired-exclusive-reacquisition")
                 let mutation = try RunAuthority.acquireLifecycleMutation(at: location); mutation.release()
                 handle.cancel(); try check(handle.snapshot().phase == .finished, "completed handle changed")
             }
+            entering("fixture-teardown")
+            } catch {
+                stageElapsed = DispatchTime.now().uptimeNanoseconds - stageStarted
+                throw error
+            }
+        }
+        } catch {
+            // Emit only after the fixture has drained its original helpers and
+            // released its registry. Preserve the original error and assertions.
+            if stageElapsed == 0 { stageElapsed = DispatchTime.now().uptimeNanoseconds - stageStarted }
+            if ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_M6_DIAGNOSTICS"] == "1" {
+                let fields: [String: Any] = ["mode": mode, "stage": stage,
+                    "elapsed_ns": stageElapsed, "error_type": String(reflecting: type(of: error))]
+                if let bytes = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]),
+                   bytes.count <= 1_024, let line = String(data: bytes, encoding: .utf8) {
+                    fputs("M6 REGISTRY CASE DIAGNOSTIC " + line + "\n", stderr); fflush(stderr)
+                }
+            }
+            throw error
         }
     }
     static func bootstrap(_ cut: RetainedCleanupRegistry.TestCut) throws {
@@ -2737,6 +3131,48 @@ private enum CustodyRegistrySelfTests {
             try until { h.snapshot().phase == .finished }
             try check(h.snapshot().journal?.outcome == .admissionRefused && registry.testingCount == 0,
                       "deadline killed or lost resumed helper")
+        }
+    }
+    static func shortenedWaiters() throws {
+        final class Results: @unchecked Sendable {
+            private let mutex = NSLock()
+            private var values: [CustodyRegistryResult] = []
+            func append(_ value: CustodyRegistryResult) { mutex.lock(); values.append(value); mutex.unlock() }
+            func snapshot() -> [CustodyRegistryResult] { mutex.lock(); defer { mutex.unlock() }; return values }
+        }
+        try fixture { location, registry in
+            let scope = try CustodyCatalogSelfTests.scope(location)
+            let resources = try make(scope, mode: "cancel", work: 2, receipt: 0.05)
+            let handle = try registry.start(resources: resources, helper: CustodyHelperExecutable.testing(releaseSHA256: scope.releaseSHA256))
+            try until { handle.snapshot().phase == .ready }
+            let barriers = [CustodyLeaseTestingBarrier(), CustodyLeaseTestingBarrier()]
+            let queueBarrier = CustodyLeaseTestingBarrier(), group = DispatchGroup(), results = Results()
+            handle.testingPauseWaiters(barriers)
+            defer {
+                barriers.forEach { $0.release() }; queueBarrier.release(); group.wait()
+            }
+            for _ in barriers {
+                group.enter()
+                DispatchQueue.global().async { results.append(handle.wait()); group.leave() }
+            }
+            // Both callers captured the old deadline before cancellation. The
+            // queue then publishes its shorter receipt and remains held, so
+            // neither pending nor terminal publication can wake them instead.
+            for barrier in barriers { try check(barrier.waitUntilEntered(), "waiter did not capture original receipt") }
+            registry.testingCancelAndPauseQueue(handle, queueBarrier)
+            try check(queueBarrier.waitUntilEntered(), "cancellation did not publish before queue hold")
+            barriers.forEach { $0.release() }
+            try check(group.wait(timeout: .now() + .seconds(1)) == .success,
+                      "waiters missed the shortened receipt while the registry was held")
+            let returned = results.snapshot()
+            try check(returned.count == 2 && returned.allSatisfy {
+                $0.phase == .cleanupPending && $0.reason == .cancelled && $0.journal == nil
+            }, "shortened receipt returned an invented completion")
+            try check(handle.snapshot().phase == .ready && registry.hasRetainedWork,
+                      "caller deadline released retained registry ownership")
+            queueBarrier.release()
+            try until { handle.snapshot().phase == .finished }
+            try check(registry.testingCount == 0, "subsequent terminal publication lost retirement")
         }
     }
     static func queuedStartDeadline() throws {
@@ -3232,11 +3668,12 @@ private enum CustodyHelperSelfTests {
     static let policyInput = Data(Array(repeating: Array((0..<256).map(UInt8.init)), count: 1024).joined())
     static let policyCode = Data(Array(repeating: Array((0..<256).reversed().map(UInt8.init)), count: 256).joined())
     static func resources(_ location: StateLocation, mode: String, work: TimeInterval = 2,
-                          output: UInt64 = 65_536, term: TimeInterval = 0.1) throws -> CustodyRequestResources {
+                          output: UInt64 = 65_536, term: TimeInterval = 0.1, lifecycleOwner: RunAuthority? = nil) throws -> CustodyRequestResources {
         let home = location.anchorPath + "/home"
         try FileManager.default.createDirectory(atPath:home,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
         let account = try EffectiveAccount.isolated(homeDirectory:home)
-        let scope = try CustodyMetadataScope(leases:CustodyAuthorityLeaseSet.retainReadLeases(at:location),
+        let leases = try lifecycleOwner?.retainCommandLeases() ?? CustodyAuthorityLeaseSet.retainReadLeases(at: location)
+        let scope = try CustodyMetadataScope(leases: leases,
             releaseSHA256:String(repeating:"c",count:64),generation:RunIdentity.make())
         let fd = open("/",O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw Failure(message:"fixture cwd") }
@@ -3244,7 +3681,8 @@ private enum CustodyHelperSelfTests {
         let serial = mode.hasPrefix("serial-")
         let policy = mode.hasPrefix("policy-")
         let system = mode.hasPrefix("system-")
-        let kind: CustodyCommandKind = system ? .systemGitConfig : (policy ? .policyClassify : (tracing || serial ? .discoveryGit : .launchctlRead))
+        let kind: CustodyCommandKind = mode.hasPrefix("lifecycle-") ? .launchctlMutation
+            : system ? .systemGitConfig : (policy ? .policyClassify : (tracing || serial ? .discoveryGit : .launchctlRead))
         return try CustodyRequestResources(scope:scope,kind:kind,arguments:[mode],
             environment:system ? SystemGitConfigurationCommand.environment(account:account) : ClosedProcessRunner.environment(account:account),
             budget:CustodyBudget.make(kind:kind,workSeconds:work,termSeconds:term,killSeconds:0.2,receiptSeconds:0.2),
@@ -3312,11 +3750,16 @@ private enum CustodyHelperSelfTests {
                 "retained_count":String(registry.testingCount)]
             guard let journal = result.journal else { throw Failure(message:"missing terminal") }
             try check(journal.outcome == expected && journal.reason == reason,"wrong durable helper result: \(String(describing:journal.outcome)) / \(String(describing:journal.reason))")
-            try check(journal.custodian != nil && journal.custodian?.pid != UInt32(getpid()),"helper identity missing")
+            // Bind the value before branching: the qualified Swift optimizer
+            // otherwise misbalances a borrow across repeated optional projections.
+            guard let custodian = journal.custodian else { throw Failure(message: "helper identity missing") }
+            let custodianPID = custodian.pid
+            try check(custodianPID != UInt32(getpid()), "helper identity missing")
             if mode == "after-admit" {
                 try check(journal.target == nil && result.stdout.isEmpty,"target spawned after cancellation")
             } else {
-                try check(journal.target != nil && journal.target?.pid != journal.custodian?.pid,"target identity not separate")
+                guard let target = journal.target else { throw Failure(message: "target identity not separate") }
+                try check(target.pid != custodianPID, "target identity not separate")
                 if mode == "before-resume" || mode == "after-preparation" { try check(result.stdout.isEmpty,"cancelled suspended target executed") }
                 else if mode == "system-missing" { try check(result.stdout.isEmpty && journal.waitStatus == 128 << 8, "missing config fixture did not exit normally") }
                 else if mode == "system-complete" || mode == "system-faildata" {
@@ -3392,6 +3835,71 @@ private enum CustodyHelperSelfTests {
                 }
                 throw error
             }
+        }
+    }
+    static func lifecycle(_ mode: String, cancelAt: Int? = nil, eof: Bool = false) throws {
+        try CustodyRegistrySelfTests.fixture { location, registry in
+            let authority = try RunAuthority.acquireLifecycleMutation(at: location)
+            defer { authority.release() }
+            var retained: CustodyRequestResources? = try resources(location, mode: mode,
+                work: mode == "lifecycle-postflight-timeout" ? 1 : 5, lifecycleOwner: authority)
+            let request = retained!.request
+            let handle = try registry.start(resources: retained!, helper: CustodyHelperExecutable.testingCustodian())
+            // Only registry/helper ownership survives. Keeping the original
+            // authority here would conceal a gap in inherited lock custody.
+            authority.release(); retained = nil
+            if let cancelAt {
+                let event = mode == "lifecycle-between-cancel" ? "retired" : "ready"
+                try until { String(decoding: handle.snapshot().stderr, as: UTF8.self)
+                    .contains("shadow-sync-fixture-serial:\(cancelAt):\(event):") }
+                do { _ = try RunAuthority.acquireLifecycleMutation(at: location); throw Failure(message: "lifecycle lease gap") }
+                catch is SecureStateError {}
+                if eof { registry.testingCloseControl(handle) } else { handle.cancel() }
+            }
+            try until(seconds: mode == "lifecycle-postflight-timeout" ? ChildProcessBudget.seconds(3) : 8) {
+                handle.snapshot().phase == .finished
+            }
+            let result = handle.snapshot()
+            guard let journal = result.journal else { throw Failure(message: "lifecycle terminal missing") }
+            let lines = String(decoding: result.stderr, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+            let markers = lines.filter { $0.hasPrefix("shadow-sync-fixture-serial:") }.map { $0.split(separator: ":").map(String.init) }
+            try check(markers.allSatisfy { $0.count == 4 && Int($0[1]) != nil && UInt32($0[3]) != nil }, "invalid lifecycle markers")
+            let resumed = markers.filter { $0[2] == "resumed" }, retired = markers.filter { $0[2] == "retired" }
+            let complete = ["lifecycle-bootstrap", "lifecycle-kickstart", "lifecycle-bootout"].contains(mode)
+            let timeout = mode == "lifecycle-postflight-timeout"
+            let expectedStages = cancelAt.map { $0 + 1 } ?? (mode.hasPrefix("lifecycle-preflight-") || mode.hasPrefix("lifecycle-next-") ? 1 : mode == "lifecycle-mutation-failure" ? 2 : 3)
+            try check(resumed.count == expectedStages && resumed.map { Int($0[1])! } == Array(0..<expectedStages), "lifecycle stage admission changed")
+            for index in 1..<resumed.count {
+                let previous = markers.firstIndex { $0[1] == String(index - 1) && $0[2] == "retired" }
+                let next = markers.firstIndex { $0[1] == String(index) && $0[2] == "resumed" }
+                try check(previous != nil && next != nil && previous! < next!, "lifecycle predecessor not retired")
+            }
+            try check(journal.budget == request.budget && journal.authority == .lifecycleMutation,
+                      "lifecycle lost its original budget or authority")
+            let expectedReason: CustodyReason = cancelAt != nil ? .cancelled : timeout ? .timeout
+                : mode.hasSuffix("overflow") ? .outputLimit : complete ? .none : .invalidResource
+            try check(journal.reason == expectedReason, "lifecycle refusal reason changed: \(journal.reason)")
+            if complete {
+                let account = try EffectiveAccount.isolated(homeDirectory: location.anchorPath + "/home")
+                let command = LifecycleLaunchCommand.fixture(mode: mode, account: account)!
+                let cleanError = Data(lines.filter { !$0.hasPrefix("shadow-sync-fixture-serial:") }.joined(separator: "\n").utf8)
+                let clean = CustodyRegistryResult(phase: result.phase, reason: result.reason, journal: journal,
+                    stdout: result.stdout, stderr: cleanError)
+                try command.validateCompletion(clean)
+                try check(retired.count == 2 && journal.waitStatus == (mode == "lifecycle-bootout" ? 113 << 8 : 0), "lifecycle fabricated child status")
+            } else {
+                try check(journal.outcome != .completed, "lifecycle failure was successful")
+                if mode.hasPrefix("lifecycle-next-") {
+                    try check(journal.waitStatus == 113 << 8, "failed next spawn lost the actual retired preflight status")
+                }
+                if mode.hasSuffix("overflow") { try check(result.stdout.isEmpty, "refused lifecycle output escaped") }
+                if cancelAt != nil && mode != "lifecycle-between-cancel" || timeout {
+                    try check(journal.waitStatus == UInt32(SIGKILL), "lifecycle resistant child was not drained")
+                }
+            }
+            try until { registry.testingCount == 0 }
+            let next = try RunAuthority.acquireLifecycleMutation(at: location)
+            next.release()
         }
     }
     static func configurationPlan(refusals: Bool) throws {
@@ -3485,8 +3993,11 @@ private enum CustodyHelperSelfTests {
             else if mode.hasPrefix("serial-policy-") || timeout || cancelAt == 1 { expectedStages = 2 }
             else { expectedStages = 1 }
             try check(resumed.count == expectedStages, "serial refusal admitted another stage")
-            try check(journal.target?.pid == UInt32(resumed.last![3])
-                && journal.custodian?.pid != journal.target?.pid, "durable target lost its exact owner")
+            guard let target = journal.target, let custodian = journal.custodian else {
+                throw Failure(message: "durable target lost its exact owner")
+            }
+            try check(target.pid == UInt32(resumed.last![3])
+                && custodian.pid != target.pid, "durable target lost its exact owner")
             if !mode.hasPrefix("serial-postflight-"), timeout || cancelAt != nil && mode != "serial-between-cancel" {
                 try check(journal.waitStatus == UInt32(SIGKILL), "resistant serial child was not KILL-drained")
             }
@@ -3551,8 +4062,9 @@ private enum CustodyHelperSelfTests {
                       "unconsumed evidence retired durable custody")
             do { _ = try RunAuthority.acquireRun(at:location); throw Failure(message:"unconsumed evidence released operation exclusion") }
             catch is SecureStateError {}
-            registry.testingReleaseDeferredRead(handle)
-            try until { handle.snapshot().phase == .finished && registry.testingCount == 0 }
+            try check(registry.testingReleaseDeferredReadAndTick(handle),
+                      "already-reaped helper needed another tick for available terminal/output EOF")
+            try check(registry.testingCount == 0, "single-tick drainage retained its reservation")
             let result = handle.snapshot()
             try check(result.reason == nil && result.journal?.outcome == .completed
                 && result.journal?.reason == CustodyReason.none && result.journal?.waitStatus == 0,
@@ -3572,6 +4084,12 @@ private enum CustodyHelperSelfTests {
     static func bare() throws {
         try check(CommandCustodian.dispatch(["fixture","--shadow-sync-command-custodian"]) == 70,"bare unsigned helper admitted")
         try check(CommandCustodian.dispatch(["fixture","--shadow-sync-command-custodian","extra"]) == 64,"extra helper argument admitted")
+        try check(LifecycleCoordinatorMain.run(arguments: ["fixture","--shadow-sync-command-custodian"]) == 70,
+                  "testing coordinator acquired publisher authority")
+        try check(CommandCustodian.dispatchLifecycle(["fixture","--shadow-sync-command-custodian","extra"]) == 64,
+                  "extra coordinator helper argument admitted")
+        try check(CommandCustodian.dispatchLifecycle(["fixture","--help"]) == nil,
+                  "ordinary coordinator invocation entered custody")
     }
     static func policyResourceBoundary(output oversized: Bool) throws {
         try CustodyRegistrySelfTests.fixture { location, registry in
@@ -3845,7 +4363,7 @@ private enum CustodyHelperSelfTests {
         try check(posix_spawnattr_setflags(&attr, flags) == 0 && posix_spawnattr_setpgroup(&attr, 0) == 0
             && posix_spawnattr_setsigdefault(&attr, &defaults) == 0 && posix_spawnattr_setsigmask(&attr, &empty) == 0, "parent flags")
         let executable = try ProcessIdentity.capture(processID: getpid(), generation: RunIdentity.make()).executablePath
-        let args = [executable, "--shadow-sync-custodian-parent-fixture", root, mode].map { strdup($0) }
+        let args = ([executable, "--shadow-sync-custodian-parent-fixture", root, mode] as [String]).map { strdup($0) }
         let environment: [String] = ["PATH=/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR=/private/tmp"]
         let environmentPointers = environment.map { strdup($0) }
         defer { (args + environmentPointers).forEach { free($0) } }
@@ -3899,8 +4417,9 @@ private enum CustodyHelperSelfTests {
         guard let bytes = try? CustodyCatalogSelfTests.bytes(location, ready.id + ".json"),
               let journal = try? CustodyJournal.decode(bytes), journal.phase == .terminal,
               journal.binding.requestID == ready.id,
-              journal.custodian?.pid == UInt32(ready.helper), journal.custodian?.startSeconds == ready.helperStart,
-              journal.target?.pid == UInt32(ready.target), journal.target?.startSeconds == ready.targetStart,
+              let custodian = journal.custodian, let target = journal.target,
+              custodian.pid == UInt32(ready.helper), custodian.startSeconds == ready.helperStart,
+              target.pid == UInt32(ready.target), target.startSeconds == ready.targetStart,
               absent(ready.helper, ready.helperStart), absent(ready.target, ready.targetStart) else { return false }
         // No adoption or signaling of recorded descendants. Their own custodian
         // supplies the terminal journal and releases the original operation lock.
@@ -4197,6 +4716,16 @@ enum StrictStateAdmissionSelfTests {
 }
 
 private enum SystemConfigCommandSelfTests {
+    // Closed, testing-only phase markers for the hosted planner crash. No path,
+    // metadata, error description or observed value enters diagnostic output.
+    private enum PlannerCheckpoint: String {
+        case beforeFreeze, afterFreeze, beforeObserver, beforeInspect
+        case observerCalled, dryRun, referenceProof, beforePending, returned, caughtPending
+        func record() {
+            guard ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_M6_DIAGNOSTICS"] == "1" else { return }
+            fputs("M6 PLANNER CHECKPOINT \(rawValue)\n", stderr); fflush(stderr)
+        }
+    }
     private struct Failure: Error { let message: String }
     private enum BodyFailure: Error { case unrelated }
     private final class RegistrationObservations: @unchecked Sendable {
@@ -4389,7 +4918,9 @@ private enum SystemConfigCommandSelfTests {
                         return
                     }
                     if scenario == "inspection-planner-pending" || scenario == "inspection-planner-ordinary" {
+                        PlannerCheckpoint.beforeFreeze.record()
                         let frozen = try handle.freezeConfiguration(account: account, configurationProbe: probe)
+                        PlannerCheckpoint.afterFreeze.record()
                         let admission = GitAdmissionSnapshot(effectiveURL: origin, transport: handle.githubIdentity.transport,
                             frozenConfigSHA256: frozen.snapshot.frozenSHA256)
                         let oid = String(repeating: "a", count: 40)
@@ -4412,33 +4943,43 @@ private enum SystemConfigCommandSelfTests {
                         let observed = RegistrationObservations()
                         var commands = 0
                         do {
-                            let draft = try RepositoryMaintenanceTesting.$registrationObserver.withValue({ observed.record($0) }) {
-                                try RepositoryMaintenancePlanner.inspect(clone: maintenanceClone, remote: remote,
-                                    account: account, handle: handle, frozen: frozen, admission: admission,
-                                    capturedNow: Date(), validateAdmission: session.validatePhaseCompletion) {
-                                        arguments, _, _, _, _ in
-                                        commands += 1
-                                        if commands == 1 {
-                                            try check(arguments.contains("--dry-run"), "planner did not begin with dry-run")
-                                            return ProcessResult(status: 0,
-                                                stdout: Data("Removing worktrees/first: fixture\nRemoving worktrees/second: fixture\n".utf8),
-                                                stderr: Data(), stdoutTruncated: false, stderrTruncated: false,
-                                                outputByteLimit: 4096, timedOut: false, cancelled: false,
-                                                terminationRequested: false, processID: -1)
-                                        }
-                                        try check(arguments.contains("rev-parse"), "unexpected planner command")
-                                        if scenario == "inspection-planner-pending" { _ = try probe.activePath(account: account) }
-                                        return ProcessResult(status: 1, stdout: Data(), stderr: Data(),
-                                            stdoutTruncated: false, stderrTruncated: false, outputByteLimit: 4096,
-                                            timedOut: false, cancelled: false, terminationRequested: false, processID: -1)
-                                    }
+                            PlannerCheckpoint.beforeObserver.record()
+                            PlannerCheckpoint.beforeInspect.record()
+                            let draft = try RepositoryMaintenancePlanner.testingInspectRegistrations(clone: maintenanceClone, remote: remote,
+                                account: account, handle: handle, frozen: frozen, admission: admission,
+                                capturedNow: Date(), validateAdmission: session.validatePhaseCompletion,
+                                observeRegistration: {
+                                    PlannerCheckpoint.observerCalled.record(); observed.record($0)
+                                }) {
+                                arguments, _, _, _, _ in
+                                commands += 1
+                                if commands == 1 {
+                                    PlannerCheckpoint.dryRun.record()
+                                    try check(arguments.contains("--dry-run"), "planner did not begin with dry-run")
+                                    return ProcessResult(status: 0,
+                                        stdout: Data("Removing worktrees/first: fixture\nRemoving worktrees/second: fixture\n".utf8),
+                                        stderr: Data(), stdoutTruncated: false, stderrTruncated: false,
+                                        outputByteLimit: 4096, timedOut: false, cancelled: false,
+                                        terminationRequested: false, processID: -1)
+                                }
+                                PlannerCheckpoint.referenceProof.record()
+                                try check(arguments.contains("rev-parse"), "unexpected planner command")
+                                if scenario == "inspection-planner-pending" {
+                                    PlannerCheckpoint.beforePending.record()
+                                    _ = try probe.activePath(account: account)
+                                }
+                                return ProcessResult(status: 1, stdout: Data(), stderr: Data(),
+                                    stdoutTruncated: false, stderrTruncated: false, outputByteLimit: 4096,
+                                    timedOut: false, cancelled: false, terminationRequested: false, processID: -1)
                             }
+                            PlannerCheckpoint.returned.record()
                             try check(scenario == "inspection-planner-ordinary", "planner swallowed pending cleanup")
                             try check(observed.snapshot == identifiers && commands == 3 && calls == 1,
                                       "ordinary proof refusal stopped unrelated registration inspection")
                             try check(draft.prunable.isEmpty && draft.moved.isEmpty && draft.diagnostics.count == 2
                                 && !draft.refusals.isEmpty && !context.isClosed, "ordinary planner warnings changed")
                         } catch SystemGitConfigurationError.cleanupPending {
+                            PlannerCheckpoint.caughtPending.record()
                             try check(scenario == "inspection-planner-pending" && observed.snapshot == ["first"]
                                 && commands == 2 && calls == 2 && context.isClosed && token.areFutureChildAdmissionsClosed,
                                 "planner accessed a later registration after pending cleanup")
@@ -4710,7 +5251,7 @@ private enum SystemConfigCommandSelfTests {
         weak var owner = frozen
         func create(kind: CustodyCommandKind = .discoveryGit, input value: Data? = nil) throws -> CustodyRequestResources {
             try CustodyRequestResources(scope: context.testingScope, kind: kind,
-                arguments: [scenario == "custody-cancel" || scenario == "custody-eof" ? "config-resist" : "config-complete"],
+                arguments: [scenario == "custody-cancel" || scenario == "custody-eof" ? "config-resist-sigterm-fixture" : "config-complete"],
                 environment: ClosedProcessRunner.environment(account: account),
                 budget: CustodyBudget.make(kind: kind, workSeconds: 2, termSeconds: 0.1,
                     killSeconds: 0.2, receiptSeconds: 0.2), stdoutLimit: 65_536, stderrLimit: 65_536,
@@ -4870,6 +5411,45 @@ private enum SystemConfigCommandSelfTests {
             catch SystemGitConfigurationError.cleanupPending {}
             try check(calls == 1 && registry.testingCount == 0,
                       "completion regression started an unqualified command")
+        }
+    }
+    static func retainedCompletion(_ scenario: String) throws {
+        try CustodyRegistrySelfTests.fixture { location, registry in
+            let context = try CustodyContextSelfTests.read(location)
+            defer { context.close() }
+            let account = try EffectiveAccount.isolated(homeDirectory: location.anchorPath + "/home")
+            let token = CancellationToken()
+            var calls = 0
+            let probe = SystemGitConfigurationProbe(testingContext: context, cancellation: token) {
+                calls += 1
+                if scenario == "pending" { throw SystemGitConfigurationError.cleanupPending }
+                if scenario == "failure" { throw SystemGitConfigurationError.unavailable }
+                return nil
+            }
+            do { _ = try probe.activePath() }
+            catch SystemGitConfigurationError.cleanupPending { try check(scenario == "pending", "unexpected pending") }
+            catch SystemGitConfigurationError.unavailable { try check(scenario == "failure", "unexpected failure") }
+            token.cancel()
+            if scenario == "closed" { context.close() }
+            if scenario == "account" {
+                try FileManager.default.createDirectory(atPath: location.anchorPath + "/other-home",
+                    withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            }
+            let expected = scenario == "account"
+                ? try EffectiveAccount.isolated(homeDirectory: location.anchorPath + "/other-home") : account
+            if scenario == "cancelled" {
+                try probe.validateRetainedEvidence(account: expected)
+                do { try probe.validate(account: account); throw Failure(message: "cancelled completion reopened command admission") }
+                catch SystemGitConfigurationError.unavailable {}
+            } else {
+                do {
+                    try probe.validateRetainedEvidence(account: expected)
+                    throw Failure(message: "cancelled completion erased authority failure")
+                } catch SystemGitConfigurationError.cleanupPending { try check(scenario == "pending", "pending precedence changed") }
+                catch SystemGitConfigurationError.unavailable { try check(scenario != "pending", "pending became unavailable") }
+            }
+            try check(calls == 1 && token.areFutureChildAdmissionsClosed && registry.testingCount == 0,
+                "retained completion started another configuration command")
         }
     }
     static func unrelatedCompletion() throws {

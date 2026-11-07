@@ -325,13 +325,20 @@ private final class PinnedParent {
 }
 
 public final class InstallationLifecycle: @unchecked Sendable {
-    private let paths: InstallationPaths
+    fileprivate let paths: InstallationPaths
     private let launchAgent: any LaunchAgentControlling
     private let host: any InstalledHostControlling
     private let fault: @Sendable (String) throws -> Void
     private let fileManager = FileManager.default
     private var pinnedAppParent: PinnedParent?
     private var pinnedPlistParent: PinnedParent?
+    #if SHADOW_SYNC_TESTING
+    var testingExclusiveRoot: String?
+    var testingExclusiveRegistry: RetainedCleanupRegistry?
+    var testingExclusiveDiagnostic = "installation-absent"
+    var testingSlotCaptureStoreFault: CustodyCatalogStore.Fault?
+    var testingSlotCaptureStage = "none"
+    #endif
 
     public init(
         paths: InstallationPaths,
@@ -596,12 +603,13 @@ public final class InstallationLifecycle: @unchecked Sendable {
             )
         }
         var launcher: LauncherAuthority?
+        var priorDrainStarted = false
         var mutationStarted = false
         var committed = false
         var coordinationBackup: CoordinationBackup?
-        let priorWasRunning = prior.running
         do {
             try fault("after-gates")
+            priorDrainStarted = true
             launcher = try acquireLauncher(
                 expectedRelease: prior.artifact?.release,
                 executable: prior.executable,
@@ -716,7 +724,6 @@ public final class InstallationLifecycle: @unchecked Sendable {
                 do {
                     try rollback(
                         prior: prior,
-                        restartPriorHost: priorWasRunning,
                         replacementRelease: source.release,
                         coordinationBackup: coordinationBackup
                     )
@@ -725,9 +732,9 @@ public final class InstallationLifecycle: @unchecked Sendable {
                         String(describing: error)
                     )
                 }
-            } else if prior.requiresInertRecovery {
-                // A failed transition never grants permission to reactivate a
-                // predecessor, including one stored at the current app path.
+            } else if prior.requiresInertRecovery || priorDrainStarted {
+                // Once drainage begins, failure leaves the verified prior
+                // generation stopped. Recovery never grants restart authority.
                 do {
                     let stopped = try acquireLauncher(
                         expectedRelease: prior.artifact?.release,
@@ -751,26 +758,6 @@ public final class InstallationLifecycle: @unchecked Sendable {
                         String(describing: error)
                     )
                 }
-            } else if prior.running,
-                      !host.isReady(
-                        location: paths.state,
-                        executable: prior.executable,
-                        release: prior.artifact!.release,
-                        timeout: 0
-                      ) {
-                try? launchAgent.bootout(
-                    label: InstallationPaths.label,
-                    expectedProgram: prior.executable
-                )
-                try? launchAgent.bootstrap(
-                    label: InstallationPaths.label,
-                    plist: paths.launchAgent,
-                    expectedProgram: prior.executable
-                )
-                try? launchAgent.kickstart(
-                    label: InstallationPaths.label,
-                    expectedProgram: prior.executable
-                )
             }
             throw error
         }
@@ -941,7 +928,6 @@ public final class InstallationLifecycle: @unchecked Sendable {
             do {
                 try rollback(
                     prior: prior,
-                    restartPriorHost: prior.running,
                     replacementRelease: prior.artifact?.release
                 )
                 if dualCanonicalApps,
@@ -1425,12 +1411,22 @@ public final class InstallationLifecycle: @unchecked Sendable {
             throw InstallationLifecycleError.unexpectedResidue
         }
         let nonce = RunIdentity.make()
+        try stageApplication(sourceBundle: sourceBundle, source: source, nonce: nonce, candidate: nil)
+        try stagePlist(nonce: nonce)
+    }
+
+    @discardableResult
+    private func stageApplication(sourceBundle: String, source: BundleArtifactIdentity, nonce: String,
+                                  candidate: InstallationCandidate?) throws -> OwnedFileDescriptor {
         let appIncomplete = appParent + "/.ShadowSync.app.incomplete.\(nonce)"
-        let plistIncomplete = plistParent
-            + "/.com.kleinperkins.shadow-sync.plist.incomplete.\(nonce)"
         try fileManager.copyItem(atPath: sourceBundle, toPath: appIncomplete)
+        let raw = open(appIncomplete, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard raw >= 0 else { throw CustodyRecordError.unsafeMetadata }
+        let retained = OwnedFileDescriptor(raw)
+        _ = try InstallationCaptureParent.node(raw, directory: true, privateMode: false)
         try Self.normalizeAndSyncBundle(appIncomplete)
-        let copied = try Self.verifyBundle(appIncomplete, requireProduction: true)
+        let copied = try candidate.map { try inspectExclusiveBundle(appIncomplete, candidate: $0) }
+            ?? Self.verifyBundle(appIncomplete, requireProduction: true)
         guard copied.canonicalSHA256 == source.canonicalSHA256,
               copied.release == source.release else {
             let sourceOnly = Set(source.inventory).subtracting(copied.inventory).first
@@ -1441,7 +1437,13 @@ public final class InstallationLifecycle: @unchecked Sendable {
                 "staged bundle differs: \(detail)"
             )
         }
-        try renameOwned(appIncomplete, appIncoming)
+        try renameOwned(appIncomplete, appIncoming, expectedSource: retained)
+        return retained
+    }
+
+    @discardableResult
+    private func stagePlist(nonce: String) throws -> OwnedFileDescriptor {
+        let plistIncomplete = plistParent + "/.com.kleinperkins.shadow-sync.plist.incomplete.\(nonce)"
         let object = Self.launchAgentDictionary(executable: executablePath)
         let rendered = try PropertyListSerialization.data(
             fromPropertyList: object,
@@ -1459,7 +1461,7 @@ public final class InstallationLifecycle: @unchecked Sendable {
         guard plistDescriptor >= 0 else {
             throw InstallationLifecycleError.system("create staged LaunchAgent", errno)
         }
-        defer { close(plistDescriptor) }
+        let retained = OwnedFileDescriptor(plistDescriptor)
         try rendered.withUnsafeBytes { bytes in
             guard let start = bytes.baseAddress else {
                 throw InstallationLifecycleError.invalidLaunchAgent
@@ -1477,8 +1479,9 @@ public final class InstallationLifecycle: @unchecked Sendable {
         guard fsync(plistDescriptor) == 0 else {
             throw InstallationLifecycleError.system("fsync staged LaunchAgent", errno)
         }
-        try renameOwned(plistIncomplete, plistIncoming)
+        try renameOwned(plistIncomplete, plistIncoming, expectedSource: retained)
         try Self.validateLaunchAgent(plistIncoming, executable: executablePath)
+        return retained
     }
 
     private func backupPrior(_ prior: Prior) throws {
@@ -1492,7 +1495,6 @@ public final class InstallationLifecycle: @unchecked Sendable {
 
     private func rollback(
         prior: Prior,
-        restartPriorHost: Bool,
         replacementRelease: ReleaseIdentity? = nil,
         coordinationBackup: CoordinationBackup? = nil
     ) throws {
@@ -1549,54 +1551,12 @@ public final class InstallationLifecycle: @unchecked Sendable {
             throw error
         }
         rollbackLauncher.release()
-        if prior.requiresInertRecovery {
-            // Restore verified preimages only. Registration and restart are not
-            // rollback rights for the legacy generation.
-            guard try loadedProgram() == nil else {
-                throw InstallationLifecycleError.launchAgentMismatch
-            }
-            return
-        }
-        if prior.loadedProgram != nil, Self.pathExists(paths.launchAgent) {
-            try launchAgent.bootstrap(
-                label: InstallationPaths.label,
-                plist: paths.launchAgent,
-                expectedProgram: prior.executable
-            )
-            guard try loadedProgram() == prior.executable else {
-                throw InstallationLifecycleError.launchAgentMismatch
-            }
-            if restartPriorHost, let priorRelease = prior.artifact?.release {
-                try launchAgent.kickstart(
-                    label: InstallationPaths.label,
-                    expectedProgram: prior.executable
-                )
-                guard let readyIdentity = host.readyIdentity(
-                    location: paths.state,
-                    executable: prior.executable,
-                    release: priorRelease,
-                    timeout: 5
-                ) else {
-                    throw InstallationLifecycleError.hostNotReady
-                }
-                _ = try InstalledStateAdmission.requireLoadedProcess(
-                    launchAgent: launchAgent,
-                    executable: prior.executable,
-                    expectedProcessID: readyIdentity.processID
-                )
-            } else if let priorRelease = prior.artifact?.release,
-                      host.isReady(
-                location: paths.state,
-                        executable: prior.executable,
-                release: priorRelease,
-                timeout: 0.25
-            ) {
-                try host.requestExit(
-                    location: paths.state,
-                    executable: prior.executable,
-                    release: priorRelease
-                )
-            }
+        // ADR 0003 applies to every generation: restore verified preimages to
+        // a stopped state. A later explicit repair owns any new activation.
+        // The validated plist has RunAtLoad and KeepAlive disabled; preserving
+        // its bytes does not authorize loading it or recreating a Login Item.
+        guard try loadedProgram() == nil else {
+            throw InstallationLifecycleError.launchAgentMismatch
         }
     }
 
@@ -2386,13 +2346,22 @@ public final class InstallationLifecycle: @unchecked Sendable {
         executable: String,
         programArguments: [String]
     ) throws {
-        var info = stat()
-        guard lstat(path, &info) == 0,
-              (info.st_mode & S_IFMT) == S_IFREG,
-              info.st_uid == geteuid(),
-              info.st_nlink == 1,
-              (info.st_mode & 0o077) == 0,
-              let dictionary = NSDictionary(contentsOfFile: path) as? [String: Any],
+        _ = try captureLaunchAgent(path, programArguments: programArguments)
+    }
+
+    /// A retained integrity snapshot for the fixed launch configuration. It is
+    /// not launch authority; callers still need their actual lifecycle leases.
+    private static func captureLaunchAgent(
+        _ path: String,
+        programArguments: [String],
+        afterRead: () throws -> Void = {}
+    ) throws -> PolicyAuthorityFile {
+        let file: PolicyAuthorityFile
+        do { file = try PolicyAuthorityFile.read(path: path, owner: geteuid(), maximumBytes: 65_536) }
+        catch { throw InstallationLifecycleError.invalidLaunchAgent }
+        try afterRead()
+        guard file.hasOwnerPrivateMode,
+              let dictionary = try? PropertyListSerialization.propertyList(from: file.bytes, format: nil) as? [String: Any],
               Set(dictionary.keys) == Set([
                 "Label", "ProgramArguments", "RunAtLoad", "KeepAlive",
                 "ProcessType", "LimitLoadToSessionType",
@@ -2405,7 +2374,22 @@ public final class InstallationLifecycle: @unchecked Sendable {
               dictionary["LimitLoadToSessionType"] as? String == "Aqua" else {
             throw InstallationLifecycleError.invalidLaunchAgent
         }
+        do { try file.revalidate() }
+        catch { throw InstallationLifecycleError.invalidLaunchAgent }
+        return file
     }
+
+    static func captureCurrentLaunchAgent(_ path: String, executable: String) throws -> PolicyAuthorityFile {
+        try captureLaunchAgent(path, programArguments: [executable, InstallationPaths.managedHostArgument])
+    }
+
+    #if SHADOW_SYNC_TESTING
+    static func testingCaptureLaunchAgent(_ path: String, executable: String,
+                                         afterRead: () throws -> Void = {}) throws -> PolicyAuthorityFile {
+        try captureLaunchAgent(path, programArguments: [executable, InstallationPaths.managedHostArgument],
+                               afterRead: afterRead)
+    }
+    #endif
 
     private static func isKnownPredecessorRelease(
         _ release: ReleaseIdentity
@@ -2432,7 +2416,17 @@ public final class InstallationLifecycle: @unchecked Sendable {
         ]
     }
 
-    private static func normalizeAndSyncBundle(_ root: String) throws {
+    #if SHADOW_SYNC_TESTING
+    static func testingSyncPublisherBundle(_ root: String, layout: PolicyRuntimeLayout) throws {
+        try normalizeAndSyncBundle(root, layoutOverride: PublisherBundleLayout.testing(bundlePath: root, layout: layout))
+    }
+    #endif
+
+    private static func normalizeAndSyncBundle(_ root: String, layoutOverride: PublisherBundleLayout? = nil) throws {
+        let publisherLayout = try layoutOverride ?? PublisherBundleLayout.captureIfPresent(root)
+        #if !SHADOW_SYNC_TESTING
+        guard publisherLayout != nil else { throw InstallationLifecycleError.unsafeInstallPath(root) }
+        #endif
         guard let enumerator = FileManager.default.enumerator(
             at: URL(fileURLWithPath: root),
             includingPropertiesForKeys: nil
@@ -2444,6 +2438,13 @@ public final class InstallationLifecycle: @unchecked Sendable {
             paths.append(url.path)
         }
         for path in paths {
+            if let publisherLayout {
+                // Signed distribution modes and reviewed framework links are
+                // already canonical. Never rewrite them to development modes.
+                let relative = path == root ? "" : String(path.dropFirst(root.count + 1))
+                _ = try publisherLayout.validateNode(relative)
+                continue
+            }
             var info = stat()
             guard lstat(path, &info) == 0,
                   info.st_uid == geteuid(),
@@ -2464,7 +2465,13 @@ public final class InstallationLifecycle: @unchecked Sendable {
                 throw InstallationLifecycleError.system("chmod staged bundle", errno)
             }
         }
+        try publisherLayout?.requireComplete(Set(paths.map { $0 == root ? "" : String($0.dropFirst(root.count + 1)) }))
+        try publisherLayout?.revalidate()
         for path in paths.reversed() {
+            if let publisherLayout {
+                let relative = path == root ? "" : String(path.dropFirst(root.count + 1))
+                if try publisherLayout.validateNode(relative) != nil { continue }
+            }
             let descriptor = Darwin.open(
                 path,
                 O_RDONLY | O_NOFOLLOW | O_CLOEXEC
@@ -2478,6 +2485,7 @@ public final class InstallationLifecycle: @unchecked Sendable {
                 throw InstallationLifecycleError.system("fsync staged inventory", errno)
             }
         }
+        try publisherLayout?.revalidate()
     }
 
     private static func ensureDirectory(
@@ -2495,7 +2503,8 @@ public final class InstallationLifecycle: @unchecked Sendable {
         try validateParent(path)
     }
 
-    private func renameOwned(_ source: String, _ destination: String) throws {
+    private func renameOwned(_ source: String, _ destination: String,
+                             expectedSource: OwnedFileDescriptor? = nil) throws {
         let sourceURL = URL(fileURLWithPath: source)
         let destinationURL = URL(fileURLWithPath: destination)
         let parent = sourceURL.deletingLastPathComponent().path
@@ -2536,6 +2545,15 @@ public final class InstallationLifecycle: @unchecked Sendable {
         ) != 0, errno == ENOENT else {
             throw InstallationLifecycleError.unsafeInstallPath(destination)
         }
+        if let expectedSource {
+            var held = stat(), named = stat()
+            guard fstat(expectedSource.value, &held) == 0,
+                  fstatat(descriptor, sourceURL.lastPathComponent, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  FileIdentity(held) == FileIdentity(sourceInfo), FileIdentity(named) == FileIdentity(held) else {
+                throw CustodyRecordError.conflict
+            }
+        }
+        try pin.validate()
         guard renameatx_np(
             descriptor,
             sourceURL.lastPathComponent,
@@ -3376,4 +3394,498 @@ public enum InstallationLifecycleError: Error, CustomStringConvertible {
             return "\(name) failed: \(String(cString: strerror(code)))"
         }
     }
+}
+
+/// Only the fixed-layout factory below constructs this proof. Keeping it alive
+/// retains the consumed original owner; a decoded snapshot cannot recreate it.
+/// It grants neither journal transition nor filesystem action permission.
+final class InstallationCapturedSlots {
+    fileprivate let owner: InstallationTransactionOwner
+    fileprivate let binding: InstallationLiveBinding
+    fileprivate let lifecycle: InstallationLifecycle
+    fileprivate let parents: [InstallationCaptureParent]
+    let transactionID: String
+    var stateBinding: InstallationStateBinding { binding.state }
+    fileprivate let observed: InstallationSlotSnapshot
+    fileprivate var expected: InstallationSlotSnapshot
+    fileprivate var exclusiveNodes: [InstallationSlot: OwnedFileDescriptor] = [:]
+    let preimages: [InstallationDocumentPreimage]
+    let canonicalPreimages: [InstallationDocumentPreimage.CanonicalObservation]
+    private var durable = false
+    private(set) var retainedPreimages: [String: InstallationDocumentRetention] = [:]
+    fileprivate init(owner: InstallationTransactionOwner, binding: InstallationLiveBinding,
+                     lifecycle: InstallationLifecycle, parents: [InstallationCaptureParent],
+                     transactionID: String, observed: InstallationSlotSnapshot,
+                     preimages: [InstallationDocumentPreimage]) throws {
+        self.owner = owner; self.binding = binding; self.lifecycle = lifecycle; self.parents = parents
+        self.transactionID = transactionID; self.observed = observed; self.expected = observed; self.preimages = preimages
+        canonicalPreimages = try preimages.map { try .init($0, uid: binding.state.directory.uid) }
+    }
+    fileprivate func markDurable(_ retained: [String: InstallationDocumentRetention]) {
+        retainedPreimages = retained; durable = true
+    }
+    var snapshot: InstallationSlotSnapshot {
+        get throws { guard durable else { throw CustodyRecordError.fenced }; return observed }
+    }
+    func revalidate(for owner: InstallationTransactionOwner) throws {
+        guard self.owner === owner, durable else { throw CustodyRecordError.fenced }
+        try validateSource()
+        let store = try CustodyCatalogStore(leases: owner.retainExclusiveLeases())
+        try store.validateInstallationPreimages(self)
+    }
+    // Storage uses this before/after its guard interval, never during it. The
+    // fields are observations; only the private factory can produce this object.
+    func validateSource() throws {
+        try binding.revalidate(for: owner)
+        try owner.validateInstallationPaths(lifecycle.paths)
+        let current = try lifecycle.observeInstallationSlots(binding: binding, transactionID: transactionID, parents: parents)
+        guard current.0 == expected, current.1 == preimages else { throw CustodyRecordError.conflict }
+        for (slot, descriptor) in exclusiveNodes {
+            guard try InstallationCaptureParent.node(descriptor.value, directory: slot.isBundle, privateMode: !slot.isBundle) == expected.images[slot]?.node else { throw CustodyRecordError.conflict }
+        }
+        try binding.revalidate(for: owner)
+    }
+}
+
+/// Retain the existing pinned installer parent and its descriptor ACL. Named
+/// children are always opened relative to this descriptor with O_NOFOLLOW.
+fileprivate final class InstallationCaptureParent {
+    let pinned: PinnedParent
+    let identity: InstallationNodeIdentity
+    init(_ path: String) throws {
+        pinned = try PinnedParent(path: path)
+        identity = try Self.node(pinned.descriptor, directory: true, privateMode: false)
+        try validate()
+    }
+    var fd: Int32 { pinned.descriptor }
+    func validate() throws {
+        try pinned.validate()
+        let current = try Self.node(fd, directory: true, privateMode: false)
+        // Child creation/removal changes a parent directory's link count on
+        // supported filesystems. Pin its stable inode/protection identity; every
+        // fixed child is separately observed and compared across the action.
+        guard current.device == identity.device, current.inode == identity.inode,
+              current.type == identity.type, current.uid == identity.uid,
+              current.mode == identity.mode, current.aclDigest == identity.aclDigest,
+              current.links > 0 else { throw CustodyRecordError.conflict }
+        // Reject intermediate symlink resolution as well as final-component
+        // links. The retained descriptor and named identity are checked again
+        // after every capture pass.
+        guard let real = realpath(pinned.path, nil) else { throw CustodyRecordError.unsafeMetadata }
+        defer { free(real) }
+        guard String(cString: real) == pinned.path else { throw CustodyRecordError.unsafeMetadata }
+    }
+    static func node(_ fd: Int32, directory: Bool, privateMode: Bool) throws -> InstallationNodeIdentity {
+        var s = stat()
+        guard fstat(fd, &s) == 0, s.st_uid == geteuid(), s.st_flags == 0,
+              s.st_mode & S_IFMT == (directory ? S_IFDIR : S_IFREG),
+              directory || s.st_nlink == 1,
+              !privateMode || s.st_mode == (directory ? S_IFDIR | 0o700 : S_IFREG | 0o600) else {
+            throw CustodyRecordError.unsafeMetadata
+        }
+        let acl = try privateMode ? PolicyAuthorityFile.privateStateACL(fd) : PolicyAuthorityFile.safeACL(fd)
+        let node = InstallationNodeIdentity(device: UInt64(s.st_dev), inode: UInt64(s.st_ino),
+            type: directory ? .directory : .regular, uid: s.st_uid, mode: UInt32(s.st_mode), links: UInt64(s.st_nlink),
+            aclDigest: CustodyRecordBinding.digest(Data(acl.utf8)))
+        try node.validate(); return node
+    }
+    func open(_ name: String, directory: Bool, privateMode: Bool) throws -> (OwnedFileDescriptor, InstallationNodeIdentity)? {
+        try validate()
+        var named = stat()
+        if fstatat(fd, name, &named, AT_SYMLINK_NOFOLLOW) != 0 {
+            guard errno == ENOENT else { throw CustodyRecordError.unsafeMetadata }
+            try validate(); return nil
+        }
+        guard named.st_mode & S_IFMT == (directory ? S_IFDIR : S_IFREG) else { throw CustodyRecordError.unsafeMetadata }
+        let raw = openat(fd, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | (directory ? O_DIRECTORY : 0))
+        guard raw >= 0 else { throw CustodyRecordError.unsafeMetadata }
+        let owned = OwnedFileDescriptor(raw), node = try Self.node(raw, directory: directory, privateMode: privateMode)
+        guard FileIdentity(named).device == node.device, FileIdentity(named).inode == node.inode,
+              named.st_uid == node.uid, UInt32(named.st_mode) == node.mode, UInt64(named.st_nlink) == node.links else {
+            throw CustodyRecordError.conflict
+        }
+        return (owned, node)
+    }
+    func absent(_ name: String) throws {
+        var s = stat()
+        guard fstatat(fd, name, &s, AT_SYMLINK_NOFOLLOW) == -1, errno == ENOENT else { throw CustodyRecordError.fenced }
+        try validate()
+    }
+    func recheck(_ name: String, owned: OwnedFileDescriptor, node: InstallationNodeIdentity, privateMode: Bool) throws {
+        var s = stat()
+        guard try Self.node(owned.value, directory: node.type == .directory, privateMode: privateMode) == node,
+              fstatat(fd, name, &s, AT_SYMLINK_NOFOLLOW) == 0,
+              UInt64(s.st_dev) == node.device, UInt64(s.st_ino) == node.inode,
+              UInt32(s.st_mode) == node.mode, s.st_uid == node.uid, UInt64(s.st_nlink) == node.links else {
+            throw CustodyRecordError.conflict
+        }
+        try validate()
+    }
+    static func bytes(_ fd: Int32, maximum: Int) throws -> Data {
+        var before = stat(); guard fstat(fd, &before) == 0, before.st_size >= 0, before.st_size <= maximum else {
+            throw CustodyRecordError.unsafeMetadata
+        }
+        var data = Data(), block = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = Darwin.read(fd, &block, min(block.count, maximum + 1 - data.count))
+            if n < 0 && errno == EINTR { continue }
+            guard n >= 0 else { throw CustodyRecordError.persistence(errno) }
+            if n == 0 { break }; data.append(contentsOf: block.prefix(n))
+            guard data.count <= maximum else { throw CustodyRecordError.unsafeMetadata }
+        }
+        var after = stat()
+        guard fstat(fd, &after) == 0, FileIdentity(before) == FileIdentity(after), before.st_size == after.st_size,
+              data.count == before.st_size, before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else { throw CustodyRecordError.conflict }
+        return data
+    }
+}
+
+extension InstallationLifecycle {
+    /// This factory never prepares parents, starts commands, mutates source
+    /// slots or grants readiness. Existing unsafe/unavailable layout refuses.
+    func captureInstallationSlots(owner: InstallationTransactionOwner, binding: InstallationLiveBinding,
+                                  transactionID: String) throws -> InstallationCapturedSlots {
+        guard RunIdentity.isValid(transactionID) else { throw CustodyRecordError.fenced }
+        #if SHADOW_SYNC_TESTING
+        testingSlotCaptureStage = "bind"
+        #endif
+        try binding.revalidate(for: owner); try owner.validateInstallationPaths(paths)
+        let parents = try [appParent, plistParent,
+            URL(fileURLWithPath: paths.state.path).deletingLastPathComponent().path,
+            paths.state.path].map(InstallationCaptureParent.init)
+        #if SHADOW_SYNC_TESTING
+        testingSlotCaptureStage = "observe"
+        #endif
+        let observed = try observeInstallationSlots(binding: binding, transactionID: transactionID, parents: parents)
+        let capture = try InstallationCapturedSlots(owner: owner, binding: binding, lifecycle: self, parents: parents,
+            transactionID: transactionID, observed: observed.0, preimages: observed.1)
+        #if SHADOW_SYNC_TESTING
+        testingSlotCaptureStage = "source"
+        #endif
+        try capture.validateSource()
+        let store = try CustodyCatalogStore(leases: owner.retainExclusiveLeases())
+        #if SHADOW_SYNC_TESTING
+        store.testingFault(testingSlotCaptureStoreFault)
+        #endif
+        #if SHADOW_SYNC_TESTING
+        testingSlotCaptureStage = "persist"
+        #endif
+        let retained = try store.persistInstallationPreimages(capture)
+        #if SHADOW_SYNC_TESTING
+        testingSlotCaptureStage = "postflight"
+        #endif
+        try capture.validateSource(); capture.markDurable(retained)
+        return capture
+    }
+    fileprivate func observeInstallationSlots(binding: InstallationLiveBinding, transactionID: String,
+                                              parents: [InstallationCaptureParent]) throws
+        -> (InstallationSlotSnapshot, [InstallationDocumentPreimage]) {
+        guard parents.count == 4 else { throw CustodyRecordError.fenced }
+        let app = parents[0], plist = parents[1], namespaceParent = parents[2], state = parents[3]
+        // The stable namespace excludes only its child-dependent directory
+        // link count, matching InstallationStateBinding.validateLive. Capture
+        // still records and checks the current count within each pass.
+        func isBoundState(_ node: InstallationNodeIdentity) -> Bool {
+            let held = binding.state.directory
+            return node.device == held.device && node.inode == held.inode && node.type == held.type
+                && node.uid == held.uid && node.mode == held.mode && node.aclDigest == held.aclDigest
+                && node.links > 0 && held.links > 0
+        }
+        guard isBoundState(state.identity) else { throw CustodyRecordError.fenced }
+        let appIncomplete = ".ShadowSync.app.incomplete." + transactionID
+        let plistIncomplete = ".com.kleinperkins.shadow-sync.plist.incomplete." + transactionID
+        // Legacy aliases remain exclusively owned by the existing compatibility
+        // reader; this new path does not reinterpret ambiguous rollback names.
+        try app.absent(URL(fileURLWithPath: legacyPredecessorAppBackup).lastPathComponent)
+        let allowedResidue = Set([appIncomplete, plistIncomplete])
+        for name in try lifecycleSlotNames() {
+            guard allowedResidue.contains(name) else { throw CustodyRecordError.fenced }
+        }
+        let legacyName = String(LegacyInstallationRelease.bundleIdentifier.split(separator: ".").last!)
+        // The present owner is bound to current state. A legacy source needs the
+        // separate accepted migration owner; do not inspect its documents under
+        // a different namespace's operation lease.
+        try namespaceParent.absent(legacyName)
+        let layout: [InstallationSlot: (InstallationCaptureParent, String)] = [
+            .application: (app, URL(fileURLWithPath: paths.app).lastPathComponent),
+            .predecessorApplication: (app, URL(fileURLWithPath: paths.predecessorApp).lastPathComponent),
+            .applicationIncoming: (app, URL(fileURLWithPath: appIncoming).lastPathComponent),
+            .applicationIncomplete: (app, appIncomplete), .applicationPrevious: (app, URL(fileURLWithPath: appBackup).lastPathComponent),
+            .predecessorPrevious: (app, URL(fileURLWithPath: predecessorAppBackup).lastPathComponent),
+            .launchPlist: (plist, URL(fileURLWithPath: paths.launchAgent).lastPathComponent),
+            .plistIncoming: (plist, URL(fileURLWithPath: plistIncoming).lastPathComponent),
+            .plistIncomplete: (plist, plistIncomplete), .plistPrevious: (plist, URL(fileURLWithPath: plistBackup).lastPathComponent),
+            .stateSource: (namespaceParent, legacyName),
+            .stateDestination: (namespaceParent, URL(fileURLWithPath: paths.state.path).lastPathComponent),
+            .hostOwner: (state, "host-owner.json"), .hostSocket: (state, "host.sock"),
+            .hostOwnerPrevious: (state, Self.ownerBackupName), .hostSocketPrevious: (state, Self.socketBackupName),
+            .installationSocket: (state, "installation.sock"),
+        ]
+        var images: [InstallationSlot: InstallationSlotImage] = [:], documents: [InstallationDocumentPreimage] = []
+        for slot in InstallationSlot.allCases {
+            #if SHADOW_SYNC_TESTING
+            testingSlotCaptureStage = "observe:" + slot.rawValue
+            #endif
+            let (parent, name) = layout[slot]!
+            let absent = InstallationSlotImage(parentDevice: parent.identity.device, parentInode: parent.identity.inode,
+                node: nil, size: nil, contentDigest: nil, documentReceipts: nil)
+            if slot.isSocket {
+                // No authenticated retained endpoint exists in this slice. Never
+                // infer safe absence/deletion from PID/ECONNREFUSED metadata.
+                try parent.absent(name); images[slot] = absent; continue
+            }
+            guard let (fd, node) = try parent.open(name, directory: slot.isBundle || slot.isNamespace,
+                                                 privateMode: !slot.isBundle) else { images[slot] = absent; continue }
+            var size: UInt64?, digest: String?, refs: [InstallationDocument: String?]?
+            if slot.isNamespace {
+                guard isBoundState(node), parent === namespaceParent else { throw CustodyRecordError.fenced }
+                var values: [InstallationDocument: String?] = [:]
+                for document in InstallationDocument.allCases {
+                    if let (source, identity) = try state.open(document.rawValue, directory: false, privateMode: true) {
+                        let bytes = try InstallationCaptureParent.bytes(source.value, maximum: InstallationDocumentPreimage.maximumContentBytes(for: document))
+                        try state.recheck(document.rawValue, owned: source, node: identity, privateMode: true)
+                        let receipt = InstallationDocumentPreimage(transactionID: transactionID, slot: slot, document: document,
+                            namespace: node, node: identity, bytes: bytes)
+                        values.updateValue(try receipt.digest(uid: node.uid), forKey: document); documents.append(receipt)
+                    } else { values.updateValue(nil, forKey: document) }
+                }
+                refs = values
+            } else if slot.isBundle {
+                let path = parent.pinned.path + "/" + name
+                let artifact = try inspectExclusiveBundle(path,
+                    candidate: [.applicationIncoming, .applicationIncomplete].contains(slot) ? binding.candidate : nil)
+                digest = artifact.canonicalSHA256
+            } else {
+                let bytes = try InstallationCaptureParent.bytes(fd.value, maximum: 65_536)
+                size = UInt64(bytes.count); digest = CustodyRecordBinding.digest(bytes)
+            }
+            try parent.recheck(name, owned: fd, node: node, privateMode: !slot.isBundle)
+            images[slot] = InstallationSlotImage(parentDevice: parent.identity.device, parentInode: parent.identity.inode,
+                node: node, size: size, contentDigest: digest, documentReceipts: refs)
+        }
+        for parent in parents { try parent.validate() }
+        let result = InstallationSlotSnapshot(images: images); try result.validate(uid: paths.state.uid)
+        return (result, documents)
+    }
+}
+
+extension InstallationLifecycle {
+    /// Closed first-install preparation. Existing applications, launch routes,
+    /// migration and recovery residues require evidence not supplied by this slice.
+    fileprivate func requireExclusiveEmptyInstall(_ capture: InstallationCapturedSlots) throws {
+        try capture.validateSource()
+        for slot in InstallationSlot.allCases where slot != .stateDestination {
+            guard capture.expected.images[slot]?.node == nil else { throw CustodyRecordError.fenced }
+        }
+    }
+
+    private func inspectExclusiveBundle(_ path: String, candidate: InstallationCandidate?) throws -> BundleArtifactIdentity {
+        let artifact = try BundleArtifactIdentity.inspect(bundlePath: path, requireProduction: true)
+        #if SHADOW_SYNC_TESTING
+        if let root = testingExclusiveRoot {
+            guard try TestIsolation.validateRoot(root) == root, path.hasPrefix(root + "/") else { throw CustodyRecordError.fenced }
+            if let candidate {
+                guard artifact.canonicalSHA256 == candidate.bundleDigest, artifact.release == candidate.release else { throw CustodyRecordError.conflict }
+            }
+            return artifact
+        }
+        #endif
+        let (_, app) = try PublisherCodeVerifier.verifiedStatic(path: path,
+            identifier: ReleaseIdentity.bundleIdentifier, team: ReleaseIdentity.publisherTeamIdentifier)
+        let (_, helper) = try PublisherCodeVerifier.verifiedStatic(path: path + LifecyclePublisher.relativeExecutable,
+            identifier: LifecyclePublisher.identifier, team: ReleaseIdentity.publisherTeamIdentifier)
+        if let candidate {
+            guard artifact.canonicalSHA256 == candidate.bundleDigest, artifact.release == candidate.release,
+                  app.codeDirectory.map({ String(format: "%02x", $0) }).joined() == candidate.appCDHash,
+                  helper.codeDirectory.map({ String(format: "%02x", $0) }).joined() == candidate.coordinatorCDHash else { throw CustodyRecordError.conflict }
+        }
+        return artifact
+    }
+
+    /// Existing fixed service diagnostic, owned by this live drain intent. Neither
+    /// an injected controller result nor a caller-supplied status can prove absence.
+    fileprivate func observeExclusiveServiceAbsence(owner: InstallationTransactionOwner,
+        journal: CustodyCatalogStore.InstallationJournalSession, deadline: MonotonicDeadline) throws {
+        var context: CommandCustodyContext?
+        var registry = RetainedCleanupRegistry.shared
+        #if SHADOW_SYNC_TESTING
+        if let root = testingExclusiveRoot {
+            context = try .testingInstallation(owner, journal: journal, root: root)
+            registry = testingExclusiveRegistry ?? registry
+        } else {
+            context = try .borrowing(owner, journal: journal, deadline: deadline)
+        }
+        #else
+        context = try .borrowing(owner, journal: journal, deadline: deadline)
+        #endif
+        weak var releasedContext = context
+        defer { context?.close() }
+        let result: CustodyRegistryResult
+        let budget = try CustodyBudget.make(kind: .launchctlRead, workSeconds: 10)
+            .clipped(to: deadline, kind: .launchctlRead, permittedWorkSeconds: 10)
+        do {
+            let command: PreparedCustodyCommand
+            #if SHADOW_SYNC_TESTING
+            if testingExclusiveRoot != nil {
+                command = try context!.testingInstallationDiagnostic(testingExclusiveDiagnostic, budget: budget)
+            } else { command = try context!.prepare(.serviceStatus, budget: budget) }
+            #else
+            command = try context!.prepare(.serviceStatus, budget: budget)
+            #endif
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            result = try registry.start(command).wait()
+        }
+        context?.close(); context = nil
+        // Removal follows terminal fsync, resource closure, reap and every EOF.
+        // A terminal result alone is insufficient; queue-owned context aliases
+        // must disappear as well as the registry's reservations.
+        while releasedContext != nil || registry.hasRetainedWork {
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        guard !deadline.hasExpired, result.phase == .finished, result.reason == nil,
+              let command = result.journal, command.phase == .terminal,
+              command.kind == .launchctlRead, command.authority == .lifecycleMutation,
+              command.outcome == .commandFailed, command.waitStatus == 113 << 8,
+              result.stdout.isEmpty else { throw CustodyRecordError.fenced }
+        let account: EffectiveAccount
+        #if SHADOW_SYNC_TESTING
+        account = try testingExclusiveRoot == nil ? EffectiveAccount.current() : EffectiveAccount.isolated(homeDirectory: paths.home)
+        #else
+        account = try EffectiveAccount.current()
+        #endif
+        guard account.homeDirectory == paths.home,
+              try LifecycleLaunchCommand(operation: .bootstrap, account: account)
+            .state(waitStatus: 113 << 8, stdout: result.stdout, stderr: result.stderr) == .absent else { throw CustodyRecordError.fenced }
+        try owner.revalidate()
+    }
+
+    fileprivate func executeExclusive(_ permit: CustodyCatalogStore.InstallationExclusiveActionPermit,
+                                      capture: InstallationCapturedSlots) throws {
+        try permit.revalidate(for: capture)
+        let action = permit.action
+        try capture.validateSource()
+        let before = capture.expected
+        try pinParents(); defer { unpinParents() }
+        // Existing parent descriptors must still name the retained capture roots.
+        try capture.parents.forEach { try $0.validate() }
+        let candidate = capture.binding.candidate
+        var created: OwnedFileDescriptor?
+        switch action {
+        case .stageApplication:
+            let sourcePath = try capture.owner.installationSourceBundle()
+            let source = try inspectExclusiveBundle(sourcePath, candidate: candidate)
+            created = try stageApplication(sourceBundle: sourcePath, source: source, nonce: capture.transactionID, candidate: candidate)
+        case .stagePlist:
+            created = try stagePlist(nonce: capture.transactionID)
+        case .promoteApplication:
+            guard let source = capture.exclusiveNodes[.applicationIncoming],
+                  try InstallationCaptureParent.node(source.value, directory: true, privateMode: false) == before.images[.applicationIncoming]?.node else { throw CustodyRecordError.fenced }
+            try fault("exclusive-before-promote-application")
+            try renameOwned(appIncoming, paths.app, expectedSource: source)
+        case .promotePlist:
+            guard let source = capture.exclusiveNodes[.plistIncoming],
+                  try InstallationCaptureParent.node(source.value, directory: false, privateMode: true) == before.images[.plistIncoming]?.node else { throw CustodyRecordError.fenced }
+            try fault("exclusive-before-promote-plist")
+            try renameOwned(plistIncoming, paths.launchAgent, expectedSource: source)
+            try Self.validateLaunchAgent(paths.launchAgent, executable: executablePath)
+        case .retireApplication, .retirePlist, .retireCoordination, .translateState, .moveStateForward:
+            // Fresh current namespace only: there is nothing to retire, translate
+            // or move. Never infer that an existing legacy route is inactive.
+            for slot in [InstallationSlot.application, .predecessorApplication, .applicationPrevious,
+                         .predecessorPrevious, .launchPlist, .plistPrevious, .stateSource,
+                         .hostOwner, .hostSocket, .hostOwnerPrevious, .hostSocketPrevious] {
+                guard before.images[slot]?.node == nil else { throw CustodyRecordError.fenced }
+            }
+        default: throw CustodyRecordError.fenced
+        }
+        try fault("exclusive-after-action-" + action.rawValue)
+        let after = try observeInstallationSlots(binding: capture.binding, transactionID: capture.transactionID, parents: capture.parents)
+        guard after.1 == capture.preimages else { throw CustodyRecordError.conflict }
+        var expected = before.images
+        switch action {
+        case .stageApplication:
+            let image = after.0.images[.applicationIncoming]!
+            guard let created, image.node == (try InstallationCaptureParent.node(created.value, directory: true, privateMode: false)),
+                  image.contentDigest == candidate.bundleDigest else { throw CustodyRecordError.conflict }
+            expected[.applicationIncoming] = image
+        case .stagePlist:
+            let image = after.0.images[.plistIncoming]!
+            let bytes = try PropertyListSerialization.data(fromPropertyList: Self.launchAgentDictionary(executable: executablePath), format: .xml, options: 0)
+            guard let created, image.node == (try InstallationCaptureParent.node(created.value, directory: false, privateMode: true)),
+                  image.node?.mode == 0o100600, image.contentDigest == CustodyRecordBinding.digest(bytes), image.size == UInt64(bytes.count) else { throw CustodyRecordError.conflict }
+            expected[.plistIncoming] = image
+        case .promoteApplication, .promotePlist:
+            let source: InstallationSlot = action == .promoteApplication ? .applicationIncoming : .plistIncoming
+            let target: InstallationSlot = action == .promoteApplication ? .application : .launchPlist
+            guard before.images[target]?.node == nil, before.images[source]?.node != nil else { throw CustodyRecordError.conflict }
+            expected[target] = before.images[source]; expected[source] = before.images[target]
+        default: break
+        }
+        guard after.0 == InstallationSlotSnapshot(images: expected) else { throw CustodyRecordError.conflict }
+        // Stage helpers fsync every created file/tree and renameOwned fsyncs the
+        // exact parent. A second pass detects changes before completion is built.
+        if let created {
+            capture.exclusiveNodes[action == .stageApplication ? .applicationIncoming : .plistIncoming] = created
+        }
+        if action == .promoteApplication || action == .promotePlist {
+            let source: InstallationSlot = action == .promoteApplication ? .applicationIncoming : .plistIncoming
+            let target: InstallationSlot = action == .promoteApplication ? .application : .launchPlist
+            capture.exclusiveNodes[target] = capture.exclusiveNodes.removeValue(forKey: source)
+        }
+        capture.expected = after.0
+        try capture.validateSource()
+    }
+}
+
+extension InstallationCapturedSlots {
+    func requireExclusiveEmptyInstall() throws { try lifecycle.requireExclusiveEmptyInstall(self) }
+    func observeExclusiveServiceAbsence(journal: CustodyCatalogStore.InstallationJournalSession,
+                                       deadline: MonotonicDeadline) throws {
+        try lifecycle.observeExclusiveServiceAbsence(owner: owner, journal: journal, deadline: deadline)
+    }
+    func executeExclusive(_ permit: CustodyCatalogStore.InstallationExclusiveActionPermit) throws -> InstallationSlotSnapshot {
+        try lifecycle.executeExclusive(permit, capture: self); return expected
+    }
+    var exclusiveSnapshot: InstallationSlotSnapshot { expected }
+}
+
+/// Detached read-only slot proof. It keeps parent/document descriptions, not the
+/// journal, capture, command controllers or any borrowed admission lock family.
+final class InstallationPreparedSlotObservation {
+    private let owner: InstallationTransactionOwner
+    private let binding: InstallationLiveBinding
+    private let expected: InstallationSlotSnapshot
+    private let documents: [InstallationDocumentPreimage]
+    private let parents: [InstallationCaptureParent]
+    private let transactionID: String
+    private let observer: InstallationLifecycle
+    private let exclusiveNodes: [InstallationSlot: OwnedFileDescriptor]
+    fileprivate init(_ capture: InstallationCapturedSlots) throws {
+        try capture.validateSource()
+        owner = capture.owner; binding = capture.binding; expected = capture.expected
+        documents = capture.preimages; parents = capture.parents; transactionID = capture.transactionID
+        exclusiveNodes = capture.exclusiveNodes
+        observer = InstallationLifecycle(paths: capture.lifecycle.paths,
+            launchAgent: SystemLaunchAgentController(), host: SystemInstalledHostController())
+        #if SHADOW_SYNC_TESTING
+        observer.testingExclusiveRoot = capture.lifecycle.testingExclusiveRoot
+        #endif
+    }
+    func revalidate(for owner: InstallationTransactionOwner) throws {
+        guard self.owner === owner else { throw CustodyRecordError.fenced }
+        try binding.revalidate(for: owner)
+        let actual = try observer.observeInstallationSlots(binding: binding, transactionID: transactionID, parents: parents)
+        guard actual.0 == expected, actual.1 == documents else { throw CustodyRecordError.conflict }
+        for (slot, descriptor) in exclusiveNodes {
+            guard try InstallationCaptureParent.node(descriptor.value, directory: slot.isBundle, privateMode: !slot.isBundle) == expected.images[slot]?.node else { throw CustodyRecordError.conflict }
+        }
+        try binding.revalidate(for: owner)
+    }
+}
+extension InstallationCapturedSlots {
+    func preparedSlotObservation() throws -> InstallationPreparedSlotObservation { try .init(self) }
 }

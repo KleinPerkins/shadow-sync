@@ -9,12 +9,6 @@ struct RepositoryMaintenanceDraft {
     let diagnostics: [String]
 }
 
-#if SHADOW_SYNC_TESTING
-enum RepositoryMaintenanceTesting {
-    @TaskLocal static var registrationObserver: (@Sendable (String) -> Void)?
-}
-#endif
-
 enum RepositoryMaintenancePlanner {
     typealias GitRun = (
         _ arguments: [String],
@@ -57,6 +51,44 @@ enum RepositoryMaintenancePlanner {
         admission: GitAdmissionSnapshot,
         capturedNow: Date,
         validateAdmission: () throws -> Void,
+        run: GitRun
+    ) throws -> RepositoryMaintenanceDraft {
+        try inspectRegistrations(clone: clone, remote: remote, account: account,
+            handle: handle, frozen: frozen, admission: admission, capturedNow: capturedNow,
+            validateAdmission: validateAdmission, observeRegistration: { _ in }, run: run)
+    }
+
+    #if SHADOW_SYNC_TESTING
+    /// Call-scoped observation of the same synchronous planner path. No fixture
+    /// state escapes the invocation or depends on a task-local runtime context.
+    static func testingInspectRegistrations(
+        clone: LocalClone,
+        remote: RemoteRepository,
+        account: EffectiveAccount,
+        handle: RepositoryHandle,
+        frozen: FrozenGitConfiguration,
+        admission: GitAdmissionSnapshot,
+        capturedNow: Date,
+        validateAdmission: () throws -> Void,
+        observeRegistration: (String) -> Void,
+        run: GitRun
+    ) throws -> RepositoryMaintenanceDraft {
+        try inspectRegistrations(clone: clone, remote: remote, account: account,
+            handle: handle, frozen: frozen, admission: admission, capturedNow: capturedNow,
+            validateAdmission: validateAdmission, observeRegistration: observeRegistration, run: run)
+    }
+    #endif
+
+    private static func inspectRegistrations(
+        clone: LocalClone,
+        remote: RemoteRepository,
+        account: EffectiveAccount,
+        handle: RepositoryHandle,
+        frozen: FrozenGitConfiguration,
+        admission: GitAdmissionSnapshot,
+        capturedNow: Date,
+        validateAdmission: () throws -> Void,
+        observeRegistration: (String) -> Void,
         run: GitRun
     ) throws -> RepositoryMaintenanceDraft {
         try validateAdmission()
@@ -123,6 +155,7 @@ enum RepositoryMaintenancePlanner {
             for identifier in identifiers {
                 try validateAdmission()
                 do {
+                    observeRegistration(identifier)
                     let inspected = try inspectRegistration(
                         identifier: identifier,
                         clone: clone,
@@ -518,9 +551,6 @@ enum RepositoryMaintenancePlanner {
         commonDirectory: String,
         account: EffectiveAccount
     ) throws -> InspectedRegistration {
-        #if SHADOW_SYNC_TESTING
-        RepositoryMaintenanceTesting.registrationObserver?(identifier)
-        #endif
         guard validRegistrationID(identifier),
               commonDirectory.hasPrefix("/") else {
             throw MaintenanceInspectionError.diagnostic("common")

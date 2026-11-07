@@ -68,6 +68,11 @@ enum DiscoveryFixtureDiagnostic {
     private static let sink = Sink(
         enabled: mode == "1" || mode == "boundaries" || mode == "costs",
         writer: { fputs($0, stderr); fflush(stderr) })
+    // First failures retain a separate bounded allowance; successful trace
+    // chatter cannot consume the evidence needed to diagnose retained work.
+    private static let failureSink = Sink(
+        enabled: mode == "1" || mode == "boundaries" || mode == "costs",
+        writer: { fputs($0, stderr); fflush(stderr) })
     private static let revalidationSamples = SampleBudget(enabled: mode == "costs")
     private static let publisherSamples = SampleBudget(enabled: mode == "costs")
 
@@ -81,6 +86,7 @@ enum DiscoveryFixtureDiagnostic {
         case queued, validated, metadata, resumed, ready, admissionQueued, controlFlushed, terminal, retired
         case deadlineBefore, revalidation, deadlineAfter, root, projection, scratch, snapshot
         case resourceFiles, appExecutable, runtimeTree
+        case failure
     }
     static func record(_ component: Component, stage: Stage, started: UInt64,
                         deadline: UInt64?, resultBits: UInt64 = 0, succeeded: Bool = false,
@@ -91,7 +97,7 @@ enum DiscoveryFixtureDiagnostic {
             switch component {
             case .admission, .session, .binder, .selection, .rebind, .discovery, .publisher: break
             case .catalog, .transport, .custody: if succeeded { return }
-            case .registry: return
+            case .registry: if stage != .failure { return }
             }
         }
         func formatted() -> String {
@@ -101,7 +107,16 @@ enum DiscoveryFixtureDiagnostic {
             let durations = zip(points, points.dropFirst()).map { String($1 - $0) }.joined(separator: ",")
             return "DISCOVERY FIXTURE DIAGNOSTIC component=\(component.rawValue) stage=\(stage.rawValue) elapsed_ns=\(now - started) deadline_expired=\(expired) result_bits=\(resultBits) succeeded=\(succeeded) intervals_ns=\(durations)\n"
         }
-        sink.emit(formatted())
+        sinkForRecord(component, stage: stage, succeeded: succeeded,
+                      ordinary: sink, failures: failureSink).emit(formatted())
+    }
+
+    // Registry phase observations are progress even though they omit succeeded.
+    // Other components report either explicit success or a terminal failure.
+    // Keep failure capacity independent of successful/progress trace saturation.
+    static func sinkForRecord(_ component: Component, stage: Stage, succeeded: Bool,
+                              ordinary: Sink, failures: Sink) -> Sink {
+        stage == .failure || (component != .registry && !succeeded) ? failures : ordinary
     }
 }
 
