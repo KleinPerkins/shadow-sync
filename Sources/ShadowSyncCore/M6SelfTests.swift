@@ -106,6 +106,11 @@ public enum M6SelfTestRunner {
         try run("m6-installation-transfer-inode-substitution") { try InstallationLockTransferFixtures.substitutionAtGap() }
         try run("m6-installation-transfer-postflight-failure") { try InstallationLockTransferFixtures.postflightFailure() }
         try run("m6-installation-transfer-stale-intent-protection") { try InstallationLockTransferFixtures.staleIntentAndProtection() }
+        try run("m6-installation-staged-lease-continuity") { try InstallationStagedCustodyFixtures.leaseContinuity() }
+        try run("m6-installation-staged-one-way-closure") { try InstallationStagedCustodyFixtures.oneWayClosure() }
+        try run("m6-installation-staged-owner-drift-refusals") { try InstallationStagedCustodyFixtures.wrongOwnerAndDrift() }
+        try run("m6-installation-staged-wire-roundtrip") { try InstallationStagedCustodyFixtures.wireRoundtrip() }
+        try run("m6-installation-staged-wire-refusals") { try InstallationStagedCustodyFixtures.wireRefusals() }
         try run("m6-installation-readiness-wire-roundtrip") { try InstallationReadinessWireFixtures.roundtrip() }
         try run("m6-installation-readiness-wire-canonical-refusals") { try InstallationReadinessWireFixtures.canonicalRefusals() }
         try run("m6-installation-readiness-wire-field-refusals") { try InstallationReadinessWireFixtures.fieldRefusals() }

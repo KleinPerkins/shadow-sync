@@ -97,6 +97,9 @@ final class CustodyMetadataScope: @unchecked Sendable {
 
     init(leases: CustodyAuthorityLeaseSet, releaseSHA256: String, generation: String, installation: CustodyCatalogStore.InstallationCommandPermit? = nil) throws {
         guard CustodyWire.hex(releaseSHA256, bytes: 32), RunIdentity.isValid(generation) else { throw CustodyRecordError.invalidRecord }
+        // Staged lease custody is not installation command authority. No generic
+        // scope may open this mode before an exact durable continuation exists.
+        guard !leases.mode.isInstallationStaged else { throw CustodyRecordError.fenced }
         self.leases = leases; self.releaseSHA256 = releaseSHA256; self.generation = generation; self.installation = installation
         bootID = try CustodyBootIdentity.current(); uid = geteuid()
         store = try CustodyCatalogStore(leases: leases)

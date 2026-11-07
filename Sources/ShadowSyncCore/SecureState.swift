@@ -595,6 +595,8 @@ public final class RunAuthority: @unchecked Sendable {
     private var installationAdmissionPhase: InstallationAdmissionPhase = .exclusive
     private var stagedNamespace: OwnedFileDescriptor?
     private var stagedLifecycle: OwnedFileDescriptor?
+    private enum InstallationStagedBorrowingPhase { case start, closingStart, stop }
+    private var installationStagedBorrowingPhase: InstallationStagedBorrowingPhase = .start
 
     public var stateDirectory: SecureStateDirectory { state }
 
@@ -1000,7 +1002,7 @@ public final class RunAuthority: @unchecked Sendable {
     fileprivate func validateStagedInstallation(_ seal: InstallationOwnershipSeal) throws {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
         guard installationSeal === seal, installationAdmissionPhase == .staged,
-              installationBorrowingClosed, custodyBorrowCount == 0 else { throw CustodyRecordError.fenced }
+              installationBorrowingClosed else { throw CustodyRecordError.fenced }
         try validateInstallationDescriptions(seal.binding)
     }
     fileprivate func validateInstallation(_ seal: InstallationOwnershipSeal, closedBorrowing: Bool = false) throws {
@@ -1033,6 +1035,66 @@ public final class RunAuthority: @unchecked Sendable {
         custodyAliasFamilies.append(WeakInstallationAliasFamily(result.initializationAliases))
         custodyBorrowCount += 1
         return result
+    }
+    fileprivate func stagedInstallationCommandsOpen(_ seal: InstallationOwnershipSeal,
+                                                     mode: CustodyAuthorityMode) -> Bool {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal, installationAdmissionPhase == .staged,
+              installationBorrowingClosed else { return false }
+        return (mode == .installationStagedStart && installationStagedBorrowingPhase == .start)
+            || (mode == .installationStagedStop && installationStagedBorrowingPhase == .stop)
+    }
+    fileprivate func borrowStagedInstallation(_ owner: InstallationTransactionOwner,
+                                             seal: InstallationOwnershipSeal,
+                                             mode: CustodyAuthorityMode) throws -> CustodyAuthorityLeaseSet {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal, custodyAdmissionClosed, installationBorrowingClosed,
+              installationAdmissionPhase == .staged,
+              (mode == .installationStagedStart && installationStagedBorrowingPhase == .start)
+                || (mode == .installationStagedStop && installationStagedBorrowingPhase == .stop),
+              let stagedNamespace, let stagedLifecycle else { throw CustodyRecordError.fenced }
+        try validateInstallationDescriptions(seal.binding)
+        // Duplicate the original EX operation description and the two fresh SH
+        // descriptions. No operation open, lock conversion, run or new authority.
+        let result = try CustodyAuthorityLeaseSet.copy(state: state, members: [
+            (.state, state.descriptor), (.namespace, stagedNamespace),
+            (.lifecycle, stagedLifecycle), (.operation, operation),
+        ], mode: mode, onRelease: { [self, owner] in
+            withExtendedLifetime(owner) {
+                custodyMutex.lock(); custodyBorrowCount -= 1; custodyMutex.unlock()
+            }
+        })
+        custodyAliasFamilies.removeAll { $0.family == nil }
+        custodyAliasFamilies.append(WeakInstallationAliasFamily(result.initializationAliases))
+        custodyBorrowCount += 1
+        return result
+    }
+    fileprivate func closeStagedInstallationStarts(_ seal: InstallationOwnershipSeal) throws {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal, installationAdmissionPhase == .staged,
+              installationStagedBorrowingPhase != .stop else { throw CustodyRecordError.fenced }
+        // Close before any drainage or publisher check; a failure never reopens
+        // the gate. Every descendant shares the enrolled root alias family.
+        installationStagedBorrowingPhase = .closingStart
+        custodyAliasFamilies.forEach { $0.family?.closeAdmission() }
+        guard custodyBorrowCount == 0 else { throw CustodyRecordError.fenced }
+        try validateInstallationDescriptions(seal.binding)
+    }
+    fileprivate func validateClosedStagedInstallationStarts(_ seal: InstallationOwnershipSeal) throws {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal, installationAdmissionPhase == .staged,
+              installationStagedBorrowingPhase == .closingStart, installationBorrowingClosed,
+              custodyBorrowCount == 0 else { throw CustodyRecordError.fenced }
+        try validateInstallationDescriptions(seal.binding)
+    }
+    fileprivate func enterStagedInstallationStop(_ seal: InstallationOwnershipSeal) throws {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal, installationAdmissionPhase == .staged,
+              installationStagedBorrowingPhase == .closingStart, custodyBorrowCount == 0 else {
+            throw CustodyRecordError.fenced
+        }
+        try validateInstallationDescriptions(seal.binding)
+        installationStagedBorrowingPhase = .stop
     }
     fileprivate func installationCommandsOpen(_ seal: InstallationOwnershipSeal) -> Bool {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
@@ -1302,6 +1364,31 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     fileprivate func validateStagedAdmission() throws {
         try revalidate(); try original.validateStagedInstallation(seal)
     }
+    fileprivate func retainStagedLeases(mode: CustodyAuthorityMode) throws -> CustodyAuthorityLeaseSet {
+        try validateStagedAdmission()
+        return try original.borrowStagedInstallation(self, seal: seal, mode: mode)
+    }
+    fileprivate func validateStagedBorrowing(mode: CustodyAuthorityMode) throws {
+        try validateStagedAdmission()
+        guard original.stagedInstallationCommandsOpen(seal, mode: mode) else { throw CustodyRecordError.fenced }
+    }
+    fileprivate func closeStagedStarts() throws -> ClosedInstallationStagedStarts {
+        try original.closeStagedInstallationStarts(seal)
+        try revalidate()
+        return ClosedInstallationStagedStarts(self)
+    }
+    fileprivate func validateClosedStagedStarts() throws {
+        try revalidate(); try original.validateClosedStagedInstallationStarts(seal)
+    }
+    fileprivate func stagedStop(after retirement: RetainedCleanupRegistry.InstallationStagedStartRetirement)
+        throws -> InstallationStagedStopAdmission {
+        // Actual registry removal is checked with no authority mutex held. The
+        // closed start gate prevents new aliases throughout this check/gap.
+        try retirement.revalidate(for: self)
+        try validateClosedStagedStarts()
+        try original.enterStagedInstallationStop(seal)
+        return InstallationStagedStopAdmission(self)
+    }
     deinit { original.releaseInstallation(seal) }
     #if SHADOW_SYNC_TESTING
     // Synchronous one-shot fixture observations. No worker can outlive the
@@ -1330,11 +1417,37 @@ final class InstallationTransactionOwner: @unchecked Sendable {
 }
 
 /// Holds fresh SH admission descriptions and the SAME continuously held original
-/// operation EX through its owner. No run lease, command factory or readiness.
+/// operation EX through its owner. Lease borrowing alone cannot prepare a command:
+/// durable action continuation, publisher binding and helper admission are separate.
 final class InstallationStagedAdmission: @unchecked Sendable {
     private let owner: InstallationTransactionOwner
     fileprivate init(_ owner: InstallationTransactionOwner) { self.owner = owner }
-    func revalidate() throws { try owner.validateStagedAdmission() }
+    func revalidate() throws { try owner.validateStagedBorrowing(mode: .installationStagedStart) }
+    func retainStartLeases() throws -> CustodyAuthorityLeaseSet {
+        try owner.retainStagedLeases(mode: .installationStagedStart)
+    }
+    func closeStarts() throws -> ClosedInstallationStagedStarts { try owner.closeStagedStarts() }
+    func stopOnly(after retirement: RetainedCleanupRegistry.InstallationStagedStartRetirement)
+        throws -> InstallationStagedStopAdmission { try owner.stagedStop(after: retirement) }
+}
+
+/// A closed borrowing family, never command retirement or candidate authentication.
+final class ClosedInstallationStagedStarts: @unchecked Sendable {
+    private let owner: InstallationTransactionOwner
+    fileprivate init(_ owner: InstallationTransactionOwner) { self.owner = owner }
+    func validate() throws { try owner.validateClosedStagedStarts() }
+    func belongs(to candidate: InstallationTransactionOwner) -> Bool { owner === candidate }
+}
+
+/// Start borrowing can never be reopened from this value. It grants only retained
+/// stop-mode leases, not authenticated lifecycle-exit, bootout or rollback authority.
+final class InstallationStagedStopAdmission: @unchecked Sendable {
+    private let owner: InstallationTransactionOwner
+    fileprivate init(_ owner: InstallationTransactionOwner) { self.owner = owner }
+    func revalidate() throws { try owner.validateStagedBorrowing(mode: .installationStagedStop) }
+    func retainStopLeases() throws -> CustodyAuthorityLeaseSet {
+        try owner.retainStagedLeases(mode: .installationStagedStop)
+    }
 }
 
 fileprivate struct InstallationLiveSnapshot: Equatable {

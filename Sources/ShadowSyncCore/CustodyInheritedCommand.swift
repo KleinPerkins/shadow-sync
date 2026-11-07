@@ -114,6 +114,10 @@ final class CustodyInheritedCommand {
         // ten-second ceiling is invalid for the two-second policy contract.
         let request = try UnvalidatedCustodyRequest.decode(raw, expected: binding,
             permittedWorkSeconds: kind == .discoveryGit ? DiscoveryGitCommand.maximumWorkSeconds : min(10, kind.maximumWorkSeconds))
+        // The wire and lease modes do not supply a durable staged command permit.
+        // Keep helper admission closed until the same-owner journal continuation,
+        // full sealed action chain and authenticated candidate stop are joined.
+        guard !request.authority.isInstallationStaged else { throw CustodyRecordError.fenced }
         let hasFrozenConfiguration = request.descriptors.contains { $0.role == .gitFile }
         let installationInput = request.authority == .lifecycleMutation && request.kind == .launchctlRead && request.inputSHA256 != nil
         // Coordinator roles cannot borrow repository authority. Mutation needs

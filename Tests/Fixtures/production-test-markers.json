@@ -385,6 +385,12 @@
     "m6-installation-readiness-wire-bounded-frames",
     "m6-installation-readiness-wire-eof-empty",
     "m6-installation-readiness-wire-absolute-deadline",
-    "m6-installation-readiness-wire-legacy-wrappers"
+    "m6-installation-readiness-wire-legacy-wrappers",
+    "InstallationStagedCustodyFixtures",
+    "m6-installation-staged-lease-continuity",
+    "m6-installation-staged-one-way-closure",
+    "m6-installation-staged-owner-drift-refusals",
+    "m6-installation-staged-wire-roundtrip",
+    "m6-installation-staged-wire-refusals"
   ]
 }

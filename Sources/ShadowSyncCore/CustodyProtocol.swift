@@ -26,7 +26,27 @@ enum CustodyCommandKind: String, CaseIterable, Sendable {
 enum CustodyAuthorityMode: String, Sendable {
     case read, mutation, lifecycleMutation = "lifecycle-mutation"
     case observation
+    case installationStagedStart = "installation-staged-start"
+    case installationStagedStop = "installation-staged-stop"
     var needsOperation: Bool { self != .observation }
+    var isInstallationStaged: Bool {
+        self == .installationStagedStart || self == .installationStagedStop
+    }
+    // Representation only. Actual admission still needs the live owner, durable
+    // action binding and independently reconstructed fixed candidate adapter.
+    func permits(kind: CustodyCommandKind) -> Bool {
+        if self == .observation { return [.launchctlRead, .signatureCheck].contains(kind) }
+        if isInstallationStaged { return [.launchctlRead, .signatureCheck, .launchctlMutation].contains(kind) }
+        return kind != .launchctlMutation || self == .lifecycleMutation
+    }
+    func permits(operation: LifecycleLaunchCommand.Operation) -> Bool {
+        switch self {
+        case .installationStagedStart: return operation == .bootstrap || operation == .kickstart
+        case .installationStagedStop: return operation == .bootout
+        case .lifecycleMutation: return true
+        default: return false
+        }
+    }
 }
 
 struct CustodyBinding: Equatable, Sendable {
@@ -323,10 +343,20 @@ struct UnvalidatedCustodyRequest: Equatable, Sendable {
               roles.map(\.number) == roles.map(\.number).sorted(),
               Set(roles).contains(.operation) == authority.needsOperation,
               !roles.contains(.run) || authority == .mutation,
-              authority != .observation || [.launchctlRead, .signatureCheck].contains(kind),
-              kind != .launchctlMutation || authority == .lifecycleMutation,
+              authority.permits(kind: kind),
               !roles.contains(.traceOutput) || kind == .discoveryGit,
               descriptors.allSatisfy({ $0.mode <= 0xffff }) else { throw CustodyProtocolError.invalidMessage }
+        if authority.isInstallationStaged {
+            // No code, Git, run, trace or caller-liveness descriptor can be
+            // smuggled through an otherwise well-formed staged observation.
+            let expected = required.union([.operation, .input])
+            guard Set(roles) == expected, inputSHA256 != nil else { throw CustodyProtocolError.invalidMessage }
+            if kind == .launchctlMutation {
+                guard let first = arguments.first,
+                      let operation = LifecycleLaunchCommand.Operation(rawValue: first),
+                      authority.permits(operation: operation) else { throw CustodyProtocolError.invalidMessage }
+            }
+        }
         // File types, ownership, ACLs, link policy, standard streams, exact allowed
         // roles and per-kind limits are authenticated by the adapter, not this parser.
     }

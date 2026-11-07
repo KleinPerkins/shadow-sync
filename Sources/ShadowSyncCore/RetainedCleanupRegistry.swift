@@ -438,16 +438,41 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         // reservedIDs includes queued admission and remains present until remove.
         // Conversely the closed family cannot reach zero while any prepared,
         // registry or inherited-resource parent alias still owns its leases.
-        try closed.validate()
+        try validateActualInstallationRetirement { try closed.validate() }
+    }
+    private func validateActualInstallationRetirement(_ validateClosed: () throws -> Void) throws {
+        try validateClosed()
         reservationMutex.lock()
         let empty = reservedIDs.isEmpty && outputReserved == 0
         reservationMutex.unlock()
         guard empty else { throw CustodyRecordError.fenced }
-        try closed.validate()
+        try validateClosed()
     }
     func installationRetirement(after closed: ClosedInstallationBorrowing) throws -> InstallationRetirement {
         try validateInstallationRetirement(closed)
         return InstallationRetirement(registry: self, closed: closed)
+    }
+
+    final class InstallationStagedStartRetirement: @unchecked Sendable {
+        private let registry: RetainedCleanupRegistry
+        private let closed: ClosedInstallationStagedStarts
+        fileprivate init(registry: RetainedCleanupRegistry, closed: ClosedInstallationStagedStarts) {
+            self.registry = registry; self.closed = closed
+        }
+        func revalidate(for owner: InstallationTransactionOwner) throws {
+            guard closed.belongs(to: owner) else { throw CustodyRecordError.fenced }
+            try registry.validateInstallationStagedStartRetirement(closed)
+        }
+    }
+    private func validateInstallationStagedStartRetirement(_ closed: ClosedInstallationStagedStarts) throws {
+        // The same actual-removal accounting used by exclusive transfer. Public
+        // finished/terminal observations are deliberately not inputs to this API.
+        try validateActualInstallationRetirement { try closed.validate() }
+    }
+    func installationStagedStartRetirement(after closed: ClosedInstallationStagedStarts)
+        throws -> InstallationStagedStartRetirement {
+        try validateInstallationStagedStartRetirement(closed)
+        return InstallationStagedStartRetirement(registry: self, closed: closed)
     }
 
     func start(_ command: PreparedCustodyCommand) throws -> Handle {
