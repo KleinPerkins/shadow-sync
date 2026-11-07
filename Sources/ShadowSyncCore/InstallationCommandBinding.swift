@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-/// Sealed observations for the fixed reservation diagnostic. This wire value is
+/// Sealed observations for fixed reservation or drain-prior diagnostics. This wire value is
 /// not authority: admission also needs actual inherited leases, a live exact
 /// coordinator, its publisher and the matching durable command reservation.
 struct InstallationCommandBinding: Equatable {
@@ -15,14 +15,15 @@ struct InstallationCommandBinding: Equatable {
     ]) }
     func validate() throws {
         try control.validate(); try controlNode.validate()
-        guard control.phase == .active, control.step?.action == .reserve,
-              control.step?.status == .complete, control.readinessCommit == nil,
+        let drain = control.step?.action == .drainPrior && control.step?.status == .intent
+        guard control.phase == .active,
+              drain || (control.step?.action == .reserve && control.step?.status == .complete), control.readinessCommit == nil,
               control.transaction != nil, controlNode.type == .regular,
               controlNode.uid == control.state.directory.uid, controlNode.mode == 0o100600,
-              (2...10).contains(receiptNodes.count),
-              receiptNodes.keys.filter({ $0.hasPrefix(InstallationStepReceipt.prefix) }).count == 2 else { throw CustodyRecordError.fenced }
+              (2...11).contains(receiptNodes.count),
+              receiptNodes.keys.filter({ $0.hasPrefix(InstallationStepReceipt.prefix) }).count == (drain ? 3 : 2) else { throw CustodyRecordError.fenced }
         guard let transaction = control.transaction, transaction.priorCommitDigest == nil,
-              control.step?.ordinal == 1 else { throw CustodyRecordError.fenced }
+              control.step?.ordinal == (drain ? 2 : 1) else { throw CustodyRecordError.fenced }
         let intent = InstallationStepReceipt(transactionID: transaction.id, ordinal: 1,
             previousReceiptDigest: nil, action: .reserve, status: .intent,
             preimage: transaction.slots, postimage: nil,
@@ -36,8 +37,15 @@ struct InstallationCommandBinding: Equatable {
                 expected.insert(InstallationDocumentPreimage.prefix + digest + ".json")
             }
         }
-        guard Set(receiptNodes.keys) == expected, control.step == (try complete.step()),
-              control.latestReceiptDigest == (try complete.digest(uid: controlNode.uid)) else { throw CustodyRecordError.fenced }
+        var latest = complete
+        if drain {
+            latest = InstallationStepReceipt(transactionID: transaction.id, ordinal: 2,
+                previousReceiptDigest: try complete.digest(uid: controlNode.uid), action: .drainPrior, status: .intent,
+                preimage: transaction.slots, postimage: nil, bindingDigest: intent.bindingDigest)
+            expected.insert(try latest.filename(uid: controlNode.uid))
+        }
+        guard Set(receiptNodes.keys) == expected, control.step == (try latest.step()),
+              control.latestReceiptDigest == (try latest.digest(uid: controlNode.uid)) else { throw CustodyRecordError.fenced }
         for (name, node) in receiptNodes {
             try node.validate()
             guard (name.hasPrefix(InstallationStepReceipt.prefix) || name.hasPrefix(InstallationDocumentPreimage.prefix)), name.hasSuffix(".json"),

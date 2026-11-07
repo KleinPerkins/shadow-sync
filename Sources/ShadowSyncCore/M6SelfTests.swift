@@ -87,6 +87,25 @@ public enum M6SelfTestRunner {
         try run("m6-installation-command-terminal-not-retirement") { try InstallationCommandBridgeFixtures.terminalIsNotRetirement() }
         try run("m6-installation-command-retirement-after-release") { try InstallationCommandBridgeFixtures.retirementAfterRelease() }
         try run("m6-installation-command-sealed-shape") { try InstallationCommandBridgeFixtures.sealedShape() }
+        try run("m6-installation-exclusive-positive-preparation") { try InstallationExclusivePreparationFixtures.positivePreparation() }
+        try run("m6-installation-exclusive-action-cuts") { try InstallationExclusivePreparationFixtures.actionCuts() }
+        try run("m6-installation-exclusive-slot-substitution") { try InstallationExclusivePreparationFixtures.substitutionRefuses() }
+        try run("m6-installation-exclusive-promotion-source-replacement") { try InstallationExclusivePreparationFixtures.promotionSourceReplacementRefuses() }
+        try run("m6-installation-exclusive-short-caller-deadline") { try InstallationExclusivePreparationFixtures.shortCallerDeadline() }
+        try run("m6-installation-exclusive-diagnostic-failure") { try InstallationExclusivePreparationFixtures.diagnosticFailureRefuses() }
+        try run("m6-installation-exclusive-order-and-deadline") { try InstallationExclusivePreparationFixtures.orderAndDeadlineRefuse() }
+        try run("m6-installation-exclusive-prior-and-source-drift") { try InstallationExclusivePreparationFixtures.priorAndSourceDriftRefuse() }
+        try run("m6-installation-exclusive-durable-intent-cut") { try InstallationExclusivePreparationFixtures.durableIntentCut() }
+        try run("m6-installation-exclusive-staged-intent-release-substitution") { try InstallationExclusivePreparationFixtures.stagedIntentReleaseAndSubstitution() }
+        try run("m6-installation-transfer-positive-and-repeated") { try InstallationLockTransferFixtures.positiveAndRepeated() }
+        try run("m6-installation-transfer-publication-aliases") { try InstallationLockTransferFixtures.publicationAliases() }
+        try run("m6-installation-transfer-borrowed-aliases") { try InstallationLockTransferFixtures.borrowedAliases() }
+        try run("m6-installation-transfer-wrong-proofs-deadline") { try InstallationLockTransferFixtures.wrongProofsAndDeadline() }
+        try run("m6-installation-transfer-synchronous-deadline-cleanup") { try InstallationLockTransferFixtures.synchronousDeadlineCleanup() }
+        try run("m6-installation-transfer-contention-continuity") { try InstallationLockTransferFixtures.contentionAndContinuity() }
+        try run("m6-installation-transfer-inode-substitution") { try InstallationLockTransferFixtures.substitutionAtGap() }
+        try run("m6-installation-transfer-postflight-failure") { try InstallationLockTransferFixtures.postflightFailure() }
+        try run("m6-installation-transfer-stale-intent-protection") { try InstallationLockTransferFixtures.staleIntentAndProtection() }
         try run("m6-live-peer-closed-descriptor") { try LivePeerFixtures.invalid("closed") }
         try run("m6-live-peer-non-socket") { try LivePeerFixtures.invalid("regular") }
         try run("m6-live-peer-unconnected-stream") { try LivePeerFixtures.invalid("unconnected") }

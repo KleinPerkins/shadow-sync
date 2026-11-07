@@ -1933,6 +1933,46 @@ public enum HostPolicySnapshotSelfTestRunner {
                 && activeLines.filter { $0 == Sink.suppression }.count == 1,
                 "diagnostic suppression was missing or repeated")
             try require(activeLines.joined().utf8.count <= Sink.maximumBytes, "diagnostic byte budget exceeded")
+            // Exercise the actual routing seam after ordinary capacity is gone.
+            // Registry progress is not failure and must not exhaust its reserve.
+            let progress = TraceProbe(), failures = TraceProbe()
+            let progressSink = Sink(enabled: true, writer: { progress.append($0) })
+            let failuresSink = Sink(enabled: true, writer: { failures.append($0) })
+            func route(_ component: DiscoveryFixtureDiagnostic.Component,
+                       _ stage: DiscoveryFixtureDiagnostic.Stage, _ succeeded: Bool,
+                       _ text: String) {
+                DiscoveryFixtureDiagnostic.sinkForRecord(component, stage: stage, succeeded: succeeded,
+                    ordinary: progressSink, failures: failuresSink).emit(text)
+            }
+            for _ in 0..<1_000 {
+                route(.catalog, .entry, true, "successful catalog\n")
+                route(.registry, .retired, false, "registry progress\n")
+            }
+            try require(progress.snapshot().0.last == Sink.suppression && failures.snapshot().0.isEmpty,
+                        "progress tracing consumed the failure reserve")
+            let terminal: [(DiscoveryFixtureDiagnostic.Component, DiscoveryFixtureDiagnostic.Stage)] = [
+                (.admission, .deadlineBefore), (.admission, .revalidation), (.admission, .deadlineAfter),
+                (.session, .snapshot), (.catalog, .decisions), (.transport, .execution),
+                (.custody, .result), (.binder, .root), (.selection, .projection),
+                (.rebind, .postflight), (.discovery, .metadata), (.publisher, .runtimeTree),
+                (.registry, .failure)
+            ]
+            for (component, stage) in terminal {
+                route(component, stage, false, "terminal \(component.rawValue) \(stage.rawValue)\n")
+            }
+            try require(failures.snapshot().0 == terminal.map { "terminal \($0.0.rawValue) \($0.1.rawValue)\n" },
+                        "a terminal diagnostic was lost after progress saturation")
+            route(.session, .postflight, true, "successful sampled session\n")
+            try require(failures.snapshot().0.count == terminal.count,
+                        "successful revalidation consumed failure capacity")
+            DispatchQueue.concurrentPerform(iterations: 1_000) { _ in
+                DiscoveryFixtureDiagnostic.sinkForRecord(.admission, stage: .revalidation, succeeded: false,
+                    ordinary: progressSink, failures: failuresSink).emit("bounded failure\n")
+            }
+            try require(failures.snapshot().0.count == Sink.maximumRecords + 1
+                && failures.snapshot().0.last == Sink.suppression
+                && failures.snapshot().0.joined().utf8.count <= Sink.maximumBytes,
+                "independent failure routing escaped concurrent output bounds")
             let byteProbe = TraceProbe()
             let byteBounded = Sink(enabled: true, writer: { byteProbe.append($0) })
             for _ in 0..<1_000 { byteBounded.emit(String(repeating: "x", count: Sink.maximumLineBytes)) }

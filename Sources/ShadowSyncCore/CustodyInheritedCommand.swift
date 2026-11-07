@@ -203,7 +203,7 @@ final class CustodyInheritedCommand {
                 fixtureMode = nil
             } else {
                 guard request.arguments.count == 1,
-                  ["complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay","deadline-before-control",
+                  ["installation-absent","complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay","deadline-before-control",
                    "trace-complete","trace-overflow","trace-resist","policy-echo","policy-resist",
                     "system-complete","system-missing","system-faildata","system-resist","system-overflow",
                     "config-complete","config-resist-sigterm-fixture", "serial-complete", "serial-system-failure", "serial-policy-failure",
@@ -290,6 +290,9 @@ final class CustodyInheritedCommand {
         // describe the same held locks; none is unlocked or reacquired.
         for fd in actual where fd > 2 { close(fd) }
         if let installation {
+            #if SHADOW_SYNC_TESTING
+            if fixture { try helper.bindTestingInstallationSource(root: URL(fileURLWithPath: account.homeDirectory).deletingLastPathComponent().path) }
+            #endif
             try installation.validateParent(parent, helper: helper)
             installationStore = try CustodyCatalogStore(leases: CustodyAuthorityLeaseSet.importing(self))
         }

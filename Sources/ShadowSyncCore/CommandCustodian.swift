@@ -41,7 +41,7 @@ public enum CommandCustodian {
         return nil
     }
     private static func targetFixture(_ mode: String) -> Int32 {
-        guard ["complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay",
+        guard ["installation-absent","complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay",
                "trace-complete","trace-overflow","trace-resist","policy-echo","policy-resist",
                     "system-complete","system-missing","system-faildata","system-resist","system-overflow",
                "config-complete","config-resist-sigterm-fixture", "system-multiple-policy-batches", "classification-allow", "classification-protected", "classification-malformed", "classification-nonce", "classification-binding", "classification-code-allow", "lifecycle-absent", "lifecycle-loaded", "lifecycle-empty", "lifecycle-foreign"].contains(mode) else { return 64 }
@@ -132,6 +132,11 @@ public enum CommandCustodian {
             let bytes = Data(("file:" + path + "\0core.safe\0").utf8)
             guard bytes.withUnsafeBytes({ Darwin.write(1, $0.baseAddress, $0.count) }) == bytes.count else { return 74 }
             return mode == "system-faildata" ? 7 : 0
+        }
+        if mode == "installation-absent" {
+            let bytes = Data("Bad request.\nCould not find service \"\(InstallationPaths.label)\" in domain for user gui: \(geteuid())\n".utf8)
+            _ = bytes.withUnsafeBytes { Darwin.write(STDERR_FILENO, $0.baseAddress!, $0.count) }
+            return 113
         }
         let greeting = Data("target-started:\(getpid())\n".utf8)
         _ = greeting.withUnsafeBytes { Darwin.write(1, $0.baseAddress, $0.count) }

@@ -107,8 +107,16 @@ enum DiscoveryFixtureDiagnostic {
             let durations = zip(points, points.dropFirst()).map { String($1 - $0) }.joined(separator: ",")
             return "DISCOVERY FIXTURE DIAGNOSTIC component=\(component.rawValue) stage=\(stage.rawValue) elapsed_ns=\(now - started) deadline_expired=\(expired) result_bits=\(resultBits) succeeded=\(succeeded) intervals_ns=\(durations)\n"
         }
-        if stage == .failure { failureSink.emit(formatted()) }
-        else { sink.emit(formatted()) }
+        sinkForRecord(component, stage: stage, succeeded: succeeded,
+                      ordinary: sink, failures: failureSink).emit(formatted())
+    }
+
+    // Registry phase observations are progress even though they omit succeeded.
+    // Other components report either explicit success or a terminal failure.
+    // Keep failure capacity independent of successful/progress trace saturation.
+    static func sinkForRecord(_ component: Component, stage: Stage, succeeded: Bool,
+                              ordinary: Sink, failures: Sink) -> Sink {
+        stage == .failure || (component != .registry && !succeeded) ? failures : ordinary
     }
 }
 

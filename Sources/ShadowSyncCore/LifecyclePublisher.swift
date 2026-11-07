@@ -137,6 +137,7 @@ final class LifecyclePublisher {
         #endif
     }
     func installationIdentity() throws -> InstallationIdentity { try InstallationIdentity.capture(self) }
+    func installationSourceBundle() throws -> String { try revalidate(); return app }
 
     func revalidate() throws {
         guard account == (try EffectiveAccount.current()), getuid() == account.uid,

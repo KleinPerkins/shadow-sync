@@ -16,6 +16,7 @@ final class CustodyHelperExecutable: @unchecked Sendable {
     #if SHADOW_SYNC_TESTING
     private let fixture: Bool
     private var custodianFixture = false
+    private var installationFixtureRoot: String?
     private var discoveryFixture = false
     private var discoveryFixtureGraphs: PolicyAuthorityFile?
     #endif
@@ -81,7 +82,7 @@ final class CustodyHelperExecutable: @unchecked Sendable {
             #if SHADOW_SYNC_TESTING
             // Existing isolated fixture executable, never a production publisher.
             guard fixture, transaction.sourceReleaseDigest == releaseSHA256,
-                  transaction.candidate == (try Self.testingInstallationCandidate()),
+                  transaction.candidate == (try testingBoundInstallationCandidate()),
                   transaction.coordinator.team == ReleaseIdentity.publisherTeamIdentifier,
                   transaction.coordinator.identifier == LifecyclePublisher.identifier,
                   transaction.coordinator.cdHash == transaction.candidate?.coordinatorCDHash else { throw CustodyRecordError.fenced }
@@ -133,6 +134,24 @@ final class CustodyHelperExecutable: @unchecked Sendable {
         return [path, "--shadow-sync-command-custodian"]
     }
     #if SHADOW_SYNC_TESTING
+    func bindTestingInstallationSource(root: String) throws {
+        guard fixture, installationFixtureRoot == nil else { throw CustodyRecordError.fenced }
+        installationFixtureRoot = try TestIsolation.validateRoot(root)
+    }
+    private func testingBoundInstallationCandidate() throws -> InstallationCandidate {
+        let fixed = try Self.testingInstallationCandidate()
+        guard let root = installationFixtureRoot else { return fixed }
+        let path = root + "/candidate/ShadowSync.app"
+        var node = stat()
+        if lstat(path, &node) != 0 {
+            guard errno == ENOENT else { throw CustodyRecordError.fenced }; return fixed
+        }
+        guard try TestIsolation.validateRoot(root) == root else { throw CustodyRecordError.fenced }
+        let artifact = try BundleArtifactIdentity.inspect(bundlePath: path, requireProduction: true)
+        guard artifact.release == fixed.release else { throw CustodyRecordError.fenced }
+        return InstallationCandidate(release: artifact.release, bundleDigest: artifact.canonicalSHA256,
+            appCDHash: fixed.appCDHash, coordinatorCDHash: fixed.coordinatorCDHash)
+    }
     static func testingInstallationCandidate() throws -> InstallationCandidate {
         let fixture = try InstallationControlFixtures.transaction().candidate!
         let release = try ReleaseIdentity(sourceRevision: fixture.release.sourceRevision,

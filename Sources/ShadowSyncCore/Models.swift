@@ -1009,6 +1009,8 @@ public struct MonotonicDeadline: Sendable {
         deadlineNanoseconds = sum.overflow ? .max : sum.partialValue
     }
 
+    var absoluteUptimeNanoseconds: UInt64 { deadlineNanoseconds }
+
     public var hasExpired: Bool {
         DispatchTime.now().uptimeNanoseconds >= deadlineNanoseconds
     }

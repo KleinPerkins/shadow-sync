@@ -111,6 +111,19 @@ struct CustodyBudget: Equatable, Sendable {
         }
     }
 
+    /// Preserve an existing caller's absolute ceiling through preparation,
+    /// target execution, cleanup and receipt waiting. A short caller may leave
+    /// cleanup pending; clipping never invents successful retirement.
+    func clipped(to deadline: MonotonicDeadline, kind: CustodyCommandKind,
+                 permittedWorkSeconds: TimeInterval) throws -> Self {
+        let limit = deadline.absoluteUptimeNanoseconds
+        let bounded = Self(issued: issued, work: min(work, limit), term: min(term, limit),
+            kill: min(kill, limit), receipt: min(receipt, limit))
+        try bounded.validate(kind: kind, permittedWorkSeconds: permittedWorkSeconds,
+            now: DispatchTime.now().uptimeNanoseconds)
+        return bounded
+    }
+
     /// Early cancellation clips all subsequent deadlines. Repeated calls never extend them.
     func draining(at now: UInt64) throws -> Self {
         guard now >= issued else { throw CustodyProtocolError.invalidBudget }

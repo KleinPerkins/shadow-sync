@@ -337,12 +337,14 @@ final class CommandCustodyContext: @unchecked Sendable {
         let location = try StateLocation.isolated(root: TestIsolation.validateRoot(root))
         let permit = try journal.commandPermit(for: owner, deadline: MonotonicDeadline(seconds: 0.750))
         try permit.validateOwner(owner)
-        return try Self(leases: owner.retainExclusiveLeases(), helper: CustodyHelperExecutable.testingCustodian(),
+        let helper = try CustodyHelperExecutable.testingCustodian()
+        try helper.bindTestingInstallationSource(root: root)
+        return try Self(leases: owner.retainExclusiveLeases(), helper: helper,
             account: EffectiveAccount.isolated(homeDirectory: root + "/home"), location: location,
             admissionSource: .installation(owner), installation: permit)
     }
     func testingInstallationDiagnostic(_ mode: String = "complete", budget: CustodyBudget? = nil) throws -> PreparedCustodyCommand {
-        guard let installation, ["complete", "resist", "terminal-delay", "after-admit"].contains(mode) else { throw CustodyRecordError.fenced }
+        guard let installation, ["installation-absent", "complete", "resist", "terminal-delay", "after-admit"].contains(mode) else { throw CustodyRecordError.fenced }
         try revalidate()
         let raw = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard raw >= 0 else { throw CustodyRecordError.fenced }
