@@ -124,11 +124,14 @@ final class InstallationParentPreparation {
             #endif
         }
     }
+    private static func safeDirectoryMode(_ mode: mode_t) -> Bool {
+        mode & 0o022 == 0 && mode & 0o7000 == 0
+    }
     private static func identity(_ fd: Int32, owner: uid_t, privateMode: Bool, ancestor: Bool) throws -> Identity {
         var s = stat()
         guard fstat(fd, &s) == 0, s.st_mode & S_IFMT == S_IFDIR, s.st_uid == owner,
               s.st_nlink > 0, ancestor || s.st_flags == 0 else { throw CustodyRecordError.unsafeMetadata }
-        var safeMode = s.st_mode & 0o022 == 0 && s.st_mode & 0o7000 == 0
+        var safeMode = safeDirectoryMode(s.st_mode)
         #if SHADOW_SYNC_TESTING
         // Only the already-validated fixture path may cross the system temp
         // ancestor. This exception is absent from production compilation.
@@ -314,6 +317,11 @@ final class InstallationParentPreparation {
         }
     }
     #if SHADOW_SYNC_TESTING
+    // Pure mode-predicate coverage only; this does not construct a live identity
+    // or bypass any owner, descriptor, ACL, flag or namespace check.
+    static func testingSafeDirectoryMode(_ mode: mode_t) -> Bool {
+        safeDirectoryMode(mode)
+    }
     static func testing(root: String) throws -> InstallationParentPreparation {
         let root = try TestIsolation.validateRoot(root)
         let account = try EffectiveAccount.isolated(homeDirectory: root + "/home")

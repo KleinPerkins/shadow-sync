@@ -1921,7 +1921,10 @@ public enum DiscoveryCallerSelfTestRunner {
             try require(tipResult.succeeded, "fixture tip setup")
             let tip = String(decoding: tipResult.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             func prepare(_ args: [String], cwd: Int32) throws -> PreparedCustodyCommand {
-                let budget = try CustodyBudget.make(kind: .retentionArchive, workSeconds: 120)
+                // T08 deliberately withholds output until cleanup is pending. Its
+                // small status command needs a fixture budget, not the maximum
+                // retention work allowance; keep every pending-owner assertion.
+                let budget = try CustodyBudget.make(kind: .retentionArchive, workSeconds: index == 7 ? 5 : 120)
                 let authority = try RetentionArchiveCommandAuthority(admission: admission, primary: handle, worktree: handle,
                     frozen: frozen, destination: slot, slotPath: slotPath, cwd: cwd, arguments: args,
                     revision: "refs/heads/main", tip: tip, statePath: location.path)

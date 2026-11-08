@@ -129,14 +129,58 @@ enum InstallationParentPreparationFixtures {
     static func unsafe() throws {
         for mode: mode_t in [0o777, 0o775, 0o1700, 0o4700] {
             try fixture { root, home in
-                try make(home, .applications); try check(chmod(home + "/Applications", mode) == 0, "fixture unsafe mode")
+                try make(home, .applications)
+                let path = home + "/Applications"
+                let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try check(fd >= 0, "fixture mode descriptor"); defer { close(fd) }
+                var original = stat(), held = stat(), named = stat()
+                try check(fstat(fd, &original) == 0 && lstat(path, &named) == 0 &&
+                          original.st_dev == named.st_dev && original.st_ino == named.st_ino &&
+                          original.st_uid == geteuid() && original.st_mode == S_IFDIR | 0o700,
+                          "fixture original mode identity")
+                try check(fchmod(fd, mode) == 0, "fixture requested mode")
+                try check(fstat(fd, &held) == 0 && lstat(path, &named) == 0 &&
+                          held.st_dev == original.st_dev && held.st_ino == original.st_ino &&
+                          named.st_dev == held.st_dev && named.st_ino == held.st_ino &&
+                          held.st_uid == original.st_uid && named.st_uid == held.st_uid &&
+                          held.st_mode == named.st_mode && held.st_mode & S_IFMT == S_IFDIR,
+                          "fixture observed mode identity")
+                let observed = held.st_mode & 0o7777
                 let before = try snapshot(root)
-                try refuses { _ = try P.testing(root: root) }
-                try check(try snapshot(root) == before, "unsafe mode repaired")
+                if mode == 0o4700 && observed == 0o700 {
+                    // Darwin may clear directory setuid even when fchmod succeeds.
+                    // This is a safe live-directory control plus separate coverage
+                    // of the exact production predicate, not a live setuid refusal.
+                    try check(!P.testingSafeDirectoryMode(S_IFDIR | mode), "synthetic special mode accepted")
+                    try check(P.testingSafeDirectoryMode(held.st_mode), "normalized directory mode refused")
+                    _ = try P.testing(root: root)
+                } else {
+                    try check(observed == mode, "fixture unsafe mode did not persist")
+                    try check(!P.testingSafeDirectoryMode(held.st_mode), "observed unsafe predicate accepted")
+                    try refuses { _ = try P.testing(root: root) }
+                }
+                try check(try snapshot(root) == before, "observed mode changed")
             }
         }
         try fixture { root, home in
-            try make(home, .local); try make(home, .state, mode: 0o755)
+            try make(home, .local); try make(home, .state)
+            let path = home + "/.local/state"
+            let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try check(fd >= 0, "fixture state mode descriptor"); defer { close(fd) }
+            var original = stat(), held = stat(), named = stat()
+            try check(fstat(fd, &original) == 0 && lstat(path, &named) == 0 &&
+                      original.st_dev == named.st_dev && original.st_ino == named.st_ino &&
+                      original.st_uid == geteuid() && original.st_mode == S_IFDIR | 0o700,
+                      "fixture original state mode identity")
+            // mkdir is filtered by the runtime's restrictive umask; establish
+            // and verify the actual unsafe state mode through its original FD.
+            try check(fchmod(fd, 0o755) == 0, "fixture requested state mode")
+            try check(fstat(fd, &held) == 0 && lstat(path, &named) == 0 &&
+                      held.st_dev == original.st_dev && held.st_ino == original.st_ino &&
+                      named.st_dev == held.st_dev && named.st_ino == held.st_ino &&
+                      held.st_uid == original.st_uid && named.st_uid == held.st_uid &&
+                      held.st_mode == S_IFDIR | 0o755 && named.st_mode == held.st_mode,
+                      "fixture observed state mode identity")
             let before = try snapshot(root); try refuses { _ = try P.testing(root: root) }
             try check(try snapshot(root) == before, "state parent privacy repaired")
         }
