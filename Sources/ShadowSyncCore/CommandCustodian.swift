@@ -1162,7 +1162,10 @@ private final class CustodianLoop {
                 consumeControl()
                 if now >= min(state.budget.work, stageBudget.work) && state.phase != .draining { beginDrain(.timeout) }
                 if state.phase == .admitted && !spawned && reason == .none {
-                    do { try spawnTarget() }
+                    do {
+                        try spawnTarget()
+                        consumeControl()
+                    }
                     catch { beginDrain(reason == .none ? .invalidResource : reason) }
                 }
                 relay(false); relay(true); relayTrace(); drainTarget()
