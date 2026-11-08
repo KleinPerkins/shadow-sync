@@ -1315,14 +1315,15 @@ public enum DiscoveryCallerSelfTestRunner {
         guard let common = candidate.commonDirectoryIdentity, let root = candidate.rootIdentity else {
             throw Failure.assertion("coordinator fixture identities missing")
         }
-        let cloneID = LocalClone.id(for: common), worktreeID = "worktree:\(common.device):\(root.inode)"
+        let cloneID = LocalClone.id(for: common), worktreeID = "worktree:\(LocalClone.id(for: common)):\(root.device):\(root.inode)"
+        let checkedOutRef = maintenance ? "refs/heads/feature" : "refs/heads/main"
         let worktree = try Worktree(id: worktreeID, cloneID: cloneID, path: candidate.path, rootIdentity: root,
-            registrationIdentity: nil, attachedBranchRef: "refs/heads/main", detachedOID: nil, isPrimary: true,
+            registrationIdentity: nil, attachedBranchRef: checkedOutRef, detachedOID: nil, isPrimary: true,
             locationKind: .canonicalPrimary, verification: .verified, cleanliness: .clean)
-        let branch = try Branch(cloneID: cloneID, fullRef: "refs/heads/main", tipOID: oid, claimingWorktreeIDs: [worktreeID])
+        let branch = try Branch(cloneID: cloneID, fullRef: checkedOutRef, tipOID: oid, claimingWorktreeIDs: [worktreeID])
         let clone = try LocalClone(repositoryID: candidate.id, sourceSnapshot: candidate, effectiveOrigin: candidate.rawOrigin,
             originParityVerified: true, policyCategory: .writable, kind: .primaryCheckout,
-            worktrees: maintenance ? [] : [worktree], branches: maintenance ? [] : [branch], warnings: [])
+            worktrees: [worktree], branches: [branch], warnings: [])
         let resolved = try RemoteDefaultBranch(name: "main", advertisedOID: oid)
         let remote = try RemoteRepository(id: candidate.id, origins: [candidate.rawOrigin], policyCategory: .writable,
             resolvedDefault: resolved, defaultUnavailableReason: nil)
@@ -1333,17 +1334,27 @@ public enum DiscoveryCallerSelfTestRunner {
     }
 
     private static func repositoryCoordinatorCorrection(_ test: String) throws {
-        let fixture = try Fixture(systemConfiguration: false)
-        let observations = CorrectionObservations(), audit = CommandAudit(), token = CancellationToken()
         let pending = test.hasPrefix("pending"), maintenance = test.hasSuffix("maintenance")
+        let fixture = try Fixture(systemConfiguration: false, initialFeatureBranch: maintenance)
+        let observations = CorrectionObservations(), audit = CommandAudit(), token = CancellationToken()
         var failure: Error?
         do {
             // Capture disposable identities before ending this read phase. The
             // ordinary coordinator must itself acquire and borrow mutation authority.
             let prepared = try repositoryFixtureResources(root: fixture.root, context: fixture.context)
             let candidate = prepared.0.candidate
-            let oid = try String(contentsOfFile: fixture.repository + "/.git/refs/heads/main", encoding: .utf8)
+            let localRef = maintenance ? "feature" : "main"
+            let oid = try String(contentsOfFile: fixture.repository + "/.git/refs/heads/" + localRef, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            if maintenance {
+                let head = try String(contentsOfFile: fixture.repository + "/.git/HEAD", encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let remote = try String(contentsOfFile: fixture.repository + "/.git/refs/remotes/origin/main", encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                try require(head == "ref: refs/heads/feature" && remote == oid
+                    && !FileManager.default.fileExists(atPath: fixture.repository + "/.git/refs/heads/main"),
+                    "maintenance fixture must have an actual feature primary and absent local main")
+            }
             let target = try correctionTarget(candidate, oid: oid, maintenance: maintenance)
             let operation = maintenance ? try PlannedOperation(kind: .initializeDefaultBranch, target: target, maintenanceEvidence: .initializeDefault)
                 : PlannedOperation(target: target)
@@ -1763,7 +1774,8 @@ public enum DiscoveryCallerSelfTestRunner {
         private var removed = false
 
         private var mutationAuthority: RunAuthority?
-        init(systemConfiguration: Bool, userConfiguration: String? = nil, retention: Bool = false) throws {
+        init(systemConfiguration: Bool, userConfiguration: String? = nil, retention: Bool = false,
+             initialFeatureBranch: Bool = false) throws {
             try require(RetainedCleanupRegistry.shared.testingCount == 0, "fixture requires exclusive empty registry")
             guard let framework = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_FRAMEWORK"],
                   let sourcePath = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_SOURCE"],
@@ -1804,7 +1816,9 @@ public enum DiscoveryCallerSelfTestRunner {
                         cancellation: CancellationToken())
                     try require(result.succeeded, "fixture setup Git failed: \(result.diagnostic)")
                 }
-                try git(["init", "--quiet", "--initial-branch=main", repository])
+                // Maintenance starts on a real feature primary; no branch deletion
+                // or invented missing worktree is needed to model absent main.
+                try git(["init", "--quiet", initialFeatureBranch ? "--initial-branch=feature" : "--initial-branch=main", repository])
                 // The null graft file remains enforced; silence only its known
                 // deprecation advice in this owned fixture before identity capture.
                 try git(["-C", repository, "config", "--local", "advice.graftFileDeprecated", "false"])
@@ -1948,9 +1962,24 @@ public enum DiscoveryCallerSelfTestRunner {
                 defer { try? FileManager.default.removeItem(atPath: changed); try? FileManager.default.moveItem(atPath: saved, toPath: changed) }
                 if index == 5 { try write(changed, Data("raise RuntimeError('fixture replacement')".utf8)) }
                 else { try FileManager.default.createDirectory(atPath: changed, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]) }
-                do { _ = try RetainedCleanupRegistry.shared.start(command); throw Failure.assertion("retention resource replacement admitted") }
-                catch is Failure { throw Failure.assertion("retention resource replacement admitted") } catch {}
-                try require(RetainedCleanupRegistry.shared.testingCount == 0, "refusal submitted a child")
+                // start reserves an asynchronous owner; its returned handle is
+                // not evidence that the replaced resource passed validation.
+                let registry = RetainedCleanupRegistry.shared
+                let catalogBefore = try repositoryCustodyBytes(location, "catalog.json")
+                try require(!registry.hasRetainedWork && registry.testingCount == 0,
+                    "replacement fixture requires an empty registry")
+                let result = try registry.start(command).wait()
+                try require(result.phase == .finished && result.reason == .invalidResource
+                    && result.journal == nil && result.stdout.isEmpty && result.stderr.isEmpty && result.trace.isEmpty,
+                    "retention resource replacement admitted")
+                try require(!registry.hasRetainedWork && registry.testingCount == 0,
+                    "refusal submitted a child")
+                try require(try context.testingScope.testingRead().entries.isEmpty
+                    && repositoryCustodyBytes(location, "catalog.json") == catalogBefore,
+                    "replacement refusal changed custody metadata")
+                try require(!FileManager.default.fileExists(atPath: location.path + "/custody/"
+                    + command.resources.request.binding.requestID + ".json"),
+                    "replacement refusal published a journal")
                 return
             }
             let registry = RetainedCleanupRegistry.shared

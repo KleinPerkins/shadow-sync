@@ -886,6 +886,22 @@ private enum CustodyLeaseSelfTests {
             try check(fcntl(ordinary, F_GETFD) & FD_CLOEXEC != 0, "legacy duplicate not atomic CLOEXEC")
             try check(mkdir(location.path + "/fixture-subdirectory", 0o700) == 0, "directory metadata fixture")
             try leases.validate() // Directory child-count changes cannot revoke an unchanged namespace.
+            var current = stat()
+            try check(fstat(authority.stateDirectory.descriptor.value, &current) == 0,
+                "state stat after original child creation")
+            let refreshed = try leases.descriptorClaims()
+            guard let stateClaim = refreshed.first(where: { $0.role == .state }) else {
+                throw Failure(message: "fresh state claim absent")
+            }
+            try check(stateClaim.device == UInt64(current.st_dev)
+                && stateClaim.inode == UInt64(current.st_ino) && stateClaim.uid == current.st_uid
+                && stateClaim.mode == UInt32(current.st_mode) && stateClaim.links == UInt64(current.st_nlink)
+                && stateClaim.access == .read, "state claim differs from fresh original descriptor")
+            try check(refreshed.filter { $0.role != .state } == claims.filter { $0.role != .state },
+                "state child creation changed lock claims")
+            for name in ["latest.log", "lifecycle.lock", "operation.lock", "run.lock"] {
+                try exclusiveBusy(location, name)
+            }
         }
     }
     static func releasePreservesLeases() throws {

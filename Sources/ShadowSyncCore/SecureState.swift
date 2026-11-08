@@ -1794,12 +1794,16 @@ final class CustodyAuthorityLeaseSet: @unchecked Sendable {
     }
 
     func descriptorClaims() throws -> [CustodyDescriptorClaim] {
-        try validate()
-        return members.map { m in
-            CustodyDescriptorClaim(role: m.role, device: m.identity.device, inode: m.identity.inode,
-                uid: m.identity.owner, mode: UInt32(m.identity.mode), links: UInt64(m.identity.linkCount),
-                access: m.access == O_RDONLY ? .read : .readWrite)
+        var claims: [CustodyDescriptorClaim] = []
+        // Serialize the same fresh observation that passed every existing check.
+        // A permitted directory child-count change must not publish stale links.
+        try Self.validate(state: state, members: members) { member, observed in
+            claims.append(CustodyDescriptorClaim(role: member.role,
+                device: observed.device, inode: observed.inode, uid: observed.owner,
+                mode: UInt32(observed.mode), links: UInt64(observed.linkCount),
+                access: member.access == O_RDONLY ? .read : .readWrite))
         }
+        return claims
     }
 
     /// Register only this bundle's closed roles. The caller retains the bundle
@@ -1834,7 +1838,8 @@ final class CustodyAuthorityLeaseSet: @unchecked Sendable {
         return (identity, access & O_ACCMODE, try PolicyAuthorityFile.privateStateACL(fd))
     }
 
-    private static func validate(state: SecureStateDirectory, members: [Member]) throws {
+    private static func validate(state: SecureStateDirectory, members: [Member],
+        observation: ((Member, FileIdentity) -> Void)? = nil) throws {
         guard let root = members.first(where: { $0.role == .state }) else { throw SecureStateError.unsafePath("custody state") }
         let names: [CustodyDescriptorClaim.Role: String] = [.namespace: "latest.log", .lifecycle: "lifecycle.lock",
             .operation: "operation.lock", .run: "run.lock"]
@@ -1851,6 +1856,7 @@ final class CustodyAuthorityLeaseSet: @unchecked Sendable {
                 guard fstatat(root.descriptor.value, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
                       FileIdentity(named) == member.identity else { throw SecureStateError.unsafePath("replaced custody lease") }
             }
+            observation?(member, observed.0)
         }
     }
 
