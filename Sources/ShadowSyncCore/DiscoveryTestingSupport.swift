@@ -261,6 +261,22 @@ enum DiscoveryFixtureDiagnostic {
         }
     }
 
+    enum RepositoryReadStage: String {
+        case fixture, resources, parallelCommands, parallelResults, drain, onceOnly
+        case progress, cleanupDrain, fixtureCleanup
+    }
+    enum RepositoryReadErrorFamily: String {
+        case repositoryCommand, selectedScope, gitConfiguration, resource, policyAuthority
+        case gitSafety, fixture, other
+    }
+    static func recordRepositoryReadFailure(stage: RepositoryReadStage,
+        family: RepositoryReadErrorFamily, outcomes: Int, admitted: Int, retired: Int) {
+        guard isEnabled else { return }
+        failureSink.emit("DISCOVERY PARALLEL READ FIRST FAILURE stage=\(stage.rawValue)"
+            + " family=\(family.rawValue) outcomes=\(outcomes)"
+            + " admitted=\(admitted) retired=\(retired)\n")
+    }
+
     enum RegistryKind: String { case policyClassify, retentionArchive }
     enum RetentionCommand: Int {
         case statusFirst = 1, statusReplay, bundleCreate, bundleVerify, clone

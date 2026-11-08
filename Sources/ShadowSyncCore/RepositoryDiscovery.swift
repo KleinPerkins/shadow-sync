@@ -571,71 +571,52 @@ public struct RepositoryDiscovery: SelectedRepositoryDiscovering {
     static func validateRemovalRuntimeEligibility(
         _ candidate: RepositoryCandidate,
         repositoryID: String,
-        account: EffectiveAccount
+        policy service: RepositoryDiscoveryPolicy
     ) throws {
-        guard candidate.isEligible else {
-            throw GitSafetyError.unsafeRepository(
-                "blocked repository entered removal admission"
-            )
+        try service.validate()
+        guard candidate.isEligible, candidate.id == repositoryID,
+              service.scope.admits(candidate),
+              let selected = service.scope.repositories.first(where: {
+                  $0.repositoryID == repositoryID && $0.repositoryPath == candidate.path
+              }) else {
+            throw GitSafetyError.unsafeRepository("blocked or changed repository entered removal admission")
         }
-        let requestedRoot = URL(fileURLWithPath: account.homeDirectory)
-            .appendingPathComponent("dev", isDirectory: true).path
-        let rootDescriptor = Darwin.open(
-            requestedRoot,
-            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
-        )
-        guard rootDescriptor >= 0 else {
-            throw M1RepositoryDiscoveryError.requiredRootUnavailable
-        }
-        defer { close(rootDescriptor) }
-        var rootInfo = stat()
-        guard fstat(rootDescriptor, &rootInfo) == 0,
-              FileIdentity(rootInfo).isDirectory,
-              rootInfo.st_uid == account.uid else {
-            throw M1RepositoryDiscoveryError.locationUnavailable
-        }
-        let rootPath = try descriptorPath(rootDescriptor)
-        guard isContained(candidate.path, root: rootPath) else {
-            throw GitSafetyError.unsafeRepository(
-                "canonical clone left the governed root"
-            )
-        }
-        let policy = try RepositoryPolicyLoader.load(
-            rootPath: rootPath
-        )
-        let relative = relativePath(candidate.path, root: rootPath)
+        let relative = try service.policyRelativePath(candidate.path)
         guard let origin = GitHubIdentity.parse(candidate.rawOrigin),
               origin == candidate.originIdentity,
               origin.canonicalName == repositoryID,
-              policy.pathDisposition(relativePath: relative) == .allowed,
-              !policy.excludedOrigins.contains(origin.canonicalName),
-              candidate.presentationLocation
-                == (relative == "."
-                    ? "~/dev" : "~/dev/\(relative)"),
-              candidate.policyAdmissionSHA256
-                == policy.admissionSHA256,
-              Self.hasNoUnsafeGraphMetadata(candidate.path) else {
-            throw GitSafetyError.unsafeRepository(
-                "removal policy or repository identity changed"
-            )
+              service.policy.pathDisposition(relativePath: relative) == .allowed,
+              !service.policy.excludedOrigins.contains(origin.canonicalName),
+              candidate.presentationLocation == (try service.presentationLocation(candidate.path)),
+              candidate.policyAdmissionSHA256 == service.policy.admissionSHA256 else {
+            throw GitSafetyError.unsafeRepository("removal policy or repository identity changed")
+        }
+        // Classify the complete initial metadata set before requireSelected
+        // opens a candidate directory. Helpers revalidate immediately before
+        // each later access under this same, fixed metadata-stage deadline.
+        try service.prepareAccess([candidate.path + "/.git", candidate.path + "/.git/objects",
+            candidate.path + "/.git/objects/info/alternates", candidate.path + "/.git/info/grafts",
+            candidate.path + "/.git/refs/replace", candidate.path + "/.git/worktrees"])
+        try service.requireSelected(selected)
+        guard try Self.hasNoUnsafeGraphMetadata(candidate.path, beforeAccess: service.willAccess) else {
+            throw GitSafetyError.unsafeRepository("removal graph metadata changed")
         }
         let topology = try registeredLinkedWorktrees(
             commonDirectory: candidate.path + "/.git",
-            rootPath: rootPath,
-            account: account,
-            allowExternal: true
+            rootPath: selected.policyRootPath,
+            account: service.account,
+            allowExternal: true,
+            admission: service
         )
         // Earlier admitted removals in this same immutable batch may
         // legitimately shrink the registered topology. A new or changed
         // registration is never accepted; target/backlink checks below
         // still require the exact selected entity to remain present.
-        guard topology.allSatisfy({
-            candidate.linkedWorktrees.contains($0)
-        }) else {
-            throw GitSafetyError.unsafeRepository(
-                "repository worktree topology changed"
-            )
+        guard topology.allSatisfy({ candidate.linkedWorktrees.contains($0) }) else {
+            throw GitSafetyError.unsafeRepository("repository worktree topology changed")
         }
+        try service.requireSelected(selected)
+        try service.validate()
     }
 
     #if SHADOW_SYNC_TESTING

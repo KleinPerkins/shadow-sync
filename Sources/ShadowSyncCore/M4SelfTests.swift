@@ -711,6 +711,8 @@ public enum M4SelfTestRunner {
             executablePath: CommandLine.arguments[0],
             onActivation: { true }
         )
+        let rejectionObservation = M4HostRejectionObservation()
+        try check(server.observeM4Rejections(rejectionObservation), "host observation setup")
         try server.start()
         defer { server.stop() }
         let state = try SecureStateDirectory.open(location)
@@ -726,6 +728,7 @@ public enum M4SelfTestRunner {
             !malformedResponse.accepted,
             "malformed activation lacked a generic rejection"
         )
+        rejectionObservation.confirmedResponse(1)
 
         let wrongRequest = HostControlRequest(
             expectedGeneration: RunIdentity.make()
@@ -737,6 +740,7 @@ public enum M4SelfTestRunner {
         )
         try check(!wrong.accepted, "wrong generation was accepted")
         try check(wrong.nonce == wrongRequest.nonce, "rejection nonce changed")
+        rejectionObservation.confirmedResponse(2)
 
         let partialStarted = MonotonicInstant.now()
         let partial = try rawHostExchange(
@@ -754,11 +758,13 @@ public enum M4SelfTestRunner {
             MonotonicInstant.now().milliseconds(since: partialStarted) < 2_000,
             "partial request did not complete within its bound"
         )
+        rejectionObservation.confirmedResponse(3)
 
         let oversized = try rawHostExchange(
             location: location,
             request: Data(repeating: UInt8(ascii: "x"), count: 17_000),
-            kind: .oversized
+            kind: .oversized,
+            rejectionObservation: rejectionObservation
         )
         let oversizedResponse = try decodedHostResponse(oversized)
         try check(
@@ -858,7 +864,8 @@ public enum M4SelfTestRunner {
         location: StateLocation,
         request: Data,
         kind: HostRejectionKind,
-        keepWriteOpen: Bool = false
+        keepWriteOpen: Bool = false,
+        rejectionObservation: M4HostRejectionObservation? = nil
     ) throws -> Data {
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
@@ -899,6 +906,7 @@ public enum M4SelfTestRunner {
                         && kind == .oversized && offset >= HostControlIO.maximumFrameBytes
                     fputs("M4 HOST REJECTION DIAGNOSTIC kind=\(kind.rawValue) offset=\(offset) bytes=\(raw.count) errno=\(code) early_rejection=\(earlyRejection)\n", stderr)
                     fflush(stderr)
+                    if !earlyRejection { rejectionObservation?.emitFirstFailure() }
                     if earlyRejection { break }
                     throw M4SelfTestError.system("host test write", code)
                 }
@@ -1990,4 +1998,106 @@ private enum CustodyProtocolSelfTests {
         try check(try !wrongSequence.permitsResume(now: start), "bad sequence allowed resume")
     }
 }
+// Fixed observation for the four sequential requests of one owned fixture server.
+// This is causal fixture attribution, never kernel descriptor-pair identity.
+final class M4HostRejectionObservation: @unchecked Sendable {
+    enum Stage: String {
+        case unobserved, peerIdentity, nonblocking, deadline, newlineBounds
+        case frameLimit, wait, read, extraBufferedBytes, decode, requestValidation
+    }
+    private let lock = NSLock()
+    private var accepted = 0
+    private var completed = 0
+    private var confirmed = 0
+    private var active = 0
+    private var ambiguous = false
+    private var emitted = false
+    private var stage: Stage = .unobserved
+    private var frameBytes = 0
+    private var wasRejected = false
+
+    func acceptedConnection() -> Int {
+        let savedErrno = errno
+        defer { errno = savedErrno }
+        lock.lock()
+        defer { lock.unlock() }
+        if accepted >= 4 || active != 0 || completed != accepted {
+            ambiguous = true
+        }
+        accepted = min(accepted + 1, 5)
+        active = accepted
+        stage = .unobserved
+        frameBytes = 0
+        wasRejected = false
+        return active
+    }
+
+    func entered(_ next: Stage, bytes: Int? = nil) {
+        let savedErrno = errno
+        defer { errno = savedErrno }
+        lock.lock()
+        defer { lock.unlock() }
+        guard active > 0, active <= 4 else { ambiguous = true; return }
+        stage = next
+        if let bytes {
+            guard bytes >= 0, bytes <= HostControlIO.maximumFrameBytes + 4_096 else {
+                ambiguous = true
+                return
+            }
+            frameBytes = bytes
+        }
+    }
+
+    func rejected() {
+        let savedErrno = errno
+        defer { errno = savedErrno }
+        lock.lock()
+        defer { lock.unlock() }
+        wasRejected = true
+    }
+
+    func completedConnection(_ ordinal: Int?) {
+        let savedErrno = errno
+        defer { errno = savedErrno }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let ordinal, ordinal == active, ordinal == completed + 1 else {
+            ambiguous = true
+            return
+        }
+        completed = min(ordinal, 5)
+        active = 0
+    }
+
+    // Called only after each original framed response and its original checks.
+    func confirmedResponse(_ ordinal: Int) {
+        let savedErrno = errno
+        defer { errno = savedErrno }
+        lock.lock()
+        defer { lock.unlock() }
+        guard ordinal == confirmed + 1, ordinal <= 3 else {
+            ambiguous = true
+            return
+        }
+        confirmed = ordinal
+    }
+
+    func emitFirstFailure() {
+        let savedErrno = errno
+        defer { errno = savedErrno }
+        lock.lock()
+        guard !emitted else { lock.unlock(); return }
+        emitted = true
+        let bound = !ambiguous && accepted == 4 && completed == 4
+            && confirmed == 3 && active == 0 && wasRejected
+        let binding = bound ? "sequential-fixture" : "unbound"
+        let observedStage = bound ? stage.rawValue : Stage.unobserved.rawValue
+        let observedBytes = bound ? frameBytes : -1
+        let counts = (accepted, completed, confirmed)
+        lock.unlock()
+        fputs("M4 SERVER REJECTION FIRST FAILURE binding=\(binding) stage=\(observedStage) frame_bytes=\(observedBytes) accepted=\(counts.0) completed=\(counts.1) responses=\(counts.2)\n", stderr)
+        fflush(stderr)
+    }
+}
+
 #endif

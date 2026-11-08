@@ -923,15 +923,15 @@ public extension RunCoordinator {
                     retention.testingCustodyHooks = self.configuration.testingRetentionCustodyHooks
                     #endif
                     do {
-                        try RepositoryDiscovery
-                            .validateRemovalRuntimeEligibility(
-                                selection.candidate.clone
-                                    .sourceSnapshot,
-                                repositoryID:
-                                    selection.candidate
-                                        .repository.id,
-                                account: effectiveAccount
-                            )
+                        guard let configurationContext else { throw SelectedRepositoryScopeError.policyUnavailable }
+                        let exactScope = try selectedScope.exactRepositoryScope(
+                            repositoryID: selection.candidate.repository.id)
+                        try configurationContext.withRemovalDiscoveryPolicy(exactScope,
+                            account: effectiveAccount, cancellation: token) { policy in
+                            try RepositoryDiscovery.validateRemovalRuntimeEligibility(
+                                selection.candidate.clone.sourceSnapshot,
+                                repositoryID: selection.candidate.repository.id, policy: policy)
+                        }
                     } catch {
                         outcome = Body3BatchNodeOutcome(
                             status: .refused,
@@ -1258,7 +1258,8 @@ public extension RunCoordinator {
                                     // rejected before filesystem access.
                                     "",
                                 protectedPaths:
-                                    protectedPaths
+                                    protectedPaths,
+                                selectedScope: selectedScope
                             )
                         try coordinatorConfiguration
                             .installationAdmission?()

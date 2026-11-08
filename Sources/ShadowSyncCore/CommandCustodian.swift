@@ -1311,7 +1311,19 @@ private final class TestingCustodianFailureWitness {
     // Closed, fixture-only syscall failure seams. The actual helper always uses
     // .none; no caller-selected path, descriptor or authority is injected.
     enum Fault { case none, afterRoot, afterHome, afterFile, initialSync, shortWrite, recordSync }
-    final class Probe { var opened: [Int32] = []; var writeAttempts = 0; var reached: Fault?; var createdFile: stat? }
+    enum RejectionStage: String {
+        case serialization, bounds, rootHeld, rootNamed, homeHeld, homeNamed
+        case fileHeld, fileNamed, rootACL, homeACL, fileACL, write, sync
+    }
+    struct Rejection {
+        let event: Event
+        let stage: RejectionStage
+        let homeLinksEqual: Bool?
+    }
+    final class Probe {
+        var opened: [Int32] = []; var writeAttempts = 0; var reached: Fault?; var createdFile: stat?
+        var firstRejection: Rejection?
+    }
     private let fault: Fault
     private let probe: Probe?
     init(home: String, binding: CustodyRecordBinding, fault: Fault = .none, probe: Probe? = nil) throws {
@@ -1372,6 +1384,8 @@ private final class TestingCustodianFailureWitness {
     func record(_ event: Event, fields: [String: Any]) {
         guard !poisoned, !seen.contains(event.slot), seen.count < 3 else { return }
         seen.insert(event.slot)
+        var rejectionStage = RejectionStage.serialization
+        var homeLinksEqual: Bool?
         do {
             var value = fields
             value["schema"] = "shadow-sync-custodian-failure-observation/v1"
@@ -1380,24 +1394,47 @@ private final class TestingCustodianFailureWitness {
             value["nonce_sha256"] = binding.nonceSHA256
             guard JSONSerialization.isValidJSONObject(value) else { throw CustodyRecordError.fenced }
             var bytes = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]); bytes.append(10)
+            rejectionStage = .bounds
             guard bytes.count <= 2048, written + bytes.count <= 6144 else { throw CustodyRecordError.fenced }
             var held = stat(), named = stat()
-            guard fstat(rootFD, &held) == 0, Self.same(rootNode, held),
-                  lstat(rootPath, &named) == 0, Self.same(rootNode, named),
-                  fstat(homeFD, &held) == 0, Self.same(homeNode, held),
-                  fstatat(rootFD, "home", &named, AT_SYMLINK_NOFOLLOW) == 0, Self.same(homeNode, named),
-                  fstat(fileFD, &held) == 0, Self.same(fileNode, held), held.st_size == written,
-                  fstatat(homeFD, filename, &named, AT_SYMLINK_NOFOLLOW) == 0, Self.same(fileNode, named),
-                  try PolicyAuthorityFile.privateStateACL(rootFD) == rootACL,
-                  try PolicyAuthorityFile.privateStateACL(homeFD) == homeACL,
-                  try PolicyAuthorityFile.privateStateACL(fileFD) == fileACL else { throw CustodyRecordError.fenced }
+            rejectionStage = .rootHeld
+            guard fstat(rootFD, &held) == 0, Self.same(rootNode, held) else { throw CustodyRecordError.fenced }
+            rejectionStage = .rootNamed
+            guard lstat(rootPath, &named) == 0, Self.same(rootNode, named) else { throw CustodyRecordError.fenced }
+            rejectionStage = .homeHeld
+            guard fstat(homeFD, &held) == 0 else { throw CustodyRecordError.fenced }
+            homeLinksEqual = homeNode.st_nlink == held.st_nlink
+            guard Self.same(homeNode, held) else { throw CustodyRecordError.fenced }
+            rejectionStage = .homeNamed
+            guard fstatat(rootFD, "home", &named, AT_SYMLINK_NOFOLLOW) == 0, Self.same(homeNode, named) else { throw CustodyRecordError.fenced }
+            rejectionStage = .fileHeld
+            guard fstat(fileFD, &held) == 0, Self.same(fileNode, held), held.st_size == written else { throw CustodyRecordError.fenced }
+            rejectionStage = .fileNamed
+            guard fstatat(homeFD, filename, &named, AT_SYMLINK_NOFOLLOW) == 0, Self.same(fileNode, named) else { throw CustodyRecordError.fenced }
+            rejectionStage = .rootACL
+            guard try PolicyAuthorityFile.privateStateACL(rootFD) == rootACL else { throw CustodyRecordError.fenced }
+            rejectionStage = .homeACL
+            guard try PolicyAuthorityFile.privateStateACL(homeFD) == homeACL else { throw CustodyRecordError.fenced }
+            rejectionStage = .fileACL
+            guard try PolicyAuthorityFile.privateStateACL(fileFD) == fileACL else { throw CustodyRecordError.fenced }
+            rejectionStage = .write
             probe?.writeAttempts += 1
             let count = bytes.withUnsafeBytes {
                 pwrite(fileFD, $0.baseAddress, fault == .shortWrite ? max(1, $0.count / 2) : $0.count, off_t(written))
             }
-            guard count == bytes.count, fault != .recordSync, fsync(fileFD) == 0 else { throw CustodyRecordError.fenced }
+            guard count == bytes.count else { throw CustodyRecordError.fenced }
+            rejectionStage = .sync
+            guard fault != .recordSync, fsync(fileFD) == 0 else { throw CustodyRecordError.fenced }
             written += count
-        } catch { poisoned = true }
+        } catch {
+            let savedErrno = errno
+            defer { errno = savedErrno }
+            poisoned = true
+            if let probe, probe.firstRejection == nil {
+                probe.firstRejection = Rejection(event: event, stage: rejectionStage,
+                                                 homeLinksEqual: homeLinksEqual)
+            }
+        }
     }
 }
 #endif
@@ -1701,6 +1738,13 @@ private extension TestingCustodianFailureWitness {
             for event in [Event.controlEOF, .controlEOF, .terminalPublication, .drainingPersistence, .pendingBoundary, .pendingPublication, .pendingBoundary] { emit(witness, event) }
             let data = try bytes(home, binding)
             let records = try data.split(separator: 10).map { try JSONSerialization.jsonObject(with: Data($0)) as? [String: Any] }
+            if records.count != 3 || probe.writeAttempts != 3 || witness.poisoned {
+                let rejection = probe.firstRejection
+                let homeLinks = rejection.flatMap { $0.homeLinksEqual }.map { $0 ? "equal" : "changed" } ?? "unobserved"
+                let line = "M6 WITNESS SLOT FAILURE records=\(records.count) attempts=\(probe.writeAttempts) poisoned=\(witness.poisoned) written=\(witness.written) bytes=\(data.count) stage=\(rejection?.stage.rawValue ?? "none") event=\(rejection?.event.rawValue ?? "none") home_links=\(homeLinks)\n"
+                // Fixed fields only; no request, path, identity, error or witness contents.
+                if line.utf8.count <= 512 { FileHandle.standardError.write(Data(line.utf8)) }
+            }
             try check(records.count == 3 && probe.writeAttempts == 3 && !witness.poisoned, "witness independent slots")
             try check(records.compactMap { $0?["event"] as? String } == ["controlEOF", "terminalPublication", "pendingBoundary"], "witness first failure overwritten")
             try check(records.allSatisfy { $0?["request"] as? String == binding.requestID && $0?["generation"] as? String == binding.generation && $0?["nonce_sha256"] as? String == binding.nonceSHA256 }, "witness binding changed")
@@ -1715,6 +1759,9 @@ private extension TestingCustodianFailureWitness {
                 let first = try bytes(home, binding)
                 emit(witness, .terminalPublication); emit(witness, .pendingBoundary)
                 try check(witness.poisoned && witness.written == 0 && probe.writeAttempts == 1 && !first.isEmpty && (try bytes(home, binding)) == first, "witness I/O poison retried or erased partial evidence")
+                try check(probe.firstRejection?.event == .controlEOF
+                    && probe.firstRejection?.stage == (fault == .shortWrite ? .write : .sync),
+                    "witness I/O rejection stage changed")
                 // record returned normally; actual helper drainage is separately
                 // exercised by the custody fixture, never synthesized here.
             }

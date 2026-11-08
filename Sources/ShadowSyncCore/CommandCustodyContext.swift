@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ShadowSyncCatalog
 
 /// Failure evidence has no authority or leases. Probes may retain it after the
 /// weak phase owner disappears without extending or reopening that phase.
@@ -461,6 +462,59 @@ final class CommandCustodyContext: @unchecked Sendable {
         try budget.validate(kind: .systemGitConfig, permittedWorkSeconds: 5, now: DispatchTime.now().uptimeNanoseconds)
         guard !cancellation.isCancelled, !cancellation.areFutureChildAdmissionsClosed else { throw CustodyRecordError.fenced }
         return PreparedCustodyCommand(context: self, helper: helper, resources: resources, graph: graph, cancellation: cancellation)
+    }
+
+    /// The existing read/EX phase supplies its actual account, retained state
+    /// descriptor and publisher. No lock or command admission is reopened.
+    func currentPolicyBinder(cancellation: CancellationToken) throws -> SelectedRepositoryScopeBinder {
+        try validatePhaseAdmission()
+        guard mode == .read || mode == .mutation else { throw CustodyRecordError.fenced }
+        let deadline = DispatchTime.now().uptimeNanoseconds &+ RepositorySelectionCatalogLimits().elapsedNanoseconds
+        let publisher: PublisherPolicyResources
+        #if SHADOW_SYNC_TESTING
+        if try helper.testingDiscoveryGraphResource() != nil {
+            publisher = try PublisherPolicyResources.testingDiscovery(account: account)
+        } else {
+            try validatePhaseAdmission(account: EffectiveAccount.current())
+            publisher = try PublisherPolicyResources.production(account: account)
+        }
+        #else
+        try validatePhaseAdmission(account: EffectiveAccount.current())
+        publisher = try PublisherPolicyResources.production(account: account)
+        #endif
+        guard DispatchTime.now().uptimeNanoseconds < deadline else { throw SelectedRepositoryScopeError.policyUnavailable }
+        let snapshot = try HostPolicySnapshot.load(account: account, contract: QualifiedAWAContract.decode(publisher.contract))
+        let state = try scope.leases.duplicateStateDirectory()
+        return try PolicyCatalogSession(snapshot: snapshot, publisher: publisher, context: self,
+            scratchDescriptor: state.0.value, cancellation: cancellation)
+            .binder(setupDeadline: deadline, revalidatePhase: phaseAdmissionCheck())
+    }
+
+    /// Borrow the original mutation owner for one rebound metadata stage.
+    /// Closing the service never closes, replaces or reacquires its caller.
+    func withRemovalDiscoveryPolicy<Value>(_ selected: ValidatedSelectedRepositoryScope,
+        account expected: EffectiveAccount, cancellation: CancellationToken,
+        _ body: (RepositoryDiscoveryPolicy) throws -> Value
+    ) throws -> Value {
+        try validatePhaseAdmission(account: expected)
+        guard mode == .mutation else { throw CustodyRecordError.fenced }
+        let probe = SystemGitConfigurationProbe(context: self, cancellation: cancellation)
+        return try probe.withValidatedCompletion {
+            do {
+                let binder = try currentPolicyBinder(cancellation: cancellation)
+                let value = try binder.withDiscoveryPolicy(selected, cancellation: cancellation, body)
+                try validatePhaseAdmission(account: expected)
+                guard !cancellation.isCancelled, !cancellation.areFutureChildAdmissionsClosed else {
+                    throw GitSafetyError.cancelled
+                }
+                return value
+            } catch {
+                // The original owner's pending cause wins over a later generic
+                // policy error or cancellation, as in configuration admission.
+                try validatePendingCause()
+                throw error
+            }
+        }
     }
 
     func frozenConfigurationAdmission(expectedPolicySHA256: String?, scratch: Int32, budget: CustodyBudget,

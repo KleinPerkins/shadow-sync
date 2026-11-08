@@ -64,6 +64,19 @@ public final class HostControlServer: @unchecked Sendable {
     private var stopped = false
     private var ownsEndpoint = false
     private var thread: Thread?
+#if SHADOW_SYNC_TESTING
+    // Installed only before start; the server thread never replaces this owner.
+    private var rejectionObservation: M4HostRejectionObservation?
+
+    func observeM4Rejections(_ observation: M4HostRejectionObservation) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard listener < 0, thread == nil, !stopped,
+              rejectionObservation == nil else { return false }
+        rejectionObservation = observation
+        return true
+    }
+#endif
 
     public init(
         authority: LauncherAuthority,
@@ -150,7 +163,13 @@ public final class HostControlServer: @unchecked Sendable {
                 if errno == EINTR { continue }
                 return
             }
+#if SHADOW_SYNC_TESTING
+            let observedConnection = rejectionObservation?.acceptedConnection()
+#endif
             handle(peer)
+#if SHADOW_SYNC_TESTING
+            rejectionObservation?.completedConnection(observedConnection)
+#endif
             close(peer)
         }
     }
@@ -158,26 +177,54 @@ public final class HostControlServer: @unchecked Sendable {
     private func handle(_ peer: Int32) {
         var peerUID: uid_t = 0
         var peerGID: gid_t = 0
+#if SHADOW_SYNC_TESTING
+        rejectionObservation?.entered(.peerIdentity)
+#endif
         guard getpeereid(peer, &peerUID, &peerGID) == 0,
               peerUID == geteuid() else {
+#if SHADOW_SYNC_TESTING
+            rejectionObservation?.rejected()
+#endif
             return
         }
         try? HostControlIO.makeNonblocking(peer)
         let request: HostControlRequest
         do {
+#if SHADOW_SYNC_TESTING
+            if let rejectionObservation {
+                request = try HostControlIO.readM4Observed(
+                    HostControlRequest.self, descriptor: peer,
+                    observation: rejectionObservation
+                )
+            } else {
+                request = try HostControlIO.read(
+                    HostControlRequest.self, descriptor: peer
+                )
+            }
+#else
             request = try HostControlIO.read(
                 HostControlRequest.self,
                 descriptor: peer
             )
+#endif
         } catch {
+#if SHADOW_SYNC_TESTING
+            rejectionObservation?.rejected()
+#endif
             try? reject(peer, nonce: RunIdentity.make())
             return
         }
+#if SHADOW_SYNC_TESTING
+        rejectionObservation?.entered(.requestValidation)
+#endif
         guard
               request.schema == HostControlRequest.schemaName,
               request.expectedGeneration == registration.identity.generation,
               RunIdentity.isValid(request.nonce),
               registration.isValid else {
+#if SHADOW_SYNC_TESTING
+            rejectionObservation?.rejected()
+#endif
             try? reject(peer, nonce: request.nonce)
             return
         }
@@ -557,18 +604,50 @@ enum HostControlIO {
         return try JSONDecoder().decode(type, from: data)
     }
 
+#if SHADOW_SYNC_TESTING
+    // Same read/decode operations as read(_:descriptor:); only this fixture's
+    // original server supplies an observation. No new frame or wire field.
+    static func readM4Observed<T: Decodable>(
+        _ type: T.Type, descriptor: Int32,
+        observation: M4HostRejectionObservation
+    ) throws -> T {
+        let deadline = MonotonicDeadline(seconds: HostControlTiming.requestTimeout)
+        var reader = FrameReader()
+        reader.m4Observation = observation
+        let data = try reader.read(descriptor: descriptor, deadline: deadline)
+        observation.entered(.extraBufferedBytes)
+        guard !reader.hasBufferedBytes else {
+            throw SecureStateError.unsafePath("host control frame")
+        }
+        observation.entered(.decode)
+        return try JSONDecoder().decode(type, from: data)
+    }
+#endif
+
     struct FrameReader {
         private var buffered = Data()
+#if SHADOW_SYNC_TESTING
+        var m4Observation: M4HostRejectionObservation?
+#endif
         var hasBufferedBytes: Bool { !buffered.isEmpty }
 
         mutating func read(descriptor: Int32, deadline: MonotonicDeadline) throws -> Data {
+#if SHADOW_SYNC_TESTING
+            m4Observation?.entered(.nonblocking)
+#endif
             try HostControlIO.requireNonblocking(descriptor)
             var bytes = [UInt8](repeating: 0, count: 4_096)
             while true {
                 // Buffered data does not renew the shared session budget.
+#if SHADOW_SYNC_TESTING
+                m4Observation?.entered(.deadline, bytes: buffered.count)
+#endif
                 try HostControlIO.requireTime(deadline)
                 if let newline = buffered.firstIndex(of: 0x0A) {
                     let length = buffered.distance(from: buffered.startIndex, to: newline)
+#if SHADOW_SYNC_TESTING
+                    m4Observation?.entered(.newlineBounds)
+#endif
                     guard length > 0, length < HostControlIO.maximumFrameBytes else {
                         throw SecureStateError.unsafePath("host control frame")
                     }
@@ -576,11 +655,20 @@ enum HostControlIO {
                     buffered.removeSubrange(...newline)
                     return frame
                 }
+#if SHADOW_SYNC_TESTING
+                m4Observation?.entered(.frameLimit)
+#endif
                 guard buffered.count < HostControlIO.maximumFrameBytes else {
                     throw SecureStateError.unsafePath("host control frame")
                 }
                 // At most one bounded frame plus one fixed read chunk is held.
+#if SHADOW_SYNC_TESTING
+                m4Observation?.entered(.wait)
+#endif
                 try HostControlIO.wait(descriptor, events: Int16(POLLIN | POLLHUP), deadline: deadline)
+#if SHADOW_SYNC_TESTING
+                m4Observation?.entered(.read)
+#endif
                 let count = Darwin.read(descriptor, &bytes, bytes.count)
                 if count > 0 { buffered.append(contentsOf: bytes.prefix(count)); continue }
                 if count < 0, errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }

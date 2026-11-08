@@ -632,20 +632,8 @@ public final class SelectedRepositoryScopeBinder:
     }
 
     private static func production(context: CommandCustodyContext, cancellation: CancellationToken) throws -> SelectedRepositoryScopeBinder {
-        do {
-            try context.validatePhaseAdmission()
-            let deadline = DispatchTime.now().uptimeNanoseconds &+ RepositorySelectionCatalogLimits().elapsedNanoseconds
-            let account = try EffectiveAccount.current()
-            let resources = try PublisherPolicyResources.production(account: account)
-            guard DispatchTime.now().uptimeNanoseconds < deadline else { throw SelectedRepositoryScopeError.policyUnavailable }
-            let snapshot = try HostPolicySnapshot.load(account: account,
-                contract: QualifiedAWAContract.decode(resources.contract))
-            let state = try SecureStateDirectory.openExisting(StateLocation.production())
-            let validate = context.phaseAdmissionCheck()
-            return try PolicyCatalogSession(snapshot: snapshot, publisher: resources, context: context,
-                scratchDescriptor: state.descriptor.value, cancellation: cancellation)
-                .binder(setupDeadline: deadline, revalidatePhase: validate)
-        } catch { throw Self.policyFailure(error) }
+        do { return try context.currentPolicyBinder(cancellation: cancellation) }
+        catch { throw Self.policyFailure(error) }
     }
 
     #if SHADOW_SYNC_TESTING

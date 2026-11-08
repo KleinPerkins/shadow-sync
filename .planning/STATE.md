@@ -7,8 +7,8 @@ The current objective is a usable signed MVP and governed standalone repository.
 ## Current evidence
 
 - The reviewed standalone source is included in the current source-import change, with per-file public provenance and private history excluded. Publication does not establish runtime, signed-release or installation qualification.
-- Current development work includes caller custody, staged command completion, readiness/session and legacy document observation components. These source components do not establish a working source-free installation or completed migration.
-- Full exact-source runtime/native coverage and hosted integration remain unqualified. Development compilation and source/tooling checks are not activation evidence. Earlier source/binary results are retained separately and are not transferred to the current snapshot.
+- Current source work includes current-policy removal admission and bounded fixture failure observations. Runtime registration is 1,194 cases, including 67 retention cases; registration is not execution. Caller custody, staged completion, readiness/session and named-socket integration still require complete qualification and do not establish a working source-free installation or completed migration.
+- The last published application CI run passed 11 of 15 mandatory units and failed four runtime units; its required aggregate failed. Full exact-source runtime/native coverage and hosted integration remain unqualified. Development compilation and source/tooling checks are not activation evidence. Earlier source/binary results are retained separately and are not transferred to the current snapshot.
 - Credential readiness is prior completed evidence, not a signed product release. No new credential request is identified.
 - No signed ShadowSync product release, installed migration, installed update or physical UAT acceptance is claimed. The controller and fleet pins remain unchanged.
 

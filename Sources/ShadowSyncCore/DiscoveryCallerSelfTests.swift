@@ -154,6 +154,7 @@ public enum DiscoveryCallerSelfTestRunner {
             try RuntimeFixtureSession.withCase(id) { try retentionWorkerLoss(phase: phase) }
             onPass(id)
         }
+        try runRemovalAdmissionCorrections(onPass: onPass)
     }
 
     private final class FrozenAccessObservation: @unchecked Sendable {
@@ -525,7 +526,24 @@ public enum DiscoveryCallerSelfTestRunner {
         }
     }
 
-    private static func retentionSelection(root: String, policyDigest: String) throws -> (RemovalSelection, RepositoryInventory) {
+    private static func retentionSelection(root: String, context: CommandCustodyContext)
+        throws -> (RemovalSelection, RepositoryInventory, ValidatedSelectedRepositoryScope) {
+        let binder = try context.currentPolicyBinder(cancellation: CancellationToken())
+        let catalog = try binder.processFreeCatalog(preferences: nil, generation: 1)
+        guard catalog.isComplete,
+              let ready = catalog.catalog.candidates.first(where: { $0.id == "fixture-owner/ready" }) else {
+            throw Failure.assertion("retention current-policy catalog incomplete")
+        }
+        let scope = try binder.bind(intent: RepositorySelectionIntent(catalog: catalog.catalog,
+            entries: [try ready.preferenceEntry]))
+        let candidates = try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
+            try RepositoryDiscovery().discoverMetadata(scope: scope, policy: service)
+        }
+        guard candidates.count == 1, let candidate = candidates.first, candidate.isEligible,
+              scope.admits(candidate), candidate.policyAdmissionSHA256 == scope.policyDigest,
+              candidate.presentationLocation == "~/workspace/products/ready" else {
+            throw Failure.assertion("retention selection lacks current bound metadata")
+        }
         let repository = root + "/home/workspace/products/ready"
         let tip = try String(contentsOfFile: repository + "/.git/refs/heads/main", encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -540,12 +558,6 @@ public enum DiscoveryCallerSelfTestRunner {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         try require(actualHead == "ref: refs/heads/main" && recoveryTip == tip && currentMainTip == tip,
             "retention fixture branch identity or equality changed")
-        let original = try RepositoryHandle.testingBoundCandidate(path: repository, id: "fixture-owner/ready",
-            displayName: "Fixture", rawOrigin: "https://github.com/fixture-owner/ready.git")
-        let candidate = RepositoryCandidate(id: original.id, displayName: original.displayName, path: original.path,
-            rawOrigin: original.rawOrigin, rootIdentity: original.rootIdentity, gitDirectoryIdentity: original.gitDirectoryIdentity,
-            commonDirectoryIdentity: original.commonDirectoryIdentity, configIdentity: original.configIdentity,
-            policyAdmissionSHA256: policyDigest)
         guard let common = candidate.commonDirectoryIdentity else { throw Failure.assertion("fixture common identity") }
         let branch = try Branch(cloneID: LocalClone.id(for: common), fullRef: "refs/heads/recovery-fixture", tipOID: tip,
             claimingWorktreeIDs: [],
@@ -567,7 +579,148 @@ public enum DiscoveryCallerSelfTestRunner {
             authority: CanonicalAuthorityState(status: .usable, record: RepositoryAuthorityRecord(clone: clone), explanation: "Fixture authority."),
             clones: [clone], relation: DefaultBranchRelation(kind: .equal, aheadCount: 0, behindCount: 0),
             fastForward: nil, fastForwardRefusal: nil)
-        return (selection, RepositoryInventory(cards: [card], onboardingProposals: [], authorityFileIdentity: nil))
+        return (selection, RepositoryInventory(cards: [card], onboardingProposals: [], authorityFileIdentity: nil), scope)
+    }
+
+    private static func runRemovalAdmissionCorrections(onPass: (String) -> Void) throws {
+        for test in ["positive", "missing-policy", "malformed-policy", "stale-policy", "unverifiable-publisher",
+                     "changed-origin", "changed-presentation", "changed-digest", "changed-identity",
+                     "topology-added", "graph-metadata", "read-context", "closed-context", "pending-context",
+                     "wrong-account", "cancelled-context", "escaped-service"] {
+            let id = "REMOVAL-ADMISSION-" + test
+            try RuntimeFixtureSession.withCase(id) {
+                let fixture = try Fixture(systemConfiguration: true, retention: test != "read-context")
+                var failure: Error?
+                let policyPath = fixture.home + "/" + fixture.snapshot.binding.policy.relativePath
+                let adapterPath = fixture.home + "/.shadow-sync-fixture/PolicyAdapter.py"
+                let policyBytes = try Data(contentsOf: URL(fileURLWithPath: policyPath))
+                var adapterInfo = stat()
+                try require(lstat(adapterPath, &adapterInfo) == 0, "removal fixture adapter identity")
+                do {
+                    let selected = try retentionSelection(root: fixture.root, context: fixture.context)
+                    let candidate = selected.0.candidate.clone.sourceSnapshot
+                    let contextID = fixture.context.id
+                    func gate(_ service: RepositoryDiscoveryPolicy, _ value: RepositoryCandidate) throws {
+                        try RepositoryDiscovery.validateRemovalRuntimeEligibility(value,
+                            repositoryID: "fixture-owner/ready", policy: service)
+                    }
+                    // Every negative begins with the exact real fixture admitted
+                    // under the current catalog; setup failure cannot pass it.
+                    let baseline = try fixture.session().binder(revalidatePhase: fixture.context.phaseAdmissionCheck())
+                    try baseline.withDiscoveryPolicy(selected.2, cancellation: CancellationToken()) { try gate($0, candidate) }
+                    let token = CancellationToken()
+                    var expectedAccount = fixture.account
+                    if test == "wrong-account" { expectedAccount = try EffectiveAccount.isolated(homeDirectory: fixture.root) }
+                    if test == "closed-context" { fixture.context.close() }
+                    if test == "pending-context" { fixture.context.recordCleanupPending(); token.cancel() }
+                    if test == "cancelled-context" { token.cancel() }
+                    var entered = false, accesses = 0, escaped: RepositoryDiscoveryPolicy?
+                    var refusal: Error?
+                    do {
+                        try fixture.context.withRemovalDiscoveryPolicy(selected.2, account: expectedAccount,
+                            cancellation: token) { service in
+                            entered = true
+                            service.testingBeforeAccess = { _ in accesses += 1 }
+                            escaped = service
+                            switch test {
+                            case "missing-policy": try FileManager.default.removeItem(atPath: policyPath)
+                            case "malformed-policy": try write(policyPath, Data("{}".utf8))
+                            case "stale-policy": try write(policyPath, policyBytes + Data("\n".utf8))
+                            case "unverifiable-publisher":
+                                try require(chmod(adapterPath, 0o666) == 0, "fixture publisher mode mutation")
+                            case "changed-identity":
+                                try FileManager.default.moveItem(atPath: fixture.repository, toPath: fixture.repository + "-previous")
+                                try FileManager.default.createDirectory(atPath: fixture.repository, withIntermediateDirectories: false,
+                                    attributes: [.posixPermissions: 0o700])
+                            case "topology-added":
+                                let result = try ClosedProcessRunner().run(command: ClosedProcessCommand(
+                                    executable: "/Library/Developer/CommandLineTools/usr/bin/git",
+                                    arguments: ["-C", fixture.repository, "worktree", "add", "--quiet", "--detach",
+                                                fixture.home + "/workspace/products/linked", "HEAD"]),
+                                    environment: ClosedProcessRunner.environment(account: fixture.account),
+                                    workingDirectoryDescriptor: fixture.directory, account: fixture.account, timeout: 10,
+                                    cancellation: CancellationToken())
+                                try require(result.succeeded, "removal fixture linked worktree creation failed")
+                            case "graph-metadata":
+                                try write(fixture.repository + "/.git/objects/info/alternates", Data("/fixture-unused\n".utf8))
+                            default: break
+                            }
+                            let value: RepositoryCandidate
+                            if ["changed-origin", "changed-presentation", "changed-digest"].contains(test) {
+                                value = RepositoryCandidate(id: candidate.id, displayName: candidate.displayName,
+                                    path: candidate.path,
+                                    rawOrigin: test == "changed-origin" ? "https://github.com/fixture-owner/other.git" : candidate.rawOrigin,
+                                    presentationLocation: test == "changed-presentation" ? "~/workspace/products/other" : candidate.presentationLocation,
+                                    rootIdentity: candidate.rootIdentity, gitDirectoryIdentity: candidate.gitDirectoryIdentity,
+                                    commonDirectoryIdentity: candidate.commonDirectoryIdentity, configIdentity: candidate.configIdentity,
+                                    policyAdmissionSHA256: test == "changed-digest" ? String(repeating: "0", count: 64) : candidate.policyAdmissionSHA256,
+                                    hookAdmissionSHA256: candidate.hookAdmissionSHA256,
+                                    linkedWorktreePaths: candidate.linkedWorktreePaths, linkedWorktrees: candidate.linkedWorktrees)
+                            } else { value = candidate }
+                            try gate(service, value)
+                        }
+                    } catch { refusal = error }
+                    if ["positive", "escaped-service"].contains(test) {
+                        try require(refusal == nil && entered && accesses > 0,
+                            "current removal fixture did not pass actual metadata gate")
+                        try fixture.context.validatePhaseAdmission()
+                        try require(fixture.context.id == contextID && !fixture.context.isClosed,
+                            "metadata borrow changed or retired original mutation context")
+                        guard let escaped else { throw Failure.assertion("removal service missing") }
+                        var escapedRefusal = false
+                        do { try escaped.validate() } catch { escapedRefusal = true }
+                        try require(escapedRefusal, "removal service survived callback")
+                    } else {
+                        try require(refusal != nil, "removal admission negative unexpectedly passed")
+                        if test == "topology-added" || test == "graph-metadata" {
+                            guard case GitSafetyError.unsafeRepository(let reason)? = refusal else {
+                                throw Failure.assertion("removal topology/graph fixture failed before its intended gate")
+                            }
+                            try require(reason == (test == "topology-added"
+                                ? "repository worktree topology changed" : "removal graph metadata changed"),
+                                "removal topology/graph fixture hit an unrelated refusal")
+                        }
+                        if test == "changed-identity" {
+                            guard case SelectedRepositoryScopeError.changed? = refusal else {
+                                throw Failure.assertion("removal identity fixture hit an unrelated refusal")
+                            }
+                        }
+                        if ["missing-policy", "malformed-policy", "stale-policy", "unverifiable-publisher",
+                            "changed-origin", "changed-presentation", "changed-digest", "read-context",
+                            "closed-context", "pending-context", "wrong-account", "cancelled-context"].contains(test) {
+                            try require(accesses == 0, "removal refusal crossed candidate access")
+                        }
+                        if ["read-context", "closed-context", "pending-context", "wrong-account", "cancelled-context"].contains(test) {
+                            try require(!entered, "ineligible command context entered metadata callback")
+                        }
+                        if test == "pending-context" {
+                            guard case SystemGitConfigurationError.cleanupPending? = refusal else {
+                                throw Failure.assertion("removal pending cause lost to cancellation")
+                            }
+                        }
+                        if ["missing-policy", "malformed-policy", "stale-policy", "unverifiable-publisher"].contains(test) {
+                            // The same invalid resources also refuse a fresh
+                            // caller factory before catalog/candidate inspection.
+                            var factoryEntered = false, factoryRefused = false
+                            do {
+                                try fixture.context.withRemovalDiscoveryPolicy(selected.2, account: fixture.account,
+                                    cancellation: CancellationToken()) { _ in factoryEntered = true }
+                            } catch { factoryRefused = true }
+                            try require(factoryRefused && !factoryEntered, "invalid policy entered fresh removal factory")
+                        }
+                    }
+                } catch { failure = error }
+                // Restore only this fixture's original resources for its normal
+                // strict custody cleanup; no authority is recovered from them.
+                do {
+                    try write(policyPath, policyBytes)
+                    try require(chmod(adapterPath, adapterInfo.st_mode & 0o777) == 0, "fixture publisher mode restore")
+                    try fixture.remove(expectDiscovery: false)
+                } catch { throw Failure.assertion("removal=\(String(describing: failure)); cleanup=\(error)") }
+                if let failure { throw failure }
+            }
+            onPass(id)
+        }
     }
 
     private static func runRetentionCallerCorrections(onPass: (String) -> Void) throws {
@@ -580,7 +733,7 @@ public enum DiscoveryCallerSelfTestRunner {
                 let observed = RetentionCallerObservations()
                 var failure: Error?
                 do {
-                    let selected = try retentionSelection(root: fixture.root, policyDigest: fixture.snapshot.admissionSHA256)
+                    let selected = try retentionSelection(root: fixture.root, context: fixture.context)
                     var hooks = RetentionArtifactStore.TestingCustodyHooks()
                     let barrier = CustodyLeaseTestingBarrier()
                     defer { barrier.release() }
@@ -622,7 +775,7 @@ public enum DiscoveryCallerSelfTestRunner {
                         configuration.testingRetentionCustodyHooks = hooks
                         let plan = try Body3BatchPlanner.make(run: RunIdentity.make(), operations: [], removals: [selected.0])
                         let coordinator = RunCoordinator(configuration: configuration, account: fixture.account)
-                        let report = try coordinator.runBody3(plan: plan, selectedScope: .testing(plan: plan),
+                        let report = try coordinator.runBody3(plan: plan, selectedScope: selected.2,
                             cancellation: CancellationToken(), inventoryProvider: { _ in selected.1 }) { event in
                                 if let record = event.record { observed.event(record) }
                                 event.confirmation?.cancel()
@@ -708,9 +861,12 @@ public enum DiscoveryCallerSelfTestRunner {
             _ = try TestIsolation.validateRoot(root)
             let location = try StateLocation.isolated(root: root)
             let account = try EffectiveAccount.isolated(homeDirectory: root + "/home")
-            let publisher = try PublisherPolicyResources.testingDiscovery(account: account)
-            let policy = try HostPolicySnapshot.load(account: account, contract: QualifiedAWAContract.decode(publisher.contract))
-            let selected = try retentionSelection(root: root, policyDigest: policy.admissionSHA256)
+            let selectionContext = try CommandCustodyContext.testing(
+                leases: CustodyAuthorityLeaseSet.retainReadLeases(at: location),
+                location: location, root: root, discoveryFixture: true)
+            let selected = try CommandCustodyContext.withPhase(selectionContext) { context in
+                try retentionSelection(root: root, context: context)
+            }
             var hooks = RetentionArtifactStore.TestingCustodyHooks()
             hooks.beforePrepare = { authority in
                 if authority.arguments.contains("bundle") && authority.arguments.contains("create") {
@@ -755,7 +911,7 @@ public enum DiscoveryCallerSelfTestRunner {
                 configuration.testingRetentionCustodyHooks = hooks
                 let plan = try Body3BatchPlanner.make(run: RunIdentity.make(), operations: [], removals: [selected.0])
                 _ = try RunCoordinator(configuration: configuration, account: account).runBody3(plan: plan,
-                    selectedScope: .testing(plan: plan), cancellation: CancellationToken(), inventoryProvider: { _ in selected.1 }) { $0.confirmation?.cancel() }
+                    selectedScope: selected.2, cancellation: CancellationToken(), inventoryProvider: { _ in selected.1 }) { $0.confirmation?.cancel() }
             } else {
                 let authority = try RunAuthority.acquireRun(at: location)
                 defer { authority.release() }
@@ -1183,10 +1339,34 @@ public enum DiscoveryCallerSelfTestRunner {
         let nonempty = test.hasPrefix("nonempty") || test == "immutable-name-refusal"
         let effective = "https://github.com/fixture-owner/ready"
         let user = "[user]\nname = Fixture User\n[url \"\(effective)\"]\ninsteadOf = https://github.com/fixture-owner/ready.git\n[core]\nsshCommand = /usr/bin/false\n"
-        let fixture = try Fixture(systemConfiguration: nonempty, userConfiguration: nonempty ? user : nil)
         let observations = CorrectionObservations(), token = CancellationToken()
+        var diagnosticStage = DiscoveryFixtureDiagnostic.RepositoryReadStage.fixture
+        var diagnosticEmitted = false
+        func recordFailure(_ error: Error) {
+            guard test == "nonempty-parallel-config", DiscoveryFixtureDiagnostic.isEnabled,
+                  !diagnosticEmitted else { return }
+            diagnosticEmitted = true
+            let family: DiscoveryFixtureDiagnostic.RepositoryReadErrorFamily
+            switch error {
+            case is RepositoryGitCommandError: family = .repositoryCommand
+            case is SelectedRepositoryScopeError: family = .selectedScope
+            case is SystemGitConfigurationError: family = .gitConfiguration
+            case is CustodyResourceError: family = .resource
+            case is PolicyAuthorityFileError: family = .policyAuthority
+            case is GitSafetyError: family = .gitSafety
+            case is Failure: family = .fixture
+            default: family = .other
+            }
+            DiscoveryFixtureDiagnostic.recordRepositoryReadFailure(stage: diagnosticStage,
+                family: family, outcomes: observations.outcomes.count,
+                admitted: observations.admitted.count, retired: observations.retired.count)
+        }
+        let fixture: Fixture
+        do { fixture = try Fixture(systemConfiguration: nonempty, userConfiguration: nonempty ? user : nil) }
+        catch { recordFailure(error); throw error }
         var failure: Error?
         do {
+            diagnosticStage = .resources
             let prepared = try repositoryFixtureResources(root: fixture.root, context: fixture.context,
                 systemPath: nonempty ? fixture.home + "/.shadow-sync-fixture/fixture-system-config" : nil,
                 effectiveURL: nonempty ? effective : "https://github.com/fixture-owner/ready.git")
@@ -1225,6 +1405,7 @@ public enum DiscoveryCallerSelfTestRunner {
                 try require(frozen.snapshot.frozenSize > 0, "nonempty fixture froze no bytes")
                 let args = ["--no-replace-objects", "--no-lazy-fetch", "remote", "get-url", "--all", "origin"]
                 if test == "nonempty-parallel-config" {
+                    diagnosticStage = .parallelCommands
                     let group = DispatchGroup()
                     for _ in 0..<2 {
                         group.enter()
@@ -1236,6 +1417,7 @@ public enum DiscoveryCallerSelfTestRunner {
                         }
                     }
                     group.wait() // Join every caller; each registry wait has its original absolute budget.
+                    diagnosticStage = .parallelResults
                     try require(observations.outcomes.count == 2, "parallel command missing")
                     for outcome in observations.outcomes {
                         let value = try outcome.get()
@@ -1326,14 +1508,21 @@ public enum DiscoveryCallerSelfTestRunner {
                 try require(!RetainedCleanupRegistry.shared.hasRetainedWork && observations.admitted.count == 1,
                     "observer refusal lost retirement")
             }
+            diagnosticStage = .drain
             try drainCorrection(observations)
+            diagnosticStage = .onceOnly
             try observations.requireOnceOnly()
             if test != "finished-resource-retirement" {
+                diagnosticStage = .progress
                 try require(progress.count == observations.admitted.count, "inventory counted retirement or missed admission")
             }
-        } catch { failure = error }
-        try drainCorrection(observations)
-        try fixture.remove(expectDiscovery: false, allowUnsubmitted: true)
+        } catch { recordFailure(error); failure = error }
+        diagnosticStage = .cleanupDrain
+        do { try drainCorrection(observations) }
+        catch { recordFailure(error); throw error }
+        diagnosticStage = .fixtureCleanup
+        do { try fixture.remove(expectDiscovery: false, allowUnsubmitted: true) }
+        catch { recordFailure(error); throw error }
         if let failure { throw failure }
     }
 
