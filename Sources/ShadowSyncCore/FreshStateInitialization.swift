@@ -90,7 +90,23 @@ final class FreshStateInitialization {
     }
     static func production() throws -> FreshStateInitialization {
         let publisher = try LifecyclePublisher.current()
-        return try Self(location: StateLocation.production(), release: publisher.releaseSHA256, publisher: publisher)
+        return try production(publisher: publisher, source: publisher.installationIdentity())
+    }
+    /// Fixed production location from the same authenticated running source as
+    /// parent preparation. No testing executable can enter this factory.
+    static func production(publisher: LifecyclePublisher,
+                           source: LifecyclePublisher.InstallationIdentity) throws -> FreshStateInitialization {
+        #if SHADOW_SYNC_TESTING
+        throw CustodyRecordError.fenced
+        #else
+        try publisher.revalidate(); try source.revalidate()
+        let location = try StateLocation.production()
+        guard try publisher.installationIdentity() == source,
+              location.anchorPath == publisher.account.homeDirectory,
+              location.uid == publisher.account.uid,
+              source.sourceReleaseDigest == publisher.releaseSHA256 else { throw CustodyRecordError.fenced }
+        return try Self(location: location, release: publisher.releaseSHA256, publisher: publisher)
+        #endif
     }
     private static func node(_ fd: Int32, uid: uid_t, directory: Bool) throws -> Node {
         var s = stat()

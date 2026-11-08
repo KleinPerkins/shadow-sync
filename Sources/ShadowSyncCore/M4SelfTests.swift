@@ -890,10 +890,14 @@ public enum M4SelfTestRunner {
             guard let base = raw.baseAddress else { return }
             var offset = 0
             while offset < raw.count {
+                // Acknowledge the frame boundary before offering the oversized
+                // tail, so only positive writes establish rejection progress.
+                let writeEnd = kind == .oversized && offset < HostControlIO.maximumFrameBytes
+                    ? min(raw.count, HostControlIO.maximumFrameBytes) : raw.count
                 let count = Darwin.write(
                     descriptor,
                     base.advanced(by: offset),
-                    raw.count - offset
+                    writeEnd - offset
                 )
                 if count < 0, errno == EINTR { continue }
                 if count <= 0 {

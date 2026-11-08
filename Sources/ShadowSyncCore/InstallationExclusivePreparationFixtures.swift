@@ -34,7 +34,7 @@ enum InstallationExclusivePreparationFixtures {
         }
         try H.check(fsync(fd) == 0, "exclusive fixture sync")
     }
-    private static func candidate(_ root: String) throws -> InstallationCandidate {
+    static func candidate(_ root: String) throws -> InstallationCandidate {
         let fixed = try CustodyHelperExecutable.testingInstallationCandidate(), r = fixed.release
         for name in ["candidate", "candidate/ShadowSync.app", "candidate/ShadowSync.app/Contents", "candidate/ShadowSync.app/Contents/MacOS"] {
             try H.check(mkdir(root + "/" + name, 0o700) == 0, "exclusive candidate directory")

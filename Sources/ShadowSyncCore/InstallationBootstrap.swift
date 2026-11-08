@@ -1,0 +1,298 @@
+import Foundation
+
+/// Retain this coordinator-owned object BEFORE calling reserve. It connects the
+/// existing fresh-install owners. reserve stops at the completed reserve action;
+/// prepareExclusive continues that same journal once through promotePlist.
+/// No owner accessor, staged transfer, release or recovery entry is exposed.
+/// A failed attempt retains its actual owners for the coordinator's lifetime;
+/// durable initialization/control records, not this lifetime, fence process loss.
+final class InstallationBootstrap {
+    enum Stage: String, CaseIterable {
+        case authenticated, parentsRetained, parentsPrepared, initializerRetained
+        case statePublished, authorityRetained, ownerConsumed, lifecycleRetained
+        case journalRetained, reserveIntent, reserveComplete
+    }
+    /// Diagnostic observations only. Neither progress nor a successful return
+    /// grants authority to reconstruct an owner or to continue another journal.
+    struct Observation: Equatable {
+        let stage: Stage
+        let attempted: Bool
+        let failedClosed: Bool
+    }
+    enum ExclusivePreparation: String { case notAttempted, running, complete, failed }
+    private var exclusivePreparation: ExclusivePreparation = .notAttempted
+    private var invocationDeadline: MonotonicDeadline?
+    private let publisher: LifecyclePublisher?
+    private let source: LifecyclePublisher.InstallationIdentity?
+    private let mutex = NSLock()
+    private var attempted = false
+    private var failedClosed = false
+    private var stage: Stage = .authenticated
+    private var parents: InstallationParentPreparation?
+    private var initializer: FreshStateInitialization?
+    private var original: RunAuthority?
+    private var owner: InstallationTransactionOwner?
+    private var lifecycle: InstallationLifecycle?
+    private var journal: CustodyCatalogStore.InstallationJournalSession?
+    #if SHADOW_SYNC_TESTING
+    private var fixtureRoot: String?
+    private var cut: Stage?
+    private var mutation: ((Stage) throws -> Void)?
+    private var parentCut: InstallationParentPreparation.Cut?
+    private var initializationFault: FreshStateInitialization.Fault?
+    private var journalCut: CustodyCatalogStore.InstallationJournalSession.Cut?
+    private var captureFault: CustodyCatalogStore.Fault?
+    private var cutCompletion = false
+    private var exclusiveCandidate: InstallationCandidate?
+    private var exclusiveRegistry: RetainedCleanupRegistry?
+    private var exclusiveDiagnostic = "installation-absent"
+    private var exclusiveFault: @Sendable (String) throws -> Void = { _ in }
+    private var exclusiveAfterClaim: (() throws -> Void)?
+    #endif
+
+    private init(publisher: LifecyclePublisher?, source: LifecyclePublisher.InstallationIdentity?) {
+        self.publisher = publisher; self.source = source
+    }
+    /// This factory performs authentication only. It has no account-directory
+    /// effects and cannot discard a partially effective bootstrap on a throw.
+    static func production() throws -> InstallationBootstrap {
+        #if SHADOW_SYNC_TESTING
+        throw CustodyRecordError.fenced
+        #else
+        let publisher = try LifecyclePublisher.current()
+        let source = try publisher.installationIdentity()
+        try source.revalidate(); try publisher.revalidate()
+        return Self(publisher: publisher, source: source)
+        #endif
+    }
+    func observation() -> Observation {
+        mutex.lock(); defer { mutex.unlock() }
+        return Observation(stage: stage, attempted: attempted, failedClosed: failedClosed)
+    }
+    private func authenticate() throws {
+        if let publisher, let source {
+            try publisher.revalidate(); try source.revalidate()
+            guard try publisher.installationIdentity() == source else { throw CustodyRecordError.fenced }
+        } else {
+            #if SHADOW_SYNC_TESTING
+            guard let fixtureRoot, try TestIsolation.validateRoot(fixtureRoot) == fixtureRoot else {
+                throw CustodyRecordError.fenced
+            }
+            #else
+            throw CustodyRecordError.fenced
+            #endif
+        }
+    }
+    private func boundary(_ deadline: MonotonicDeadline) throws {
+        guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+        try authenticate()
+        guard let parents else { throw CustodyRecordError.fenced }
+        try parents.revalidate()
+        guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+    }
+    private func advance(_ value: Stage) throws {
+        stage = value
+        #if SHADOW_SYNC_TESTING
+        try mutation?(value)
+        if cut == value { throw CustodyRecordError.injectedFailure }
+        #endif
+    }
+    /// Exactly one attempt and one absolute caller deadline. Each real owner is
+    /// stored before the next fallible step. Catch never releases, replays,
+    /// fabricates recovery/cleanup evidence, or replaces the durable journal.
+    func reserve(deadline: MonotonicDeadline) throws {
+        guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+        guard !attempted, !failedClosed else { throw CustodyRecordError.fenced }
+        attempted = true
+        invocationDeadline = deadline
+        do {
+            try authenticate()
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            try advance(.authenticated)
+            if let publisher, let source {
+                parents = try .production(publisher: publisher, source: source)
+            } else {
+                #if SHADOW_SYNC_TESTING
+                guard let fixtureRoot else { throw CustodyRecordError.fenced }
+                parents = try .testing(root: fixtureRoot)
+                #else
+                throw CustodyRecordError.fenced
+                #endif
+            }
+            try advance(.parentsRetained)
+            #if SHADOW_SYNC_TESTING
+            parents!.testingCut(parentCut)
+            #endif
+            try authenticate()
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            try parents!.prepare()
+            try advance(.parentsPrepared)
+            try boundary(deadline)
+            if let publisher, let source {
+                initializer = try .production(publisher: publisher, source: source)
+            } else {
+                #if SHADOW_SYNC_TESTING
+                guard let fixtureRoot else { throw CustodyRecordError.fenced }
+                initializer = try .testing(root: fixtureRoot)
+                #else
+                throw CustodyRecordError.fenced
+                #endif
+            }
+            try advance(.initializerRetained)
+            #if SHADOW_SYNC_TESTING
+            if let initializationFault { initializer!.testingFault(initializationFault) }
+            #endif
+            try boundary(deadline)
+            _ = try initializer!.publish()
+            try advance(.statePublished)
+            try boundary(deadline)
+            original = try initializer!.takeInstallationAuthority()
+            try advance(.authorityRetained)
+            try boundary(deadline)
+            if let publisher {
+                owner = try InstallationTransactionOwner.consume(original!, publisher: publisher)
+            } else {
+                #if SHADOW_SYNC_TESTING
+                guard let fixtureRoot else { throw CustodyRecordError.fenced }
+                owner = try InstallationTransactionOwner.testingConsume(original!, root: fixtureRoot)
+                #else
+                throw CustodyRecordError.fenced
+                #endif
+            }
+            try advance(.ownerConsumed)
+            try boundary(deadline)
+            if publisher != nil {
+                let paths = try InstallationPaths.production()
+                guard paths.home == publisher!.account.homeDirectory,
+                      paths.state.uid == publisher!.account.uid else { throw CustodyRecordError.fenced }
+                lifecycle = InstallationLifecycle(paths: paths,
+                    launchAgent: SystemLaunchAgentController(), host: SystemInstalledHostController())
+            } else {
+                #if SHADOW_SYNC_TESTING
+                guard let fixtureRoot else { throw CustodyRecordError.fenced }
+                if let exclusiveCandidate {
+                    let binding = try InstallationBindingTestingSource(root: fixtureRoot, candidate: exclusiveCandidate,
+                        process: ProcessIdentity.capture(processID: ProcessInfo.processInfo.processIdentifier, generation: RunIdentity.make()),
+                        boot: CustodyBootIdentity.current())
+                    try owner!.testingSetBindingSource(binding)
+                } else {
+                    try owner!.testingSetBindingSource(InstallationOwnershipFixtures.bindingSource(fixtureRoot, original!))
+                }
+                lifecycle = try InstallationLifecycle(paths: .isolated(root: fixtureRoot),
+                    launchAgent: InstallationSlotCaptureFixtures.NoCommands(), host: InstallationSlotCaptureFixtures.NoCommands(),
+                    fault: exclusiveFault)
+                if let exclusiveRegistry {
+                    lifecycle!.testingExclusiveRoot = fixtureRoot
+                    lifecycle!.testingExclusiveRegistry = exclusiveRegistry
+                    lifecycle!.testingExclusiveDiagnostic = exclusiveDiagnostic
+                }
+                #else
+                throw CustodyRecordError.fenced
+                #endif
+            }
+            #if SHADOW_SYNC_TESTING
+            lifecycle!.testingSlotCaptureStoreFault = captureFault
+            #endif
+            try advance(.lifecycleRetained)
+            try boundary(deadline)
+            journal = try owner!.installationJournal(intent: .install, lifecycle: lifecycle!)
+            try advance(.journalRetained)
+            try boundary(deadline)
+            #if SHADOW_SYNC_TESTING
+            if !cutCompletion { journal!.testingCut(journalCut) }
+            #endif
+            _ = try journal!.begin(deadline: deadline)
+            try advance(.reserveIntent)
+            try boundary(deadline)
+            #if SHADOW_SYNC_TESTING
+            if cutCompletion { journal!.testingCut(journalCut) }
+            #endif
+            _ = try journal!.completeReservation(deadline: deadline)
+            try advance(.reserveComplete)
+            try boundary(deadline)
+        } catch {
+            failedClosed = true
+            throw error
+        }
+    }
+
+    /// An observation is not a continuation capability. Only this retained
+    /// instance can claim its original journal; no caller timeout can replace
+    /// the absolute deadline captured by reserve.
+    func exclusiveObservation() -> ExclusivePreparation {
+        mutex.lock(); defer { mutex.unlock() }
+        return exclusivePreparation
+    }
+    func prepareExclusive() throws {
+        guard mutex.try() else { throw CustodyRecordError.busy }
+        guard attempted, !failedClosed, stage == .reserveComplete,
+              exclusivePreparation == .notAttempted,
+              let deadline = invocationDeadline, let journal else {
+            mutex.unlock(); throw CustodyRecordError.fenced
+        }
+        exclusivePreparation = .running
+        mutex.unlock()
+        // No bootstrap mutex spans authentication, commands or retirement. All
+        // original owners remain fields of this live instance on both outcomes.
+        do {
+            try boundary(deadline)
+            #if SHADOW_SYNC_TESTING
+            try exclusiveAfterClaim?()
+            #endif
+            try boundary(deadline)
+            _ = try journal.prepareExclusive(deadline: deadline)
+            try boundary(deadline)
+            mutex.lock(); exclusivePreparation = .complete; mutex.unlock()
+        } catch {
+            mutex.lock(); failedClosed = true; exclusivePreparation = .failed; mutex.unlock()
+            throw error
+        }
+    }
+
+    #if SHADOW_SYNC_TESTING
+    /// Configured before reservation only, on an existing owned fixture root.
+    /// The root retains both this bootstrap and the actual command registry.
+    func testingConfigureExclusive(candidate: InstallationCandidate, registry: RetainedCleanupRegistry,
+        diagnostic: String = "installation-absent", fault: @escaping @Sendable (String) throws -> Void = { _ in },
+        afterClaim: (() throws -> Void)? = nil) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        guard !attempted, let fixtureRoot else { throw CustodyRecordError.fenced }
+        _ = try RuntimeFixtureSession.installationRoot(fixtureRoot)
+        exclusiveCandidate = candidate; exclusiveRegistry = registry
+        exclusiveDiagnostic = diagnostic; exclusiveFault = fault; exclusiveAfterClaim = afterClaim
+    }
+    static func testing(root: String) throws -> InstallationBootstrap {
+        let root = try TestIsolation.validateRoot(root)
+        let value = Self(publisher: nil, source: nil); value.fixtureRoot = root
+        return value
+    }
+    func testingConfigure(cut: Stage? = nil, parentCut: InstallationParentPreparation.Cut? = nil,
+                          initializationFault: FreshStateInitialization.Fault? = nil,
+                          journalCut: CustodyCatalogStore.InstallationJournalSession.Cut? = nil,
+                          captureFault: CustodyCatalogStore.Fault? = nil, cutCompletion: Bool = false,
+                          mutation: ((Stage) throws -> Void)? = nil) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        guard !attempted else { throw CustodyRecordError.fenced }
+        self.cut = cut; self.parentCut = parentCut; self.initializationFault = initializationFault
+        self.journalCut = journalCut; self.mutation = mutation
+        self.captureFault = captureFault; self.cutCompletion = cutCompletion
+    }
+    /// Presence observations never expose a descriptor, lease or journal.
+    func testingRetained() -> [Bool] {
+        mutex.lock(); defer { mutex.unlock() }
+        return [parents != nil, initializer != nil, original != nil,
+                owner != nil, lifecycle != nil, journal != nil]
+    }
+    func testingOneUseRefusals() throws -> Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        guard let fixtureRoot, let initializer, let original, let owner, let lifecycle, let journal else {
+            throw CustodyRecordError.fenced
+        }
+        do { _ = try initializer.takeInstallationAuthority(); return false } catch {}
+        do { _ = try InstallationTransactionOwner.testingConsume(original, root: fixtureRoot); return false } catch {}
+        do { _ = try owner.installationJournal(intent: .install, lifecycle: lifecycle); return false } catch {}
+        do { _ = try journal.begin(deadline: .init(seconds: 0.750)); return false } catch {}
+        return true
+    }
+    #endif
+}

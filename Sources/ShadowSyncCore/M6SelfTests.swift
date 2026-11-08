@@ -43,6 +43,23 @@ public enum M6SelfTestRunner {
         try run("m6-legacy-state-observation-source-bounds") { try LegacyStateDocumentFixtures.sourceBounds() }
         try run("m6-legacy-state-observation-opaque-refusals") { try LegacyStateDocumentFixtures.opaqueRefusals() }
 
+        try run("m6-installation-bootstrap-reservation") { try InstallationBootstrapFixtures.reservation() }
+        try run("m6-installation-bootstrap-one-use") { try InstallationBootstrapFixtures.oneUse() }
+        try run("m6-installation-bootstrap-owner-cuts") { try InstallationBootstrapFixtures.ownerCuts() }
+        try run("m6-installation-bootstrap-parent-failure") { try InstallationBootstrapFixtures.parentFailure() }
+        try run("m6-installation-bootstrap-publication-failure") { try InstallationBootstrapFixtures.publicationFailure() }
+        try run("m6-installation-bootstrap-journal-failure") { try InstallationBootstrapFixtures.journalFailure() }
+        try run("m6-installation-bootstrap-substitution") { try InstallationBootstrapFixtures.substitution() }
+        try run("m6-installation-bootstrap-unsafe-expired") { try InstallationBootstrapFixtures.unsafeAndExpired() }
+        try run("m6-installation-bootstrap-production-refusal") { try InstallationBootstrapFixtures.productionRefusal() }
+        try run("m6-installation-bootstrap-exclusive-before-reserve") { try InstallationBootstrapFixtures.exclusiveBeforeReserve() }
+        try run("m6-installation-bootstrap-exclusive-ordered") { try InstallationBootstrapFixtures.exclusiveOrdered() }
+        try run("m6-installation-bootstrap-exclusive-original-deadline") { try InstallationBootstrapFixtures.exclusiveOriginalDeadline() }
+        try run("m6-installation-bootstrap-exclusive-concurrent-replay") { try InstallationBootstrapFixtures.exclusiveConcurrentReplay() }
+        try run("m6-installation-bootstrap-exclusive-partial-failures") { try InstallationBootstrapFixtures.exclusivePartialFailures() }
+        try run("m6-installation-bootstrap-exclusive-substitution") { try InstallationBootstrapFixtures.exclusiveSubstitution() }
+        try run("m6-installation-bootstrap-exclusive-diagnostic-failure") { try InstallationBootstrapFixtures.exclusiveDiagnosticFailure() }
+
         try run("m6-fixed-parents-absent") { try InstallationParentPreparationFixtures.absent() }
         try run("m6-fixed-parents-present") { try InstallationParentPreparationFixtures.present() }
         try run("m6-fixed-parents-partial") { try InstallationParentPreparationFixtures.partial() }

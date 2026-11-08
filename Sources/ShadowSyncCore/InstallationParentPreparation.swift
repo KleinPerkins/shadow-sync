@@ -88,6 +88,18 @@ final class InstallationParentPreparation {
         #else
         let publisher = try LifecyclePublisher.current()
         let source = try publisher.installationIdentity()
+        return try production(publisher: publisher, source: source)
+        #endif
+    }
+    /// Share the bootstrap's exact authenticated source, without accepting an
+    /// account, path or caller-supplied candidate identity.
+    static func production(publisher: LifecyclePublisher,
+                           source: LifecyclePublisher.InstallationIdentity) throws -> InstallationParentPreparation {
+        #if SHADOW_SYNC_TESTING
+        throw CustodyRecordError.fenced
+        #else
+        try publisher.revalidate(); try source.revalidate()
+        guard try publisher.installationIdentity() == source else { throw CustodyRecordError.fenced }
         return try Self(publisher: publisher, source: source, account: publisher.account)
         #endif
     }

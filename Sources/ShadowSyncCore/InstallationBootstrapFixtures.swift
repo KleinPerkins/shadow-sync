@@ -1,0 +1,435 @@
+#if SHADOW_SYNC_TESTING
+import Darwin
+import Foundation
+
+/// Real isolated parent/initializer/owner/journal mechanics, with the existing
+/// synthetic binding source only. These cases cannot qualify a signed source.
+/// The existing isolated state layout is root/state, not production's home/.local/state.
+/// Keeping that contract avoids changing owner/path predicates for this fixture.
+enum InstallationBootstrapFixtures {
+    typealias B = InstallationBootstrap
+    typealias H = InstallationParentPreparationFixtures
+    private static func fixture(_ body: (String, StateLocation, B) throws -> Void) throws {
+        try H.fixture { root, _ in
+            try H.check(mkdir(root + "/state", 0o700) == 0, "bootstrap isolated state parent")
+            let bootstrap = try B.testing(root: root)
+            try body(root, .isolated(root: root), bootstrap)
+            // Synchronous only; no queue, child, socket, command or native peer.
+            // Keep the owner through assertions, before identity-bound fixture cleanup.
+            withExtendedLifetime(bootstrap) {}
+        }
+    }
+    private static func stored(_ location: StateLocation) throws -> InstallationControlRecord {
+        try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath:
+            location.path + "/custody/installation.json")))
+    }
+    private static func assertGuardHeld(_ root: String) throws {
+        let fd = open(root + "/state/.shadow-sync-initialization.lock", O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        try H.check(fd >= 0, "bootstrap guard contender"); defer { close(fd) }
+        let acquired = flock(fd, LOCK_EX | LOCK_NB), code = errno
+        try H.check(acquired == -1 && code == EWOULDBLOCK, "bootstrap lost actual initializer guard")
+    }
+    private static func unchangedReplay(_ root: String, _ bootstrap: B) throws {
+        let before = try H.snapshot(root), observation = bootstrap.observation()
+        try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 0.750)) }
+        try H.check(bootstrap.observation() == observation && H.snapshot(root) == before,
+                    "bootstrap replay changed retained failure or disk")
+    }
+    static func reservation() throws {
+        try fixture { root, location, bootstrap in
+            var reached: [B.Stage] = []
+            try bootstrap.testingConfigure(mutation: { reached.append($0) })
+            try bootstrap.reserve(deadline: .init(seconds: 0.750))
+            try H.check(reached == B.Stage.allCases, "bootstrap actual owner ordering")
+            try H.check(bootstrap.observation() == .init(stage: .reserveComplete, attempted: true, failedClosed: false),
+                        "bootstrap reservation observation")
+            try H.check(bootstrap.testingRetained() == [true, true, true, true, true, true], "bootstrap exact owners retained")
+            let record = try stored(location)
+            try H.check(record.revision == 3 && record.phase == .active && record.step?.action == .reserve
+                && record.step?.status == .complete && record.step?.ordinal == 1
+                && record.readinessCommit == nil && record.transaction?.intent == .install,
+                "bootstrap reserve must stop before exclusive preparation")
+            try H.check(!FileManager.default.fileExists(atPath: root + "/home/Applications/ShadowSync.app")
+                && !FileManager.default.fileExists(atPath: root + "/home/Library/LaunchAgents/com.kleinperkins.shadow-sync.plist"),
+                "bootstrap published runnable payload")
+            try InstallationOwnershipFixtures.excluded(location)
+            try assertGuardHeld(root)
+        }
+    }
+    static func oneUse() throws {
+        try fixture { root, location, bootstrap in
+            try bootstrap.reserve(deadline: .init(seconds: 0.750))
+            let before = try H.snapshot(root)
+            try H.check(try bootstrap.testingOneUseRefusals(), "bootstrap original transfer or journal replay accepted")
+            try H.check(try H.snapshot(root) == before, "bootstrap one-use refusal changed disk")
+            try unchangedReplay(root, bootstrap)
+            try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    static func ownerCuts() throws {
+        for (index, cut) in B.Stage.allCases.enumerated() {
+            try fixture { root, location, bootstrap in
+                try bootstrap.testingConfigure(cut: cut)
+                try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 0.750)) }
+                try H.check(bootstrap.observation() == .init(stage: cut, attempted: true, failedClosed: true),
+                            "bootstrap failure stage replaced with success")
+                let expected = [index >= 1, index >= 3, index >= 5, index >= 6, index >= 7, index >= 8]
+                try H.check(bootstrap.testingRetained() == expected, "bootstrap retained owners missing at failure cut")
+                if index >= 3 { try assertGuardHeld(root) }
+                if index >= 4 { try InstallationOwnershipFixtures.excluded(location) }
+                if index >= 9 {
+                    let record = try stored(location)
+                    try H.check(record.step?.action == .reserve && record.step?.status == (index == 10 ? .complete : .intent)
+                        && record.readinessCommit == nil, "bootstrap invented durable failure completion")
+                }
+                try unchangedReplay(root, bootstrap)
+            }
+        }
+    }
+    static func parentFailure() throws {
+        try fixture { root, _, bootstrap in
+            try bootstrap.testingConfigure(parentCut: .afterCreate(.local))
+            try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 0.750)) }
+            try H.check(bootstrap.observation().stage == .parentsRetained && bootstrap.observation().failedClosed,
+                        "bootstrap parent cut not retained")
+            try H.check(bootstrap.testingRetained() == [true, false, false, false, false, false], "bootstrap parent failure advanced")
+            try H.check(FileManager.default.fileExists(atPath: root + "/home/.local"), "bootstrap deleted partial parent")
+            try unchangedReplay(root, bootstrap)
+        }
+    }
+    static func publicationFailure() throws {
+        for cut in [FreshStateInitialization.Fault.afterManifest, .afterReady, .afterPublication] {
+            try fixture { root, location, bootstrap in
+                try bootstrap.testingConfigure(initializationFault: cut)
+                try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 0.750)) }
+                try H.check(bootstrap.observation().stage == .initializerRetained && bootstrap.observation().failedClosed,
+                            "bootstrap publication cut advanced")
+                try H.check(bootstrap.testingRetained() == [true, true, false, false, false, false], "bootstrap partial initializer dropped")
+                try assertGuardHeld(root)
+                if cut == .afterPublication {
+                    try InstallationOwnershipFixtures.excluded(location)
+                    try H.check(try stored(location).phase == .initial, "bootstrap publication failure began journal")
+                } else if cut == .afterReady {
+                    let stages = try FileManager.default.contentsOfDirectory(atPath: root + "/state").filter { name in
+                        var node = stat()
+                        return name.hasPrefix(".shadow-sync-initialization.")
+                            && lstat(root + "/state/" + name, &node) == 0 && node.st_mode & S_IFMT == S_IFDIR
+                    }
+                    try H.check(stages.count == 1, "bootstrap exact unpublished state missing")
+                    let staged = StateLocation(anchorPath: root, components: ["state", stages[0]], uid: location.uid)
+                    try InstallationOwnershipFixtures.excluded(staged)
+                }
+                try unchangedReplay(root, bootstrap)
+            }
+        }
+    }
+    static func journalFailure() throws {
+        for completion in [false, true] {
+            try fixture { root, location, bootstrap in
+                try bootstrap.testingConfigure(journalCut: .afterReceipt, cutCompletion: completion)
+                try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 0.750)) }
+                try H.check(bootstrap.observation().stage == (completion ? .reserveIntent : .journalRetained)
+                    && bootstrap.observation().failedClosed, "bootstrap receipt cut pretended intent completion")
+                try H.check(bootstrap.testingRetained().allSatisfy { $0 }, "bootstrap journal failure lost original owners")
+                let record = try stored(location)
+                try H.check(record.phase == (completion ? .active : .initial)
+                    && record.revision == (completion ? 2 : 1), "bootstrap uncertain receipt replaced control")
+                let names = try FileManager.default.contentsOfDirectory(atPath: location.path + "/custody/receipts")
+                let steps = names.filter { $0.hasPrefix(InstallationStepReceipt.prefix) }
+                try H.check(steps.count == (completion ? 2 : 1), "bootstrap lost pending reserve receipt")
+                try unchangedReplay(root, bootstrap)
+                try InstallationOwnershipFixtures.excluded(location)
+            }
+        }
+        // The journal factory can persist preimages before it returns. Keep the
+        // consumed owner and lifecycle if that factory throws; never reissue it.
+        try fixture { root, location, bootstrap in
+            try bootstrap.testingConfigure(captureFault: .afterDirectorySync)
+            try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 0.750)) }
+            try H.check(bootstrap.observation().stage == .lifecycleRetained && bootstrap.observation().failedClosed,
+                        "bootstrap capture-constructor failure advanced")
+            try H.check(bootstrap.testingRetained() == [true, true, true, true, true, false],
+                        "bootstrap unreturned journal was claimed retained")
+            try H.check(try stored(location).phase == .initial, "bootstrap failed capture began reserve")
+            try H.check(try !FileManager.default.contentsOfDirectory(atPath: location.path + "/custody/receipts").isEmpty,
+                        "bootstrap discarded partial preimage evidence")
+            try unchangedReplay(root, bootstrap)
+            try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    static func substitution() throws {
+        for cut in [B.Stage.parentsPrepared, .statePublished, .authorityRetained, .ownerConsumed, .journalRetained] {
+            try fixture { root, location, bootstrap in
+                let parentAttack = cut == .parentsPrepared || cut == .journalRetained
+                let path = parentAttack ? root + "/home/Applications" : location.path
+                let retained = root + "/retained-substituted-node"
+                try bootstrap.testingConfigure(mutation: { stage in
+                    if stage == cut {
+                        try H.check(rename(path, retained) == 0, "bootstrap fixture retain substituted node")
+                        try H.check(mkdir(path, 0o700) == 0, "bootstrap fixture replacement")
+                    }
+                })
+                try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 0.750)) }
+                try H.check(bootstrap.observation().failedClosed, "bootstrap adopted substitution")
+                try H.check(FileManager.default.fileExists(atPath: retained)
+                    && FileManager.default.fileExists(atPath: path), "bootstrap deleted unknown replacement")
+                try unchangedReplay(root, bootstrap)
+                if !parentAttack {
+                    // Repoint only the fixture contender at the displaced actual
+                    // state. This observation grants no restoration authority.
+                    let displaced = StateLocation(anchorPath: root, components: ["retained-substituted-node"], uid: location.uid)
+                    try InstallationOwnershipFixtures.excluded(displaced)
+                }
+            }
+        }
+    }
+    static func unsafeAndExpired() throws {
+        try fixture { root, _, bootstrap in
+            try H.check(mkdir(root + "/home/Applications", 0o700) == 0, "bootstrap unsafe fixture parent")
+            try H.check(chmod(root + "/home/Applications", 0o777) == 0, "bootstrap unsafe fixture mode")
+            let before = try H.snapshot(root)
+            try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 0.750)) }
+            try H.check(try H.snapshot(root) == before, "bootstrap unsafe preflight changed parents")
+            try H.check(bootstrap.testingRetained() == [false, false, false, false, false, false], "bootstrap unsafe preflight advanced")
+            // Restore only the fixture-owned node for the existing strict cleanup.
+            try H.check(chmod(root + "/home/Applications", 0o700) == 0, "bootstrap fixture mode restore")
+        }
+        try fixture { root, _, bootstrap in
+            let before = try H.snapshot(root)
+            try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 0)) }
+            try H.check(try H.snapshot(root) == before, "bootstrap expired deadline changed account paths")
+            try unchangedReplay(root, bootstrap)
+        }
+    }
+    static func productionRefusal() throws {
+        // The testing branch precedes current publisher/account lookup. This
+        // assertion intentionally performs no real account or host observation.
+        try H.refuses { _ = try B.production() }
+    }
+    // Command-bearing continuation fixtures use the existing registered root
+    // guardian. Retain the bootstrap and registry BEFORE configuration/reserve
+    // can throw. Pending work prevents root and original-owner disposal.
+    private static func exclusiveFixture(diagnostic: String = "installation-absent",
+        fault: @escaping @Sendable (String) throws -> Void = { _ in }, afterClaim: (() throws -> Void)? = nil,
+        _ body: (String, StateLocation, B, RetainedCleanupRegistry) throws -> Void) throws {
+        try InstallationStorageFixtures.fixture { root, location in
+            try H.check(mkdir(root + "/home", 0o700) == 0, "bootstrap exclusive fixture home")
+            let custody = try RuntimeFixtureSession.installationRoot(root)
+            let bootstrap = try B.testing(root: root)
+            custody.retain(bootstrap)
+            let registry = RetainedCleanupRegistry.testingInstance()
+            custody.retain(registry)
+            var failure: Error?
+            do {
+                let candidate = try InstallationExclusivePreparationFixtures.candidate(root)
+                try bootstrap.testingConfigureExclusive(candidate: candidate, registry: registry,
+                    diagnostic: diagnostic, fault: fault, afterClaim: afterClaim)
+                try body(root, location, bootstrap, registry)
+            } catch { failure = error }
+            if registry.hasRetainedWork { registry.testingRequestCancellation() }
+            let cleanup = MonotonicDeadline(seconds: 8)
+            while registry.testingCount != 0 || !registry.testingOriginalHelpersReaped {
+                guard !cleanup.hasExpired else { throw H.Failure(message: "bootstrap exclusive owned cleanup pending") }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+            try registry.testingDispose()
+            if let failure { throw failure }
+        }
+    }
+    private static func assertExclusiveFence(_ root: String, _ location: StateLocation, _ bootstrap: B) throws {
+        try H.check(bootstrap.testingRetained() == [true, true, true, true, true, true],
+                    "bootstrap exclusive lost original owners")
+        try assertGuardHeld(root)
+        try InstallationOwnershipFixtures.excluded(location)
+        let record = try stored(location)
+        try H.check(record.phase == .active && record.readinessCommit == nil,
+                    "bootstrap exclusive opened staged admission")
+    }
+    private static func unchangedExclusiveReplay(_ root: String, _ bootstrap: B) throws {
+        let disk = try H.snapshot(root), reserve = bootstrap.observation(), exclusive = bootstrap.exclusiveObservation()
+        try H.refuses { try bootstrap.prepareExclusive() }
+        try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 30)) }
+        try H.check(try H.snapshot(root) == disk && bootstrap.observation() == reserve
+            && bootstrap.exclusiveObservation() == exclusive, "bootstrap exclusive replay changed retained outcome")
+    }
+    static func exclusiveBeforeReserve() throws {
+        try fixture { root, location, bootstrap in
+            let disk = try H.snapshot(root), observation = bootstrap.observation()
+            try H.refuses { try bootstrap.prepareExclusive() }
+            try H.check(try H.snapshot(root) == disk && bootstrap.observation() == observation
+                && bootstrap.exclusiveObservation() == .notAttempted, "bootstrap exclusive before-reserve mutated state")
+            try bootstrap.reserve(deadline: .init(seconds: 0.750))
+            try H.check(try stored(location).step?.action == .reserve
+                && bootstrap.exclusiveObservation() == .notAttempted, "bootstrap exclusive refusal consumed reservation")
+        }
+    }
+    /// The lifecycle fault callback is Sendable. Its action log therefore
+    /// owns synchronization for every append and snapshot.
+    private final class ExclusiveActions: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String] = []
+        func append(_ value: String) {
+            lock.lock(); values.append(value); lock.unlock()
+        }
+        func snapshot() -> [String] {
+            lock.lock(); defer { lock.unlock() }; return values
+        }
+    }
+    static func exclusiveOrdered() throws {
+        let actions = ExclusiveActions()
+        try exclusiveFixture(fault: { stage in
+            if stage.hasPrefix("exclusive-after-action-") { actions.append(stage) }
+        }) { root, location, bootstrap, registry in
+            let deadline = MonotonicDeadline(seconds: 30)
+            try bootstrap.reserve(deadline: deadline)
+            let reserved = try stored(location)
+            let log = try Data(contentsOf: URL(fileURLWithPath: location.path + "/latest.log"))
+            try bootstrap.prepareExclusive()
+            let prepared = try stored(location)
+            try H.check(actions.snapshot() == [InstallationAction.stageApplication, .stagePlist, .retireApplication, .retirePlist,
+                .retireCoordination, .translateState, .moveStateForward, .promoteApplication, .promotePlist]
+                .map { "exclusive-after-action-" + $0.rawValue }, "bootstrap exclusive action order")
+            try H.check(reserved.revision == 3 && prepared.revision == 23
+                && prepared.transaction?.id == reserved.transaction?.id
+                && prepared.state == reserved.state && prepared.transaction?.candidate == reserved.transaction?.candidate,
+                "bootstrap exclusive replaced original transaction")
+            try H.check(prepared.step?.action == .promotePlist && prepared.step?.status == .complete
+                && prepared.step?.ordinal == 11 && bootstrap.exclusiveObservation() == .complete
+                && !bootstrap.observation().failedClosed, "bootstrap exclusive exact stop missing")
+            try H.check(prepared.transaction?.slots.images[.application]?.node != nil
+                && prepared.transaction?.slots.images[.launchPlist]?.node != nil
+                && prepared.transaction?.slots.images[.applicationIncoming]?.node == nil
+                && prepared.transaction?.slots.images[.plistIncoming]?.node == nil, "bootstrap exclusive postimages missing")
+            let artifact = try BundleArtifactIdentity.inspect(bundlePath: root + "/home/Applications/ShadowSync.app", requireProduction: true)
+            try H.check(artifact.canonicalSHA256 == prepared.transaction?.candidate?.bundleDigest
+                && Data(contentsOf: URL(fileURLWithPath: location.path + "/latest.log")) == log,
+                "bootstrap exclusive changed candidate or state preimage")
+            try H.check(!registry.hasRetainedWork && registry.testingOriginalHelpersReaped,
+                        "bootstrap exclusive diagnostic not retired")
+            try H.check(try bootstrap.testingOneUseRefusals(), "bootstrap exclusive original owner replay accepted")
+            try assertExclusiveFence(root, location, bootstrap)
+            try unchangedExclusiveReplay(root, bootstrap)
+        }
+    }
+    static func exclusiveOriginalDeadline() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            let original = MonotonicDeadline(seconds: 0.750)
+            try bootstrap.reserve(deadline: original)
+            let disk = try H.snapshot(root), reserved = try stored(location)
+            // A fresh caller budget cannot replace the reservation's deadline.
+            try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 30)) }
+            while !original.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+            try H.refuses { try bootstrap.prepareExclusive() }
+            try H.check(try H.snapshot(root) == disk && stored(location) == reserved
+                && bootstrap.exclusiveObservation() == .failed && bootstrap.observation().failedClosed,
+                "bootstrap exclusive extended original deadline")
+            try H.check(!registry.hasRetainedWork && registry.testingOriginalHelpersReaped,
+                        "bootstrap exclusive expired invocation started command")
+            try assertExclusiveFence(root, location, bootstrap)
+            try unchangedExclusiveReplay(root, bootstrap)
+        }
+    }
+    private final class ExclusiveGate: @unchecked Sendable {
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+    }
+    private final class ExclusiveCall: @unchecked Sendable {
+        let bootstrap: B
+        init(_ bootstrap: B) { self.bootstrap = bootstrap }
+    }
+    static func exclusiveConcurrentReplay() throws {
+        let gate = ExclusiveGate(), deadline = MonotonicDeadline(seconds: 30)
+        try exclusiveFixture(afterClaim: {
+            gate.entered.signal()
+            guard gate.release.wait(timeout: .init(uptimeNanoseconds: deadline.absoluteUptimeNanoseconds)) == .success else {
+                throw CustodyRecordError.busy
+            }
+        }) { root, location, bootstrap, _ in
+            try bootstrap.reserve(deadline: deadline)
+            let custody = try RuntimeFixtureSession.installationRoot(root), call = ExclusiveCall(bootstrap)
+            let work = custody.startWork { try call.bootstrap.prepareExclusive() }
+            defer { gate.release.signal() }
+            try H.check(gate.entered.wait(timeout: .init(uptimeNanoseconds: deadline.absoluteUptimeNanoseconds)) == .success,
+                        "bootstrap exclusive claimed work not reached")
+            // These synchronous observations/replays would deadlock if the
+            // bootstrap mutex spanned the actual continuation work.
+            try H.check(bootstrap.exclusiveObservation() == .running, "bootstrap exclusive running claim missing")
+            try unchangedExclusiveReplay(root, bootstrap)
+            try assertExclusiveFence(root, location, bootstrap)
+            gate.release.signal()
+            try work.value(deadline: deadline)
+            try H.check(bootstrap.exclusiveObservation() == .complete && stored(location).step?.action == .promotePlist,
+                        "bootstrap exclusive concurrent refusal replaced first outcome")
+            try unchangedExclusiveReplay(root, bootstrap)
+        }
+    }
+    static func exclusivePartialFailures() throws {
+        for action in [InstallationAction.stageApplication, .stagePlist, .promoteApplication, .promotePlist] {
+            try exclusiveFixture(fault: { stage in
+                if stage == "exclusive-after-action-" + action.rawValue { throw CustodyRecordError.injectedFailure }
+            }) { root, location, bootstrap, registry in
+                try bootstrap.reserve(deadline: .init(seconds: 30))
+                let reserved = try stored(location)
+                try H.refuses { try bootstrap.prepareExclusive() }
+                let partial = try stored(location)
+                try H.check(partial.transaction?.id == reserved.transaction?.id
+                    && partial.step?.action == action && partial.step?.status == .intent
+                    && bootstrap.exclusiveObservation() == .failed && bootstrap.observation().failedClosed,
+                    "bootstrap exclusive partial effect invented completion")
+                let promoted = action == .promoteApplication || action == .promotePlist
+                try H.check(FileManager.default.fileExists(atPath: root + "/home/Applications/"
+                    + (promoted ? "ShadowSync.app" : ".ShadowSync.app.incoming")), "bootstrap exclusive partial bytes discarded")
+                try H.check(!registry.hasRetainedWork && registry.testingOriginalHelpersReaped,
+                            "bootstrap exclusive partial action retained diagnostic")
+                try assertExclusiveFence(root, location, bootstrap)
+                try unchangedExclusiveReplay(root, bootstrap)
+            }
+        }
+    }
+    static func exclusiveSubstitution() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            try bootstrap.reserve(deadline: .init(seconds: 30))
+            let reserved = try stored(location), path = root + "/home/Applications", retained = root + "/retained-applications"
+            try H.check(rename(path, retained) == 0 && mkdir(path, 0o700) == 0, "bootstrap exclusive substitute parent")
+            let disk = try H.snapshot(root)
+            try H.refuses { try bootstrap.prepareExclusive() }
+            try H.check(try H.snapshot(root) == disk && stored(location) == reserved
+                && bootstrap.exclusiveObservation() == .failed, "bootstrap exclusive adopted replacement parent")
+            try assertExclusiveFence(root, location, bootstrap)
+            try unchangedExclusiveReplay(root, bootstrap)
+        }
+        let cut = InstallationExclusivePreparationFixtures.Cut()
+        cut.action = "exclusive-before-promote-application"; cut.replaceApplication = true
+        try exclusiveFixture(fault: { try cut.visit($0) }) { root, location, bootstrap, _ in
+            cut.root = root
+            try bootstrap.reserve(deadline: .init(seconds: 30))
+            try H.refuses { try bootstrap.prepareExclusive() }
+            let partial = try stored(location)
+            try H.check(partial.step?.action == .promoteApplication && partial.step?.status == .intent
+                && !FileManager.default.fileExists(atPath: root + "/home/Applications/ShadowSync.app")
+                && FileManager.default.fileExists(atPath: root + "/replaced-incoming-app"),
+                "bootstrap exclusive promoted substituted candidate")
+            let replacement = try BundleArtifactIdentity.inspect(
+                bundlePath: root + "/home/Applications/.ShadowSync.app.incoming", requireProduction: true)
+            try H.check(replacement.canonicalSHA256 == partial.transaction?.candidate?.bundleDigest
+                && bootstrap.exclusiveObservation() == .failed && bootstrap.observation().failedClosed,
+                "bootstrap exclusive replacement setup or failure latch missing")
+            try assertExclusiveFence(root, location, bootstrap)
+            try unchangedExclusiveReplay(root, bootstrap)
+        }
+    }
+    static func exclusiveDiagnosticFailure() throws {
+        try exclusiveFixture(diagnostic: "complete") { root, location, bootstrap, registry in
+            try bootstrap.reserve(deadline: .init(seconds: 30))
+            try H.refuses { try bootstrap.prepareExclusive() }
+            let partial = try stored(location)
+            try H.check(partial.step?.action == .drainPrior && partial.step?.status == .intent
+                && bootstrap.exclusiveObservation() == .failed && bootstrap.observation().failedClosed,
+                "bootstrap exclusive accepted unproved service absence")
+            try H.check(!registry.hasRetainedWork && registry.testingOriginalHelpersReaped,
+                        "bootstrap exclusive failed diagnostic not retired")
+            try assertExclusiveFence(root, location, bootstrap)
+            try unchangedExclusiveReplay(root, bootstrap)
+        }
+    }
+}
+#endif

@@ -40,9 +40,13 @@ final class InstallationReadinessFixtureCustody: @unchecked Sendable {
     private var journals: [CustodyCatalogStore.InstallationStagedJournal] = []
     private var work: [InstallationFixtureWork] = []
     private var registries: [RetainedCleanupRegistry] = []
+    private var bootstraps: [InstallationBootstrap] = []
     init(root: String, identity: FileIdentity) { self.root = root; self.identity = identity }
     func retain(_ journal: CustodyCatalogStore.InstallationStagedJournal) {
         lock.lock(); journals.append(journal); lock.unlock()
+    }
+    func retain(_ bootstrap: InstallationBootstrap) {
+        lock.lock(); bootstraps.append(bootstrap); lock.unlock()
     }
     func retain(_ registry: RetainedCleanupRegistry) {
         lock.lock(); registries.append(registry); lock.unlock()
@@ -67,7 +71,7 @@ final class InstallationReadinessFixtureCustody: @unchecked Sendable {
             throw CustodyRecordError.conflict
         }
         try FileManager.default.removeItem(atPath: root)
-        lock.lock(); self.journals.removeAll(); self.work.removeAll(); self.registries.removeAll(); lock.unlock()
+        lock.lock(); self.journals.removeAll(); self.work.removeAll(); self.registries.removeAll(); self.bootstraps.removeAll(); lock.unlock()
     }
 }
 
