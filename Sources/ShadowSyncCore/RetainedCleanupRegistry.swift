@@ -372,6 +372,9 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         var deferredRead: TestReadDeferral?
         var reapedObservations = 0
         let diagnosticStarted = DispatchTime.now().uptimeNanoseconds
+        private var diagnosticKind: DiscoveryFixtureDiagnostic.RegistryKind {
+            resources.request.kind == .retentionArchive ? .retentionArchive : .policyClassify
+        }
         func diagnostic(_ stage: DiscoveryFixtureDiagnostic.Stage) {
             guard command != nil, resources.request.kind == .policyClassify else { return }
             DiscoveryFixtureDiagnostic.record(.registry, stage: stage,
@@ -379,7 +382,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         }
         private var diagnosticFailures: UInt8 = 0
         func diagnosticFailure(_ error: Error, retiring: Bool) {
-            guard command != nil, resources.request.kind == .policyClassify else { return }
+            guard command != nil, (resources.request.kind == .policyClassify || resources.request.kind == .retentionArchive) else { return }
             let flag: UInt8 = retiring ? 2 : 1
             guard diagnosticFailures & flag == 0 else { return }
             diagnosticFailures |= flag
@@ -417,10 +420,10 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             }
             DiscoveryFixtureDiagnostic.record(.registry, stage: .failure,
                 started: diagnosticStarted, deadline: resources.request.budget.work,
-                resultBits: bits | (code << 8) | (systemCode << 16))
+                resultBits: bits | (code << 8) | (systemCode << 16), kind: diagnosticKind)
         }
         func diagnosticPending() {
-            guard command != nil, resources.request.kind == .policyClassify,
+            guard command != nil, (resources.request.kind == .policyClassify || resources.request.kind == .retentionArchive),
                   let reason else { return }
             let observation = owner?.observation
             let reaped: Bool
@@ -439,7 +442,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             DiscoveryFixtureDiagnostic.record(.registry, stage: .failure,
                 started: diagnosticStarted, deadline: resources.request.budget.work,
                 resultBits: DiscoveryFixtureDiagnostic.pendingBits(reason: reason,
-                    owner: observation, state: state))
+                    owner: observation, state: state), kind: diagnosticKind)
         }
         #endif
         init(_ resources: CustodyRequestResources, _ helper: CustodyHelperExecutable, command: PreparedCustodyCommand?) throws {

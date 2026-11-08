@@ -118,7 +118,9 @@ final class PolicyCatalogSession: @unchecked Sendable {
             try classifyWithinValidatedAdmission(paths, deadline: deadline)
         }, revalidate: { [self] in try revalidate() })
         #if SHADOW_SYNC_TESTING
-        return value.testingObservingFailures { stage, started, deadline in
+        return value.testingObservingValidation { position, started, deadline in
+            DiscoveryFixtureDiagnostic.beginAdmission(position: position, started: started, deadline: deadline)
+        }.testingObservingFailures { stage, started, deadline in
             let observation: DiscoveryFixtureDiagnostic.Stage
             switch stage {
             case .deadlineBefore: observation = .deadlineBefore
@@ -192,9 +194,13 @@ final class PolicyCatalogSession: @unchecked Sendable {
         #if SHADOW_SYNC_TESTING
         let diagnosticStart = DispatchTime.now().uptimeNanoseconds
         let diagnosticSample = DiscoveryFixtureDiagnostic.sampleRevalidation()
+        let diagnosticAdmission = DiscoveryFixtureDiagnostic.currentAdmission
+        let diagnosticCollect = diagnosticSample || diagnosticAdmission != nil
         var diagnosticMilestones: [UInt64] = []
         var diagnosticStage = DiscoveryFixtureDiagnostic.Stage.entry
         defer {
+            diagnosticAdmission?.capture(.session, stage: diagnosticStage,
+                started: diagnosticStart, passed: validated, milestones: diagnosticMilestones)
             if !validated || diagnosticSample {
                 DiscoveryFixtureDiagnostic.record(.session, stage: diagnosticStage,
                     started: diagnosticStart, deadline: nil, succeeded: validated,
@@ -222,17 +228,17 @@ final class PolicyCatalogSession: @unchecked Sendable {
             #if SHADOW_SYNC_TESTING
             // Successful samples have four intervals: scratch, host snapshot,
             // publisher resources, then postflight. No pathname is recorded.
-            if diagnosticSample { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
+            if diagnosticCollect { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
             diagnosticStage = .snapshot
             #endif
             try snapshot.revalidate()
             #if SHADOW_SYNC_TESTING
-            if diagnosticSample { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
+            if diagnosticCollect { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
             diagnosticStage = .resources
             #endif
             try revalidateResources()
             #if SHADOW_SYNC_TESTING
-            if diagnosticSample { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
+            if diagnosticCollect { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
             #endif
         } catch PolicyHelperError.cleanupPending {
             pendingLock.lock(); cleanupPending = true; pendingLock.unlock()

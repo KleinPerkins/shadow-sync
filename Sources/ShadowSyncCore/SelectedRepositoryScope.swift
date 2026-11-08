@@ -214,12 +214,21 @@ final class RepositoryDiscoveryPolicy {
         policy = try RepositoryPolicy(snapshot: snapshot)
         guard scope.policyDigest == snapshot.admissionSHA256,
               !scope.repositories.isEmpty else { throw SelectedRepositoryScopeError.changed }
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.initial)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         try validate()
     }
 
     fileprivate func close() { closed = true }
 
     func validate() throws {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticHadCaller = DiscoveryFixtureDiagnostic.hasCaller
+        let diagnosticCaller = diagnosticHadCaller ? nil : DiscoveryFixtureDiagnostic.enterCaller(.validate)
+        defer { if !diagnosticHadCaller { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) } }
+        #endif
         try validateLocalAuthority()
         do { try admission.validate(deadline: deadline) }
         catch { throw record(error) }
@@ -267,6 +276,10 @@ final class RepositoryDiscoveryPolicy {
     func requireAllowed(_ path: String) throws { try requireAllowed([path]) }
 
     func requireAllowed(_ paths: [String]) throws {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.requireAllowed)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         try validateLocalAuthority()
         do {
             try classifyAllowed(paths)
@@ -293,6 +306,10 @@ final class RepositoryDiscoveryPolicy {
     /// A permitted leaf does not grant access through a protected ancestor.
     /// Keep every prefix request inside the original metadata-stage deadline.
     func prepareAccess(_ paths: [String]) throws {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.prepareAccess)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         try validateLocalAuthority()
         do {
             try classifyAccessPrefixes(paths)
@@ -325,6 +342,10 @@ final class RepositoryDiscoveryPolicy {
     /// obligation that the former entry validation would have observed.
     /// This full check performs no candidate classification or access.
     private func preparationFailure(_ original: Error) -> SelectedRepositoryScopeError {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.preparationFailure)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         do { try validate() } catch { _ = record(error) }
         return record(original)
     }
@@ -335,6 +356,10 @@ final class RepositoryDiscoveryPolicy {
     /// candidate I/O intervenes. Preserve each ordered hook and complete fresh
     /// validation after all hooks, immediately before the caller's candidate I/O.
     func willAccess(_ paths: [String]) throws {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.willAccess)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         try validateLocalAuthority()
         do {
             try classifyAccessPrefixes(paths)
@@ -346,6 +371,10 @@ final class RepositoryDiscoveryPolicy {
     }
 
     func policyRelativePath(_ path: String) throws -> String {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.policyRelativePath)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         try validate()
         let relative = try homeRelative(path), prefix = snapshot.projection.rootComponents
         guard relative.count >= prefix.count,
@@ -362,6 +391,10 @@ final class RepositoryDiscoveryPolicy {
     }
 
     func requireSelected(_ selected: ValidatedSelectedRepository) throws {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.requireSelected)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         try validate()
         let relative = try homeRelative(selected.repositoryPath)
         let root = account.homeDirectory + "/" + snapshot.projection.rootComponents.joined(separator: "/")
@@ -1062,12 +1095,20 @@ public final class SelectedRepositoryScopeBinder:
             defer { service.close() }
             do {
                 let value = try body(service)
+                #if SHADOW_SYNC_TESTING
+                let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.finalValidation)
+                defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+                #endif
                 try service.validate()
                 #if SHADOW_SYNC_TESTING
                 diagnosticPassed = true
                 #endif
                 return value
             } catch {
+                #if SHADOW_SYNC_TESTING
+                let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.errorValidation)
+                defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+                #endif
                 try service.validate()
                 throw error
             }

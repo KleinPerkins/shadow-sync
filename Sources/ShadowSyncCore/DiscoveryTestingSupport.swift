@@ -2,6 +2,7 @@
 import Darwin
 import Foundation
 import Security
+import ShadowSyncCatalog
 
 /// Closed, testing-only failure observations: no path, input, child output or
 /// arbitrary error text is admitted. These observations never alter a budget.
@@ -110,6 +111,8 @@ enum DiscoveryFixtureDiagnostic {
     private static let revalidationSamples = SampleBudget(enabled: mode == "costs")
     private static let publisherSamples = SampleBudget(enabled: mode == "costs")
 
+    static var isEnabled: Bool { mode == "1" || mode == "boundaries" || mode == "costs" }
+
     static func sampleRevalidation() -> Bool { revalidationSamples.take() }
     static func samplePublisherRevalidation() -> Bool { publisherSamples.take() }
 
@@ -126,7 +129,7 @@ enum DiscoveryFixtureDiagnostic {
     }
     static func record(_ component: Component, stage: Stage, started: UInt64,
                         deadline: UInt64?, resultBits: UInt64 = 0, succeeded: Bool = false,
-                        milestones: [UInt64] = []) {
+                        milestones: [UInt64] = [], kind: RegistryKind = .policyClassify) {
         // Boundary mode keeps successful helper chatter from consuming the
         // same fixed budget before a later admission failure can be observed.
         if mode == "boundaries" || mode == "costs" {
@@ -141,10 +144,162 @@ enum DiscoveryFixtureDiagnostic {
             let expired = deadline.map { now >= $0 } ?? false
             let points = [started] + milestones + [now]
             let durations = zip(points, points.dropFirst()).map { String($1 - $0) }.joined(separator: ",")
-            return "DISCOVERY FIXTURE DIAGNOSTIC component=\(component.rawValue) stage=\(stage.rawValue) elapsed_ns=\(now - started) deadline_expired=\(expired) result_bits=\(resultBits) succeeded=\(succeeded) intervals_ns=\(durations)\n"
+            let kindField = component == .registry ? " kind=\(kind.rawValue)" : ""
+            return "DISCOVERY FIXTURE DIAGNOSTIC component=\(component.rawValue)\(kindField) stage=\(stage.rawValue) elapsed_ns=\(now - started) deadline_expired=\(expired) result_bits=\(resultBits) succeeded=\(succeeded) intervals_ns=\(durations)\n"
         }
         sinkForRecord(component, stage: stage, succeeded: succeeded,
                       ordinary: sink, failures: failureSink).emit(formatted())
+    }
+
+    // Synchronous metadata admission only. Each thread holds at most the
+    // current call, restored on return/throw; there is no history or cross-call
+    // sample. No diagnostic context is propagated to dispatched work.
+    enum AdmissionCaller: String {
+        case initial, validate, requireAllowed, prepareAccess, willAccess
+        case policyRelativePath, requireSelected, preparationFailure, finalValidation, errorValidation
+    }
+    private static let callerKey = "ShadowSync.DiscoveryFixtureDiagnostic.caller"
+    private static let admissionKey = "ShadowSync.DiscoveryFixtureDiagnostic.admission"
+    static func enterCaller(_ caller: AdmissionCaller) -> String? {
+        guard isEnabled else { return nil }
+        let previous = Thread.current.threadDictionary[callerKey] as? String
+        Thread.current.threadDictionary[callerKey] = caller.rawValue
+        return previous
+    }
+    static func leaveCaller(_ previous: String?) {
+        guard isEnabled else { return }
+        if let previous { Thread.current.threadDictionary[callerKey] = previous }
+        else { Thread.current.threadDictionary.removeObject(forKey: callerKey) }
+    }
+    static var hasCaller: Bool { isEnabled && Thread.current.threadDictionary[callerKey] != nil }
+    static var currentAdmission: AdmissionObservation? {
+        guard isEnabled else { return nil }
+        return Thread.current.threadDictionary[admissionKey] as? AdmissionObservation
+    }
+    final class AdmissionObservation: @unchecked Sendable {
+        struct Sample {
+            let stage: Stage
+            let started: UInt64
+            let ended: UInt64
+            let passed: Bool
+            let milestones: [UInt64]
+        }
+        let caller: AdmissionCaller
+        let position: RepositorySelectionPathAdmission.TestingPosition
+        let started: UInt64
+        let deadline: UInt64
+        // This object is confined to its synchronous validate call/thread.
+        // Components are fixed slots, never an accumulated history.
+        var session: Sample?
+        var publisher: Sample?
+        var phase: Sample?
+        init(caller: AdmissionCaller, position: RepositorySelectionPathAdmission.TestingPosition,
+             started: UInt64, deadline: UInt64) {
+            self.caller = caller; self.position = position
+            self.started = started; self.deadline = deadline
+        }
+        func capture(_ component: Component, stage: Stage, started: UInt64,
+                     passed: Bool, milestones: [UInt64] = []) {
+            let sample = Sample(stage: stage, started: started,
+                ended: DispatchTime.now().uptimeNanoseconds, passed: passed,
+                milestones: Array(milestones.prefix(3)))
+            switch component {
+            case .session: session = sample
+            case .publisher: publisher = sample
+            case .phase: phase = sample
+            default: break
+            }
+        }
+    }
+    private final class FirstAdmissionFailure: @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded = false
+        func take() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard !recorded else { return false }
+            recorded = true; return true
+        }
+    }
+    private static let firstAdmissionFailure = FirstAdmissionFailure()
+    static func beginAdmission(position: RepositorySelectionPathAdmission.TestingPosition,
+                               started: UInt64, deadline: UInt64)
+        -> RepositorySelectionPathAdmission.TestingValidationCompletion? {
+        guard isEnabled,
+              let raw = Thread.current.threadDictionary[callerKey] as? String,
+              let caller = AdmissionCaller(rawValue: raw) else { return nil }
+        let previous = currentAdmission
+        let observation = AdmissionObservation(caller: caller, position: position,
+            started: started, deadline: deadline)
+        Thread.current.threadDictionary[admissionKey] = observation
+        return { failed in
+            defer {
+                if let previous { Thread.current.threadDictionary[admissionKey] = previous }
+                else { Thread.current.threadDictionary.removeObject(forKey: admissionKey) }
+            }
+            guard let failed, firstAdmissionFailure.take() else { return }
+            let ended = DispatchTime.now().uptimeNanoseconds
+            let remaining = deadline > started ? deadline - started : 0
+            failureSink.emit("DISCOVERY ADMISSION FIRST FAILURE caller=\(caller.rawValue)"
+                + " position=\(position.rawValue) cut=\(failed.rawValue)"
+                + " entry_remaining_ns=\(remaining) elapsed_ns=\(ended - started)"
+                + " deadline_expired=\(ended >= deadline)\n")
+            func emit(_ component: Component, _ sample: AdmissionObservation.Sample?) {
+                guard let sample else {
+                    failureSink.emit("DISCOVERY ADMISSION SAMPLE component=\(component.rawValue) observed=false\n")
+                    return
+                }
+                let points = [sample.started] + sample.milestones + [sample.ended]
+                let intervals = zip(points, points.dropFirst()).map { String($1 - $0) }.joined(separator: ",")
+                failureSink.emit("DISCOVERY ADMISSION SAMPLE component=\(component.rawValue) observed=true"
+                    + " stage=\(sample.stage.rawValue) succeeded=\(sample.passed)"
+                    + " elapsed_ns=\(sample.ended - sample.started) intervals_ns=\(intervals)\n")
+            }
+            emit(.session, observation.session)
+            emit(.phase, observation.phase)
+            emit(.publisher, observation.publisher)
+        }
+    }
+
+    enum RegistryKind: String { case policyClassify, retentionArchive }
+    enum RetentionCommand: Int {
+        case statusFirst = 1, statusReplay, bundleCreate, bundleVerify, clone
+        case checkout, revision, connectivity, restoredStatus
+        var family: String {
+            switch self {
+            case .statusFirst, .statusReplay, .restoredStatus: "status"
+            case .bundleCreate: "bundle-create"
+            case .bundleVerify: "bundle-verify"
+            case .clone: "clone"
+            case .checkout: "checkout"
+            case .revision: "revision"
+            case .connectivity: "connectivity"
+            }
+        }
+    }
+    static func recordRetentionResult(_ result: CustodyRegistryResult, command: RetentionCommand) {
+        // Mirror the fixture's existing require, including nil journal semantics.
+        guard isEnabled, !(result.phase == .finished && result.journal?.waitStatus == 0
+            && result.journal?.reason == CustodyReason.none) else { return }
+        let phase: String
+        switch result.phase {
+        case .starting: phase = "starting"
+        case .ready: phase = "ready"
+        case .running: phase = "running"
+        case .cleanupPending: phase = "cleanup-pending"
+        case .finished: phase = "finished"
+        }
+        failureSink.emit("RETENTION FIXTURE COMMAND ordinal=\(command.rawValue) family=\(command.family)"
+            + " phase=\(phase) reason=\(result.reason?.rawValue ?? "absent")"
+            + " journal_present=\(result.journal != nil)"
+            + " journal_reason=\(result.journal?.reason?.rawValue ?? "absent")"
+            + " wait_status=\(result.journal?.waitStatus.map { String($0) } ?? "absent")\n")
+    }
+    static func recordFixtureCleanup(registryEmpty: Bool, scopeTerminal: Bool,
+                                     unsubmittedClosed: Bool, catalogEmpty: Bool?) {
+        guard isEnabled, !(registryEmpty && (scopeTerminal || unsubmittedClosed) && catalogEmpty == true) else { return }
+        failureSink.emit("RETENTION DISCOVERY FIXTURE CLEANUP registry_empty=\(registryEmpty)"
+            + " scope_terminal_or_absent=\(scopeTerminal) unsubmitted_closed=\(unsubmittedClosed)"
+            + " catalog_empty=\(catalogEmpty.map { String($0) } ?? "unknown")\n")
     }
 
     /// Exact closed result fields for failed fixture commands. No process IDs,

@@ -218,7 +218,10 @@ final class CommandCustodyContext: @unchecked Sendable {
         let diagnosticStart = DispatchTime.now().uptimeNanoseconds
         var diagnosticStage = DiscoveryFixtureDiagnostic.Stage.entry
         var diagnosticPassed = false
+        let diagnosticAdmission = DiscoveryFixtureDiagnostic.currentAdmission
         defer {
+            diagnosticAdmission?.capture(.phase, stage: diagnosticStage,
+                started: diagnosticStart, passed: diagnosticPassed)
             if !diagnosticPassed {
                 // Contemporaneous cached state, not a claim about which
                 // predicate first failed. No new wait, signal or identity read.

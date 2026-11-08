@@ -1904,29 +1904,30 @@ public enum DiscoveryCallerSelfTestRunner {
                 return try context.prepareRetention(authority, budget: budget, cancellation: cancellation)
             }
             let status = ["-C", repository, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching"]
-            func execute(_ args: [String], cwd: Int32) throws -> CustodyRegistryResult {
+            func execute(_ tag: DiscoveryFixtureDiagnostic.RetentionCommand, _ args: [String], cwd: Int32) throws -> CustodyRegistryResult {
                 let command = try prepare(args, cwd: cwd)
                 let result = try RetainedCleanupRegistry.shared.start(command).wait()
+                DiscoveryFixtureDiagnostic.recordRetentionResult(result, command: tag)
                 try require(result.phase == .finished && result.journal?.waitStatus == 0 && result.journal?.reason == CustodyReason.none,
                     "retention command failed: \(String(describing: result.journal?.reason))")
                 return result
             }
             if index == 0 || index == 1 {
-                let first = try execute(status, cwd: handle.worktreeDescriptor)
-                let second = try execute(status, cwd: handle.worktreeDescriptor)
+                let first = try execute(.statusFirst, status, cwd: handle.worktreeDescriptor)
+                let second = try execute(.statusReplay, status, cwd: handle.worktreeDescriptor)
                 try require(first.stdout == second.stdout, "configuration replay changed status")
                 let bundle = slotPath + "/branch.bundle", restore = slotPath + "/.restore-proof/repository"
-                _ = try execute(["--git-dir", handle.identity.commonDirectoryPath, "bundle", "create", bundle, "refs/heads/main"], cwd: handle.worktreeDescriptor)
-                _ = try execute(["--git-dir", handle.identity.commonDirectoryPath, "bundle", "verify", bundle], cwd: handle.worktreeDescriptor)
-                _ = try execute(["clone", "--no-hardlinks", bundle, restore], cwd: proof)
+                _ = try execute(.bundleCreate, ["--git-dir", handle.identity.commonDirectoryPath, "bundle", "create", bundle, "refs/heads/main"], cwd: handle.worktreeDescriptor)
+                _ = try execute(.bundleVerify, ["--git-dir", handle.identity.commonDirectoryPath, "bundle", "verify", bundle], cwd: handle.worktreeDescriptor)
+                _ = try execute(.clone, ["clone", "--no-hardlinks", bundle, restore], cwd: proof)
                 let restored = open(restore, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
                 try require(restored >= 0, "restored fixture root"); defer { close(restored) }
-                _ = try execute(["-C", restore, "checkout", "--detach", tip], cwd: restored)
-                let observed = try execute(["-C", restore, "rev-parse", "--verify", tip + "^{commit}"], cwd: restored)
+                _ = try execute(.checkout, ["-C", restore, "checkout", "--detach", tip], cwd: restored)
+                let observed = try execute(.revision, ["-C", restore, "rev-parse", "--verify", tip + "^{commit}"], cwd: restored)
                 try require(String(decoding: observed.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == tip,
                     "retention tip mismatch")
-                _ = try execute(["-C", restore, "fsck", "--connectivity-only", "--no-dangling"], cwd: restored)
-                _ = try execute(["-C", restore] + Array(status.dropFirst(2)), cwd: restored)
+                _ = try execute(.connectivity, ["-C", restore, "fsck", "--connectivity-only", "--no-dangling"], cwd: restored)
+                _ = try execute(.restoredStatus, ["-C", restore] + Array(status.dropFirst(2)), cwd: restored)
                 return
             }
             if (3...5).contains(index) {
@@ -2020,6 +2021,17 @@ public enum DiscoveryCallerSelfTestRunner {
             }
             // A reaped helper is not proof of resource retirement. Never dispose
             // pending transactions or erase their evidence to make cleanup pass.
+            if DiscoveryFixtureDiagnostic.isEnabled {
+                // Independent observations only; the original short-circuiting
+                // assertion below remains authoritative and unchanged.
+                let catalogEmpty = try? CustodyCatalog.decode(repositoryCustodyBytes(
+                    StateLocation.isolated(root: root), "catalog.json")).entries.isEmpty
+                DiscoveryFixtureDiagnostic.recordFixtureCleanup(
+                    registryEmpty: RetainedCleanupRegistry.shared.testingCount == 0,
+                    scopeTerminal: retainedContext == nil || retainedContext!.testingScope.observation == .terminal,
+                    unsubmittedClosed: allowUnsubmitted && retainedContext?.isClosed == true,
+                    catalogEmpty: catalogEmpty)
+            }
             try require(RetainedCleanupRegistry.shared.testingCount == 0
                 && (retainedContext == nil || retainedContext!.testingScope.observation == .terminal
                     || (allowUnsubmitted && retainedContext!.isClosed))

@@ -378,10 +378,14 @@ final class PublisherPolicyResources: @unchecked Sendable {
         #if SHADOW_SYNC_TESTING
         let diagnosticStart = DispatchTime.now().uptimeNanoseconds
         let diagnosticSample = DiscoveryFixtureDiagnostic.samplePublisherRevalidation()
+        let diagnosticAdmission = DiscoveryFixtureDiagnostic.currentAdmission
+        let diagnosticCollect = diagnosticSample || diagnosticAdmission != nil
         var diagnosticStage = DiscoveryFixtureDiagnostic.Stage.resourceFiles
         var diagnosticMilestones: [UInt64] = []
         var diagnosticPassed = false
         defer {
+            diagnosticAdmission?.capture(.publisher, stage: diagnosticStage,
+                started: diagnosticStart, passed: diagnosticPassed, milestones: diagnosticMilestones)
             if !diagnosticPassed || diagnosticSample {
                 DiscoveryFixtureDiagnostic.record(.publisher, stage: diagnosticStage,
                     started: diagnosticStart, deadline: nil, succeeded: diagnosticPassed,
@@ -392,14 +396,14 @@ final class PublisherPolicyResources: @unchecked Sendable {
         do {
             try PolicyAuthorityFile.revalidate(resources)
             #if SHADOW_SYNC_TESTING
-            if diagnosticSample { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
+            if diagnosticCollect { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
             diagnosticStage = .appExecutable
             #endif
             guard try PublisherExecutableSnapshot.capture(path: appExecutable, owner: owner) == appExecutableIdentity else {
                 throw PublisherPolicyError.unavailable
             }
             #if SHADOW_SYNC_TESTING
-            if diagnosticSample { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
+            if diagnosticCollect { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
             diagnosticStage = .runtimeTree
             #endif
             try tree.revalidate(root: framework, owner: owner, layout: layout)

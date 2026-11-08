@@ -58,7 +58,22 @@ public struct RepositorySelectionPathAdmission: Sendable {
     private let revalidate: @Sendable () throws -> Void
 
     #if SHADOW_SYNC_TESTING
-    public enum TestingFailureStage: Sendable { case deadlineBefore, revalidation, deadlineAfter }
+    public enum TestingFailureStage: String, Sendable { case deadlineBefore, revalidation, deadlineAfter }
+    public enum TestingPosition: String, Sendable { case direct, classifyBefore, classifyAfter }
+    public typealias TestingValidationCompletion = @Sendable (TestingFailureStage?) -> Void
+    private var testingPosition = TestingPosition.direct
+    private var testingValidation: (@Sendable (TestingPosition, UInt64, UInt64) -> TestingValidationCompletion?)?
+
+    /// The returned completion is called synchronously on this same thread,
+    /// exactly once, before validate returns or throws.
+    public func testingObservingValidation(
+        _ observer: @escaping @Sendable (TestingPosition, UInt64, UInt64) -> TestingValidationCompletion?
+    ) -> Self {
+        var copy = self; copy.testingValidation = observer; return copy
+    }
+    private func testingAt(_ position: TestingPosition) -> Self {
+        var copy = self; copy.testingPosition = position; return copy
+    }
     private var testingFailure: (@Sendable (TestingFailureStage, UInt64, UInt64) -> Void)?
 
     public func testingObservingFailures(
@@ -89,7 +104,11 @@ public struct RepositorySelectionPathAdmission: Sendable {
         let started = DispatchTime.now().uptimeNanoseconds
         var stage = TestingFailureStage.deadlineBefore
         var passed = false
-        defer { if !passed { testingFailure?(stage, started, deadline) } }
+        let completed = testingValidation?(testingPosition, started, deadline)
+        defer {
+            completed?(passed ? nil : stage)
+            if !passed { testingFailure?(stage, started, deadline) }
+        }
         #endif
         guard DispatchTime.now().uptimeNanoseconds < deadline else {
             throw RepositorySelectionAdmissionError.unavailable
@@ -114,9 +133,17 @@ public struct RepositorySelectionPathAdmission: Sendable {
         guard !paths.isEmpty, paths.count <= 64 else {
             throw RepositorySelectionAdmissionError.unavailable
         }
+        #if SHADOW_SYNC_TESTING
+        try testingAt(.classifyBefore).validate(deadline: deadline)
+        #else
         try validate(deadline: deadline)
+        #endif
         let decisions = try evaluate(paths, deadline)
+        #if SHADOW_SYNC_TESTING
+        try testingAt(.classifyAfter).validate(deadline: deadline)
+        #else
         try validate(deadline: deadline)
+        #endif
         guard decisions.count == paths.count,
               zip(paths, decisions).allSatisfy({ $0.sameBytes(as: $1.path) }) else {
             throw RepositorySelectionAdmissionError.unavailable

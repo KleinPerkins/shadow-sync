@@ -654,7 +654,13 @@
     "m6-legacy-state-observation-opaque-refusals",
     "/fixture-policy.yml",
     "AWA active-root evidence is inconsistent; fail-safe keep applies.",
-    "AWA lease identity is inconsistent; fail-safe keep applies."
+    "AWA lease identity is inconsistent; fail-safe keep applies.",
+    "DISCOVERY ADMISSION FIRST FAILURE",
+    "DISCOVERY ADMISSION SAMPLE",
+    "RETENTION DISCOVERY FIXTURE CLEANUP",
+    "RETENTION FIXTURE COMMAND",
+    "ShadowSync.DiscoveryFixtureDiagnostic.admission",
+    "ShadowSync.DiscoveryFixtureDiagnostic.caller"
   ],
   "schema": "shadow-sync-production-test-markers/v1"
 }
