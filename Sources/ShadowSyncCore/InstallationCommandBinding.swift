@@ -63,14 +63,21 @@ struct InstallationCommandBinding: Equatable {
     var stagedMode: CustodyAuthorityMode? {
         guard control.step?.status == .intent else { return nil }
         switch control.step?.action {
-        case .bootstrapCandidate?, .kickstartCandidate?: return .installationStagedStart
+        case .bootstrapCandidate?, .kickstartCandidate?:
+            // Recovery retains the unresolved action, but only stop-mode fixed
+            // diagnostics may observe it. No start or bootout operation is legal.
+            return control.phase == .recovery ? .installationStagedStop : .installationStagedStart
+        case .candidateReady?: return .installationStagedStart
         case .candidateStop?: return .installationStagedStop
         default: return nil
         }
     }
     func validateStagedOperation(mode: CustodyAuthorityMode, operation: LifecycleLaunchCommand.Operation) throws {
         try validate()
-        guard stagedMode == mode else { throw CustodyRecordError.fenced }
+        guard stagedMode == mode,
+              !(control.phase == .recovery && control.step?.action != .candidateStop) else {
+            throw CustodyRecordError.fenced
+        }
         switch (control.step?.action, operation) {
         case (.bootstrapCandidate?, .bootstrap), (.kickstartCandidate?, .kickstart), (.candidateStop?, .bootout): return
         default: throw CustodyRecordError.fenced
@@ -88,6 +95,7 @@ struct InstallationCommandBinding: Equatable {
         switch step.action {
         case .bootstrapCandidate: guard step.ordinal == 13 else { throw CustodyRecordError.fenced }
         case .kickstartCandidate: guard step.ordinal == 14 else { throw CustodyRecordError.fenced }
+        case .candidateReady: guard step.ordinal == 15 else { throw CustodyRecordError.fenced }
         case .candidateStop: guard (13...Self.maximumStagedOrdinal).contains(step.ordinal) else { throw CustodyRecordError.fenced }
         default: throw CustodyRecordError.fenced
         }

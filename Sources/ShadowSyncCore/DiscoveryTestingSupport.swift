@@ -62,6 +62,40 @@ enum DiscoveryFixtureDiagnostic {
         }
     }
 
+    // Pending observation v1: bit 63 distinguishes these records from the
+    // existing caught-error records. Bits 0...7 hold the closed effective
+    // reason, 8...39 the raw wait status when reaped, 40...43 owner tags,
+    // and 44...52 the closed entry-state flags. Raw zero never means absent.
+    static func pendingBits(reason: CustodyReason, owner: OwnedDirectChildObservation?,
+                            state: UInt64) -> UInt64 {
+        let code: UInt64
+        switch reason {
+        case .none: code = 0
+        case .cancelled: code = 1
+        case .timeout: code = 2
+        case .protocolFault: code = 3
+        case .invalidResource: code = 4
+        case .identityFailure: code = 5
+        case .outputLimit: code = 6
+        case .ioFailure: code = 7
+        case .startFailure: code = 8
+        case .ownershipLost: code = 9
+        case .persistenceFailure: code = 10
+        case .bootChanged: code = 11
+        }
+        var bits = (UInt64(1) << 63) | code | ((state & 0x1ff) << 44)
+        if let owner {
+            bits |= UInt64(1) << 40
+            switch owner {
+            case .running: bits |= UInt64(1) << 41
+            case .reaped(let status):
+                bits |= (UInt64(1) << 42) | (UInt64(UInt32(bitPattern: status)) << 8)
+            case .ownershipFailure: bits |= UInt64(1) << 43
+            }
+        }
+        return bits
+    }
+
     // Read the testing-only opt-in once. The complete type and environment key
     // are absent from production builds. Disabled traces do not format records.
     private static let mode = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS"]
@@ -79,13 +113,15 @@ enum DiscoveryFixtureDiagnostic {
     static func sampleRevalidation() -> Bool { revalidationSamples.take() }
     static func samplePublisherRevalidation() -> Bool { publisherSamples.take() }
 
-    enum Component: String { case catalog, transport, custody, registry, admission, binder, selection, rebind, discovery, session, publisher }
+    enum Component: String { case catalog, transport, custody, registry, admission, binder, selection, rebind, discovery, session, publisher, policyPreparation, publication, helperPreparation, phase }
     enum Stage: String {
         case entry, budget, input, authorityBefore, resources, execution
         case authorityAfter, decode, prepare, start, wait, result, postflight, decisions
         case queued, validated, metadata, resumed, ready, admissionQueued, controlFlushed, terminal, retired
         case deadlineBefore, revalidation, deadlineAfter, root, projection, scratch, snapshot
         case resourceFiles, appExecutable, runtimeTree
+        case suspendedSpawn, suspendedVerification, ownerTransfer
+        case authorityConstruction, lockValidation, installationFence, catalogFence, reservationWrite, preparedWrite
         case failure
     }
     static func record(_ component: Component, stage: Stage, started: UInt64,
@@ -96,7 +132,7 @@ enum DiscoveryFixtureDiagnostic {
         if mode == "boundaries" || mode == "costs" {
             switch component {
             case .admission, .session, .binder, .selection, .rebind, .discovery, .publisher: break
-            case .catalog, .transport, .custody: if succeeded { return }
+            case .catalog, .transport, .custody, .policyPreparation, .publication, .helperPreparation, .phase: if succeeded { return }
             case .registry: if stage != .failure { return }
             }
         }
@@ -109,6 +145,30 @@ enum DiscoveryFixtureDiagnostic {
         }
         sinkForRecord(component, stage: stage, succeeded: succeeded,
                       ordinary: sink, failures: failureSink).emit(formatted())
+    }
+
+    /// Exact closed result fields for failed fixture commands. No process IDs,
+    /// request data, paths, child output or arbitrary errors enter this record.
+    static func recordCustodyResult(_ result: CustodyRegistryResult) {
+        guard result.phase != .finished || result.journal?.outcome != .completed
+            || result.journal?.waitStatus != 0
+            || (result.reason != nil && result.reason != CustodyReason.none) else { return }
+        let phase: String
+        switch result.phase {
+        case .starting: phase = "starting"
+        case .ready: phase = "ready"
+        case .running: phase = "running"
+        case .cleanupPending: phase = "cleanup-pending"
+        case .finished: phase = "finished"
+        }
+        failureSink.emit("DISCOVERY CUSTODY RESULT phase=\(phase)"
+            + " reason=\(result.reason?.rawValue ?? "absent")"
+            + " journal_reason=\(result.journal?.reason?.rawValue ?? "absent")"
+            + " outcome=\(result.journal?.outcome?.rawValue ?? "absent")"
+            + " wait_status=\(result.journal?.waitStatus.map { String($0) } ?? "absent")"
+            + " ordinal=\(result.journal.map { String($0.ordinal) } ?? "absent")"
+            + " helper_observed=\(result.journal?.custodian != nil)"
+            + " target_observed=\(result.journal?.target != nil)\n")
     }
 
     // Registry phase observations are progress even though they omit succeeded.

@@ -193,6 +193,16 @@ public final class AWAWorktreeCleanupAdapter:
             return (.notApplicable, nil)
         }
         let arguments = ["clean", "--path", worktree.path]
+        #if !SHADOW_SYNC_TESTING
+        // No private-policy-bound adapter is qualified. Refuse before opening
+        // an executable or constructing a deployment environment.
+        return (.unavailable, RemovalCommandEvidence(
+            executable: executablePath,
+            arguments: arguments,
+            forceLevel: .ordinaryOnly,
+            outcome: "AWA cleanup adapter is unavailable."
+        ))
+        #else
         guard let opened = openAdapterExecutable()
                 else {
             return (
@@ -300,6 +310,7 @@ public final class AWAWorktreeCleanupAdapter:
                 )
             )
         }
+        #endif
     }
 
     private func validateAdapterExecutable()
@@ -1191,6 +1202,13 @@ public final class RemovalTransaction:
             account: account,
             capturedNow: Date()
         )
+        #if !SHADOW_SYNC_TESTING
+        guard freshAWA.state != .unavailable else {
+            throw GitSafetyError.unsafeRepository(
+                "External workspace-manager evidence is unavailable; worktree removal is disabled."
+            )
+        }
+        #endif
         guard Self.awaRisk(freshAWA.state)
                 <= Self.awaRisk(
                     expected.awaEvidence?.state

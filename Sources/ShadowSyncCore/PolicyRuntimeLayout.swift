@@ -137,6 +137,18 @@ struct PolicyRuntimeTree: Equatable, Sendable {
             ctime = s.st_ctimespec.tv_sec; ctimeNS = s.st_ctimespec.tv_nsec
             self.acl = acl; self.target = target
         }
+        // An ancestor may gain or lose unrelated children. Its identity,
+        // access policy and flags must stay fixed; child-count/timestamps/size
+        // belong to the sealed framework inventory, not its parent directories.
+        func matchesAncestorIdentityAndAccess(_ other: Self) -> Bool {
+            device == other.device && inode == other.inode && owner == other.owner
+                && group == other.group && mode == other.mode && flags == other.flags && acl == other.acl
+        }
+    }
+    private struct InspectionObserver {
+        #if SHADOW_SYNC_TESTING
+        var afterAncestorRead: ((String) throws -> Void)? = nil
+        #endif
     }
     let nodes: [String: Node]
     let machOFiles: [String]
@@ -151,7 +163,18 @@ struct PolicyRuntimeTree: Equatable, Sendable {
         }
     }
 
-    private static func inspect(root: String, owner: uid_t, layout: PolicyRuntimeLayout, expected: Self?) throws -> Self {
+    #if SHADOW_SYNC_TESTING
+    func testingRevalidate(root: String, owner: uid_t, layout: PolicyRuntimeLayout,
+                           afterAncestorRead: @escaping (String) throws -> Void) throws {
+        guard try Self.inspect(root: root, owner: owner, layout: layout, expected: self,
+            observer: InspectionObserver(afterAncestorRead: afterAncestorRead)) == self else {
+            throw PublisherPolicyError.unavailable
+        }
+    }
+    #endif
+
+    private static func inspect(root: String, owner: uid_t, layout: PolicyRuntimeLayout, expected: Self?,
+                                observer: InspectionObserver = InspectionObserver()) throws -> Self {
         let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
         let components = root.utf8.split(separator: 47, omittingEmptySubsequences: false)
             .map { String(decoding: $0, as: UTF8.self) }
@@ -317,13 +340,21 @@ struct PolicyRuntimeTree: Equatable, Sendable {
             var opened = stat(), named = stat()
             guard fstat(descriptors[index], &opened) == 0 else { throw PublisherPolicyError.unavailable }
             let now = Node(opened, acl: try PolicyAuthorityFile.safeACL(descriptors[index])), old = parents[index]
-            guard now.device == old.device, now.inode == old.inode, now.owner == old.owner,
-                  now.group == old.group, now.mode == old.mode, now.acl == old.acl else {
-                throw PublisherPolicyError.unavailable
-            }
+            guard now.matchesAncestorIdentityAndAccess(old) else { throw PublisherPolicyError.unavailable }
             if index > 0 {
-                guard fstatat(descriptors[index - 1], components[index], &named, AT_SYMLINK_NOFOLLOW) == 0,
-                      Node(named, acl: now.acl) == now else { throw PublisherPolicyError.unavailable }
+                #if SHADOW_SYNC_TESTING
+                try observer.afterAncestorRead?(components.prefix(index + 1).joined(separator: "/"))
+                #endif
+                guard fstatat(descriptors[index - 1], components[index], &named, AT_SYMLINK_NOFOLLOW) == 0 else {
+                    throw PublisherPolicyError.unavailable
+                }
+                // Read access policy again instead of relying on ctime to
+                // detect ACL changes between the held and named observations.
+                let namedNode = Node(named, acl: try PolicyAuthorityFile.safeACL(descriptors[index]))
+                guard namedNode.matchesAncestorIdentityAndAccess(now) else { throw PublisherPolicyError.unavailable }
+                if index == descriptors.count - 1 {
+                    guard namedNode == now else { throw PublisherPolicyError.unavailable }
+                }
             }
             if index == descriptors.count - 1 { guard now == old else { throw PublisherPolicyError.unavailable } }
         }

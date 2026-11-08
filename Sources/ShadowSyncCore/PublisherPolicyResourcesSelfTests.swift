@@ -826,6 +826,115 @@ public enum PublisherPolicyResourcesSelfTestRunner {
             try refused { try retained.revalidate(root: aclFixture.framework, owner: geteuid(), layout: layout) }
         }
         onPass("PUBLISHER-POLICY-T22-bulk-recursive-multibatch-physical-drift-refusals")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T23-ancestor-sibling-stability-and-policy-drift-refusals") {
+            guard let framework = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_FRAMEWORK"],
+                  let source = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_SOURCE"],
+                  framework.hasPrefix("/private/tmp/"), source.hasPrefix("/private/tmp/") else {
+                throw Failure.assertion("explicit test resources missing")
+            }
+            let layout = try PolicyRuntimeLayout.decode(
+                Data(contentsOf: URL(fileURLWithPath: framework + "/" + PolicyRuntimeLayout.manifest)),
+                source: Data(contentsOf: URL(fileURLWithPath: source)))
+            for variant in ["sibling", "mode", "flags", "identity", "acl", "framework-root"] {
+                let fixture = try Fixture(layout: layout)
+                defer { try? fixture.remove() }
+                let parent = open(fixture.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try require(parent >= 0, "ancestor fixture descriptor")
+                defer { close(parent) }
+                var initial = stat()
+                try require(fstat(parent, &initial) == 0, "ancestor fixture metadata")
+                let initialACL = try PolicyAuthorityFile.safeACL(parent)
+                let backup = fixture.path + "-retained"
+                var moved = false, replacement: FileIdentity?, mutated = false, restored = false
+                var mutationCompleted = false
+                func restore() throws {
+                    if restored { return }
+                    if variant == "identity", moved {
+                        if let replacement {
+                            var named = stat()
+                            try require(lstat(fixture.path, &named) == 0 && replacement.matchesStableNode(FileIdentity(named))
+                                && named.st_mode & S_IFMT == S_IFDIR && rmdir(fixture.path) == 0,
+                                "ancestor replacement cleanup identity")
+                        }
+                        var retained = stat()
+                        try require(lstat(backup, &retained) == 0 && retained.st_dev == initial.st_dev
+                            && retained.st_ino == initial.st_ino
+                            && renameatx_np(AT_FDCWD, backup, AT_FDCWD, fixture.path, UInt32(RENAME_EXCL)) == 0,
+                            "ancestor retained identity restore")
+                        moved = false
+                    }
+                    if variant == "mode" { try require(fchmod(parent, initial.st_mode & 0o7777) == 0, "ancestor mode restore") }
+                    if variant == "flags" { try require(fchflags(parent, initial.st_flags) == 0, "ancestor flags restore") }
+                    if variant == "acl", mutated {
+                        guard let empty = acl_init(0) else { throw Failure.assertion("ancestor empty ACL") }
+                        defer { acl_free(UnsafeMutableRawPointer(empty)) }
+                        try require(acl_set_fd_np(parent, empty, ACL_TYPE_EXTENDED) == 0, "ancestor ACL restore")
+                        try require(try PolicyAuthorityFile.safeACL(parent) == initialACL, "ancestor ACL identity restore")
+                    }
+                    restored = true
+                }
+                defer { try? restore() }
+                let retained = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: layout)
+                try retained.revalidate(root: fixture.framework, owner: geteuid(), layout: layout)
+                var calls = 0
+                func run() throws {
+                    try retained.testingRevalidate(root: fixture.framework, owner: geteuid(), layout: layout) { path in
+                        guard path == (variant == "framework-root" ? fixture.framework : fixture.path) else { return }
+                        calls += 1
+                        try require(calls == 1, "ancestor hook repeated")
+                        mutated = true
+                        switch variant {
+                        case "sibling":
+                            var before = stat(), after = stat()
+                            try require(fstat(parent, &before) == 0 && mkdir(fixture.path + "/unrelated-sibling", 0o700) == 0
+                                && fstat(parent, &after) == 0, "ancestor sibling mutation")
+                            let a = PolicyRuntimeTree.Node(before, acl: try PolicyAuthorityFile.safeACL(parent))
+                            let b = PolicyRuntimeTree.Node(after, acl: try PolicyAuthorityFile.safeACL(parent))
+                            try require(a != b && a.matchesAncestorIdentityAndAccess(b),
+                                        "sibling must change volatile metadata while preserving identity and access")
+                        case "mode":
+                            try require(fchmod(parent, 0o701) == 0, "ancestor mode mutation")
+                        case "flags":
+                            try require(fchflags(parent, initial.st_flags ^ UInt32(UF_NODUMP)) == 0, "ancestor flag mutation")
+                        case "identity":
+                            try require(renameatx_np(AT_FDCWD, fixture.path, AT_FDCWD, backup, UInt32(RENAME_EXCL)) == 0,
+                                        "ancestor move original without replacement")
+                            moved = true
+                            try require(mkdir(fixture.path, 0o700) == 0, "ancestor replacement directory")
+                            var named = stat()
+                            try require(lstat(fixture.path, &named) == 0, "ancestor replacement observation")
+                            replacement = FileIdentity(named)
+                            try require(named.st_dev != initial.st_dev || named.st_ino != initial.st_ino,
+                                        "ancestor replacement must change identity")
+                        case "acl":
+                            var acl = acl_init(1)
+                            defer { if let acl { acl_free(UnsafeMutableRawPointer(acl)) } }
+                            var entry: acl_entry_t?
+                            try require(acl_create_entry(&acl, &entry) == 0 && entry != nil, "ancestor ACL entry")
+                            var uuid = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!.uuid
+                            var permissions: acl_permset_t?
+                            try require(acl_set_tag_type(entry!, ACL_EXTENDED_DENY) == 0
+                                && acl_set_qualifier(entry!, &uuid) == 0
+                                && acl_get_permset(entry!, &permissions) == 0 && permissions != nil,
+                                "ancestor ACL qualifier")
+                            try require(acl_add_perm(permissions!, ACL_DELETE) == 0
+                                && acl_set_fd_np(parent, acl, ACL_TYPE_EXTENDED) == 0, "ancestor ACL mutation")
+                            try require(try PolicyAuthorityFile.safeACL(parent) != initialACL, "ancestor ACL must drift")
+                        case "framework-root":
+                            try require(mkdir(fixture.framework + "/unexpected-child", 0o700) == 0, "framework root mutation")
+                        default: throw Failure.assertion("unknown ancestor mutation")
+                        }
+                        mutationCompleted = true
+                    }
+                }
+                if variant == "sibling" { try run() } else { try refused { try run() } }
+                try require(calls == 1 && mutated && mutationCompleted,
+                            "ancestor negative control did not complete mutation before validator refusal")
+                try restore()
+                try fixture.remove()
+            }
+        }
+        onPass("PUBLISHER-POLICY-T23-ancestor-sibling-stability-and-policy-drift-refusals")
     }
 
 

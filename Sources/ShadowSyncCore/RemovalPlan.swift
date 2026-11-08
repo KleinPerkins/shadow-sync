@@ -743,6 +743,8 @@ public enum PreparedRemovalOracle {
             gap = reason
                 + (names.isEmpty
                     ? "" : " Omitted: \(names).")
+        case .cleanupPending:
+            throw SelectedRepositoryScopeError.cleanupPending
         case .cancelled:
             artifact = nil
             gap = "Recovery preparation was cancelled."

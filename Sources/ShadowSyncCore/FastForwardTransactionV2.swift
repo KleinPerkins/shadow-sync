@@ -42,11 +42,12 @@ public final class FastForwardTransactionV2: @unchecked Sendable {
             detail: String? = nil,
             failureReason: FetchFailureReason? = nil
         ) -> RepositoryResult {
-            RepositoryResult(
+            let pending = configuration.commandContext?.hasCleanupPending == true
+            return RepositoryResult(
                 repository: candidate,
                 operationID: operation.id,
                 defaultBranch: branch.name,
-                code: code,
+                code: pending ? .cleanupPending : code,
                 fetched: fetched,
                 mainUpdated: updated,
                 beforeCommit: beforeCommit,
@@ -58,7 +59,7 @@ public final class FastForwardTransactionV2: @unchecked Sendable {
                 endedAt: WallClock.timestamp(),
                 durationMilliseconds:
                     MonotonicInstant.now().milliseconds(since: started),
-                explanation: explanation,
+                explanation: pending ? "Cleanup is still pending. Further repository work is blocked." : explanation,
                 technicalDetail: detail.map(Redactor.sanitize),
                 failureReason: failureReason
             )
@@ -115,7 +116,7 @@ public final class FastForwardTransactionV2: @unchecked Sendable {
             )
             try handle.rejectReplacementAndGraftState()
             try handle.rejectBusyState(defaultBranch: branch.name)
-            let frozen = try freezeConfiguration(handle)
+            let frozen = try freezeConfiguration(handle, cancellation: cancellation)
             let admission = try validateOriginAndTransport(
                 handle: handle,
                 frozen: frozen,
@@ -603,7 +604,7 @@ public final class FastForwardTransactionV2: @unchecked Sendable {
         let handle = try RepositoryHandle.open(candidate)
         try handle.rejectReplacementAndGraftState()
         try handle.rejectBusyState(defaultBranch: branch.name)
-        let frozen = try freezeConfiguration(handle)
+        let frozen = try freezeConfiguration(handle, cancellation: cancellation)
         guard
             let hooksDirectory =
                 frozen.effectiveHooksDirectory
@@ -1491,7 +1492,7 @@ public final class FastForwardTransactionV2: @unchecked Sendable {
     }
 
     func freezeConfiguration(
-        _ handle: RepositoryHandle
+        _ handle: RepositoryHandle, cancellation: CancellationToken
     ) throws -> FrozenGitConfiguration {
         #if SHADOW_SYNC_TESTING
         let additional = configuration.transportMapping.flatMap {
@@ -1500,10 +1501,12 @@ public final class FastForwardTransactionV2: @unchecked Sendable {
         #else
         let additional: String? = nil
         #endif
-        return try handle.freezeConfiguration(
-            account: account,
-            additionalConfiguration: additional
-        )
+        if let context = configuration.commandContext {
+            return try handle.freezeConfiguration(account: account,
+                retainedConfigurationProbe: SystemGitConfigurationProbe(context: context, cancellation: cancellation),
+                additionalConfiguration: additional)
+        }
+        return try handle.freezeConfiguration(account: account, additionalConfiguration: additional)
     }
 
     func validateOriginAndTransport(
@@ -1863,7 +1866,12 @@ public final class FastForwardTransactionV2: @unchecked Sendable {
                 ?? handle.githubIdentity.transport,
             frozenConfigPath: frozen.snapshot.frozenPath
         )
-        let result = try runner.run(
+        let result: ProcessResult
+        if let context = configuration.commandContext {
+            result = try runner.runRepository(arguments: admittedArguments, context: context, handle: handle,
+                frozen: frozen, snapshot: snapshot, timeout: timeout, cancellation: cancellation)
+        } else {
+        result = try runner.run(
             ProcessRequest(
                 executable: DescriptorProcessRunner.gitPath,
                 arguments: admittedArguments,
@@ -1879,10 +1887,12 @@ public final class FastForwardTransactionV2: @unchecked Sendable {
             ),
             cancellation: cancellation
         )
+        }
         try validationHandle.validateExecutionSnapshot(
             validationSnapshot,
             account: account,
-            requirePackedIdentity: !arguments.contains("fetch")
+            requirePackedIdentity: !arguments.contains("fetch"),
+            frozenConfiguration: frozen
         )
         try RepositoryHandle.validateFrozenConfiguration(
             descriptor: frozen.descriptor,

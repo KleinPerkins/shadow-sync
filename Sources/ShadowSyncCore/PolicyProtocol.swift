@@ -91,7 +91,7 @@ indirect enum PolicyWireValue: Equatable {
 /// Closed wire grammar: JSON objects/arrays/strings/booleans/null and unsigned
 /// integer indexes. Reject duplicate keys before Foundation can discard them.
 struct PolicyWireParser {
-    enum Profile { case wire, configuration, bundleLayout, discoveryCustody }
+    enum Profile { case wire, configuration, bundleLayout, discoveryCustody, legacyStateDocument }
     private let bytes: [UInt8]
     private let maximumStringBytes: Int
     private let maximumArrayCount: Int
@@ -108,7 +108,13 @@ struct PolicyWireParser {
         // Configuration fields enforce decoded bounds. Escaping a valid large
         // dispatcher must not reduce its permitted length; the document is capped.
         maximumStringBytes = profile == .wire ? 4096 : profile == .discoveryCustody ? 16_384 : 1_048_576
-        maximumArrayCount = profile == .wire || profile == .discoveryCustody ? 64 : 256
+        // Legacy documents historically had a one-MiB byte bound, not a
+        // 256-entry bound. Even an array of one-byte JSON values needs at
+        // least two bytes per item including separators: no such document
+        // can contain more than 524,288 array elements. Existing profiles
+        // retain their exact count, byte, string, object and depth budgets.
+        maximumArrayCount = profile == .legacyStateDocument ? 524_288
+            : profile == .wire || profile == .discoveryCustody ? 64 : 256
         maximumObjectCount = profile == .bundleLayout ? 4096 : 16
         // Discovery's snapshot/configuration/contributors/file/identity leaf is
         // one level deeper. Existing policy/configuration grammar stays at six.

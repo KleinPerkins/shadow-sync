@@ -550,6 +550,26 @@ public enum V2Body2SelfTestRunner {
             username: "fixture",
             homeDirectory: home
         )
+        let unqualifiedAudit = LockedCounter()
+        let unqualified = ReadOnlyGitHubCLIAdapter(
+            account: account,
+            audit: { _ in _ = unqualifiedAudit.increment() }
+        )
+        let refused = unqualified.lookup(
+            repositoryID: "owner/repo", branch: "feature",
+            tipOID: String(repeating: "a", count: 40),
+            cancellation: CancellationToken()
+        )
+        try check(refused.unavailableReason == .unqualified
+            && refused.records.isEmpty && unqualifiedAudit.value == 0,
+            "unqualified production GitHub adapter did not refuse before invocation")
+        let cancelled = CancellationToken()
+        cancelled.cancel()
+        try check(unqualified.lookup(
+            repositoryID: "owner/repo", branch: "feature",
+            tipOID: String(repeating: "a", count: 40), cancellation: cancelled
+        ).unavailableReason == .cancelled && unqualifiedAudit.value == 0,
+            "unqualified GitHub adapter lost cancellation or invoked a child")
         let environment =
             ReadOnlyGitHubCLIAdapter.environment(account: account)
         try check(

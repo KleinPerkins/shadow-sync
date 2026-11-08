@@ -3581,7 +3581,15 @@ extension InstallationLifecycle {
         return capture
     }
     fileprivate func observeInstallationSlots(binding: InstallationLiveBinding, transactionID: String,
-                                              parents: [InstallationCaptureParent]) throws
+                                              parents: [InstallationCaptureParent], endpoint: InstallationReadinessEndpoint? = nil) throws
+        -> (InstallationSlotSnapshot, [InstallationDocumentPreimage]) {
+        try observeInstallationSlots(stateBinding: binding.state, candidate: binding.candidate,
+            transactionID: transactionID, parents: parents, endpoint: endpoint)
+    }
+    fileprivate func observeInstallationSlots(stateBinding: InstallationStateBinding, candidate: InstallationCandidate,
+                                              transactionID: String, parents: [InstallationCaptureParent],
+                                              endpoint: InstallationReadinessEndpoint? = nil,
+                                              hostEndpoint: InstallationPrecommitHostEndpoint? = nil) throws
         -> (InstallationSlotSnapshot, [InstallationDocumentPreimage]) {
         guard parents.count == 4 else { throw CustodyRecordError.fenced }
         let app = parents[0], plist = parents[1], namespaceParent = parents[2], state = parents[3]
@@ -3589,7 +3597,7 @@ extension InstallationLifecycle {
         // link count, matching InstallationStateBinding.validateLive. Capture
         // still records and checks the current count within each pass.
         func isBoundState(_ node: InstallationNodeIdentity) -> Bool {
-            let held = binding.state.directory
+            let held = stateBinding.directory
             return node.device == held.device && node.inode == held.inode && node.type == held.type
                 && node.uid == held.uid && node.mode == held.mode && node.aclDigest == held.aclDigest
                 && node.links > 0 && held.links > 0
@@ -3633,9 +3641,16 @@ extension InstallationLifecycle {
             let absent = InstallationSlotImage(parentDevice: parent.identity.device, parentInode: parent.identity.inode,
                 node: nil, size: nil, contentDigest: nil, documentReceipts: nil)
             if slot.isSocket {
-                // No authenticated retained endpoint exists in this slice. Never
-                // infer safe absence/deletion from PID/ECONNREFUSED metadata.
-                try parent.absent(name); images[slot] = absent; continue
+                if slot == .installationSocket, let endpoint {
+                    try endpoint.revalidate()
+                    guard endpoint.parentMatches(parent.identity) else { throw CustodyRecordError.conflict }
+                    images[slot] = endpoint.image
+                } else if slot == .installationSocket, let hostEndpoint {
+                    try hostEndpoint.revalidate()
+                    guard hostEndpoint.parentMatches(parent.identity) else { throw CustodyRecordError.conflict }
+                    images[slot] = hostEndpoint.image
+                } else { try parent.absent(name); images[slot] = absent }
+                continue
             }
             guard let (fd, node) = try parent.open(name, directory: slot.isBundle || slot.isNamespace,
                                                  privateMode: !slot.isBundle) else { images[slot] = absent; continue }
@@ -3656,7 +3671,7 @@ extension InstallationLifecycle {
             } else if slot.isBundle {
                 let path = parent.pinned.path + "/" + name
                 let artifact = try inspectExclusiveBundle(path,
-                    candidate: [.applicationIncoming, .applicationIncomplete].contains(slot) ? binding.candidate : nil)
+                    candidate: [.applicationIncoming, .applicationIncomplete].contains(slot) ? candidate : nil)
                 digest = artifact.canonicalSHA256
             } else {
                 let bytes = try InstallationCaptureParent.bytes(fd.value, maximum: 65_536)
@@ -3858,7 +3873,8 @@ extension InstallationCapturedSlots {
 final class InstallationPreparedSlotObservation {
     private let owner: InstallationTransactionOwner
     private let binding: InstallationLiveBinding
-    private let expected: InstallationSlotSnapshot
+    private var expected: InstallationSlotSnapshot
+    private var endpoint: InstallationReadinessEndpoint?
     private let documents: [InstallationDocumentPreimage]
     private let parents: [InstallationCaptureParent]
     private let transactionID: String
@@ -3875,10 +3891,37 @@ final class InstallationPreparedSlotObservation {
         observer.testingExclusiveRoot = capture.lifecycle.testingExclusiveRoot
         #endif
     }
+    // Caller must already have persisted open-staged-admission intent. This
+    // factory additionally requires the actual consumed owner in staged phase.
+    func createReadinessEndpoint(for owner: InstallationTransactionOwner) throws -> InstallationReadinessEndpoint {
+        guard self.owner === owner, endpoint == nil else { throw CustodyRecordError.fenced }
+        try owner.validateReadinessOwner()
+        try revalidate(for: owner)
+        guard expected.images[.installationSocket]?.node == nil else { throw CustodyRecordError.fenced }
+        let created = try InstallationReadinessEndpoint(parent: parents[3])
+        // Retain immediately. Failure after bind preserves the endpoint and fence;
+        // no unknown/stale-socket cleanup is available on this path.
+        endpoint = created
+        var images = expected.images; images[.installationSocket] = created.image
+        expected = InstallationSlotSnapshot(images: images)
+        try revalidate(for: owner)
+        return created
+    }
+    func readinessHost(peer: PublisherCodeVerifier.AuditPeerObservation, generation: String,
+                       for owner: InstallationTransactionOwner) throws -> ProcessIdentity {
+        try revalidate(for: owner)
+        guard peer.uid == binding.state.directory.uid else { throw CustodyRecordError.fenced }
+        let process = try ProcessIdentity.capture(processID: peer.pid, generation: generation,
+            expectedExecutablePath: observer.paths.executable)
+        guard process.userID == peer.uid else { throw CustodyRecordError.fenced }
+        try revalidate(for: owner)
+        return process
+    }
+    var readinessSnapshot: InstallationSlotSnapshot { expected }
     func revalidate(for owner: InstallationTransactionOwner) throws {
         guard self.owner === owner else { throw CustodyRecordError.fenced }
         try binding.revalidate(for: owner)
-        let actual = try observer.observeInstallationSlots(binding: binding, transactionID: transactionID, parents: parents)
+        let actual = try observer.observeInstallationSlots(binding: binding, transactionID: transactionID, parents: parents, endpoint: endpoint)
         guard actual.0 == expected, actual.1 == documents else { throw CustodyRecordError.conflict }
         for (slot, descriptor) in exclusiveNodes {
             guard try InstallationCaptureParent.node(descriptor.value, directory: slot.isBundle, privateMode: !slot.isBundle) == expected.images[slot]?.node else { throw CustodyRecordError.conflict }
@@ -3888,4 +3931,195 @@ final class InstallationPreparedSlotObservation {
 }
 extension InstallationCapturedSlots {
     func preparedSlotObservation() throws -> InstallationPreparedSlotObservation { try .init(self) }
+}
+
+/// Fixed promoted slots, independently pinned by caller and custodian. Neither
+/// decoded paths nor an ordinary bootout's old-release exception enter here.
+final class InstallationStagedCandidateSlots {
+    private let applicationParent: InstallationCaptureParent
+    private let plistParent: InstallationCaptureParent
+    private let application: OwnedFileDescriptor
+    private let plist: OwnedFileDescriptor
+    private let expectedApplication: InstallationSlotImage
+    private let expectedPlist: InstallationSlotImage
+    init(binding: InstallationCommandBinding, account: EffectiveAccount) throws {
+        try binding.validate()
+        guard binding.stagedMode != nil, let slots = binding.control.transaction?.slots,
+              let app = slots.images[.application], let plist = slots.images[.launchPlist],
+              app.node != nil, plist.node != nil else { throw CustodyRecordError.fenced }
+        expectedApplication = app; expectedPlist = plist
+        applicationParent = try InstallationCaptureParent(account.homeDirectory + "/Applications")
+        plistParent = try InstallationCaptureParent(account.homeDirectory + "/Library/LaunchAgents")
+        guard let application = try applicationParent.open("ShadowSync.app", directory: true, privateMode: false),
+              let launch = try plistParent.open(InstallationPaths.label + ".plist", directory: false, privateMode: true),
+              application.1 == app.node, launch.1 == plist.node else { throw CustodyRecordError.fenced }
+        self.application = application.0; self.plist = launch.0
+        try revalidate()
+    }
+    func revalidate() throws {
+        guard applicationParent.identity.device == expectedApplication.parentDevice,
+              applicationParent.identity.inode == expectedApplication.parentInode,
+              plistParent.identity.device == expectedPlist.parentDevice,
+              plistParent.identity.inode == expectedPlist.parentInode,
+              let appNode = expectedApplication.node, let plistNode = expectedPlist.node else { throw CustodyRecordError.fenced }
+        try applicationParent.recheck("ShadowSync.app", owned: application, node: appNode, privateMode: false)
+        try plistParent.recheck(InstallationPaths.label + ".plist", owned: plist, node: plistNode, privateMode: true)
+    }
+}
+
+/// Owns the fixed installation endpoint, not installation/operation authority.
+/// No production unlink API exists: accepted cleanup-coordination must consume
+/// a future typed retirement capability. Closing service preserves durable fence.
+final class InstallationReadinessEndpoint: @unchecked Sendable {
+    private let parent: InstallationCaptureParent
+    let listener: OwnedFileDescriptor
+    private let node: OwnedFileDescriptor
+    let image: InstallationSlotImage
+    private static let name = "installation.sock"
+    private let serviceLock = NSLock()
+    fileprivate init(parent: InstallationCaptureParent) throws {
+        self.parent = parent
+        try parent.validate(); try parent.absent(Self.name)
+        guard parent.identity.mode == 0o40700 else { throw CustodyRecordError.unsafeMetadata }
+        let raw = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard raw >= 0 else { throw CustodyRecordError.persistence(errno) }
+        let listener = OwnedFileDescriptor(raw); self.listener = listener
+        try InstallationPrecommitTransport.configure(raw)
+        var address = try HostControlIO.address(path: parent.pinned.path + "/" + Self.name)
+        let bound = withUnsafePointer(to: &address) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(raw, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        guard bound == 0 else { throw CustodyRecordError.persistence(errno) }
+        // No cleanup catch: even a partial publication retains unknown evidence.
+        let held = openat(parent.fd, Self.name, O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard held >= 0 else { throw CustodyRecordError.persistence(errno) }
+        node = OwnedFileDescriptor(held)
+        var before = stat(), named = stat()
+        guard fstat(held, &before) == 0, before.st_mode & S_IFMT == S_IFSOCK,
+              before.st_uid == geteuid(), before.st_nlink == 1,
+              fstatat(parent.fd, Self.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              FileIdentity(before).matchesStableNode(FileIdentity(named)),
+              fchmod(held, 0o600) == 0 else { throw CustodyRecordError.unsafeMetadata }
+        let identity = try Self.identity(held)
+        image = InstallationSlotImage(parentDevice: parent.identity.device, parentInode: parent.identity.inode,
+            node: identity, size: nil, contentDigest: nil, documentReceipts: nil)
+        try revalidate()
+        guard listen(raw, 1) == 0, fsync(parent.fd) == 0 else { throw CustodyRecordError.persistence(errno) }
+        try revalidate()
+    }
+    fileprivate static func identity(_ fd: Int32) throws -> InstallationNodeIdentity {
+        var s = stat()
+        guard fstat(fd, &s) == 0, s.st_mode == S_IFSOCK | 0o600,
+              s.st_uid == geteuid(), s.st_nlink == 1, s.st_flags == 0 else { throw CustodyRecordError.unsafeMetadata }
+        return InstallationNodeIdentity(device: UInt64(s.st_dev), inode: UInt64(s.st_ino), type: .socket,
+            uid: s.st_uid, mode: UInt32(s.st_mode), links: UInt64(s.st_nlink),
+            aclDigest: CustodyRecordBinding.digest(Data(try PolicyAuthorityFile.privateStateACL(fd).utf8)))
+    }
+    fileprivate func parentMatches(_ other: InstallationNodeIdentity) -> Bool { parent.identity == other }
+    func revalidate() throws {
+        try parent.validate()
+        guard let expected = image.node, try Self.identity(node.value) == expected else { throw CustodyRecordError.conflict }
+        let fd = openat(parent.fd, Self.name, O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw CustodyRecordError.conflict }
+        defer { close(fd) }
+        guard try Self.identity(fd) == expected else { throw CustodyRecordError.conflict }
+        try parent.validate()
+    }
+    func closeService() {
+        serviceLock.lock(); defer { serviceLock.unlock() }
+        if let fd = try? listener.duplicate() { _ = shutdown(fd, SHUT_RDWR); close(fd) }
+        listener.closeNow()
+    }
+    #if SHADOW_SYNC_TESTING
+    func testingRemoveOwnedEndpoint() throws {
+        closeService(); try revalidate()
+        guard unlinkat(parent.fd, Self.name, 0) == 0, fsync(parent.fd) == 0 else { throw CustodyRecordError.persistence(errno) }
+        try parent.absent(Self.name)
+    }
+    #endif
+}
+
+/// Pins the fixed staged layout for the current host. This performs only the
+/// existing installation-slot reads, never ordinary admission or activation.
+final class InstallationCommittedHostSlots {
+    private let observer: InstallationLifecycle
+    private let control: InstallationControlRecord
+    private let parents: [InstallationCaptureParent]
+    private let endpoint: InstallationPrecommitHostEndpoint
+    init(paths: InstallationPaths, control: InstallationControlRecord,
+         endpoint: InstallationPrecommitHostEndpoint) throws {
+        guard control.phase == .committed, control.step?.action == .readinessCommit,
+              control.step?.status == .complete else { throw CustodyRecordError.fenced }
+        observer = InstallationLifecycle(paths: paths, launchAgent: SystemLaunchAgentController(), host: SystemInstalledHostController())
+        self.control = control; self.endpoint = endpoint
+        parents = try [URL(fileURLWithPath: paths.app).deletingLastPathComponent().path,
+            URL(fileURLWithPath: paths.launchAgent).deletingLastPathComponent().path,
+            URL(fileURLWithPath: paths.state.path).deletingLastPathComponent().path,
+            paths.state.path].map(InstallationCaptureParent.init)
+        try revalidate()
+    }
+    func revalidate() throws {
+        guard let transaction = control.transaction, let candidate = transaction.candidate else { throw CustodyRecordError.fenced }
+        let observed = try observer.observeInstallationSlots(stateBinding: control.state, candidate: candidate,
+            transactionID: transaction.id, parents: parents, hostEndpoint: endpoint)
+        guard observed.0 == transaction.slots else { throw CustodyRecordError.conflict }
+    }
+}
+
+/// Host-side pin of the same fixed endpoint. The control image is evidence only;
+/// live exact-code peer authentication remains mandatory on the retained stream.
+final class InstallationPrecommitHostEndpoint {
+    private let parent: InstallationCaptureParent
+    private let node: OwnedFileDescriptor
+    private let expected: InstallationSlotImage
+    let connection: OwnedFileDescriptor
+    init(admission: LifecycleAdmissionAuthority, control: InstallationControlRecord,
+         deadline: MonotonicDeadline) throws {
+        guard let expected = control.transaction?.slots.images[.installationSocket], expected.node != nil else {
+            throw CustodyRecordError.fenced
+        }
+        self.expected = expected
+        parent = try InstallationCaptureParent(admission.stateDirectory.path)
+        guard parent.identity.device == control.state.directory.device,
+              parent.identity.inode == control.state.directory.inode,
+              parent.identity.mode == control.state.directory.mode,
+              parent.identity.aclDigest == control.state.directory.aclDigest,
+              expected.parentDevice == parent.identity.device, expected.parentInode == parent.identity.inode else {
+            throw CustodyRecordError.conflict
+        }
+        let fd = openat(parent.fd, "installation.sock", O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw CustodyRecordError.persistence(errno) }
+        node = OwnedFileDescriptor(fd)
+        let raw = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard raw >= 0 else { throw CustodyRecordError.persistence(errno) }
+        connection = OwnedFileDescriptor(raw)
+        try InstallationPrecommitTransport.configure(raw)
+        try revalidate()
+        var address = try HostControlIO.address(path: parent.pinned.path + "/installation.sock")
+        let result = withUnsafePointer(to: &address) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(raw, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        if result != 0 {
+            guard errno == EINPROGRESS else { throw CustodyRecordError.persistence(errno) }
+            try HostControlIO.wait(raw, events: Int16(POLLOUT), deadline: deadline)
+            var code: Int32 = 0, size = socklen_t(MemoryLayout<Int32>.size)
+            guard getsockopt(raw, SOL_SOCKET, SO_ERROR, &code, &size) == 0,
+                  size == socklen_t(MemoryLayout<Int32>.size), code == 0 else { throw CustodyRecordError.conflict }
+        }
+        guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+        try revalidate()
+    }
+    fileprivate var image: InstallationSlotImage { expected }
+    fileprivate func parentMatches(_ other: InstallationNodeIdentity) -> Bool { parent.identity == other }
+    func revalidate() throws {
+        try parent.validate()
+        guard let image = expected.node, try InstallationReadinessEndpoint.identity(node.value) == image else {
+            throw CustodyRecordError.conflict
+        }
+        let fd = openat(parent.fd, "installation.sock", O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw CustodyRecordError.conflict }
+        defer { close(fd) }
+        guard try InstallationReadinessEndpoint.identity(fd) == image else { throw CustodyRecordError.conflict }
+        try parent.validate()
+    }
 }

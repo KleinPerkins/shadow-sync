@@ -7,8 +7,8 @@ The current objective is a usable signed MVP and governed standalone repository.
 ## Current evidence
 
 - The reviewed standalone source is included in the current source-import change, with per-file public provenance and private history excluded. Publication does not establish runtime, signed-release or installation qualification.
-- The private 252-file candidate passes 334 tooling tests and 61/849 mandatory cases in four complete suites: guardian 7, custody 11, closed runner 10 and M1 33. M1 spawned and reaped 565 children; its two earlier failures and the corrected test-only atomic-write fixture remain preserved. Independent review verified exact source/binary/raw evidence and clean fixture teardown. 235 testing-positive markers are absent from all three production executables.
-- Prior 681-case, 47-case and 46-case results belong to other source identities and are not added to current coverage. Full current-source runtime/native qualification remains open.
+- Current development work includes caller custody, staged command completion, readiness/session and legacy document observation components. These source components do not establish a working source-free installation or completed migration.
+- Full exact-source runtime/native coverage and hosted integration remain unqualified. Development compilation and source/tooling checks are not activation evidence. Earlier source/binary results are retained separately and are not transferred to the current snapshot.
 - Credential readiness is prior completed evidence, not a signed product release. No new credential request is identified.
 - No signed ShadowSync product release, installed migration, installed update or physical UAT acceptance is claimed. The controller and fleet pins remain unchanged.
 

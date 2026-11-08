@@ -99,6 +99,41 @@ enum InstallationReadinessWireFixtures {
         let written = data.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
         try check(written == data.count, "readiness fixture write incomplete")
     }
+    static func challengeExcessBeforeReady() throws {
+        let hello = message(), deadline = MonotonicDeadline(seconds: 3)
+        var initial = try InstallationPrecommitTranscript(hello: hello)
+        try initial.consume(hello, sender: .host, deadline: deadline)
+        let challenge = try initial.message(.challenge)
+        let frame = try challenge.encode() + Data([10])
+        for suffix in [Data(), frame, try message(.commit).encode() + Data([10]), Data([123])] {
+            try sockets { coordinator, host in
+                let payload = frame + suffix
+                // One bounded write and one reader chunk force the relevant
+                // coalesced condition rather than relying on stream timing.
+                try check(payload.count < 4_096, "challenge fixture exceeds reader chunk")
+                try raw(payload, to: coordinator)
+                var frames = HostControlIO.FrameReader(), transcript = initial
+                let advance = {
+                    let observed = try InstallationPrecommitTransport.readChallenge(reader: &frames,
+                        descriptor: host, deadline: deadline)
+                    try transcript.consume(observed, sender: .coordinator, deadline: deadline)
+                    let ready = try transcript.message(.ready)
+                    try HostControlIO.writeFrame(ready.encode(), descriptor: host, deadline: deadline)
+                }
+                if suffix.isEmpty {
+                    try advance()
+                    var response = HostControlIO.FrameReader()
+                    let ready = try InstallationReadinessMessage.decode(response.read(descriptor: coordinator, deadline: deadline))
+                    try check(ready.event == .ready, "single challenge did not produce ready")
+                } else {
+                    try refuses(advance)
+                    var byte: UInt8 = 0
+                    try check(Darwin.read(coordinator, &byte, 1) == -1 && (errno == EAGAIN || errno == EWOULDBLOCK),
+                        "coalesced challenge emitted ready before refusal")
+                }
+            }
+        }
+    }
     static func persistentFrames() throws {
         try sockets { writer, reader in
             let first = try message().encode(), next = try message(.challenge).encode()

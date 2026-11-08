@@ -46,8 +46,10 @@ struct PolicyRuntimeBulkDirectory {
         @inline(never) get { buffer.withUnsafeBytes { UInt(bitPattern: $0.baseAddress!) } }
     }
     var testingIsReset: Bool {
-        offset == 0 && remaining == 0 && total == 0 && !finished
-            && buffer.allSatisfy { $0 == 0 }
+        @inline(never) get {
+            offset == 0 && remaining == 0 && total == 0 && !finished
+                && buffer.allSatisfy { $0 == 0 }
+        }
     }
     var testingPendingCount: Int { @inline(never) get { remaining } }
     var testingTotalCount: Int { @inline(never) get { total } }

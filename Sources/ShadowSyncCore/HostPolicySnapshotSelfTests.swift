@@ -1947,6 +1947,9 @@ public enum HostPolicySnapshotSelfTestRunner {
             for _ in 0..<1_000 {
                 route(.catalog, .entry, true, "successful catalog\n")
                 route(.registry, .retired, false, "registry progress\n")
+                route(.policyPreparation, .postflight, true, "successful preparation\n")
+                route(.publication, .preparedWrite, true, "successful publication\n")
+                route(.helperPreparation, .postflight, true, "successful helper preparation\n")
             }
             try require(progress.snapshot().0.last == Sink.suppression && failures.snapshot().0.isEmpty,
                         "progress tracing consumed the failure reserve")
@@ -1955,7 +1958,13 @@ public enum HostPolicySnapshotSelfTestRunner {
                 (.session, .snapshot), (.catalog, .decisions), (.transport, .execution),
                 (.custody, .result), (.binder, .root), (.selection, .projection),
                 (.rebind, .postflight), (.discovery, .metadata), (.publisher, .runtimeTree),
-                (.registry, .failure)
+                (.registry, .failure), (.policyPreparation, .authorityConstruction),
+                (.policyPreparation, .resources), (.publication, .lockValidation),
+                (.publication, .catalogFence), (.publication, .reservationWrite),
+                (.publication, .preparedWrite), (.helperPreparation, .suspendedSpawn),
+                (.helperPreparation, .suspendedVerification), (.helperPreparation, .ownerTransfer),
+                (.phase, .entry), (.phase, .resources), (.phase, .lockValidation),
+                (.phase, .installationFence), (.phase, .authorityAfter), (.phase, .metadata), (.phase, .postflight)
             ]
             for (component, stage) in terminal {
                 route(component, stage, false, "terminal \(component.rawValue) \(stage.rawValue)\n")
@@ -1989,6 +1998,24 @@ public enum HostPolicySnapshotSelfTestRunner {
                 checked.emit(oversized); checked.emit("later diagnostic\n")
                 try require(probe.snapshot().0 == [Sink.suppression], "oversized diagnostic escaped UTF-8 bound")
             }
+            let absent = DiscoveryFixtureDiagnostic.pendingBits(reason: .ioFailure, owner: nil, state: 0)
+            let running = DiscoveryFixtureDiagnostic.pendingBits(reason: .ioFailure, owner: .running, state: 0)
+            let zero = DiscoveryFixtureDiagnostic.pendingBits(reason: .ioFailure, owner: .reaped(0), state: 0)
+            let exited = DiscoveryFixtureDiagnostic.pendingBits(reason: .ioFailure, owner: .reaped(71 << 8), state: 0x1ff)
+            let lost = DiscoveryFixtureDiagnostic.pendingBits(reason: .ioFailure, owner: .ownershipFailure(ECHILD), state: 0)
+            try require(Set([absent, running, zero, exited, lost]).count == 5
+                && [absent, running, zero, exited, lost].allSatisfy { $0 >> 63 == 1 && $0 & 0xff == 7 }
+                && ((exited >> 8) & 0xffff_ffff) == UInt64(71 << 8)
+                && ((exited >> 44) & 0x1ff) == 0x1ff
+                && DiscoveryFixtureDiagnostic.pendingBits(reason: .ioFailure, owner: nil, state: UInt64.max)
+                    == (absent | (UInt64(0x1ff) << 44)),
+                "pending observations conflated absent/reaped status or escaped closed bits")
+            let reasons: [CustodyReason] = [.none, .cancelled, .timeout, .protocolFault,
+                .invalidResource, .identityFailure, .outputLimit, .ioFailure, .startFailure,
+                .ownershipLost, .persistenceFailure, .bootChanged]
+            try require(reasons.enumerated().allSatisfy {
+                DiscoveryFixtureDiagnostic.pendingBits(reason: $0.element, owner: nil, state: 0) & 0xff == UInt64($0.offset)
+            }, "pending diagnostic reason table changed")
         }
         onPass("POLICY-SESSION-T61-diagnostic-opt-in-and-concurrent-output-bounds")
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T62-metadata-resource-revocation-before-during-and-after-classification") {
@@ -2418,6 +2445,28 @@ public enum HostPolicySnapshotSelfTestRunner {
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T70-rebind-first-batch-current-policy-metadata") {
             let fixture = try SessionFixture(); defer { try? fixture.remove() }
             let scope = try selectedScope(fixture), audit = CommandAudit()
+            let advisory = try fixture.make().binder().processFreeCatalog(preferences: nil,
+                generation: scope.selectionGeneration)
+            let intent = try RepositorySelectionIntent(catalog: advisory.catalog,
+                entries: scope.repositories.map {
+                    try RepositorySelectionPreferenceEntry(repositoryID: $0.repositoryID, locator: $0.locator)
+                })
+            let initialAudit = CommandAudit()
+            let initial = try fixture.make("rebind-first-batch", audit: initialAudit).binder()
+            for _ in 0..<2 {
+                let before = initialAudit.invocations.count
+                let bound = try initial.bind(intent: intent)
+                try require(bound == scope && initialAudit.invocations.count > before,
+                    "initial bind omitted first-batch metadata or reused prior deadline authority")
+            }
+            let initialProtectedAudit = CommandAudit()
+            let initialProtected = try fixture.make("rebind-first-protected", audit: initialProtectedAudit).binder()
+            do {
+                _ = try initialProtected.bind(intent: intent)
+                throw Failure.assertion("initial bind trusted protected lexical selection")
+            } catch SelectedRepositoryScopeError.ambiguous {}
+            try require(!initialProtectedAudit.invocations.isEmpty,
+                "initial bind failed before current protected classification")
             // The adapter rejects a root batch lacking this selection's fixed
             // metadata, so a separate later warming request cannot satisfy it.
             let binder = try fixture.make("rebind-first-batch", audit: audit).binder()
@@ -2454,6 +2503,12 @@ public enum HostPolicySnapshotSelfTestRunner {
             }
             let fixture = try SessionFixture(); defer { try? fixture.remove() }
             let scope = try selectedScope(fixture), snapshot = try fixture.snapshot(), requests = Requests()
+            let advisory = try fixture.make().binder().processFreeCatalog(preferences: nil,
+                generation: scope.selectionGeneration)
+            let intent = try RepositorySelectionIntent(catalog: advisory.catalog,
+                entries: scope.repositories.map {
+                    try RepositorySelectionPreferenceEntry(repositoryID: $0.repositoryID, locator: $0.locator)
+                })
             let admission = RepositorySelectionPathAdmission(evaluate: { paths, deadline in
                 requests.record(paths, deadline)
                 return paths.map { RepositorySelectionAdmissionDecision(path: $0,
@@ -2469,12 +2524,18 @@ public enum HostPolicySnapshotSelfTestRunner {
                     throw Failure.assertion("allowed hint overrode denied required root")
                 } catch SelectedRepositoryScopeError.policyUnavailable {}
             }
+            for _ in 0..<2 {
+                do {
+                    _ = try binder.bind(intent: intent)
+                    throw Failure.assertion("initial bind hint overrode denied required root")
+                } catch SelectedRepositoryScopeError.policyUnavailable {}
+            }
             let observed = requests.all
-            try require(!entered && catalogs == 0 && observed.count == 2
+            try require(!entered && catalogs == 0 && observed.count == 4
                 && observed.allSatisfy { $0.0.count == 2 && $0.0[0].components.isEmpty
                     && $0.0[1].components == scope.repositories[0].locator.components
                     && $0.1 > started }
-                && observed[1].1 > observed[0].1,
+                && zip(observed, observed.dropFirst()).allSatisfy { $0.1 < $1.1 },
                 "root denial was bypassed or rebind reused first invocation deadline")
             try fixture.remove()
         }

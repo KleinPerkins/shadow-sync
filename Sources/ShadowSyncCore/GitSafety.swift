@@ -705,17 +705,25 @@ public final class FrozenGitConfiguration: @unchecked Sendable {
     private let ownedDirectoryDescriptor: OwnedFileDescriptor
     public let snapshot: GitConfigurationSnapshot
     let effectiveHooksDirectory: String?
+    // In-memory evidence retained with these exact frozen resources. It is not
+    // encoded into a trampoline request or reconstructed from contributor paths.
+    fileprivate let retainedPreflight: GitConfigurationPreflight?
+    fileprivate let retainedProbe: SystemGitConfigurationProbe?
 
-    init(
+    fileprivate init(
         descriptor: Int32,
         directoryDescriptor: Int32,
         snapshot: GitConfigurationSnapshot,
-        effectiveHooksDirectory: String?
+        effectiveHooksDirectory: String?,
+        retainedPreflight: GitConfigurationPreflight? = nil,
+        retainedProbe: SystemGitConfigurationProbe? = nil
     ) {
         ownedDescriptor = OwnedFileDescriptor(descriptor)
         ownedDirectoryDescriptor = OwnedFileDescriptor(directoryDescriptor)
         self.snapshot = snapshot
         self.effectiveHooksDirectory = effectiveHooksDirectory
+        self.retainedPreflight = retainedPreflight
+        self.retainedProbe = retainedProbe
     }
 
     public var descriptor: Int32 {
@@ -2564,8 +2572,13 @@ public final class RepositoryHandle: @unchecked Sendable {
         account: EffectiveAccount,
         additionalConfiguration: String? = nil
     ) throws -> FrozenGitConfiguration {
-        try freezeConfiguration(account: account, additionalConfiguration: additionalConfiguration,
-                                systemPath: nil)
+        #if SHADOW_SYNC_TESTING
+        guard !GitConfigurationValidationTesting.forbidRawProbe else { throw SystemGitConfigurationError.unavailable }
+        return try freezeConfiguration(account: account, additionalConfiguration: additionalConfiguration,
+                                       systemPath: nil)
+        #else
+        throw SystemGitConfigurationError.unavailable
+        #endif
     }
 
     func freezeConfiguration(account: EffectiveAccount, configurationProbe: SystemGitConfigurationProbe,
@@ -2577,17 +2590,58 @@ public final class RepositoryHandle: @unchecked Sendable {
         return value
     }
 
+    /// Capture once under actual caller-held custody. Subsequent parent-side
+    /// preflight/postflight reuses this input and revalidates the same files.
+    func freezeConfiguration(account: EffectiveAccount, retainedConfigurationProbe probe: SystemGitConfigurationProbe,
+                             additionalConfiguration: String? = nil,
+                             admitConfiguration: ((GitConfigurationPreflight, CustodyBudget) throws -> Void)? = nil) throws -> FrozenGitConfiguration {
+        // Choose both future names lexically. No directory lookup, recovery scan,
+        // contributor read or mkdir is permitted before every ancestor is admitted.
+        #if SHADOW_SYNC_TESTING
+        let budget = try probe.testingFreezeBudget ?? CustodyBudget.make(kind: .repositoryGit, workSeconds: 120)
+        #else
+        let budget = try CustodyBudget.make(kind: .repositoryGit, workSeconds: 120)
+        #endif
+        let directory = try Self.frozenSnapshotPrefix() + String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(6))
+        let preflight = try probe.capturePreflight(account: account, budget: budget)
+        let paths = try preflight.admissionPaths(account: account) + [directory, directory + "/config"]
+        let admission = try probe.frozenConfigurationAdmission(expectedPolicySHA256: candidate.policyAdmissionSHA256,
+            scratch: worktreeDescriptor, budget: budget, account: account)
+        try admission.admit(paths)
+        #if SHADOW_SYNC_TESTING
+        try probe.testingBeforeConfigurationAdmission?(budget)
+        #endif
+        try admitConfiguration?(preflight, budget)
+        try admission.revalidate()
+        #if SHADOW_SYNC_TESTING
+        probe.testingFrozenAccess?()
+        #endif
+        try Self.recoverStaleSnapshots(admit: admission.admit, revalidate: admission.revalidate, probe: probe)
+        try admission.admit(paths)
+        try admission.revalidate()
+        let value = try freezeConfiguration(account: account, additionalConfiguration: additionalConfiguration,
+            systemPath: { preflight.systemPath }, retainedPreflight: preflight, retainedProbe: probe,
+            admittedDirectory: directory)
+        try preflight.validate(configuration: value.snapshot, account: account)
+        try probe.validate(account: account)
+        return value
+    }
+
     private func freezeConfiguration(account: EffectiveAccount, additionalConfiguration: String?,
-                                     systemPath: (() throws -> String?)?) throws -> FrozenGitConfiguration {
+                                     systemPath: (() throws -> String?)?,
+                                     retainedPreflight: GitConfigurationPreflight? = nil,
+                                     retainedProbe: SystemGitConfigurationProbe? = nil,
+                                     admittedDirectory: String? = nil) throws -> FrozenGitConfiguration {
         try revalidate()
         try rejectReplacementAndGraftState()
-        try Self.recoverStaleSnapshots()
+        // The retained caller already recovered under exact path admission.
+        if retainedProbe == nil { try Self.recoverStaleSnapshots() }
         let contributorPaths = try Self.configurationPaths(account: account, systemPath: systemPath)
         let captured = try captureConfiguration(account: account, contributorPaths: contributorPaths,
                                                 additionalConfiguration: additionalConfiguration)
         let frozenBytes = captured.bytes
         let frozenDigest = Self.sha256(frozenBytes)
-        let retained = try Self.makeRetainedSnapshot(contents: frozenBytes)
+        let retained = try Self.makeRetainedSnapshot(contents: frozenBytes, admittedDirectory: admittedDirectory)
         var frozenInfo = stat()
         var directoryInfo = stat()
         guard fstat(retained.descriptor, &frozenInfo) == 0,
@@ -2611,8 +2665,8 @@ public final class RepositoryHandle: @unchecked Sendable {
             descriptor: retained.descriptor,
             directoryDescriptor: retained.directoryDescriptor,
             snapshot: snapshot,
-            effectiveHooksDirectory:
-                captured.effectiveHooksDirectory
+            effectiveHooksDirectory: captured.effectiveHooksDirectory,
+            retainedPreflight: retainedPreflight, retainedProbe: retainedProbe
         )
     }
 
@@ -2694,8 +2748,23 @@ public final class RepositoryHandle: @unchecked Sendable {
         frozenConfiguration: FrozenGitConfiguration,
         admission: GitAdmissionSnapshot?
     ) throws -> RepositoryExecutionSnapshot {
-        try executionSnapshot(account: account, frozenConfiguration: frozenConfiguration,
-                              admission: admission, systemPath: nil)
+        if let preflight = frozenConfiguration.retainedPreflight,
+           let probe = frozenConfiguration.retainedProbe {
+            try probe.validate(account: account)
+            try Self.validateFrozenConfiguration(descriptor: frozenConfiguration.descriptor,
+                directoryDescriptor: frozenConfiguration.directoryDescriptor, snapshot: frozenConfiguration.snapshot)
+            let value = try executionSnapshot(account: account, configuration: frozenConfiguration.snapshot,
+                admission: admission, configurationPreflight: preflight)
+            try probe.validate(account: account)
+            return value
+        }
+        #if SHADOW_SYNC_TESTING
+        guard !GitConfigurationValidationTesting.forbidRawProbe else { throw SystemGitConfigurationError.unavailable }
+        return try executionSnapshot(account: account, frozenConfiguration: frozenConfiguration,
+                                     admission: admission, systemPath: nil)
+        #else
+        throw SystemGitConfigurationError.unavailable
+        #endif
     }
 
     func executionSnapshot(account: EffectiveAccount, frozenConfiguration: FrozenGitConfiguration,
@@ -2796,7 +2865,13 @@ public final class RepositoryHandle: @unchecked Sendable {
         // the legacy raw probe after either nil or a thrown custody failure.
         let active: String?
         if let systemPath { active = try systemPath() }
-        else { active = try activeSystemConfigurationPath(account: account) }
+        else {
+            #if SHADOW_SYNC_TESTING
+            active = try activeSystemConfigurationPath(account: account)
+            #else
+            throw SystemGitConfigurationError.unavailable
+            #endif
+        }
         var paths: [String] = []
         if let system = active {
             paths.append(system)
@@ -2808,6 +2883,7 @@ public final class RepositoryHandle: @unchecked Sendable {
         return paths
     }
 
+    #if SHADOW_SYNC_TESTING
     private static func activeSystemConfigurationPath(
         account: EffectiveAccount
     ) throws -> String? {
@@ -3013,6 +3089,8 @@ public final class RepositoryHandle: @unchecked Sendable {
         }
         throw ProcessOwnershipError.unavailable("system Git config probe reap")
     }
+
+    #endif
 
     static func activeSystemPath(from output: Data) throws -> String? {
         let fields = output.split(separator: 0, omittingEmptySubsequences: true)
@@ -3379,6 +3457,9 @@ public final class RepositoryHandle: @unchecked Sendable {
         requirePackedIdentity: Bool = true,
         requireWorktreeMarkerIdentity: Bool = true
     ) throws {
+        #if !SHADOW_SYNC_TESTING
+        throw SystemGitConfigurationError.unavailable
+        #else
         try validateCurrentDirectory(
             snapshot.repository,
             requireWorktreeMarkerIdentity:
@@ -3389,6 +3470,7 @@ public final class RepositoryHandle: @unchecked Sendable {
             account: account,
             requirePackedIdentity: requirePackedIdentity
         )
+        #endif
     }
 
     public static func validateCommonExecutionSnapshot(
@@ -3396,8 +3478,12 @@ public final class RepositoryHandle: @unchecked Sendable {
         account: EffectiveAccount,
         requirePackedIdentity: Bool = true
     ) throws {
+        #if !SHADOW_SYNC_TESTING
+        throw SystemGitConfigurationError.unavailable
+        #else
         try validateCommonExecutionSnapshot(snapshot, account: account,
             requirePackedIdentity: requirePackedIdentity, systemPath: nil)
+        #endif
     }
 
     /// Custodian route: use a completed, closed configuration preflight and never
@@ -3485,6 +3571,23 @@ public final class RepositoryHandle: @unchecked Sendable {
         configurationBefore: Data,
         commandSucceeded: Bool
     ) throws {
+        try validateBranchDeletionSnapshot(snapshot, account: account, branchName: branchName,
+            configurationBefore: configurationBefore, commandSucceeded: commandSucceeded,
+            configurationPreflight: nil)
+    }
+
+    static func validateBranchDeletionSnapshot(
+        _ snapshot: RepositoryExecutionSnapshot,
+        account: EffectiveAccount,
+        branchName: String,
+        configurationBefore: Data,
+        commandSucceeded: Bool,
+        configurationPreflight: GitConfigurationPreflight?
+    ) throws {
+        if let configurationPreflight { try configurationPreflight.validate(snapshot, account: account) }
+        #if !SHADOW_SYNC_TESTING
+        guard configurationPreflight != nil else { throw SystemGitConfigurationError.unavailable }
+        #endif
         try validateWorktreePathAfterBranchDeletion(
             snapshot.repository,
             rootPath: snapshot.rootPath
@@ -3494,7 +3597,7 @@ public final class RepositoryHandle: @unchecked Sendable {
         )
         defer { close(gitFD) }
         let contributors =
-            try configurationPaths(account: account).map {
+            try configurationPaths(account: account, systemPath: configurationPreflight.map { captured in { captured.systemPath } }).map {
                 path -> GitPathDigest in
                 let allowedOwners: Set<uid_t> =
                     path.hasPrefix(
@@ -3795,8 +3898,35 @@ public final class RepositoryHandle: @unchecked Sendable {
         account: EffectiveAccount,
         requirePackedIdentity: Bool
     ) throws {
+        #if !SHADOW_SYNC_TESTING
+        throw SystemGitConfigurationError.unavailable
+        #else
         try validateExecutionSnapshot(snapshot, account: account, requirePackedIdentity: requirePackedIdentity,
                                       systemPath: nil)
+        #endif
+    }
+
+    func validateExecutionSnapshot(_ snapshot: RepositoryExecutionSnapshot, account: EffectiveAccount,
+                                   requirePackedIdentity: Bool, frozenConfiguration: FrozenGitConfiguration) throws {
+        if let preflight = frozenConfiguration.retainedPreflight,
+           let probe = frozenConfiguration.retainedProbe {
+            try probe.validateRetainedEvidence(account: account)
+            try preflight.validate(snapshot, account: account)
+            guard snapshot.configuration == frozenConfiguration.snapshot else {
+                throw SystemGitConfigurationError.unavailable
+            }
+            try Self.validateFrozenConfiguration(descriptor: frozenConfiguration.descriptor,
+                directoryDescriptor: frozenConfiguration.directoryDescriptor, snapshot: frozenConfiguration.snapshot)
+            try validateExecutionSnapshot(snapshot, account: account, requirePackedIdentity: requirePackedIdentity,
+                                          systemPath: { preflight.systemPath })
+            try probe.validateRetainedEvidence(account: account)
+            return
+        }
+        #if SHADOW_SYNC_TESTING
+        try validateExecutionSnapshot(snapshot, account: account, requirePackedIdentity: requirePackedIdentity)
+        #else
+        throw SystemGitConfigurationError.unavailable
+        #endif
     }
 
     func validateExecutionSnapshot(_ snapshot: RepositoryExecutionSnapshot, account: EffectiveAccount,
@@ -4163,7 +4293,17 @@ public final class RepositoryHandle: @unchecked Sendable {
         #endif
     }
 
-    private static func recoverStaleSnapshots() throws {
+    private static func recoverStaleSnapshots(admit: (([String]) throws -> Void)? = nil,
+                                              revalidate: (() throws -> Void)? = nil,
+                                              probe: SystemGitConfigurationProbe? = nil) throws {
+        try admit?(["/private/tmp"])
+        #if SHADOW_SYNC_TESTING
+        try probe?.testingFrozenRecoveryBoundary?("root-admitted")
+        #endif
+        try revalidate?()
+        #if SHADOW_SYNC_TESTING
+        probe?.testingFrozenRecoveryAccess?("root-open")
+        #endif
         let prefix = URL(fileURLWithPath: try frozenSnapshotPrefix()).lastPathComponent
         let temporaryFD = Darwin.open(
             "/private/tmp",
@@ -4173,8 +4313,31 @@ public final class RepositoryHandle: @unchecked Sendable {
             throw SecureStateError.systemCall("open snapshot recovery root", errno)
         }
         defer { close(temporaryFD) }
-        for name in try directoryEntryNames(descriptor: temporaryFD)
-        where name.hasPrefix(prefix) {
+        let names = try directoryEntryNames(descriptor: temporaryFD, maximumEntries: 4096, revalidate: revalidate,
+            probe: probe, recoveryAccess: "root-read")
+        let candidates = names.filter { $0.hasPrefix(prefix) }
+        guard candidates.count <= 256 else { throw SystemGitConfigurationError.unavailable }
+        // Admit the entire bounded candidate set before opening any candidate;
+        // a refusal therefore cannot partially delete an earlier stale entry.
+        for name in candidates {
+            let suffix = name.dropFirst(prefix.count)
+            guard suffix.count == 6, suffix.utf8.allSatisfy({
+                ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90) || ($0 >= 97 && $0 <= 122)
+            }) else { throw GitSafetyError.unsafeRepository("questionable frozen Git config recovery entry") }
+            try admit?(["/private/tmp/" + name, "/private/tmp/" + name + "/config"])
+        }
+        #if SHADOW_SYNC_TESTING
+        try probe?.testingFrozenRecoveryBoundary?("candidates-admitted")
+        #endif
+        for name in candidates {
+            #if SHADOW_SYNC_TESTING
+            try probe?.testingFrozenRecoveryBoundary?("candidate-open")
+            #endif
+            try revalidate?()
+            // The whole-set check prevents partial deletion on an initial refusal;
+            // this exact-path check grants access only under current admission.
+            try admit?(["/private/tmp/" + name, "/private/tmp/" + name + "/config"])
+            try revalidate?()
             let suffix = name.dropFirst(prefix.count)
             guard suffix.count == 6,
                   suffix.utf8.allSatisfy({
@@ -4186,6 +4349,9 @@ public final class RepositoryHandle: @unchecked Sendable {
                     "questionable frozen Git config recovery entry"
                 )
             }
+            #if SHADOW_SYNC_TESTING
+            probe?.testingFrozenRecoveryAccess?("candidate-open")
+            #endif
             let directoryFD = openat(
                 temporaryFD,
                 name,
@@ -4203,11 +4369,19 @@ public final class RepositoryHandle: @unchecked Sendable {
                   directoryInfo.st_uid == geteuid(),
                   (directoryInfo.st_mode & 0o777) == 0o700,
                   (directoryInfo.st_flags & UInt32(UF_IMMUTABLE)) != 0,
-                  try directoryEntryNames(descriptor: directoryFD) == ["config"] else {
+                  try directoryEntryNames(descriptor: directoryFD, revalidate: revalidate,
+                      probe: probe, recoveryAccess: "candidate-read") == ["config"] else {
                 throw GitSafetyError.unsafeRepository(
                     "questionable frozen Git config recovery shape"
                 )
             }
+            #if SHADOW_SYNC_TESTING
+            try probe?.testingFrozenRecoveryBoundary?("config-open")
+            #endif
+            try revalidate?()
+            #if SHADOW_SYNC_TESTING
+            probe?.testingFrozenRecoveryAccess?("config-open")
+            #endif
             let configFD = openat(directoryFD, "config", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
             guard configFD >= 0 else {
                 throw GitSafetyError.unsafeRepository(
@@ -4237,6 +4411,17 @@ public final class RepositoryHandle: @unchecked Sendable {
                     lockError
                 )
             }
+            do {
+                #if SHADOW_SYNC_TESTING
+                try probe?.testingFrozenRecoveryBoundary?("candidate-delete")
+                #endif
+                try revalidate?()
+                try admit?(["/private/tmp/" + name, "/private/tmp/" + name + "/config"])
+                try revalidate?()
+            } catch { close(configFD); throw error }
+            #if SHADOW_SYNC_TESTING
+            probe?.testingFrozenRecoveryAccess?("candidate-delete")
+            #endif
             guard fchflags(directoryFD, 0) == 0,
                   fchflags(configFD, 0) == 0,
                   unlinkat(directoryFD, "config", 0) == 0 else {
@@ -4257,7 +4442,11 @@ public final class RepositoryHandle: @unchecked Sendable {
         }
     }
 
-    private static func directoryEntryNames(descriptor: Int32) throws -> [String] {
+    private static func directoryEntryNames(descriptor: Int32, maximumEntries: Int = 4096,
+                                            revalidate: (() throws -> Void)? = nil,
+                                            probe: SystemGitConfigurationProbe? = nil,
+                                            recoveryAccess: String? = nil) throws -> [String] {
+        try revalidate?()
         let duplicate = dup(descriptor)
         guard duplicate >= 0, let directory = fdopendir(duplicate) else {
             if duplicate >= 0 {
@@ -4267,7 +4456,16 @@ public final class RepositoryHandle: @unchecked Sendable {
         }
         defer { closedir(directory) }
         var names: [String] = []
-        while let entry = readdir(directory) {
+        while true {
+            #if SHADOW_SYNC_TESTING
+            if let recoveryAccess { try probe?.testingFrozenRecoveryBoundary?(recoveryAccess) }
+            #endif
+            try revalidate?()
+            #if SHADOW_SYNC_TESTING
+            if let recoveryAccess { probe?.testingFrozenRecoveryAccess?(recoveryAccess) }
+            #endif
+            guard let entry = readdir(directory) else { break }
+            guard names.count < maximumEntries else { throw SystemGitConfigurationError.unavailable }
             let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
                 pointer.withMemoryRebound(
                     to: CChar.self,
@@ -4282,20 +4480,26 @@ public final class RepositoryHandle: @unchecked Sendable {
     }
 
     private static func makeRetainedSnapshot(
-        contents: Data
+        contents: Data, admittedDirectory: String? = nil
     ) throws -> (
         descriptor: Int32,
         directoryDescriptor: Int32,
         path: String,
         directory: String
     ) {
-        var template = Array((try frozenSnapshotPrefix() + "XXXXXX").utf8CString)
-        guard let created = template.withUnsafeMutableBufferPointer({
-            mkdtemp($0.baseAddress)
-        }) else {
-            throw SecureStateError.systemCall("mkdtemp frozen Git config", errno)
+        let directory: String
+        if let admittedDirectory {
+            guard mkdir(admittedDirectory, 0o700) == 0 else {
+                throw SecureStateError.systemCall("create admitted frozen Git config directory", errno)
+            }
+            directory = admittedDirectory
+        } else {
+            var template = Array((try frozenSnapshotPrefix() + "XXXXXX").utf8CString)
+            guard let created = template.withUnsafeMutableBufferPointer({ mkdtemp($0.baseAddress) }) else {
+                throw SecureStateError.systemCall("mkdtemp frozen Git config", errno)
+            }
+            directory = String(cString: created)
         }
-        let directory = String(cString: created)
         guard chmod(directory, 0o700) == 0 else {
             _ = rmdir(directory)
             throw SecureStateError.systemCall("chmod frozen Git config directory", errno)

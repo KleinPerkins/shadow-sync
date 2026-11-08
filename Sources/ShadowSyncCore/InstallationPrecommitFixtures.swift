@@ -1,0 +1,565 @@
+#if SHADOW_SYNC_TESTING
+import Darwin
+import Foundation
+
+/// No synthetic positive native verifier. These cases prove source mechanisms
+/// only; signed supported-host mutual authentication is a separate gate.
+enum InstallationPrecommitFixtures {
+    typealias H = InstallationStorageFixtures
+    static func rejects(_ body: () throws -> Void) throws {
+        do { try body() }
+        catch is CustodyProtocolError { return }
+        catch is CustodyRecordError { return }
+        catch is SecureStateError { return }
+        catch is PublisherPolicyError { return }
+        catch is PolicyAuthorityFileError { return }
+        throw H.Failure(message: "InstallationPrecommitFixtures accepted invalid transition")
+    }
+    static func order() throws {
+        try InstallationReadinessWireFixtures.challengeExcessBeforeReady()
+        let hello = InstallationReadinessWireFixtures.message()
+        let deadline = MonotonicDeadline(seconds: 3)
+        var transcript = try InstallationPrecommitTranscript(hello: hello)
+        try transcript.consume(hello, sender: .host, deadline: deadline)
+        let challenge = try transcript.message(.challenge)
+        try transcript.consume(challenge, sender: .coordinator, deadline: deadline)
+        let ready = try transcript.message(.ready)
+        try transcript.consume(ready, sender: .host, deadline: deadline)
+        try H.check(transcript.completedDigest != nil, "three-message transcript missing")
+        for event in InstallationReadinessMessage.Event.allCases {
+            try rejects { _ = try transcript.message(event) }
+            try rejects { try transcript.consume(InstallationReadinessWireFixtures.message(event), sender: event.sender, deadline: deadline) }
+        }
+        var fresh = try InstallationPrecommitTranscript(hello: hello)
+        try rejects { try fresh.consume(hello, sender: .coordinator, deadline: deadline) }
+        try rejects { try fresh.consume(challenge, sender: .coordinator, deadline: deadline) }
+        try fresh.consume(hello, sender: .host, deadline: deadline)
+        try rejects { try fresh.consume(hello, sender: .host, deadline: deadline) }
+    }
+    static func bindings() throws {
+        let hello = InstallationReadinessWireFixtures.message()
+        for key in ["transaction", "boot", "revision", "candidate", "state", "hostGeneration", "nonce", "previous"] {
+            var transcript = try InstallationPrecommitTranscript(hello: hello)
+            let deadline = MonotonicDeadline(seconds: 3)
+            try transcript.consume(hello, sender: .host, deadline: deadline)
+            let challenge = try transcript.message(.challenge)
+            var wire = try JSONSerialization.jsonObject(with: challenge.encode()) as! [String: Any]
+            switch key {
+            case "transaction", "boot", "hostGeneration": wire[key] = "00000000-0000-0000-0000-000000000099"
+            case "revision": wire[key] = 25
+            case "nonce": wire[key] = String(repeating: "e", count: 32)
+            default: wire[key] = String(repeating: "f", count: 64)
+            }
+            let bytes = try JSONSerialization.data(withJSONObject: wire, options: [.sortedKeys, .withoutEscapingSlashes])
+            let altered = try InstallationReadinessMessage.decode(bytes)
+            try rejects { try transcript.consume(altered, sender: .coordinator, deadline: deadline) }
+        }
+    }
+    static func deadlineAndEOF() throws {
+        var transcript = try InstallationPrecommitTranscript(hello: InstallationReadinessWireFixtures.message())
+        try rejects { try transcript.consume(InstallationReadinessWireFixtures.message(), sender: .host, deadline: .init(seconds: 0)) }
+        try InstallationReadinessWireFixtures.eofAndEmpty()
+        try InstallationReadinessWireFixtures.sharedDeadline()
+    }
+    static func endpoint() throws {
+        try InstallationStagedJournalFixtures.fixture { _, location, _, _, _, journal, _ in
+            let completed = try journal.completeAdmission(deadline: .init(seconds: 3))
+            guard let endpoint = journal.testingEndpoint, let image = completed.transaction?.slots.images[.installationSocket],
+                  let node = image.node else { throw H.Failure(message: "missing actual readiness endpoint") }
+            try endpoint.revalidate()
+            try H.check(node.type == .socket && node.mode == 0o140600 && node.links == 1
+                && image.contentDigest == nil, "endpoint postimage differs")
+            let control = try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")))
+            try H.check(control == completed, "endpoint completion not durable")
+            try journal.closeReadiness(deadline: .init(seconds: 3))
+            // Closing service never erases its recovery evidence.
+            try endpoint.revalidate()
+            try journal.testingRemoveReadinessEndpoint()
+        }
+    }
+    static func unknownEndpoint() throws {
+        for symlinked in [false, true] {
+            try InstallationStagedJournalFixtures.fixture { root, location, _, _, _, journal, _ in
+                let name = location.path + "/installation.sock"
+                if symlinked { try H.check(symlink(root, name) == 0, "fixture symlink") }
+                else {
+                    let fd = open(name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+                    try H.check(fd >= 0, "fixture endpoint impostor"); close(fd)
+                }
+                var before = stat(); try H.check(lstat(name, &before) == 0, "fixture impostor before")
+                try rejects { _ = try journal.completeAdmission(deadline: .init(seconds: 3)) }
+                var after = stat(); try H.check(lstat(name, &after) == 0 && FileIdentity(before) == FileIdentity(after), "unknown endpoint altered")
+            }
+        }
+    }
+    static func substitution() throws {
+        try InstallationStagedJournalFixtures.fixture { root, location, _, _, _, journal, _ in
+            _ = try journal.completeAdmission(deadline: .init(seconds: 3))
+            try journal.closeReadiness(deadline: .init(seconds: 3))
+            guard let endpoint = journal.testingEndpoint else { throw H.Failure(message: "missing endpoint") }
+            let name = location.path + "/installation.sock", saved = root + "/owned-endpoint"
+            try H.check(rename(name, saved) == 0, "fixture endpoint move")
+            let fd = open(name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+            try H.check(fd >= 0, "fixture endpoint substitute"); close(fd)
+            try rejects { try endpoint.revalidate() }
+            try rejects { try endpoint.testingRemoveOwnedEndpoint() }
+            // Restore only this fixture-created substitute and original inode.
+            try H.check(unlink(name) == 0 && rename(saved, name) == 0, "restore owned endpoint")
+            try endpoint.revalidate()
+            try InstallationOwnershipFixtures.withACLGrant(location.path) {
+                try rejects { try endpoint.revalidate() }
+                try rejects { try endpoint.testingRemoveOwnedEndpoint() }
+            }
+            try endpoint.revalidate()
+            try journal.testingRemoveReadinessEndpoint()
+        }
+    }
+    static func partialPublication() throws {
+        try InstallationStagedJournalFixtures.fixture { _, location, _, _, _, journal, _ in
+            journal.testingCut(.afterReceipt)
+            try rejects { _ = try journal.completeAdmission(deadline: .init(seconds: 3)) }
+            try H.check(journal.testingHasPending, "partial endpoint publication lost receipt")
+            guard let endpoint = journal.testingEndpoint else { throw H.Failure(message: "partial endpoint missing") }
+            try endpoint.revalidate()
+            let record = try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")))
+            try H.check(record.step?.status == .intent && record.transaction?.slots.images[.installationSocket]?.node == nil,
+                "partial publication manufactured completion")
+            try journal.testingRemoveReadinessEndpoint()
+        }
+    }
+    static func extraPeer() throws {
+        try H.fixture { root, _ in
+            let path = root + "/extra.sock"
+            let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard listener >= 0 else { throw H.Failure(message: "fixture listener") }
+            defer { close(listener) }
+            try InstallationPrecommitTransport.configure(listener)
+            var address = try HostControlIO.address(path: path)
+            let result = withUnsafePointer(to: &address) { p in
+                p.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            }
+            try H.check(result == 0 && listen(listener, 2) == 0, "fixture listener bound")
+            var before = stat(); try H.check(lstat(path, &before) == 0, "fixture listener identity")
+            defer {
+                var after = stat()
+                if lstat(path, &after) == 0 && FileIdentity(before).matchesStableNode(FileIdentity(after)) { _ = unlink(path) }
+            }
+            try InstallationPrecommitTransport.refuseAdditionalPeer(listener: listener)
+            var peers: [Int32] = []
+            defer { for fd in peers { close(fd) } }
+            for _ in 0..<2 {
+                let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+                guard fd >= 0 else { throw H.Failure(message: "fixture additional peer") }
+                peers.append(fd)
+                let connected = withUnsafePointer(to: &address) { p in
+                    p.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+                }
+                try H.check(connected == 0, "fixture peer connect")
+            }
+            let first = accept(listener, nil, nil)
+            try H.check(first >= 0, "fixture first peer"); close(first)
+            try rejects { try InstallationPrecommitTransport.refuseAdditionalPeer(listener: listener) }
+            try InstallationPrecommitTransport.refuseAdditionalPeer(listener: listener)
+        }
+        try InstallationStagedJournalFixtures.fixture { _, location, _, _, _, journal, _ in
+            let deadline = MonotonicDeadline(seconds: 3)
+            _ = try journal.completeAdmission(deadline: deadline)
+            guard let session = journal.testingSession else { throw H.Failure(message: "missing real session") }
+            // No fake authenticated peer is admitted. A real untrusted socket
+            // must end the bounded session without publishing readiness.
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard fd >= 0 else { throw H.Failure(message: "fixture peer socket") }
+            defer { close(fd) }
+            var address = try HostControlIO.address(path: location.path + "/installation.sock")
+            let connected = withUnsafePointer(to: &address) { p in
+                p.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            }
+            try H.check(connected == 0, "untrusted peer did not connect")
+            try session.testingWaitForAuthenticationRefusal(deadline: deadline)
+            try journal.closeReadiness(deadline: deadline)
+            let control = try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")))
+            try H.check(control.readinessCommit == nil && control.step?.action == .openStagedAdmission,
+                "untrusted peer changed installation phase")
+            try journal.testingRemoveReadinessEndpoint()
+        }
+    }
+    static func publicationCancellation() throws {
+        // A completed close must fence the actual admission turn before it can
+        // bind a new endpoint, even when admission has never started.
+        try InstallationStagedJournalFixtures.fixture { _, location, _, _, _, journal, _ in
+            try journal.closeReadiness(deadline: .init(seconds: 3))
+            try rejects { _ = try journal.completeAdmission(deadline: .init(seconds: 3)) }
+            var node = stat()
+            try H.check(lstat(location.path + "/installation.sock", &node) == -1 && errno == ENOENT,
+                "closed admission created an endpoint")
+            try H.check(journal.testingEndpoint == nil && journal.testingSession == nil,
+                "closed admission retained new service work")
+        }
+        // A reserved turn is visible to close before source verification or
+        // endpoint effects. A failed bounded join cannot claim retirement.
+        try InstallationStagedJournalFixtures.fixture { root, location, _, _, _, journal, _ in
+            let barrier = CustodyLeaseTestingBarrier(), deadline = MonotonicDeadline(seconds: 3)
+            defer { barrier.release() }
+            journal.testingPauseSource(barrier)
+            let work = try RuntimeFixtureSession.installationRoot(root).startWork {
+                try rejects { _ = try journal.completeAdmission(deadline: deadline) }
+            }
+            try H.check(barrier.waitUntilEntered(), "admission turn barrier did not enter")
+            try rejects { try journal.closeReadiness(deadline: .init(seconds: 0.02)) }
+            var node = stat()
+            try H.check(lstat(location.path + "/installation.sock", &node) == -1 && errno == ENOENT,
+                "admission endpoint preceded reserved source turn")
+            barrier.release(); try work.value(deadline: deadline)
+            try journal.closeReadiness(deadline: deadline)
+            try H.check(journal.testingSession == nil, "closed admission work survived join")
+        }
+        try InstallationStagedJournalFixtures.fixture { root, _, _, _, _, journal, _ in
+            let barrier = CustodyLeaseTestingBarrier(), deadline = MonotonicDeadline(seconds: 3)
+            defer { barrier.release() }
+            journal.testingPausePublication(barrier)
+            let work = try RuntimeFixtureSession.installationRoot(root).startWork {
+                try H.refuses { _ = try journal.completeAdmission(deadline: deadline) }
+            }
+            try H.check(barrier.waitUntilEntered(), "publication barrier did not enter")
+            guard let reserved = journal.testingSession else { throw H.Failure(message: "session was not published") }
+            try journal.closeReadiness(deadline: deadline)
+            try H.check(journal.testingSession == nil, "unlaunched reservation not joined")
+            barrier.release(); try work.value(deadline: deadline)
+            try H.check(!reserved.start(), "cancelled session launched late work")
+            try journal.testingEndpoint?.revalidate()
+        }
+    }
+    static func verificationCancellation() throws {
+        try InstallationStagedJournalFixtures.fixture { root, _, _, _, _, journal, _ in
+            let deadline = MonotonicDeadline(seconds: 3)
+            _ = try journal.completeAdmission(deadline: deadline)
+            let barrier = CustodyLeaseTestingBarrier()
+            defer { barrier.release() }
+            journal.testingPauseSource(barrier)
+            let work = try RuntimeFixtureSession.installationRoot(root).startWork {
+                _ = try journal.bootstrapCandidateIntent(deadline: deadline)
+            }
+            try H.check(barrier.waitUntilEntered(), "source verification barrier did not enter")
+            try H.check(journal.testingMetadataLockAvailable, "journal mutex spans source verification")
+            try journal.closeReadiness(deadline: .init(seconds: 0.2))
+            try H.check(journal.testingSession == nil, "source verification blocked cancellation")
+            barrier.release(); try work.value(deadline: deadline)
+        }
+    }
+    static func failedJoinRetainsRoot() throws {
+        try InstallationStagedJournalFixtures.fixture { root, location, _, _, _, journal, _ in
+            let deadline = MonotonicDeadline(seconds: 3)
+            _ = try journal.completeAdmission(deadline: deadline)
+            guard let session = journal.testingSession else { throw H.Failure(message: "missing owned session") }
+            let barrier = CustodyLeaseTestingBarrier()
+            defer { barrier.release() }
+            session.testingPauseVerification(barrier)
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard fd >= 0 else { throw H.Failure(message: "join fixture socket") }; defer { close(fd) }
+            var address = try HostControlIO.address(path: location.path + "/installation.sock")
+            let connected = withUnsafePointer(to: &address) { p in
+                p.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            }
+            try H.check(connected == 0 && barrier.waitUntilEntered(), "join fixture did not reach actual queue")
+            let custody = try RuntimeFixtureSession.installationRoot(root)
+            try H.refuses { try custody.finish(deadline: .init(seconds: 0.02)) }
+            var info = stat()
+            try H.check(lstat(root, &info) == 0 && journal.testingSession === session,
+                "failed join lost root or actual session owner")
+            try H.check(try RuntimeFixtureSession.installationRoot(root) === custody,
+                "outer fixture custody lost unresolved owner")
+            barrier.release()
+            try journal.closeReadiness(deadline: deadline)
+            try H.check(journal.testingSession == nil, "released verifier did not really join")
+        }
+    }
+    /// Value/unsigned-storage coverage only. No native authenticated host,
+    /// ReadyObservation, admission or positive verifier is manufactured here.
+    static func commitBinding() throws {
+        var harness = try InstallationControlFixtures.Harness()
+        try harness.throughReady()
+        let kickstartReceipts = Array(harness.receipts.dropLast(2))
+        let last = kickstartReceipts.last!
+        let base = InstallationControlRecord(revision: harness.record.revision - 2, phase: .active,
+            state: harness.state, transaction: harness.transaction, step: try last.step(),
+            latestReceiptDigest: try last.digest(uid: harness.state.directory.uid), readinessCommit: nil, recoveryReason: nil)
+        try base.validateReceiptChain(kickstartReceipts)
+        try harness.commitReady()
+        let expected = try InstallationHostCommitBinding.expectedControl(after: base,
+            host: InstallationControlFixtures.process(401), transcriptDigest: InstallationControlFixtures.otherSHA)
+        try H.check(expected == harness.record, "host expected a different four-edge commit")
+        try H.refuses { _ = try InstallationHostCommitBinding.expectedControl(after: expected,
+            host: InstallationControlFixtures.process(401), transcriptDigest: InstallationControlFixtures.otherSHA) }
+        let ready = InstallationReadinessMessage(event: .ready, transactionID: harness.transaction.id,
+            boot: harness.transaction.boot, controlRevision: base.revision,
+            candidateReleaseDigest: harness.transaction.candidate!.release.releaseContractSHA256,
+            stateBindingDigest: try base.state.digest(), hostGeneration: InstallationControlFixtures.generation,
+            sessionNonce: String(repeating: "d", count: 32), previousMessageDigest: InstallationControlFixtures.sha)
+        let message = InstallationReadinessMessage(event: .commit, transactionID: ready.transactionID,
+            boot: ready.boot, controlRevision: expected.revision, candidateReleaseDigest: ready.candidateReleaseDigest,
+            stateBindingDigest: ready.stateBindingDigest, hostGeneration: ready.hostGeneration,
+            sessionNonce: ready.sessionNonce, previousMessageDigest: try ready.digest())
+        try InstallationHostCommitBinding.validateMessage(message, ready: ready, committed: expected, deadline: .init(seconds: 1))
+        try rejects { try InstallationHostCommitBinding.validateMessage(message, ready: ready, committed: expected, deadline: .init(seconds: 0)) }
+        for key in ["event", "transaction", "boot", "revision", "candidate", "state", "hostGeneration", "nonce", "previous"] {
+            var value = try JSONSerialization.jsonObject(with: message.encode()) as! [String: Any]
+            switch key {
+            case "event": value[key] = "challenge"
+            case "transaction", "boot", "hostGeneration": value[key] = "00000000-0000-4000-8000-000000000099"
+            case "revision": value[key] = expected.revision + 1
+            case "nonce": value[key] = String(repeating: "e", count: 32)
+            default: value[key] = String(repeating: "f", count: 64)
+            }
+            let altered = try InstallationReadinessMessage.decode(JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes]))
+            try rejects { try InstallationHostCommitBinding.validateMessage(altered, ready: ready, committed: expected, deadline: .init(seconds: 1)) }
+        }
+    }
+    static func deliveryOrdering() throws {
+        // Pure ordering values cannot mint a journal capability or touch IO.
+        var state = InstallationCommitDeliveryState()
+        try H.refuses { try state.begin() }
+        try H.refuses { try state.finish() }
+        try state.submit()
+        try H.refuses { try state.submit() }
+        try H.refuses { try state.finish() }
+        try state.begin()
+        try H.refuses { try state.submit() }
+        try H.refuses { try state.begin() }
+        try state.finish()
+        try H.refuses { try state.submit() }
+        try H.refuses { try state.begin() }
+        try H.refuses { try state.finish() }
+        // Cancellation/failure at every prefix permanently forbids retry,
+        // including a failure after send reservation/possible partial write.
+        for prefix in 0...3 {
+            for cancelled in [false, true] {
+                var value = InstallationCommitDeliveryState()
+                if prefix > 0 { try value.submit() }
+                if prefix > 1 { try value.begin() }
+                if prefix > 2 { try value.finish() }
+                if cancelled { value.cancel() } else { value.fail() }
+                try H.refuses { try value.submit() }
+                try H.refuses { try value.begin() }
+                try H.refuses { try value.finish() }
+            }
+        }
+    }
+    static func deliveryBinding() throws {
+        var harness = try InstallationControlFixtures.Harness()
+        try harness.throughReady(); try harness.commitReady()
+        let ready = InstallationReadinessMessage(event: .ready, transactionID: harness.transaction.id,
+            boot: harness.transaction.boot, controlRevision: harness.record.revision - 4,
+            candidateReleaseDigest: harness.transaction.candidate!.release.releaseContractSHA256,
+            stateBindingDigest: try harness.state.digest(), hostGeneration: InstallationControlFixtures.generation,
+            sessionNonce: String(repeating: "d", count: 32), previousMessageDigest: InstallationControlFixtures.sha)
+        let deadline = MonotonicDeadline(seconds: 1)
+        let message = try InstallationCommitDeliveryBinding.message(ready: ready, committed: harness.record, deadline: deadline)
+        try H.check(message.event == .commit && message.controlRevision == harness.record.revision
+            && message.previousMessageDigest == (try ready.digest()), "delivery lost revision or ready predecessor")
+        try InstallationHostCommitBinding.validateMessage(message, ready: ready, committed: harness.record, deadline: deadline)
+        try H.refuses { _ = try InstallationCommitDeliveryBinding.message(ready: ready, committed: harness.record,
+            deadline: .init(seconds: 0)) }
+        for key in ["event", "transaction", "boot", "revision", "candidate", "state", "hostGeneration"] {
+            var wire = try JSONSerialization.jsonObject(with: ready.encode()) as! [String: Any]
+            switch key {
+            case "event": wire[key] = "challenge"
+            case "transaction", "boot", "hostGeneration": wire[key] = "00000000-0000-4000-8000-000000000099"
+            case "revision": wire[key] = ready.controlRevision + 1
+            default: wire[key] = String(repeating: "f", count: 64)
+            }
+            let changed = try InstallationReadinessMessage.decode(JSONSerialization.data(withJSONObject: wire,
+                options: [.sortedKeys, .withoutEscapingSlashes]))
+            try rejects { _ = try InstallationCommitDeliveryBinding.message(ready: changed, committed: harness.record, deadline: deadline) }
+        }
+    }
+    static func deliveryUnready() throws {
+        try InstallationStagedJournalFixtures.fixture { _, location, _, _, _, journal, _ in
+            let path = location.path + "/custody/installation.json"
+            let before = try Data(contentsOf: URL(fileURLWithPath: path))
+            try H.refuses { _ = try journal.deliverReadinessCommit() }
+            try journal.closeReadiness(deadline: .init(seconds: 3))
+            try H.refuses { _ = try journal.deliverReadinessCommit() }
+            try H.check(try Data(contentsOf: URL(fileURLWithPath: path)) == before,
+                "unready delivery wrote durable state")
+        }
+    }
+
+    /// Source harness only: requires an actual signed current coordinator and
+    /// peer, real ReadyObservation, retired diagnostics and durable commit.
+    /// No such fixture factory is supplied here; this is NOT an unsigned case.
+    static func authenticatedDelivery(_ journal: CustodyCatalogStore.InstallationStagedJournal,
+                                      committed: InstallationControlRecord) throws {
+        let observation = try journal.deliverReadinessCommit()
+        try H.check(observation.controlRevision == committed.revision && committed.phase == .committed,
+            "transport observation differs from durable commit")
+        try H.refuses { _ = try journal.deliverReadinessCommit() }
+        // Host consumption/startup must be independently observed by its owner.
+    }
+
+    /// Both barriers stop the actual sole queue, not a synthetic send callback.
+    /// The guardian retains the work/root if joining fails. A driver must supply
+    /// a fresh real committed session for EACH point; this does not mint one.
+    static func authenticatedDeliveryCloseRace(_ journal: CustodyCatalogStore.InstallationStagedJournal,
+        point: InstallationPrecommitSession.TestingDeliveryPoint, root: String, location: StateLocation) throws {
+        let paths = try InstallationPaths.isolated(root: TestIsolation.validateRoot(root))
+        try H.check(paths.state.path == location.path && paths.state.uid == location.uid,
+            "delivery race root mismatch")
+        guard let session = journal.testingSession, let deadline = session.testingAnchoredDeadline,
+              !deadline.hasExpired else { throw H.Failure(message: "actual committed session prerequisite missing") }
+        let path = location.path + "/custody/installation.json"
+        let before = try Data(contentsOf: URL(fileURLWithPath: path))
+        let committed = try InstallationControlRecord.decode(before)
+        try H.check(committed.phase == .committed && committed.readinessCommit != nil,
+            "delivery race requires durable commit")
+        let barrier = CustodyLeaseTestingBarrier()
+        defer { barrier.release() }
+        try session.testingPauseDelivery(at: point, barrier: barrier)
+        let work = try RuntimeFixtureSession.installationRoot(root).startWork {
+            try rejects { _ = try journal.deliverReadinessCommit() }
+        }
+        try H.check(barrier.waitUntilEntered(), "actual delivery reservation not reached")
+        let short = MonotonicDeadline(uptimeNanoseconds: min(deadline.absoluteUptimeNanoseconds,
+            MonotonicDeadline(seconds: 0.02).absoluteUptimeNanoseconds))
+        do {
+            try journal.closeReadiness(deadline: short)
+            throw H.Failure(message: "close succeeded with a reserved delivery still in flight")
+        } catch CustodyRecordError.busy {}
+        try H.check(journal.testingSession === session, "failed close lost original session owner")
+        barrier.release()
+        try work.value(deadline: deadline)
+        try journal.closeReadiness(deadline: deadline)
+        try H.check(journal.testingSession == nil, "delivery queue survived successful close")
+        try H.refuses { _ = try journal.deliverReadinessCommit() }
+        try H.check(try Data(contentsOf: URL(fileURLWithPath: path)) == before,
+            "failed delivery rolled committed control back")
+    }
+
+    static func commitEOFDistinction() throws {
+        for extra in [false, true] {
+            var fds: [Int32] = [-1, -1]
+            try H.check(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0, "commit fixture socket pair")
+            let owned = OwnedFileDescriptor(fds[0]), peer = OwnedFileDescriptor(fds[1])
+            defer { owned.closeNow(); peer.closeNow() }
+            try InstallationPrecommitTransport.configure(owned.value)
+            try InstallationPrecommitTransport.configure(peer.value)
+            try InstallationHostCommitBinding.requireNoPostcommitInput(owned)
+            if extra {
+                var byte: UInt8 = 1
+                try H.check(Darwin.write(peer.value, &byte, 1) == 1, "commit fixture extra frame")
+                try rejects { try InstallationHostCommitBinding.requireNoPostcommitInput(owned) }
+            } else {
+                peer.closeNow()
+                try rejects { try InstallationPrecommitTransport.requireQuiet(owned) }
+                try InstallationHostCommitBinding.requireNoPostcommitInput(owned)
+            }
+            owned.closeNow()
+            try rejects { try InstallationHostCommitBinding.requireNoPostcommitInput(owned) }
+        }
+    }
+
+    static func commitLauncherOwnership() throws {
+        try H.fixture { root, location in
+            var initializer: FreshStateInitialization? = try .testing(root: root)
+            _ = try initializer!.publish(); initializer = nil
+            let lifecycle = try LifecycleAdmissionAuthority.acquire(at: location)
+            let launcher = try LauncherAuthority.acquireWithinLifecycle(at: location)
+            defer { launcher.release(); lifecycle.release() }
+            let state = try InstallationStateBinding.capture(stateDescriptor: lifecycle.stateDirectory.descriptor.value, uid: location.uid)
+            try launcher.validateRetainedInstallation(state)
+            // Moving the owned inode does not transfer its lock to a replacement.
+            let path = location.path + "/launcher.lock", saved = root + "/retained-launcher"
+            try H.check(rename(path, saved) == 0, "fixture retained launcher move")
+            let replacement = open(path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            try H.check(replacement >= 0, "fixture replacement launcher")
+            close(replacement)
+            try H.refuses { try launcher.validateRetainedInstallation(state) }
+            let changed = try InstallationStateBinding.capture(stateDescriptor: lifecycle.stateDirectory.descriptor.value, uid: location.uid)
+            // Even freshly decoded state matching the replacement cannot turn
+            // the retained old description into ownership of that replacement.
+            try H.refuses { try launcher.validateRetainedInstallation(changed) }
+            try H.check(unlink(path) == 0 && rename(saved, path) == 0, "fixture launcher restore")
+            try launcher.validateRetainedInstallation(state)
+            launcher.release()
+            try H.refuses { try launcher.validateRetainedInstallation(state) }
+        }
+    }
+
+    /// Requires a genuinely constructed current signed host and a concurrent
+    /// genuine coordinator. Not a registered unsigned positive or a factory.
+    /// Native execution and the postcommit socket/slot fault matrix stay open.
+    static func authenticatedCommitHandoff(_ host: InstallationPrecommitHost) throws {
+        let admission = try host.run()
+        let ownership = try admission.take()
+        defer { ownership.close() }
+        try rejects { _ = try admission.take() }
+        try ownership.validateBeforeStartup()
+        ownership.close()
+        try rejects { try ownership.validateBeforeStartup() }
+        try rejects { _ = try admission.take() }
+        try rejects { _ = try host.run() }
+    }
+
+    static func commitStoredReadback() throws {
+        try H.fixture { root, location in
+            var initializer: FreshStateInitialization? = try .testing(root: root)
+            _ = try initializer!.publish(); initializer = nil
+            let admission = try LifecycleAdmissionAuthority.acquire(at: location)
+            defer { admission.release() }
+            let state = try InstallationStateBinding.capture(stateDescriptor: admission.stateDirectory.descriptor.value, uid: location.uid)
+            var harness = try InstallationControlFixtures.Harness(state: state)
+            try harness.throughReady(); try harness.commitReady()
+            let directory = location.path + "/custody/", receipts = directory + "receipts/"
+            for receipt in harness.receipts {
+                let path = receipts + (try receipt.filename(uid: location.uid))
+                try receipt.encode(uid: location.uid).write(to: URL(fileURLWithPath: path))
+                try H.check(chmod(path, 0o600) == 0, "fixture receipt mode")
+            }
+            let path = directory + InstallationControlRecord.filename
+            try harness.record.encode().write(to: URL(fileURLWithPath: path))
+            let deadline = MonotonicDeadline(seconds: 3)
+            let observed = try CustodyCatalogStore.committedHostObservation(admission: admission, expected: harness.record, deadline: deadline)
+            try observed.revalidate(deadline: deadline)
+            // Same bytes on a replacement inode still invalidate retained evidence.
+            for selected in [path, receipts + (try harness.receipts.last!.filename(uid: location.uid))] {
+                let saved = root + "/retained-host-readback"
+                let bytes = try Data(contentsOf: URL(fileURLWithPath: selected))
+                try H.check(rename(selected, saved) == 0, "fixture retained readback move")
+                try H.refuses { try observed.revalidate(deadline: deadline) }
+                try bytes.write(to: URL(fileURLWithPath: selected))
+                try H.check(chmod(selected, 0o600) == 0, "fixture replacement mode")
+                try H.refuses { try observed.revalidate(deadline: deadline) }
+                try H.check(unlink(selected) == 0 && rename(saved, selected) == 0, "fixture retained readback restore")
+                try observed.revalidate(deadline: deadline)
+            }
+            try H.refuses { try observed.revalidate(deadline: .init(seconds: 0)) }
+            admission.release()
+            try H.refuses { _ = try CustodyCatalogStore.committedHostObservation(admission: admission,
+                expected: harness.record, deadline: deadline) }
+        }
+    }
+
+    static func pendingHostWait() throws {
+        var harness = try InstallationControlFixtures.Harness()
+        try harness.pair(.reserve)
+        for action in [InstallationAction.drainPrior, .stageApplication, .stagePlist, .retireApplication,
+                       .retirePlist, .retireCoordination, .translateState, .moveStateForward,
+                       .promoteApplication, .promotePlist, .openStagedAdmission, .bootstrapCandidate] {
+            try harness.add(action, status: .intent); try harness.add(action, status: .complete)
+        }
+        try harness.add(.kickstartCandidate, status: .intent)
+        let pending = harness.record, deadline = MonotonicDeadline(seconds: 0.2)
+        let original = deadline.absoluteUptimeNanoseconds
+        try InstallationPrecommitWait.validateSuccessor(pending, of: pending, deadline: deadline)
+        let complete = try InstallationPrecommitWait.completion(of: pending).0
+        try harness.add(.kickstartCandidate, status: .complete)
+        try H.check(complete == harness.record, "pending wait expected a different durable edge")
+        try InstallationPrecommitWait.validateSuccessor(complete, of: pending, deadline: deadline)
+        try H.check(deadline.absoluteUptimeNanoseconds == original, "pending wait reset budget")
+        try rejects { try InstallationPrecommitWait.validateSuccessor(pending, of: complete, deadline: deadline) }
+        try rejects { try InstallationPrecommitWait.validateSuccessor(complete, of: pending, deadline: .init(seconds: 0)) }
+        // Waiting observation never satisfies hello's completed-control predicate.
+        try rejects { try InstallationPrecommitTranscript.validateHello(InstallationReadinessWireFixtures.message(), control: pending) }
+    }
+
+}
+#endif

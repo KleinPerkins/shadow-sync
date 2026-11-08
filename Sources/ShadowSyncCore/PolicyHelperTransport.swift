@@ -58,6 +58,7 @@ struct PolicyHelperTransport {
         scratchDescriptor: Int32,
         timeout: TimeInterval,
         absoluteDeadline: UInt64? = nil,
+        enclosingBudget: CustodyBudget? = nil,
         cancellation: CancellationToken,
         audit: CommandAudit? = nil
     ) throws -> [PolicyDecision] {
@@ -75,7 +76,8 @@ struct PolicyHelperTransport {
         do {
             // One absolute budget starts before nonce/serialization/authority
             // work; helper and registry consume this same remaining time.
-            let budget = try PolicyCommandWire.budget(timeout: timeout, absoluteDeadline: absoluteDeadline)
+            let budget = try PolicyCommandWire.budget(timeout: timeout, absoluteDeadline: absoluteDeadline,
+                enclosingBudget: enclosingBudget)
             guard !cancellation.isCancelled, !cancellation.areFutureChildAdmissionsClosed,
                   timeout.isFinite, timeout > 0, timeout <= 2,
                   adapter.count > 0, adapter.count <= 65_536,
@@ -229,6 +231,7 @@ private final class PolicyCustodyExecution {
         diagnosticResultBits |= (result.trace.isEmpty ? 32 : 0)
         diagnosticResultBits |= (!cancellation.isCancelled && !cancellation.areFutureChildAdmissionsClosed ? 64 : 0)
         diagnosticResultBits |= (result.reason == nil || result.reason == CustodyReason.none ? 128 : 0)
+        DiscoveryFixtureDiagnostic.recordCustodyResult(result)
         #endif
         if result.phase == .cleanupPending {
             context.close(); cancellation.closeFutureChildAdmissions()

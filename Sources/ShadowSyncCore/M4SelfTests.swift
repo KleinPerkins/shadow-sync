@@ -718,7 +718,8 @@ public enum M4SelfTestRunner {
 
         let malformed = try rawHostExchange(
             location: location,
-            request: Data("{bad}\n".utf8)
+            request: Data("{bad}\n".utf8),
+            kind: .malformed
         )
         let malformedResponse = try decodedHostResponse(malformed)
         try check(
@@ -732,7 +733,7 @@ public enum M4SelfTestRunner {
         var wrongBytes = try JSONEncoder().encode(wrongRequest)
         wrongBytes.append(0x0A)
         let wrong = try decodedHostResponse(
-            rawHostExchange(location: location, request: wrongBytes)
+            rawHostExchange(location: location, request: wrongBytes, kind: .wrongGeneration)
         )
         try check(!wrong.accepted, "wrong generation was accepted")
         try check(wrong.nonce == wrongRequest.nonce, "rejection nonce changed")
@@ -741,6 +742,7 @@ public enum M4SelfTestRunner {
         let partial = try rawHostExchange(
             location: location,
             request: Data(#"{"schema":"partial""#.utf8),
+            kind: .partial,
             keepWriteOpen: true
         )
         let partialResponse = try decodedHostResponse(partial)
@@ -755,7 +757,8 @@ public enum M4SelfTestRunner {
 
         let oversized = try rawHostExchange(
             location: location,
-            request: Data(repeating: UInt8(ascii: "x"), count: 17_000)
+            request: Data(repeating: UInt8(ascii: "x"), count: 17_000),
+            kind: .oversized
         )
         let oversizedResponse = try decodedHostResponse(oversized)
         try check(
@@ -847,9 +850,14 @@ public enum M4SelfTestRunner {
         )
     }
 
+    private enum HostRejectionKind: String {
+        case malformed, wrongGeneration, partial, oversized
+    }
+
     private static func rawHostExchange(
         location: StateLocation,
         request: Data,
+        kind: HostRejectionKind,
         keepWriteOpen: Bool = false
     ) throws -> Data {
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -880,8 +888,19 @@ public enum M4SelfTestRunner {
                     base.advanced(by: offset),
                     raw.count - offset
                 )
-                guard count > 0 else {
-                    throw M4SelfTestError.system("host test write", errno)
+                if count < 0, errno == EINTR { continue }
+                if count <= 0 {
+                    let code = count == 0 ? EPIPE : errno
+                    // The server rejects once a full unterminated frame is read;
+                    // it need not consume the oversized fixture's remaining tail.
+                    // EPIPE alone is never success: the caller must still decode
+                    // the server's framed rejection and assert accepted == false.
+                    let earlyRejection = count < 0 && code == EPIPE
+                        && kind == .oversized && offset >= HostControlIO.maximumFrameBytes
+                    fputs("M4 HOST REJECTION DIAGNOSTIC kind=\(kind.rawValue) offset=\(offset) bytes=\(raw.count) errno=\(code) early_rejection=\(earlyRejection)\n", stderr)
+                    fflush(stderr)
+                    if earlyRejection { break }
+                    throw M4SelfTestError.system("host test write", code)
                 }
                 offset += count
             }

@@ -12,8 +12,11 @@ final class CustodyInheritedCommand {
     let account: EffectiveAccount
     let policy: PolicyCommandAuthority?
     let discovery: InheritedDiscoveryResources?
+    let retention: InheritedRetentionArchiveResources?
+    let repository: InheritedRepositoryGitResources?
     let installation: InstallationCommandBinding?
     private var installationStore: CustodyCatalogStore?
+    private var stagedCandidate: InstallationStagedCandidateAuthority?
     private(set) var lifecycle: LifecycleLaunchAuthority?
     var lifecycleCommand: LifecycleLaunchCommand? {
         #if SHADOW_SYNC_TESTING
@@ -54,6 +57,9 @@ final class CustodyInheritedCommand {
                 var root = stat()
                 guard type == S_IFDIR, access == O_RDONLY, lstat("/", &root) == 0,
                       s.st_dev == root.st_dev, s.st_ino == root.st_ino, s.st_uid == 0 else { throw CustodyResourceError.invalidResource }
+            case .retentionSource, .retentionDestination, .retentionWorktree:
+                guard type == S_IFDIR, s.st_uid == uid, access == O_RDONLY,
+                      role != .retentionDestination || s.st_mode == S_IFDIR | 0o700 else { throw CustodyResourceError.invalidResource }
             case .gitDirectory, .gitFile:
                 guard type == (role == .gitFile ? S_IFREG : S_IFDIR),
                       s.st_mode == (role == .gitFile ? S_IFREG | 0o600 : S_IFDIR | 0o700),
@@ -90,7 +96,7 @@ final class CustodyInheritedCommand {
         // Validate the original inherited set before creating any copies. Runtime
         // framework descriptors are not silently accepted as authority.
         let actual = try Self.openDescriptors()
-        let permitted: Set<Int32> = [0,1,2,7,8,9,190,191,192,193,194,195,196,197,198,199,200]
+        let permitted: Set<Int32> = [0,1,2,7,8,9,10,11,12,190,191,192,193,194,195,196,197,198,199,200]
         guard actual.isSubset(of: permitted), Set([0,1,2,190,191,192,193,194,197,200]).isSubset(of: actual) else {
             throw CustodyResourceError.invalidResource
         }
@@ -113,40 +119,39 @@ final class CustodyInheritedCommand {
         // The decoder also validates the adapter's ceiling itself. A generic
         // ten-second ceiling is invalid for the two-second policy contract.
         let request = try UnvalidatedCustodyRequest.decode(raw, expected: binding,
-            permittedWorkSeconds: kind == .discoveryGit ? DiscoveryGitCommand.maximumWorkSeconds : min(10, kind.maximumWorkSeconds))
-        // The wire and lease modes do not supply a durable staged command permit.
-        // Keep helper admission closed until the same-owner journal continuation,
-        // full sealed action chain and authenticated candidate stop are joined.
-        guard !request.authority.isInstallationStaged else { throw CustodyRecordError.fenced }
+            permittedWorkSeconds: [.repositoryGit, .retentionArchive].contains(kind) ? kind.maximumWorkSeconds : (kind == .discoveryGit ? DiscoveryGitCommand.maximumWorkSeconds : min(10, kind.maximumWorkSeconds)))
         let hasFrozenConfiguration = request.descriptors.contains { $0.role == .gitFile }
-        let installationInput = request.authority == .lifecycleMutation && request.kind == .launchctlRead && request.inputSHA256 != nil
+        let installationInput = request.authority.isInstallationStaged
+            || (request.authority == .lifecycleMutation && request.kind == .launchctlRead && request.inputSHA256 != nil)
         // Coordinator roles cannot borrow repository authority. Mutation needs
         // actual lifecycle leases and the independently validated closed adapter.
         if helper.isLifecycleCoordinator {
             guard (request.authority == .observation && [.launchctlRead, .signatureCheck].contains(request.kind))
-                || (request.authority == .lifecycleMutation && [.launchctlRead, .signatureCheck, .launchctlMutation].contains(request.kind)) else {
+                || ((request.authority == .lifecycleMutation || request.authority.isInstallationStaged) && [.launchctlRead, .signatureCheck, .launchctlMutation].contains(request.kind)) else {
                 throw CustodyResourceError.invalidResource
             }
         }
         if discoveryFixture {
-            guard fixture, !hasFrozenConfiguration,
-                  request.kind == .policyClassify || request.kind == .discoveryGit else {
+            guard fixture, (hasFrozenConfiguration == ([.repositoryGit, .retentionArchive].contains(request.kind))),
+                  [.repositoryGit, .retentionArchive, .policyClassify, .discoveryGit, .systemGitConfig].contains(request.kind) else {
                 throw CustodyResourceError.invalidResource
             }
         }
         // Production discovery v2 carries only sealed intent. Frozen resources
         // are created by this helper after policy; inherited 195/196 refuse.
-        var permittedKind = [.launchctlRead, .launchctlMutation, .signatureCheck, .policyClassify, .systemGitConfig].contains(request.kind)
+        var permittedKind = [.repositoryGit, .launchctlRead, .launchctlMutation, .signatureCheck, .policyClassify, .systemGitConfig].contains(request.kind)
             || (request.kind == .discoveryGit && !hasFrozenConfiguration)
+            || (request.kind == .retentionArchive && hasFrozenConfiguration && request.authority == .mutation)
         #if SHADOW_SYNC_TESTING
         if fixture, !discoveryFixture, request.kind == .discoveryGit, request.traceLimit > 0 || hasFrozenConfiguration || request.arguments.first?.hasPrefix("serial-") == true { permittedKind = true }
         if fixture, request.kind == .policyClassify { permittedKind = true }
         #endif
         guard permittedKind, (request.inputSHA256 != nil) == (request.kind == .policyClassify
                 || hasFrozenConfiguration || installationInput || (usesRealWire && request.kind == .discoveryGit)),
-              !hasFrozenConfiguration || request.kind == .discoveryGit,
-              request.stdoutLimit <= (request.kind == .discoveryGit ? UInt64(DiscoveryGitCommand.stdoutLimit) : UInt64(LifecycleCommandRunner.outputLimit)),
-              request.stderrLimit <= (request.kind == .discoveryGit ? UInt64(DiscoveryGitCommand.stderrLimit) : UInt64(LifecycleCommandRunner.outputLimit)) else {
+              !hasFrozenConfiguration || [.repositoryGit, .retentionArchive, .discoveryGit].contains(request.kind),
+              ![.repositoryGit, .retentionArchive].contains(request.kind) || hasFrozenConfiguration,
+              request.stdoutLimit <= ([.repositoryGit, .retentionArchive].contains(request.kind) ? UInt64(DescriptorProcessRunner.completeRepositoryOutputLimit) : (request.kind == .discoveryGit ? UInt64(DiscoveryGitCommand.stdoutLimit) : UInt64(LifecycleCommandRunner.outputLimit))),
+              request.stderrLimit <= ([.repositoryGit, .retentionArchive].contains(request.kind) ? UInt64(DescriptorProcessRunner.completeRepositoryOutputLimit) : (request.kind == .discoveryGit ? UInt64(DiscoveryGitCommand.stderrLimit) : UInt64(LifecycleCommandRunner.outputLimit))) else {
             throw CustodyResourceError.invalidResource
         }
         var roles: Set<CustodyDescriptorClaim.Role> = [.request,.control,.status,.state,.namespace,.lifecycle,.workingDirectory]
@@ -157,6 +162,7 @@ final class CustodyInheritedCommand {
         if usesRealWire, request.kind == .discoveryGit { roles.insert(.input) }
         if installationInput { roles.insert(.input) }
         if hasFrozenConfiguration { roles.formUnion([.input, .gitDirectory, .gitFile]) }
+        if request.kind == .retentionArchive { roles.formUnion([.retentionSource, .retentionDestination, .retentionWorktree]) }
         guard Set(request.descriptors.map(\.role)) == roles,
               actual == Set(roles.map { Int32($0.number) }).union([0,1,2]) else {
             throw CustodyResourceError.invalidResource
@@ -204,10 +210,34 @@ final class CustodyInheritedCommand {
             let root = URL(fileURLWithPath: home).deletingLastPathComponent().path
             statePath = try StateLocation.isolated(root: root).path
             if discoveryFixture {
+                if request.kind == .systemGitConfig { try helper.bindTestingDiscoveryResources(home: account.homeDirectory) }
                 fixtureMode = nil
+            } else if request.authority.isInstallationStaged, request.kind == .launchctlMutation {
+                // Exact staged wire intent uses the existing fixed three-child
+                // fixture adapter. No request may select a host executable or
+                // skip the inherited installation/candidate checks below.
+                let command = try LifecycleLaunchCommand(arguments: request.arguments, account: account)
+                guard let installation else { throw CustodyRecordError.fenced }
+                try installation.validateStagedOperation(mode: request.authority, operation: command.operation)
+                // Closed disposable fixture scenarios reuse the existing real
+                // three-child adapter; request arguments remain canonical.
+                let outcomePath = home + "/.staged-reconciliation-outcome"
+                var outcomeInfo = stat()
+                if lstat(outcomePath, &outcomeInfo) == 0 {
+                    let marker = try PolicyAuthorityFile.read(path: outcomePath, owner: account.uid, maximumBytes: 64)
+                    guard command.operation == .bootstrap, outcomeInfo.st_mode == S_IFREG | 0o600,
+                          let value = String(data: marker.bytes, encoding: .utf8),
+                          ["lifecycle-mutation-failure", "lifecycle-mutation-cancel", "lifecycle-postflight-timeout"].contains(value) else {
+                        throw CustodyRecordError.fenced
+                    }
+                    fixtureMode = value
+                } else {
+                    guard errno == ENOENT else { throw CustodyRecordError.fenced }
+                    fixtureMode = "lifecycle-" + command.operation.rawValue
+                }
             } else {
                 guard request.arguments.count == 1,
-                  ["installation-absent","complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay","deadline-before-control",
+                  ["installation-absent","installation-loaded","installation-foreign","complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay","deadline-before-control",
                    "trace-complete","trace-overflow","trace-resist","policy-echo","policy-resist",
                     "system-complete","system-missing","system-faildata","system-resist","system-overflow",
                     "config-complete","config-resist-sigterm-fixture", "serial-complete", "serial-system-failure", "serial-policy-failure",
@@ -232,8 +262,8 @@ final class CustodyInheritedCommand {
         #endif
         let expectedEnvironment = request.kind == .systemGitConfig
             ? SystemGitConfigurationCommand.environment(account: account) : ClosedProcessRunner.environment(account: account)
-        guard request.environment == expectedEnvironment else { throw CustodyResourceError.invalidResource }
-        if usesRealWire, request.kind == .policyClassify || request.kind == .discoveryGit {
+        guard request.kind == .retentionArchive || request.environment == expectedEnvironment else { throw CustodyResourceError.invalidResource }
+        if usesRealWire, [.repositoryGit, .retentionArchive, .policyClassify, .discoveryGit].contains(request.kind) {
             guard request.authority == .read || request.authority == .mutation, let sealedInput else {
                 throw CustodyResourceError.invalidResource
             }
@@ -257,19 +287,34 @@ final class CustodyInheritedCommand {
                     throw CustodyResourceError.invalidResource
                 }
                 try authority.validate(input: sealedInput, code: sealedCode)
-                discovery = nil
+                discovery = nil; repository = nil; retention = nil
+            } else if request.kind == .repositoryGit {
+                guard let directory = owned[.gitDirectory], let file = owned[.gitFile], sealedCode == nil else {
+                    throw CustodyResourceError.invalidResource
+                }
+                repository = try InheritedRepositoryGitResources(bytes: sealedInput, request: request, policy: authority,
+                    helper: helper, account: account, parent: parent, directory: directory, file: file)
+                discovery = nil; retention = nil
+            } else if request.kind == .retentionArchive {
+                guard let source = owned[.retentionSource], let target = owned[.retentionWorktree], let destination = owned[.retentionDestination],
+                      let directory = owned[.gitDirectory], let file = owned[.gitFile], sealedCode == nil else { throw CustodyResourceError.invalidResource }
+                discovery = nil; repository = nil
+                retention = try InheritedRetentionArchiveResources(bytes: sealedInput, request: request, policy: authority,
+                    helper: helper, account: account, statePath: statePath, parent: parent, source: source, target: target, destination: destination, directory: directory, file: file)
             } else {
+                retention = nil
+                repository = nil
                 guard !hasFrozenConfiguration, sealedCode == nil else { throw CustodyResourceError.invalidResource }
                 discovery = try InheritedDiscoveryResources(input: sealedInput, request: request,
                     policy: authority, helper: helper, account: account, parent: parent.processID)
             }
             policy = authority
         } else {
-            policy = nil; discovery = nil
+            policy = nil; discovery = nil; retention = nil; repository = nil
             if !fixture, request.kind == .systemGitConfig {
                 try SystemGitConfigurationCommand.validate(request, account: account)
             } else if !fixture, request.kind == .launchctlMutation {
-                lifecycle = try LifecycleLaunchAuthority(request: request, helper: helper, account: account)
+                lifecycle = try LifecycleLaunchAuthority(request: request, helper: helper, account: account, installation: installation)
             } else if !fixture {
                 let expected = request.kind == .launchctlRead
                     ? ["print", "gui/\(account.uid)/\(InstallationPaths.label)"]
@@ -281,7 +326,7 @@ final class CustodyInheritedCommand {
         // pathname. Production discovery defers this pathname validation until
         // the serial policy batches have admitted every required resource.
         #if SHADOW_SYNC_TESTING
-        if fixture, hasFrozenConfiguration {
+        if fixture, !discoveryFixture, hasFrozenConfiguration {
             guard let sealedInput, let directory = owned[.gitDirectory], let file = owned[.gitFile] else {
                 throw CustodyResourceError.invalidResource
             }
@@ -298,6 +343,17 @@ final class CustodyInheritedCommand {
             if fixture { try helper.bindTestingInstallationSource(root: URL(fileURLWithPath: account.homeDirectory).deletingLastPathComponent().path) }
             #endif
             try installation.validateParent(parent, helper: helper)
+            guard request.authority == (installation.stagedMode ?? .lifecycleMutation) else { throw CustodyRecordError.fenced }
+            if installation.control.step?.action == .candidateReady {
+                guard request.kind == .launchctlRead else { throw CustodyRecordError.fenced }
+            }
+            if request.authority.isInstallationStaged {
+                if request.kind == .launchctlMutation {
+                    let operation = try LifecycleLaunchCommand(arguments: request.arguments, account: account).operation
+                    try installation.validateStagedOperation(mode: request.authority, operation: operation)
+                }
+                stagedCandidate = try InstallationStagedCandidateAuthority(binding: installation, helper: helper, account: account)
+            }
             installationStore = try CustodyCatalogStore(leases: CustodyAuthorityLeaseSet.importing(self))
         }
         try revalidateResources()
@@ -322,7 +378,8 @@ final class CustodyInheritedCommand {
     func revalidateResources() throws {
         try revalidatePersistenceResources()
         try installationStore?.checkInheritedInstallation(self)
-        try discovery?.revalidate()
+        try stagedCandidate?.revalidate()
+        try discovery?.revalidate(); try retention?.revalidate(); try repository?.revalidate()
         try lifecycle?.revalidate()
         try frozenConfiguration?.revalidate()
     }

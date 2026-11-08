@@ -382,7 +382,7 @@ final class PublisherPolicyResources: @unchecked Sendable {
         var diagnosticMilestones: [UInt64] = []
         var diagnosticPassed = false
         defer {
-            if diagnosticSample {
+            if !diagnosticPassed || diagnosticSample {
                 DiscoveryFixtureDiagnostic.record(.publisher, stage: diagnosticStage,
                     started: diagnosticStart, deadline: nil, succeeded: diagnosticPassed,
                     milestones: diagnosticMilestones)

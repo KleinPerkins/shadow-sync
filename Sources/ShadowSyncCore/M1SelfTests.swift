@@ -348,7 +348,7 @@ public enum M1SelfTestRunner {
                  .skippedIgnoredFileCollision:
                 expected = .warning
             case .failedInspection, .failedFetchAuthentication, .failedFetchNetwork,
-                 .failedFetch, .failedUpdate, .needsAttention:
+                 .failedFetch, .failedUpdate, .needsAttention, .cleanupPending:
                 expected = .failure
             case .cancelledPending, .cancelledDuringFetch, .cancelledNoUpdate:
                 expected = .cancelled
@@ -515,9 +515,9 @@ public enum M1SelfTestRunner {
     private static func testDiscoveryErrorPresentation() throws {
         let expected: [(M1RepositoryDiscoveryError, String)] = [
             (.accountUnavailable, "Account Information Unavailable"),
-            (.requiredRootUnavailable, "Required ~/dev Folder Unavailable"),
-            (.locationUnavailable, "Required ~/dev Folder Unavailable"),
-            (.unsupportedLayout, "Required ~/dev Folder Unavailable"),
+            (.requiredRootUnavailable, "Repository Location Unavailable"),
+            (.locationUnavailable, "Repository Location Unavailable"),
+            (.unsupportedLayout, "Repository Location Unavailable"),
             (.invalidRepositoryMetadata, "Repository Could Not Be Verified"),
         ]
         for (error, title) in expected {
@@ -566,7 +566,7 @@ public enum M1SelfTestRunner {
             missingError ?? M1RepositoryDiscoveryError.accountUnavailable
         )
         try check(
-            missingPresentation.informativeText.contains("Restore or check out ~/dev"),
+            missingPresentation.informativeText.contains("Check the configured location"),
             "missing-root recovery was not actionable"
         )
 
@@ -581,7 +581,7 @@ public enum M1SelfTestRunner {
         let empty = RepositoryDiscoveryEmptyPresentation.m1NoCandidate
         try check(
             empty.messageText == "No Eligible Repository Found"
-                && empty.informativeText.contains("found ~/dev")
+                && empty.informativeText.contains("in the configured locations")
                 && empty.informativeText.contains("No update was started"),
             "valid no-candidate presentation was inaccurate"
         )

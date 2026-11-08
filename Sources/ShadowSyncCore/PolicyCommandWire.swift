@@ -6,12 +6,20 @@ enum PolicyCommandWire {
     static let logicalArguments = ["isolated-policy-classification"]
     static var interpreterArguments: [String] { ["-I", "-S", "-B", "-c", bootstrap] }
 
-    static func budget(timeout: TimeInterval, absoluteDeadline: UInt64?,
+    static func budget(timeout: TimeInterval, absoluteDeadline: UInt64?, enclosingBudget: CustodyBudget? = nil,
                        now: UInt64 = DispatchTime.now().uptimeNanoseconds) throws -> CustodyBudget {
         let original = try CustodyBudget.make(kind: .policyClassify, workSeconds: timeout, now: now)
-        guard let deadline = absoluteDeadline else { return original }
+        let bounded: CustodyBudget
+        if let enclosingBudget {
+            // repositoryPreflight already caps each cleanup interval to the
+            // policy ceiling. Draining at this request's shorter work endpoint
+            // therefore also caps every endpoint to the original policy budget.
+            bounded = try enclosingBudget.repositoryPreflight(.policyClassification, now: now)
+                .draining(at: original.work)
+        } else { bounded = original }
+        guard let deadline = absoluteDeadline else { return bounded }
         guard deadline > now else { throw CustodyProtocolError.invalidBudget }
-        return try original.draining(at: deadline)
+        return try bounded.draining(at: deadline)
     }
 
     static func resources(adapter: Data, contract: Data) throws -> Data {

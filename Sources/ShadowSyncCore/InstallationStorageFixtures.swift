@@ -4,6 +4,73 @@
 import Darwin
 import Foundation
 
+/// Actual reserved queue ownership for deterministic fixture interleavings.
+/// The root retains it through every assertion throw; only group completion
+/// proves it joined. It is never counted as a spawned/reaped child.
+final class InstallationFixtureWork: @unchecked Sendable {
+    private let group = DispatchGroup()
+    private let lock = NSLock()
+    private var result: Result<Void, Error>?
+    init() { group.enter() }
+    fileprivate func start(_ body: @escaping @Sendable () throws -> Void) {
+        DispatchQueue(label: "shadow-sync.installation-fixture-work").async { [self] in
+            let value: Result<Void, Error>
+            do { try body(); value = .success(()) } catch { value = .failure(error) }
+            lock.lock(); result = value; lock.unlock(); group.leave()
+        }
+    }
+    func join(deadline: MonotonicDeadline) throws {
+        guard group.wait(timeout: .init(uptimeNanoseconds: deadline.absoluteUptimeNanoseconds)) == .success else {
+            throw CustodyRecordError.busy
+        }
+    }
+    func value(deadline: MonotonicDeadline) throws {
+        try join(deadline: deadline)
+        lock.lock(); let value = result; lock.unlock()
+        guard let value else { throw CustodyRecordError.fenced }; try value.get()
+    }
+}
+
+/// Testing-only outer custody. Failed joins retain these actual owners and the
+/// exact root until the case/guardian observes successful independent drainage.
+final class InstallationReadinessFixtureCustody: @unchecked Sendable {
+    let root: String
+    private let identity: FileIdentity
+    private let lock = NSLock()
+    private var journals: [CustodyCatalogStore.InstallationStagedJournal] = []
+    private var work: [InstallationFixtureWork] = []
+    private var registries: [RetainedCleanupRegistry] = []
+    init(root: String, identity: FileIdentity) { self.root = root; self.identity = identity }
+    func retain(_ journal: CustodyCatalogStore.InstallationStagedJournal) {
+        lock.lock(); journals.append(journal); lock.unlock()
+    }
+    func retain(_ registry: RetainedCleanupRegistry) {
+        lock.lock(); registries.append(registry); lock.unlock()
+    }
+    func startWork(_ body: @escaping @Sendable () throws -> Void) -> InstallationFixtureWork {
+        let value = InstallationFixtureWork()
+        lock.lock(); work.append(value); lock.unlock()
+        value.start(body); return value
+    }
+    func finish(deadline: MonotonicDeadline) throws {
+        lock.lock(); let journals = self.journals, work = self.work, registries = self.registries; lock.unlock()
+        for journal in journals { try journal.closeReadiness(deadline: deadline) }
+        for item in work { try item.join(deadline: deadline) }
+        for registry in registries {
+            guard !registry.hasRetainedWork, registry.testingOriginalHelpersReaped else { throw CustodyRecordError.busy }
+        }
+        // Rejoin after other owned calls return: a crossing publication cannot
+        // create new work after the earlier cancellation observation.
+        for journal in journals { try journal.closeReadiness(deadline: deadline) }
+        var current = stat()
+        guard lstat(root, &current) == 0, FileIdentity(current).matchesStableNode(identity) else {
+            throw CustodyRecordError.conflict
+        }
+        try FileManager.default.removeItem(atPath: root)
+        lock.lock(); self.journals.removeAll(); self.work.removeAll(); self.registries.removeAll(); lock.unlock()
+    }
+}
+
 enum InstallationStorageFixtures {
     struct Failure: Error { let message: String }
     static func check(_ value: Bool, _ message: String) throws {
@@ -18,19 +85,30 @@ enum InstallationStorageFixtures {
         throw Failure(message: "unexpected installation metadata acceptance")
     }
     static func fixture(_ body: (String, StateLocation) throws -> Void) throws {
-        var name = Array((try RuntimeFixtureSession.fixturePrefix("shadow-sync-custody-catalog.") + "XXXXXX").utf8CString)
-        guard let pointer = mkdtemp(&name) else { throw Failure(message: "fixture root creation") }
-        let root = String(cString: pointer)
+        var name = Array((try RuntimeFixtureSession.fixturePrefix("shadow-sync-ic.") + "XXXXXX").utf8CString)
+        let root = try name.withUnsafeMutableBufferPointer { buffer in
+            guard let pointer = mkdtemp(buffer.baseAddress) else { throw Failure(message: "fixture root creation") }
+            return String(cString: pointer)
+        }
         var identity = stat()
         try check(lstat(root, &identity) == 0, "fixture root identity")
-        defer {
-            var current = stat()
-            if lstat(root, &current) == 0, FileIdentity(current).matchesStableNode(FileIdentity(identity)) {
-                try? FileManager.default.removeItem(atPath: root)
-            }
+        let custody = InstallationReadinessFixtureCustody(root: root, identity: FileIdentity(identity))
+        try RuntimeFixtureSession.registerInstallationRoot(custody)
+        var failure: Error?
+        do {
+            try check(mkdir(root + "/state", 0o700) == 0, "fixture state parent")
+            try body(root, StateLocation.isolated(root: root))
+        } catch { failure = error }
+        do {
+            try custody.finish(deadline: .init(seconds: 3))
+            RuntimeFixtureSession.didFinishInstallationRoot(custody)
+        } catch {
+            // The outer case retains the actual journal/work/registry and root.
+            // No defer removes a live tree or claims a timed-out join succeeded.
+            fputs("INSTALLATION FIXTURE ROOT CLEANUP PENDING\n", stderr); fflush(stderr)
+            throw error
         }
-        try check(mkdir(root + "/state", 0o700) == 0, "fixture state parent")
-        try body(root, StateLocation.isolated(root: root))
+        if let failure { throw failure }
     }
     static func initial() throws {
         try fixture { root, location in

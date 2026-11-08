@@ -10,7 +10,9 @@ struct CommandGraphCatalog {
         case launchctlRead = "launchctl-read/v1"
         case launchctlMutation = "launchctl-mutation/v1"
         case signatureCheck = "signature-check/v1"
+        case repositoryGit = "repository-git/v1"
         case discoveryGit = "discovery-git/v1"
+        case retentionArchive = "retention-archive/v1"
         case systemGitConfig = "system-git-config/v1"
         case policyClassify = "policy-classify/v1"
         var kind: CustodyCommandKind {
@@ -18,7 +20,9 @@ struct CommandGraphCatalog {
             case .launchctlRead: .launchctlRead
             case .launchctlMutation: .launchctlMutation
             case .signatureCheck: .signatureCheck
+            case .repositoryGit: .repositoryGit
             case .discoveryGit: .discoveryGit
+            case .retentionArchive: .retentionArchive
             case .systemGitConfig: .systemGitConfig
             case .policyClassify: .policyClassify
             }
@@ -29,7 +33,7 @@ struct CommandGraphCatalog {
             switch self {
             case .launchctlRead, .launchctlMutation: ["/bin/launchctl"]
             case .signatureCheck: ["/usr/bin/codesign"]
-            case .discoveryGit, .systemGitConfig: ["/usr/bin/git", "/Library/Developer/CommandLineTools/usr/bin/git"]
+            case .repositoryGit, .retentionArchive, .discoveryGit, .systemGitConfig: ["/usr/bin/git", "/Library/Developer/CommandLineTools/usr/bin/git"]
             // This one fixed relative path is resolved only through verified
             // publisher resources, never through a caller-selected bundle.
             case .policyClassify: ["Contents/Frameworks/Python.framework/" + PolicyRuntimeLayout.interpreter]
@@ -155,7 +159,7 @@ final class QualifiedCommandGraph: @unchecked Sendable {
                 guard let publisher else { throw PublisherPolicyError.unavailable }
                 return try Self(testingEntry: entry, resource: resource, publisher: publisher)
             }
-            guard publisher == nil, kind == .systemGitConfig || kind == .discoveryGit else {
+            guard publisher == nil, [.systemGitConfig, .discoveryGit, .repositoryGit, .retentionArchive].contains(kind) else {
                 throw PublisherPolicyError.unavailable
             }
             return try Self(entry: entry, resource: resource)

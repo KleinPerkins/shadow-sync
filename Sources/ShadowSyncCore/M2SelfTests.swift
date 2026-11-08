@@ -1815,7 +1815,7 @@ public enum M2SelfTestRunner {
         try check(
             presentation.messageText == "Repository Search Limit Reached"
                 && presentation.informativeText
-                    == "ShadowSync stopped before offering repositories because ~/dev contains more folders than can be safely inspected in one run. Move unnecessary folders outside ~/dev, then try again. No update was started.",
+                    == "ShadowSync stopped before offering repositories because the configured locations contain more folders than can be safely inspected in one run. Narrow the configured locations, then try again. No update was started.",
             "scan-budget failure copy changed"
         )
 

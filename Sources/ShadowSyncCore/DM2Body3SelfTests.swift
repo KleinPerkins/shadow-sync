@@ -987,6 +987,8 @@ public enum V2Body3SelfTestRunner {
             switch preparation {
             case let .incomplete(_, _, reason):
                 diagnostic = reason
+            case .cleanupPending:
+                diagnostic = "cleanup pending"
             case .cancelled:
                 diagnostic = "cancelled"
             case .completed:
@@ -1503,7 +1505,7 @@ public enum V2Body3SelfTestRunner {
                 && successResult.commands.count == 1
                 && successResult.commands[0].executable
                     == fixture.home
-                        + "/dev/_ops/bin/dev-worktree.sh"
+                        + "/fixture-tools/cleanup.sh"
                 && !FileManager.default.fileExists(
                     atPath: successPath
                 )
@@ -3708,12 +3710,16 @@ final class Body3Fixture {
         removeOnSuccess: Bool = false
     ) throws -> String {
         let path =
-            home + "/dev/_ops/bin/dev-worktree.sh"
+            home + "/fixture-tools/cleanup.sh"
+        try FileManager.default.createDirectory(
+            atPath: home + "/fixture-tools", withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
         let log = temporary.path + "/awa.log"
         let script = """
         #!/bin/bash
-        [ "$AWA_POLICY" = "\(home)/dev/_ops/policy/worktree-policy.yml" ] || exit 91
-        [ "$AWA_GOVERNED_ROOT" = "\(home)/dev" ] || exit 92
+        [ "$AWA_POLICY" = "\(home)/fixture-policy.yml" ] || exit 91
+        [ "$AWA_GOVERNED_ROOT" = "\(home)/fixture-workspace" ] || exit 92
         printf '%s|%s|%s\\n' "$1" "$2" "$3" >> "\(log)"
         \(removeOnSuccess ? #"/usr/bin/git worktree remove "$3" || exit $?"# : "")
         exit \(exitStatus)
@@ -3779,7 +3785,7 @@ final class Body3Fixture {
                     stateLocation: stateLocation,
                     awaExecutablePath:
                         home
-                            + "/dev/_ops/bin/dev-worktree.sh",
+                            + "/fixture-tools/cleanup.sh",
                     protectedPaths: [
                         stateLocation.path,
                         executable,

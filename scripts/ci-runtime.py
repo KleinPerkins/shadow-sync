@@ -27,7 +27,7 @@ build = load('ci-build')
 require = build.require
 PREFIXES = ('shadow-sync-m2.', 'shadow-sync-m4.', 'shadow-sync-self-tests.',
     'shadow-sync-custody-anchor-', 'shadow-sync-m6-self.', 'shadow-sync-custody-leases.',
-    'shadow-sync-custody-catalog.', 'shadow-sync-fresh-state.', 'shadow-sync-registry.',
+    'shadow-sync-custody-catalog.', 'shadow-sync-ic.', 'shadow-sync-fresh-state.', 'shadow-sync-registry.',
     'shadow-sync-state-admission.', 'shadow-sync-policy-input-', 'shadow-sync-policy-transport-',
     'shadow-sync-policy-authority-', 'shadow-sync-catalog-admission-', 'shadow-sync-publisher-policy-',
     'shadow-sync-discovery-spawn.', 'shadow-sync-fixture-config.', 'shadow-sync-v3-preferences.',

@@ -181,6 +181,52 @@ struct CustodyBudget: Equatable, Sendable {
         return bounded
     }
 
+    func repositoryPreflight(_ stage: DiscoveryGitCommand.Preflight,
+                            now: UInt64 = DispatchTime.now().uptimeNanoseconds) throws -> Self {
+        try validate(kind: .repositoryGit, permittedWorkSeconds: CustodyCommandKind.repositoryGit.maximumWorkSeconds, now: now)
+        let ceiling = try Self.make(kind: stage.kind, workSeconds: stage.workSeconds, now: now)
+        let boundedWork = min(work, ceiling.work)
+        // Clip the intervals as well as the endpoints. Otherwise an early
+        // two-second preflight could regain two seconds of cleanup even when
+        // its enclosing transaction explicitly permits none. These validated
+        // nanosecond differences are already scaled; do not scale them again.
+        let boundedTerm = min(term, try Self.add(boundedWork,
+            min(term - work, ceiling.term - ceiling.work)))
+        let boundedKill = min(kill, try Self.add(boundedTerm,
+            min(kill - term, ceiling.kill - ceiling.term)))
+        let boundedReceipt = min(receipt, try Self.add(boundedKill,
+            min(receipt - kill, ceiling.receipt - ceiling.kill)))
+        let bounded = Self(issued: now, work: boundedWork, term: boundedTerm,
+                           kill: boundedKill, receipt: boundedReceipt)
+        try bounded.validate(kind: stage.kind, permittedWorkSeconds: stage.workSeconds, now: now)
+        return bounded
+    }
+
+    func repositoryProbe(now: UInt64 = DispatchTime.now().uptimeNanoseconds) throws -> Self {
+        try repositoryPreflight(.systemConfiguration, now: now)
+    }
+
+    func retentionPreflight(_ stage: DiscoveryGitCommand.Preflight,
+                            now: UInt64 = DispatchTime.now().uptimeNanoseconds) throws -> Self {
+        try validate(kind: .retentionArchive, permittedWorkSeconds: 120, now: now)
+        let ceiling = try Self.make(kind: stage.kind, workSeconds: stage.workSeconds, now: now)
+        let boundedWork = min(work, ceiling.work)
+        // Clip the intervals as well as the endpoints. Otherwise an early
+        // two-second preflight could regain two seconds of cleanup even when
+        // its enclosing transaction explicitly permits none. These validated
+        // nanosecond differences are already scaled; do not scale them again.
+        let boundedTerm = min(term, try Self.add(boundedWork,
+            min(term - work, ceiling.term - ceiling.work)))
+        let boundedKill = min(kill, try Self.add(boundedTerm,
+            min(kill - term, ceiling.kill - ceiling.term)))
+        let boundedReceipt = min(receipt, try Self.add(boundedKill,
+            min(receipt - kill, ceiling.receipt - ceiling.kill)))
+        let bounded = Self(issued: now, work: boundedWork, term: boundedTerm,
+                           kill: boundedKill, receipt: boundedReceipt)
+        try bounded.validate(kind: stage.kind, permittedWorkSeconds: stage.workSeconds, now: now)
+        return bounded
+    }
+
     private static func cleanupDuration(_ seconds: TimeInterval, maximum: TimeInterval) throws -> UInt64 {
         guard seconds.isFinite, seconds >= 0, seconds <= maximum else { throw CustodyProtocolError.invalidBudget }
         return try duration(seconds)
@@ -216,11 +262,13 @@ struct CustodyDescriptorClaim: Equatable, Sendable {
         case request, control, status, state, namespace, gitDirectory = "git-directory"
         case gitFile = "git-file", lifecycle, operation, run, input, code, workingDirectory = "working-directory"
         case traceOutput = "trace-output"
+        case retentionSource = "retention-source", retentionDestination = "retention-destination", retentionWorktree = "retention-worktree"
         var number: UInt64 {
             switch self {
             case .request: 190; case .control: 191; case .status: 192; case .state: 193
             case .namespace: 194; case .gitDirectory: 195; case .gitFile: 196
             case .lifecycle: 197; case .operation: 198; case .run: 199
+            case .retentionSource: 10; case .retentionDestination: 11; case .retentionWorktree: 12
             case .input: 8; case .code: 9; case .workingDirectory: 200; case .traceOutput: 7
             }
         }

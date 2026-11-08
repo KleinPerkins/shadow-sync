@@ -796,6 +796,16 @@ public enum RemovalPreviewOracle {
                     "The resolved-default target and protected/read-only policy categories cannot be removal candidates."
             )
         }
+        #if !SHADOW_SYNC_TESTING
+        if awa.state == .unavailable {
+            return RemovalPreview(
+                recommendation: .hardExcluded,
+                permission: .hardExcluded,
+                explanation:
+                    "External workspace-manager evidence is unavailable; worktree removal is disabled."
+            )
+        }
+        #endif
         if preservationFailed
             || (branchTipPreserved == false && !recoverySupported) {
             return RemovalPreview(
@@ -923,6 +933,7 @@ public enum RemovalPreviewOracle {
     }
 }
 
+#if SHADOW_SYNC_TESTING
 enum AWAEvidenceReader {
     private struct LeaseDocument: Decodable {
         let schema: String
@@ -1278,3 +1289,27 @@ enum AWAEvidenceReader {
         return "darwin-boot-\(bootTime.tv_sec)"
     }
 }
+
+#else
+enum AWAEvidenceReader {
+    static func read(
+        worktreePath: String,
+        commonDirectory: String,
+        branch: String?,
+        location: WorktreeLocationKind,
+        account: EffectiveAccount,
+        capturedNow: Date,
+        activeRootTTL: TimeInterval = 12 * 3_600
+    ) -> AWAEvidence {
+        // No implicit deployment path, schema, PID or lease discovery.
+        // The private-policy-bound integration has not been qualified.
+        AWAEvidence(
+            state: .unavailable,
+            explanation:
+                "External workspace-manager evidence is unavailable; worktree removal is disabled.",
+            blocksRemoval: true,
+            forceOverridableUnknown: false
+        )
+    }
+}
+#endif

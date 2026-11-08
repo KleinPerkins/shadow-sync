@@ -9798,7 +9798,13 @@ final class RunWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func wirePayloadIsValid(_ message: WorkerWireMessage) -> Bool {
+        guard (message.kind == .repositoryCommand) == (message.repositoryCommand != nil) else { return false }
         switch message.kind {
+        case .repositoryCommand:
+            return message.repositoryCommand.map { RunIdentity.isValid($0.requestID) } == true
+                && message.event == nil && message.report == nil && message.error == nil
+                && message.workerIdentity == nil && message.childIdentity == nil
+                && message.workerPID == nil && message.runID == nil
         case .ownership:
             return message.workerIdentity != nil
                 && message.runID == expectedRunID

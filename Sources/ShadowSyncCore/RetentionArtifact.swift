@@ -215,6 +215,7 @@ public enum RetentionPreparation:
         reason: String
     )
     case cancelled
+    case cleanupPending
 }
 
 public final class RetentionArtifactStore:
@@ -225,6 +226,19 @@ public final class RetentionArtifactStore:
     private let state: SecureStateDirectory
     private let account: EffectiveAccount
     private let runner: ClosedProcessRunner
+    private var configurationContext: CommandCustodyContext?
+    #if SHADOW_SYNC_TESTING
+    struct TestingCustodyHooks: Sendable {
+        var beforePrepare: (@Sendable (RetentionArchiveCommandAuthority) throws -> Void)? = nil
+        var afterStart: (@Sendable (PreparedCustodyCommand, RetainedCleanupRegistry.Handle, CancellationToken) throws -> Void)? = nil
+    }
+    var testingCustodyHooks: TestingCustodyHooks? = nil
+    #endif
+    private var archiveAdmission: RetentionArchiveAdmission?
+    private var archivePrimary: RepositoryHandle?, archiveWorktree: RepositoryHandle?
+    private var archiveFrozen: FrozenGitConfiguration?
+    private var archiveSlot: OwnedFileDescriptor?
+    private var archiveSlotPath: String?, archiveRevision: String?, archiveTip: String?
 
     public init(
         state: SecureStateDirectory,
@@ -234,6 +248,12 @@ public final class RetentionArtifactStore:
         self.state = state
         self.account = account
         self.runner = runner
+    }
+
+    convenience init(state: SecureStateDirectory, account: EffectiveAccount,
+                     runner: ClosedProcessRunner = ClosedProcessRunner(), configurationContext: CommandCustodyContext?) {
+        self.init(state: state, account: account, runner: runner)
+        self.configurationContext = configurationContext
     }
 
     public func prepare(
@@ -270,9 +290,29 @@ public final class RetentionArtifactStore:
         var retentionFD: Int32 = -1
         var slotFD: Int32 = -1
         let slotName = ".incomplete-\(artifactID)"
+        defer {
+            archiveAdmission = nil; archivePrimary = nil; archiveWorktree = nil; archiveFrozen = nil; archiveSlot = nil
+            archiveSlotPath = nil; archiveRevision = nil; archiveTip = nil
+        }
         do {
             if cancellation.isCancelled {
                 return .cancelled
+            }
+            if let context = configurationContext {
+                let admission = try context.retentionAdmission(cancellation: cancellation)
+                let candidate = selection.candidate, source = candidate.clone.sourceSnapshot
+                let slotPath = state.path + "/retention/" + slotName
+                var paths = DiscoveryCustodyIntent.repositoryMetadataPaths(repositoryPath: source.path)
+                if let worktree = candidate.worktree { paths += [worktree.path, worktree.path + "/.git"] }
+                paths += [slotPath, slotPath + "/branch.bundle", slotPath + "/.restore-proof", slotPath + "/.restore-proof/repository"]
+                try admission.classify(paths: paths, scratch: state.descriptor.value, cancellation: cancellation,
+                    budget: CustodyBudget.make(kind: .retentionArchive, workSeconds: 120))
+                guard source.policyAdmissionSHA256 == admission.policy.snapshot.admissionSHA256 else { throw CustodyResourceError.invalidResource }
+                archiveAdmission = admission
+            } else {
+                #if !SHADOW_SYNC_TESTING
+                throw PublisherPolicyError.unavailable
+                #endif
             }
             retentionFD = try ensureRetentionDirectory()
             guard mkdirat(
@@ -297,6 +337,12 @@ public final class RetentionArtifactStore:
                 slotName: slotName,
                 cancellation: cancellation
             )
+            try archiveAdmission?.revalidate()
+            if let archivePrimary, let archiveFrozen {
+                try archivePrimary.revalidate()
+                try RepositoryHandle.validateFrozenConfiguration(descriptor: archiveFrozen.descriptor,
+                    directoryDescriptor: archiveFrozen.directoryDescriptor, snapshot: archiveFrozen.snapshot)
+            }
             Darwin.close(slotFD)
             slotFD = -1
             guard renameatx_np(
@@ -319,23 +365,40 @@ public final class RetentionArtifactStore:
             }
             Darwin.close(retentionFD)
             return .completed(summary)
+        } catch SelectedRepositoryScopeError.cleanupPending {
+            configurationContext?.recordCleanupPending(); cancellation.closeFutureChildAdmissions()
+            if slotFD >= 0 { Darwin.close(slotFD) }
+            if retentionFD >= 0 { Darwin.close(retentionFD) }
+            return .cleanupPending
+        } catch SystemGitConfigurationError.cleanupPending {
+            configurationContext?.recordCleanupPending(); cancellation.closeFutureChildAdmissions()
+            if slotFD >= 0 { Darwin.close(slotFD) }
+            if retentionFD >= 0 { Darwin.close(retentionFD) }
+            return .cleanupPending
+        } catch PolicyHelperError.cleanupPending {
+            configurationContext?.recordCleanupPending(); cancellation.closeFutureChildAdmissions()
+            if slotFD >= 0 { Darwin.close(slotFD) }
+            if retentionFD >= 0 { Darwin.close(retentionFD) }
+            return .cleanupPending
         } catch GitSafetyError.cancelled {
+            if configurationContext?.hasCleanupPending == true {
+                if slotFD >= 0 { Darwin.close(slotFD) }
+                if retentionFD >= 0 { Darwin.close(retentionFD) }
+                cancellation.closeFutureChildAdmissions(); return .cleanupPending
+            }
             if slotFD >= 0 { Darwin.close(slotFD) }
             if retentionFD >= 0 {
-                try? removeOwnedTree(
-                    named: slotName,
-                    parent: retentionFD
-                )
                 Darwin.close(retentionFD)
             }
             return .cancelled
         } catch {
+            if configurationContext?.hasCleanupPending == true {
+                if slotFD >= 0 { Darwin.close(slotFD) }
+                if retentionFD >= 0 { Darwin.close(retentionFD) }
+                cancellation.closeFutureChildAdmissions(); return .cleanupPending
+            }
             if slotFD >= 0 { Darwin.close(slotFD) }
             if retentionFD >= 0 {
-                try? removeOwnedTree(
-                    named: slotName,
-                    parent: retentionFD
-                )
                 Darwin.close(retentionFD)
             }
             return .incomplete(
@@ -755,9 +818,26 @@ public final class RetentionArtifactStore:
         } else {
             target = primary
         }
-        let frozen = try primary.freezeConfiguration(
-            account: account
-        )
+        let frozen: FrozenGitConfiguration
+        if let configurationContext {
+            frozen = try primary.freezeConfiguration(account: account,
+                retainedConfigurationProbe: SystemGitConfigurationProbe(context: configurationContext, cancellation: cancellation),
+                admitConfiguration: { [self] preflight, budget in
+                    guard let archiveAdmission else { throw PublisherPolicyError.unavailable }
+                    try archiveAdmission.classify(paths: preflight.admissionPaths(account: account),
+                        scratch: state.descriptor.value, cancellation: cancellation, budget: budget)
+                })
+        } else {
+            frozen = try primary.freezeConfiguration(account: account)
+        }
+        if let archiveAdmission {
+            try archiveAdmission.revalidate()
+            archivePrimary = primary; archiveWorktree = target; archiveFrozen = frozen
+            archiveSlot = OwnedFileDescriptor(try RetentionArchiveCommandAuthority.copy(slotFD))
+            archiveSlotPath = state.path + "/retention/" + slotName
+            archiveTip = candidate.expectedOID
+            archiveRevision = candidate.branch?.fullRef ?? candidate.worktree?.attachedBranchRef ?? candidate.expectedOID
+        }
         let environment = ClosedProcessRunner.environment(
             account: account,
             frozenConfigPath: frozen.snapshot.frozenPath
@@ -879,12 +959,13 @@ public final class RetentionArtifactStore:
             parent: slotFD
         )
         let proofPath = slotPath + "/\(proofName)"
+        var proofComplete = false
         defer {
             Darwin.close(proofFD)
-            try? removeOwnedTree(
+            if proofComplete && configurationContext?.hasCleanupPending != true { try? removeOwnedTree(
                 named: proofName,
                 parent: slotFD
-            )
+            ) }
         }
         let restorePath = proofPath + "/repository"
         var bundleVerified = false
@@ -1166,6 +1247,7 @@ public final class RetentionArtifactStore:
                 errno
             )
         }
+        proofComplete = true
         return RetentionArtifactSummary(
             manifest: manifest,
             path: state.path
@@ -1608,17 +1690,50 @@ public final class RetentionArtifactStore:
         operation: String
     ) throws -> ProcessResult {
         try RetentionGitCommandPolicy.validate(arguments)
-        let result = try runner.run(
-            command: ClosedProcessCommand(
-                executable: "/usr/bin/git",
-                arguments: arguments
-            ),
-            environment: environment,
-            workingDirectoryDescriptor: cwd,
-            account: account,
-            timeout: 120,
-            cancellation: cancellation
-        )
+        let result: ProcessResult
+        if let admission = archiveAdmission, let primary = archivePrimary, let worktree = archiveWorktree,
+           let frozen = archiveFrozen, let slot = archiveSlot, let slotPath = archiveSlotPath,
+           let revision = archiveRevision, let tip = archiveTip {
+            let budget = try CustodyBudget.make(kind: .retentionArchive, workSeconds: 120)
+            let authority = try RetentionArchiveCommandAuthority(admission: admission, primary: primary, worktree: worktree,
+                frozen: frozen, destination: slot.value, slotPath: slotPath, cwd: cwd, arguments: arguments,
+                revision: revision, tip: tip, statePath: state.path)
+            #if SHADOW_SYNC_TESTING
+            try testingCustodyHooks?.beforePrepare?(authority)
+            #endif
+            let command = try admission.context.prepareRetention(authority, budget: budget, cancellation: cancellation)
+            try runner.recordRetainedArchive(arguments: arguments, environment: command.resources.request.environment)
+            let retained = try RetainedCleanupRegistry.shared.start(command)
+            #if SHADOW_SYNC_TESTING
+            try testingCustodyHooks?.afterStart?(command, retained, cancellation)
+            #endif
+            let observer = cancellation.observeCustodyCancellation(retained)
+            defer { cancellation.removeCustodyCancellation(observer) }
+            let output = retained.wait()
+            if output.phase == .cleanupPending {
+                admission.context.recordCleanupPending(); cancellation.closeFutureChildAdmissions()
+                throw SelectedRepositoryScopeError.cleanupPending
+            }
+            guard output.phase == .finished, let journal = output.journal, journal.phase == .terminal,
+                  journal.kind == .retentionArchive, let reason = journal.reason,
+                  [CustodyReason.none, .cancelled, .timeout, .outputLimit].contains(reason), let raw = journal.waitStatus else {
+                throw GitSafetyError.commandFailed(operation, 125, "Recovery command did not complete under retained custody; incomplete artifacts were preserved.")
+            }
+            if reason == .cancelled { throw GitSafetyError.cancelled }
+            try admission.context.validatePhaseAdmission()
+            result = ProcessResult(status: raw & 0x7f == 0 ? Int32((raw >> 8) & 0xff) : 128 + Int32(raw & 0x7f),
+                stdout: output.stdout, stderr: output.stderr, stdoutTruncated: reason == .outputLimit,
+                stderrTruncated: reason == .outputLimit, outputByteLimit: 16_777_216,
+                timedOut: reason == .timeout, cancelled: reason == .cancelled, terminationRequested: reason != .none,
+                processID: pid_t(journal.target?.pid ?? 0))
+        } else {
+            #if SHADOW_SYNC_TESTING
+            result = try runner.run(command: ClosedProcessCommand(executable: "/usr/bin/git", arguments: arguments),
+                environment: environment, workingDirectoryDescriptor: cwd, account: account, timeout: 120, cancellation: cancellation)
+            #else
+            throw PublisherPolicyError.unavailable
+            #endif
+        }
         guard result.succeeded,
               !result.stdoutTruncated,
               !result.stderrTruncated else {
@@ -2592,7 +2707,7 @@ public final class RetentionArtifactStore:
     }
 }
 
-private enum RetentionPath {
+enum RetentionPath {
     static func isComponent(_ value: String) -> Bool {
         !value.isEmpty
             && value != "."
@@ -2674,7 +2789,7 @@ private enum RetentionPath {
     }
 }
 
-private enum RetentionGitCommandPolicy {
+enum RetentionGitCommandPolicy {
     static func validate(_ arguments: [String]) throws {
         guard !arguments.isEmpty,
               !arguments.contains(where: {

@@ -27,6 +27,9 @@ public enum CommandCustodian {
     }
     #if SHADOW_SYNC_TESTING
     public static func testingDispatch(_ arguments: [String]) -> Int32? {
+        if arguments.count == 4, arguments[1] == "--shadow-sync-repository-git-worker-fixture" {
+            return DiscoveryCallerSelfTestRunner.repositoryWorker(root: arguments[2], phase: arguments[3])
+        }
         if arguments.count == 2 && arguments[1] == "--shadow-sync-discovery-custodian-fixture" {
             do { return try CustodianLoop(inherited: CustodyInheritedCommand.testingDiscovery()).run() }
             catch { return 71 }
@@ -41,7 +44,7 @@ public enum CommandCustodian {
         return nil
     }
     private static func targetFixture(_ mode: String) -> Int32 {
-        guard ["installation-absent","complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay",
+        guard ["installation-absent","installation-loaded","installation-foreign","complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay",
                "trace-complete","trace-overflow","trace-resist","policy-echo","policy-resist",
                     "system-complete","system-missing","system-faildata","system-resist","system-overflow",
                "config-complete","config-resist-sigterm-fixture", "system-multiple-policy-batches", "classification-allow", "classification-protected", "classification-malformed", "classification-nonce", "classification-binding", "classification-code-allow", "lifecycle-absent", "lifecycle-loaded", "lifecycle-empty", "lifecycle-foreign"].contains(mode) else { return 64 }
@@ -133,6 +136,15 @@ public enum CommandCustodian {
             guard bytes.withUnsafeBytes({ Darwin.write(1, $0.baseAddress, $0.count) }) == bytes.count else { return 74 }
             return mode == "system-faildata" ? 7 : 0
         }
+        if mode == "installation-loaded" || mode == "installation-foreign" {
+            guard let home = ProcessInfo.processInfo.environment["HOME"],
+                  let account = try? EffectiveAccount.isolated(homeDirectory: home), fcntl(198, F_GETFD) >= 0 else { return 75 }
+            let command = LifecycleLaunchCommand(operation: .bootstrap, account: account)
+            let bytes = mode == "installation-loaded" ? command.fixtureLoadedOutput
+                : Data("foreign service diagnostic\n".utf8)
+            guard bytes.withUnsafeBytes({ Darwin.write(1, $0.baseAddress, $0.count) }) == bytes.count else { return 74 }
+            return 0
+        }
         if mode == "installation-absent" {
             let bytes = Data("Bad request.\nCould not find service \"\(InstallationPaths.label)\" in domain for user gui: \(geteuid())\n".utf8)
             _ = bytes.withUnsafeBytes { Darwin.write(STDERR_FILENO, $0.baseAddress!, $0.count) }
@@ -205,13 +217,26 @@ public enum CommandCustodian {
 /// supplies authenticated publisher, resource and lease authority.
 private enum CustodianStage: Equatable {
     case systemConfiguration, policyClassification, command
+    case repositoryProbe(Int)
     case lifecyclePreflight, lifecycleMutation, lifecyclePostflight
     var isIntermediate: Bool { self != .command && self != .lifecyclePostflight }
+    var usesRepository: Bool { if case .repositoryProbe = self { return true }; return self == .command }
+    #if SHADOW_SYNC_TESTING
+    var repositoryFixturePhase: String? {
+        switch self {
+        case .systemConfiguration: "system"
+        case .policyClassification: "policy"
+        case .repositoryProbe(let index): ["root", "origin", "transport"].indices.contains(index) ? ["root", "origin", "transport"][index] : nil
+        case .command: "command"
+        default: nil
+        }
+    }
+    #endif
     var preflight: DiscoveryGitCommand.Preflight? {
         switch self {
         case .systemConfiguration: .systemConfiguration
         case .policyClassification: .policyClassification
-        case .command, .lifecyclePreflight, .lifecycleMutation, .lifecyclePostflight: nil
+        case .command, .repositoryProbe, .lifecyclePreflight, .lifecycleMutation, .lifecyclePostflight: nil
         }
     }
 }
@@ -255,7 +280,7 @@ private final class CustodianTarget {
                     case "serial-policy-code-batches": targetMode = "classification-code-allow"
                     default: targetMode = "classification-allow"
                     }
-                case .lifecyclePreflight, .lifecycleMutation, .lifecyclePostflight:
+                case .repositoryProbe, .lifecyclePreflight, .lifecycleMutation, .lifecyclePostflight:
                     throw CustodyResourceError.invalidResource
                 case .command:
                     targetMode = mode == "serial-command-cancel" ? "resist" : "complete"
@@ -278,10 +303,54 @@ private final class CustodianTarget {
             default: throw CustodyResourceError.invalidResource
             }
             environment = inherited.request.environment
+        } else if let repository = inherited.repository {
+            try repository.revalidate()
+            switch stage {
+            case .systemConfiguration:
+                qualified = repository.systemGraph; args = SystemGitConfigurationCommand.arguments
+                var values = SystemGitConfigurationCommand.environment(account: inherited.account)
+                #if SHADOW_SYNC_TESTING
+                if inherited.testingDiscovery {
+                    values["GIT_CONFIG_SYSTEM"] = try DiscoveryFixtureResources.systemConfiguration(home: inherited.account.homeDirectory)
+                }
+                #endif
+                environment = values
+            case .policyClassification:
+                qualified = repository.policy.graph; args = PolicyCommandWire.interpreterArguments
+                environment = ClosedProcessRunner.environment(account: inherited.account)
+            case .repositoryProbe(let index):
+                try repository.validateBeforeTarget()
+                qualified = repository.gitGraph; args = try repository.probeArguments(index)
+                environment = try repository.input.environment(account: inherited.account)
+            case .command:
+                try repository.validateBeforeTarget()
+                qualified = repository.gitGraph; args = repository.arguments
+                environment = try repository.input.environment(account: inherited.account)
+            default: throw CustodyResourceError.invalidResource
+            }
+        } else if let retention = inherited.retention {
+            try retention.revalidate()
+            switch stage {
+            case .systemConfiguration:
+                qualified = retention.systemGraph; args = SystemGitConfigurationCommand.arguments
+                var values = SystemGitConfigurationCommand.environment(account: inherited.account)
+                #if SHADOW_SYNC_TESTING
+                if inherited.testingDiscovery { values["GIT_CONFIG_SYSTEM"] = try DiscoveryFixtureResources.systemConfiguration(home: inherited.account.homeDirectory) }
+                #endif
+                environment = values
+            case .policyClassification:
+                qualified = retention.policy.graph; args = PolicyCommandWire.interpreterArguments
+                environment = ClosedProcessRunner.environment(account: inherited.account)
+            case .command:
+                guard retention.cwd != nil, retention.frozen != nil else { throw CustodyResourceError.invalidResource }
+                qualified = retention.archiveGraph; args = inherited.request.arguments
+                environment = retention.input.environment(account: inherited.account)
+            default: throw CustodyResourceError.invalidResource
+            }
         } else if let discovery = inherited.discovery {
             try discovery.revalidate()
             switch stage {
-            case .lifecyclePreflight, .lifecycleMutation, .lifecyclePostflight:
+            case .repositoryProbe, .lifecyclePreflight, .lifecycleMutation, .lifecyclePostflight:
                 throw CustodyResourceError.invalidResource
             case .systemConfiguration:
                 qualified = discovery.systemGraph; args = SystemGitConfigurationCommand.arguments
@@ -310,10 +379,16 @@ private final class CustodianTarget {
                 args = PolicyCommandWire.interpreterArguments
             } else {
                 guard [.launchctlRead, .signatureCheck, .systemGitConfig].contains(inherited.request.kind) else { throw CustodyResourceError.invalidResource }
-                qualified = try QualifiedCommandGraph.production(kind: inherited.request.kind, helper: inherited.helper)
+                qualified = try QualifiedCommandGraph.forHelper(kind: inherited.request.kind, helper: inherited.helper)
                 args = inherited.request.arguments
             }
-            environment = inherited.request.environment
+            var values = inherited.request.environment
+            #if SHADOW_SYNC_TESTING
+            if inherited.testingDiscovery, inherited.request.kind == .systemGitConfig {
+                values["GIT_CONFIG_SYSTEM"] = try DiscoveryFixtureResources.systemConfiguration(home: inherited.account.homeDirectory)
+            }
+            #endif
+            environment = values
         }
         graph = qualified; path = qualified.entryPath; arguments = [path] + args
         fixtureSnapshot = nil
@@ -344,6 +419,7 @@ private final class CustodianLoop {
     private var stageIndex = 0
     #if SHADOW_SYNC_TESTING
     private var serialReadyPublished = false
+    private var testingFailureWitness: TestingCustodianFailureWitness?
     #endif
     private var stageBudget: CustodyBudget
     private var stage: CustodianStage { stages[stageIndex] }
@@ -372,7 +448,7 @@ private final class CustodianLoop {
     init(inherited: CustodyInheritedCommand) throws {
         self.inherited = inherited
         journal = try CustodyHelperJournal.begin(inherited)
-        var serial = inherited.discovery != nil
+        var serial = inherited.discovery != nil || inherited.retention != nil || inherited.repository != nil
         #if SHADOW_SYNC_TESTING
         serial = serial || inherited.fixtureMode?.hasPrefix("serial-") == true
         #endif
@@ -381,11 +457,20 @@ private final class CustodianLoop {
         discoveryCommand = try inherited.discovery?.command ?? (serial ? DiscoveryGitCommand(
             arguments: ["--no-replace-objects", "--no-lazy-fetch", "symbolic-ref", "--quiet", "--short", "HEAD"],
             captureTransportConfiguration: false, timeoutSeconds: DiscoveryGitCommand.maximumWorkSeconds) : nil)
-        stageBudget = try discoveryCommand.map {
-            try inherited.request.budget.discoveryPreflight(.systemConfiguration, command: $0)
-        } ?? inherited.request.budget
+        stageBudget = try inherited.repository != nil
+            ? inherited.request.budget.repositoryPreflight(.systemConfiguration)
+            : discoveryCommand.map { try inherited.retention != nil ? inherited.request.budget.retentionPreflight(.systemConfiguration)
+                : inherited.request.budget.discoveryPreflight(.systemConfiguration, command: $0) }
+                ?? inherited.request.budget
         target = try CustodianTarget(inherited, stage: stages[0])
         state = try CustodyAdmissionState(binding: inherited.request.binding, budget: inherited.request.budget)
+        #if SHADOW_SYNC_TESTING
+        if inherited.testingDiscovery, inherited.request.kind == .repositoryGit,
+           inherited.repository?.input.testingPausePhase != nil {
+            testingFailureWitness = try? TestingCustodianFailureWitness(
+                home: inherited.account.homeDirectory, binding: journal.current.binding)
+        }
+        #endif
     }
     private var now: UInt64 { DispatchTime.now().uptimeNanoseconds }
     private func status(_ event: CustodyMessage.Event, terminal: CustodyJournal? = nil) throws {
@@ -402,10 +487,64 @@ private final class CustodianLoop {
         if state.phase != .terminal { try? state.closeAdmission(now: now) }
         if let clipped = try? stageBudget.draining(at: now) { stageBudget = clipped }
         do { try journal.draining(reason: reason) }
-        catch { persistenceFailed = true }
+        catch {
+            persistenceFailed = true
+            #if SHADOW_SYNC_TESTING
+            testingObserveFailure(.drainingPersistence, error: error)
+            #endif
+        }
     }
     #if SHADOW_SYNC_TESTING
     private var testingExpiredControlObserved = false
+    private func testingObserveFailure(_ event: TestingCustodianFailureWitness.Event, error: Error?) {
+        guard let witness = testingFailureWitness else { return }
+        var fields: [String: Any] = [
+            "event": event.rawValue, "stage_index": stageIndex,
+            "stage": stage.repositoryFixturePhase ?? "other", "reason": reason.rawValue,
+            "journal_phase": journal.current.phase.rawValue, "journal_ordinal": journal.current.ordinal,
+            "terminal_stage": journal.testingTerminalStage.rawValue,
+            "control_ended": controlEnded, "status_broken": statusBroken,
+            "persistence_failed": persistenceFailed, "spawned": spawned, "resumed": resumed,
+            "target_drained": targetDrained, "stdout_eof": stdoutEnded, "stderr_eof": stderrEnded,
+            "trace_eof": traceEnded, "stdout_broken": stdoutBroken, "stderr_broken": stderrBroken,
+            "trace_broken": traceBroken, "stdout_empty": stdoutBuffer.isEmpty,
+            "stderr_empty": stderrBuffer.isEmpty, "trace_empty": traceBuffer.isEmpty,
+            "uptime": now, "issued": inherited.request.budget.issued,
+            "work": inherited.request.budget.work, "term": inherited.request.budget.term,
+            "kill": inherited.request.budget.kill, "receipt": inherited.request.budget.receipt,
+        ]
+        if let owner {
+            switch owner.observation {
+            case .running: fields["owner"] = "running"
+            case .reaped(let status): fields["owner"] = "reaped"; fields["owner_value"] = status
+            case .ownershipFailure(let value): fields["owner"] = "ownership-failure"; fields["owner_value"] = value
+            }
+            fields["graph_retirement_permitted"] = owner.graphRetirementPermitted
+            fields["graph_fault"] = owner.hasGraphFault
+            fields["terminal_held"] = owner.terminalStatusHeld != nil
+            fields["recorded_owner_matches"] = journal.testingRecordedOwnerMatches(owner)
+            fields["durable_target_matches"] = (try? CustodyProcessObservation(owner.identity)) == journal.current.target
+        } else { fields["owner"] = "absent" }
+        fields["error"] = "none"
+        if let error {
+            if let record = error as? CustodyRecordError {
+                switch record {
+                case .invalidRecord: fields["error"] = "invalid-record"
+                case .invalidTransition: fields["error"] = "invalid-transition"
+                case .conflict: fields["error"] = "conflict"
+                case .fenced: fields["error"] = "fenced"
+                case .busy: fields["error"] = "busy"
+                case .unsafeMetadata: fields["error"] = "unsafe-metadata"
+                case .persistence(let value): fields["error"] = "persistence"; fields["error_value"] = value
+                case .committedCleanupFailure(let value): fields["error"] = "committed-cleanup"; fields["error_value"] = value
+                case .injectedFailure: fields["error"] = "injected"
+                }
+            } else { fields["error"] = "other" }
+        }
+        // Snapshot-only owner reads above release their mutexes before file I/O.
+        // Diagnostic failure cannot change cancellation, persistence or drainage.
+        witness.record(event, fields: fields)
+    }
     #endif
     private func consumeControl() {
         #if SHADOW_SYNC_TESTING
@@ -436,8 +575,34 @@ private final class CustodianLoop {
             let n = Darwin.read(fd, &bytes, bytes.count)
             if n == 0 {
                 controlEnded = true
+                #if SHADOW_SYNC_TESTING
+                let testingTrueLoss = reason == .none
+                let testingEOFUptime = now
+                #endif
                 do { try decoder.finish() } catch { beginDrain(.protocolFault) }
-                beginDrain(.cancelled); return
+                #if SHADOW_SYNC_TESTING
+                let testingCleanEOF = testingTrueLoss && reason == .none
+                #endif
+                beginDrain(.cancelled)
+                #if SHADOW_SYNC_TESTING
+                // Independent EOF slot: expected cancellation cannot hide the
+                // first later retirement/persistence refusal.
+                testingObserveFailure(.controlEOF, error: nil)
+                if testingCleanEOF, inherited.testingDiscovery, stage == .command, resumed,
+                   let retention = inherited.retention, retention.input.testingPauseAfterResume,
+                   !retention.input.testingPauseBeforeResume, let owner {
+                    // Only the actual zero-byte read reaches this seam. HUP,
+                    // errors, partial/cancel frames and terminal-held targets
+                    // never manufacture positive evidence. A failed sample must
+                    // not interrupt the ordinary cancellation/drain transition.
+                    do {
+                        try retention.testingPublishEOF(request: inherited.request, worker: inherited.parent,
+                            helper: inherited.identity, owner: owner, controlFD: fd, eofUptime: testingEOFUptime,
+                            before: min(stageBudget.term, inherited.request.budget.term))
+                    } catch { /* Missing/invalid witness fails the enclosing fixture. */ }
+                }
+                #endif
+                return
             }
             if n < 0 {
                 if errno == EINTR { continue }
@@ -483,6 +648,9 @@ private final class CustodianLoop {
         #endif
         consumeControl()
         guard try state.permitsResume(now: now), controlQuiescent() else { throw CustodyRecordError.fenced }
+        if inherited.repository != nil, stage.usesRepository {
+            try inherited.repository?.validateBeforeTarget()
+        }
         let out = try pipe(), err = try pipe()
         let trace = stage == .command && inherited.request.traceLimit > 0 ? try pipe() : nil
         stdoutRead = out.0; stderrRead = err.0; stdoutEnded = false; stderrEnded = false
@@ -496,7 +664,8 @@ private final class CustodianLoop {
         guard posix_spawn_file_actions_adddup2(&actions,out.1.value,1) == 0,
               posix_spawn_file_actions_adddup2(&actions,err.1.value,2) == 0,
               posix_spawn_file_actions_addopen(&actions,0,"/dev/null",O_RDONLY,0) == 0,
-              let cwd = (stage == .command ? inherited.discovery?.root : nil) ?? inherited.descriptors[.workingDirectory], posix_spawn_file_actions_addfchdir(&actions,cwd.value) == 0 else { throw CustodyResourceError.invalidResource }
+              let cwd = ((stage.usesRepository)
+                ? inherited.repository?.root ?? (inherited.retention?.cwd ?? inherited.discovery?.root) : nil) ?? inherited.descriptors[.workingDirectory], posix_spawn_file_actions_addfchdir(&actions,cwd.value) == 0 else { throw CustodyResourceError.invalidResource }
         let policyInputView = try stage == .policyClassification ? configurationPolicyInput?.duplicateReadOnly() : nil
         let policyCodeView = try stage == .policyClassification ? configurationPolicyCode?.duplicateReadOnly() : nil
         defer { policyInputView?.closeNow(); policyCodeView?.closeNow() }
@@ -505,7 +674,7 @@ private final class CustodianLoop {
                   posix_spawn_file_actions_adddup2(&actions, policyInputView.value, 0) == 0 else { throw CustodyResourceError.invalidResource }
             if let policyCodeView {
                 guard posix_spawn_file_actions_adddup2(&actions, policyCodeView.value, 9) == 0 else { throw CustodyResourceError.invalidResource }
-            } else if inherited.discovery != nil { throw CustodyResourceError.invalidResource }
+            } else if inherited.discovery != nil || inherited.repository != nil || inherited.retention != nil { throw CustodyResourceError.invalidResource }
         }
         if inherited.request.kind == .policyClassify {
             guard let input = inherited.descriptors[.input], let code = inherited.descriptors[.code],
@@ -514,7 +683,12 @@ private final class CustodianLoop {
                 throw CustodyResourceError.invalidResource
             }
         }
-        if stage == .command, let frozen = inherited.discovery?.frozen {
+        let repositoryConfigView = try stage.usesRepository ? inherited.repository?.frozen?.openTargetReadOnly() : nil
+        defer { repositoryConfigView?.closeNow() }
+        if inherited.repository != nil, stage.usesRepository {
+            guard let repositoryConfigView,
+                  posix_spawn_file_actions_adddup2(&actions, repositoryConfigView.value, 196) == 0 else { throw CustodyResourceError.invalidResource }
+        } else if stage == .command, let frozen = inherited.discovery?.frozen {
             try frozen.revalidate()
             guard inherited.request.kind == .discoveryGit, let descriptor = frozen.descriptor,
                   posix_spawn_file_actions_adddup2(&actions, descriptor, 196) == 0 else {
@@ -566,9 +740,13 @@ private final class CustodianLoop {
         try inherited.revalidateResources(); try inherited.revalidateParent(); try target.validate(anchor)
         guard owner!.prepareGraphSignal() == .ready else { throw CustodyRecordError.fenced }
         #if SHADOW_SYNC_TESTING
+        if inherited.retention?.input.testingPauseBeforeResume == true, stage == .command { try testingAwaitFinalControl() }
         if inherited.fixtureMode == "before-resume" { usleep(200_000) }
         if inherited.fixtureMode == "after-preparation" { try testingAwaitFinalControl() }
         #endif
+        if let repository = inherited.repository, stage.usesRepository {
+            try repository.validateBeforeTarget()
+        }
         // The same serialized loop observes all available cancellation/EOF and
         // enters the final resume transition; no queue callback can race it.
         consumeControl()
@@ -577,6 +755,9 @@ private final class CustodianLoop {
               owner!.resume(before: MonotonicDeadline(uptimeNanoseconds: min(state.budget.work, stageBudget.work))) else { throw CustodyRecordError.fenced }
         resumed = true
         #if SHADOW_SYNC_TESTING
+        if inherited.retention?.input.testingPauseAfterResume == true, stage == .command { try testingAwaitFinalControl() }
+        if let phase = stage.repositoryFixturePhase { try testingRepositoryPause(phase) }
+
         if inherited.fixtureMode?.hasPrefix("serial-") == true || inherited.lifecycleCommand != nil {
             try testingSerialMarker("resumed", targetPID: owner!.identity.processID)
         }
@@ -587,7 +768,35 @@ private final class CustodianLoop {
     /// for the existing control channel to become readable. It neither consumes
     /// control nor changes admission: the production transition below must do
     /// both. The original suspended child remains owned throughout the pause.
+    private func testingRepositoryPause(_ phase: String) throws {
+        guard inherited.testingDiscovery, inherited.repository?.input.testingPausePhase == phase else { return }
+        guard let control = inherited.descriptors[.control] else { throw CustodyResourceError.invalidResource }
+        let bytes = Data(("shadow-sync-fixture-repository-phase:" + phase + "\n").utf8)
+        guard bytes.withUnsafeBytes({ Darwin.write(inherited.error.value, $0.baseAddress, $0.count) }) == bytes.count else {
+            throw CustodyResourceError.invalidResource
+        }
+        while now < state.budget.work {
+            var item = pollfd(fd: control.value, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)
+            let value = poll(&item, 1, 2)
+            if value > 0 { return }
+            if value < 0 && errno != EINTR { throw CustodyResourceError.invalidResource }
+        }
+        throw CustodyProtocolError.invalidBudget
+    }
     private func testingSerialMarker(_ event: String, targetPID: pid_t) throws {
+        // Optional owner-private disposable-fixture output mode. The same three
+        // actual children and custody checks run; only test telemetry is quiet.
+        if inherited.request.authority.isInstallationStaged {
+            let path = inherited.account.homeDirectory + "/.staged-completion-quiet"
+            var info = stat()
+            if lstat(path, &info) == 0 {
+                let marker = try PolicyAuthorityFile.read(path: path, owner: inherited.account.uid, maximumBytes: 32)
+                guard marker.bytes == Data("staged-completion-quiet/v1\n".utf8),
+                      info.st_mode == S_IFREG | 0o600 else { throw CustodyRecordError.fenced }
+                return
+            }
+            guard errno == ENOENT else { throw CustodyRecordError.fenced }
+        }
         let bytes = Data("shadow-sync-fixture-serial:\(stageIndex):\(event):\(targetPID)\n".utf8)
         let n = bytes.withUnsafeBytes { Darwin.write(inherited.error.value, $0.baseAddress, $0.count) }
         guard n == bytes.count else { throw CustodyResourceError.invalidResource }
@@ -753,13 +962,21 @@ private final class CustodianLoop {
             replaceRetiredTarget(next, budget: inherited.request.budget)
             return true
         }
-        if stage == .systemConfiguration {
+        if case .repositoryProbe(let index) = stage {
+            try journal.retireRepositoryProbe(owner, index: index, stdout: stdoutBuffer, stderr: stderrBuffer,
+                streamsDrained: targetDrained)
+        } else if stage == .systemConfiguration {
             let preflight = try journal.retireSystemConfigurationChild(owner,
                 stdout: stdoutBuffer, stderr: stderrBuffer,
                 streamsDrained: stdoutEnded && stderrEnded && traceEnded)
             let plan: ConfigurationPolicyPlan
+            if let repository = inherited.repository {
+                plan = try ConfigurationPolicyPlan(preflight: preflight, account: inherited.account, repository: repository.input)
+            } else {
             #if SHADOW_SYNC_TESTING
-            if inherited.testingDiscovery, let discovery = inherited.discovery {
+            if let retention = inherited.retention {
+                plan = try ConfigurationPolicyPlan(preflight: preflight, account: inherited.account, retention: retention.input)
+            } else if inherited.testingDiscovery, let discovery = inherited.discovery {
                 plan = try ConfigurationPolicyPlan(preflight: preflight, account: inherited.account,
                     testingDiscovery: discovery.input, requestID: inherited.request.binding.requestID)
             } else {
@@ -768,12 +985,18 @@ private final class CustodianLoop {
                     requestID: inherited.discovery == nil ? nil : inherited.request.binding.requestID)
             }
             #else
+            if let retention = inherited.retention {
+                plan = try ConfigurationPolicyPlan(preflight: preflight, account: inherited.account, retention: retention.input)
+            } else {
             plan = try ConfigurationPolicyPlan(preflight: preflight, account: inherited.account,
                 discovery: inherited.discovery?.input,
                 requestID: inherited.discovery == nil ? nil : inherited.request.binding.requestID)
+            }
             #endif
+            }
             configurationPreflight = preflight; configurationPolicyPlan = plan
-            stages = [.systemConfiguration] + Array(repeating: .policyClassification, count: plan.batches.count) + [.command]
+            let probes = (0..<(inherited.repository?.probeCount ?? 0)).map { CustodianStage.repositoryProbe($0) }
+            stages = [.systemConfiguration] + Array(repeating: .policyClassification, count: plan.batches.count) + probes + [.command]
         } else {
             guard raw == 0, let batch = configurationPolicyBatch else { throw CustodyResourceError.invalidResource }
             try batch.validate(stdout: stdoutBuffer, stderr: stderrBuffer)
@@ -801,11 +1024,16 @@ private final class CustodianLoop {
         guard reason == .none, try state.permitsResume(now: now), controlQuiescent(),
               let discoveryCommand, stageIndex + 1 < stages.count else { throw CustodyRecordError.fenced }
         let next = stages[stageIndex + 1]
-        let nextBudget = try next.preflight.map {
-            try inherited.request.budget.discoveryPreflight($0, command: discoveryCommand)
+        let nextBudget = try (next.usesRepository && next != .command && inherited.repository != nil)
+            ? inherited.request.budget.repositoryProbe()
+            : next.preflight.map {
+            try inherited.repository != nil ? inherited.request.budget.repositoryPreflight($0)
+                : inherited.retention != nil ? inherited.request.budget.retentionPreflight($0)
+                : inherited.request.budget.discoveryPreflight($0, command: discoveryCommand)
         } ?? inherited.request.budget
-        try nextBudget.validate(kind: next.preflight?.kind ?? .discoveryGit,
-            permittedWorkSeconds: next.preflight?.workSeconds ?? discoveryCommand.workSeconds, now: now)
+        try nextBudget.validate(kind: next.preflight?.kind ?? inherited.request.kind,
+            permittedWorkSeconds: next.preflight?.workSeconds ?? (inherited.repository != nil
+                ? CustodyCommandKind.repositoryGit.maximumWorkSeconds : inherited.retention != nil ? 120 : discoveryCommand.workSeconds), now: now)
         var nextPolicyBatch: ConfigurationPolicyBatch?, nextPolicyInput: CustodySealedResource?, nextPolicyCode: CustodySealedResource?
         if next == .policyClassification {
             guard let plan = configurationPolicyPlan else { throw CustodyResourceError.invalidResource }
@@ -848,6 +1076,15 @@ private final class CustodianLoop {
             }
             #endif
         }
+        if let repository = inherited.repository, repository.root == nil, next == .command || next == .repositoryProbe(0) {
+            guard let preflight = configurationPreflight else { throw CustodyResourceError.invalidResource }
+            consumeControl()
+            guard reason == .none, try state.permitsResume(now: now), controlQuiescent() else { throw CustodyRecordError.fenced }
+            try inherited.revalidateParent(); try journal.leases.validate()
+            try repository.admit(preflight: preflight)
+            consumeControl()
+            guard reason == .none, try state.permitsResume(now: now), controlQuiescent() else { throw CustodyRecordError.fenced }
+        }
         if next == .command, let discovery = inherited.discovery {
             guard let preflight = configurationPreflight else { throw CustodyResourceError.invalidResource }
             try discovery.admit(preflight: preflight, journal: journal) { [weak self] in
@@ -859,6 +1096,14 @@ private final class CustodianLoop {
                 try self.inherited.policy?.revalidate()
                 try self.journal.leases.validate()
             }
+        }
+        if next == .command, let retention = inherited.retention {
+            guard let preflight = configurationPreflight else { throw CustodyResourceError.invalidResource }
+            consumeControl()
+            guard reason == .none, try state.permitsResume(now: now), controlQuiescent() else { throw CustodyRecordError.fenced }
+            try inherited.revalidateParent(); try retention.admit(preflight: preflight)
+            consumeControl()
+            guard reason == .none, try state.permitsResume(now: now), controlQuiescent() else { throw CustodyRecordError.fenced }
         }
         let nextTarget = try CustodianTarget(inherited, stage: next)
         replaceRetiredTarget(nextTarget, budget: nextBudget)
@@ -928,10 +1173,23 @@ private final class CustodianLoop {
                     // output if the caller stopped reading while still alive.
                     if stdoutBuffer.isEmpty && stderrBuffer.isEmpty && traceBuffer.isEmpty {
                         do {
+                            if reason == .none, stage == .command, let retention = inherited.retention {
+                                do { try retention.revalidate() } catch { beginDrain(.invalidResource) }
+                            }
                             if reason == .none, !discoveryPostflightComplete, stage == .command, let discovery = inherited.discovery {
                                 // A later control-frame retry must not demand
                                 // the frozen files after their verified removal.
                                 do { try discovery.revalidate(); discoveryPostflightComplete = true }
+                                catch { beginDrain(.invalidResource) }
+                            }
+                            if reason == .none, stage == .command, let repository = inherited.repository,
+                               !repository.postflightComplete, let owner, case .reaped(let raw) = owner.observation {
+                                do {
+                                    try repository.postflight(waitStatus: raw)
+                                    #if SHADOW_SYNC_TESTING
+                                    try testingRepositoryPause("postflight")
+                                    #endif
+                                }
                                 catch { beginDrain(.invalidResource) }
                             }
                             #if SHADOW_SYNC_TESTING
@@ -955,6 +1213,9 @@ private final class CustodianLoop {
                             } catch {
                                 // Close admission and report pending on the existing
                                 // budget. Keep the resource owner and leases alive.
+                                #if SHADOW_SYNC_TESTING
+                                testingObserveFailure(.resourceRetirement, error: error)
+                                #endif
                                 beginDrain(.ioFailure); throw error
                             }
                             // Postflight can perform bounded filesystem/security
@@ -977,13 +1238,26 @@ private final class CustodianLoop {
                             terminalTime = now
                             do { try status(.terminal,terminal:terminal) }
                             catch { return 74 }
-                        } catch { persistenceFailed = true }
+                        } catch {
+                            persistenceFailed = true
+                            #if SHADOW_SYNC_TESTING
+                            testingObserveFailure(.terminalPublication, error: error)
+                            #endif
+                        }
                     }
                 }
                 if state.phase == .draining && now >= min(state.budget.kill, stageBudget.kill) && !sentPending {
                     sentPending = true
+                    #if SHADOW_SYNC_TESTING
+                    testingObserveFailure(.pendingBoundary, error: nil)
+                    #endif
                     do { try journal.pending(reason:reason == .none ? .ownershipLost : reason); try status(.pending) }
-                    catch { persistenceFailed = true }
+                    catch {
+                        persistenceFailed = true
+                        #if SHADOW_SYNC_TESTING
+                        testingObserveFailure(.pendingPublication, error: error)
+                        #endif
+                    }
                 }
             }
             flushStatus()
@@ -999,3 +1273,456 @@ private final class CustodianLoop {
         }
     }
 }
+
+#if SHADOW_SYNC_TESTING
+/// Bounded testing-only observations survive loss of the worker's pipe reader.
+/// These bytes are diagnostics, never custody, retirement or signaling authority.
+private final class TestingCustodianFailureWitness {
+    enum Event: String {
+        case controlEOF, drainingPersistence, resourceRetirement
+        case terminalPublication, pendingBoundary, pendingPublication
+        var slot: String {
+            switch self {
+            case .controlEOF: return "eof"
+            case .pendingBoundary: return "pending"
+            default: return "failure"
+            }
+        }
+    }
+    private let rootPath: String
+    private let rootFD: Int32, homeFD: Int32, fileFD: Int32
+    private let rootNode: stat, homeNode: stat, fileNode: stat
+    private let rootACL: String, homeACL: String, fileACL: String
+    private let filename: String
+    private let binding: CustodyRecordBinding
+    private var written = 0
+    private var seen = Set<String>()
+    private var poisoned = false
+    // Closed, fixture-only syscall failure seams. The actual helper always uses
+    // .none; no caller-selected path, descriptor or authority is injected.
+    enum Fault { case none, afterRoot, afterHome, afterFile, initialSync, shortWrite, recordSync }
+    final class Probe { var opened: [Int32] = []; var writeAttempts = 0; var reached: Fault?; var createdFile: stat? }
+    private let fault: Fault
+    private let probe: Probe?
+    init(home: String, binding: CustodyRecordBinding, fault: Fault = .none, probe: Probe? = nil) throws {
+        guard home.hasSuffix("/home"), RunIdentity.isValid(binding.requestID) else { throw CustodyRecordError.fenced }
+        let root = String(home.dropLast(5))
+        guard root.hasPrefix("/private/tmp/shadow-sync-policy-authority-"),
+              (root as NSString).lastPathComponent.count <= 160 else { throw CustodyRecordError.fenced }
+        _ = try TestIsolation.validateRoot(root)
+        let rootFD = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard rootFD >= 0 else { throw CustodyRecordError.fenced }
+        var keepRoot = false; defer { if !keepRoot { close(rootFD) } }
+        probe?.opened.append(rootFD)
+        if fault == .afterRoot { probe?.reached = fault; throw CustodyRecordError.injectedFailure }
+        let homeFD = openat(rootFD, "home", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard homeFD >= 0 else { throw CustodyRecordError.fenced }
+        var keepHome = false; defer { if !keepHome { close(homeFD) } }
+        probe?.opened.append(homeFD)
+        if fault == .afterHome { probe?.reached = fault; throw CustodyRecordError.injectedFailure }
+        var rootNode = stat(), homeNode = stat(), named = stat()
+        guard fstat(rootFD, &rootNode) == 0, fstat(homeFD, &homeNode) == 0,
+              Self.safe(rootNode, directory: true), Self.safe(homeNode, directory: true),
+              lstat(root, &named) == 0, Self.same(rootNode, named),
+              fstatat(rootFD, "home", &named, AT_SYMLINK_NOFOLLOW) == 0, Self.same(homeNode, named) else { throw CustodyRecordError.fenced }
+        let rootACL = try PolicyAuthorityFile.privateStateACL(rootFD)
+        let homeACL = try PolicyAuthorityFile.privateStateACL(homeFD)
+        let filename = ".shadow-sync-custodian-observation-" + binding.requestID + ".jsonl"
+        let fileFD = openat(homeFD, filename, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fileFD >= 0 else { throw CustodyRecordError.fenced }
+        var keepFile = false; defer { if !keepFile { close(fileFD) } }
+        probe?.opened.append(fileFD)
+        if let probe {
+            var created = stat()
+            guard fstat(fileFD, &created) == 0 else { throw CustodyRecordError.fenced }
+            probe.createdFile = created
+        }
+        if fault == .afterFile { probe?.reached = fault; throw CustodyRecordError.injectedFailure }
+        var fileNode = stat()
+        guard fstat(fileFD, &fileNode) == 0, Self.safe(fileNode, directory: false), fileNode.st_size == 0,
+              fstatat(homeFD, filename, &named, AT_SYMLINK_NOFOLLOW) == 0, Self.same(fileNode, named) else { throw CustodyRecordError.fenced }
+        if fault == .initialSync { probe?.reached = fault; throw CustodyRecordError.injectedFailure }
+        guard fsync(fileFD) == 0, fsync(homeFD) == 0 else { throw CustodyRecordError.fenced }
+        let fileACL = try PolicyAuthorityFile.privateStateACL(fileFD)
+        self.rootACL = rootACL; self.homeACL = homeACL; self.fileACL = fileACL
+        self.rootPath = root; self.rootFD = rootFD; self.homeFD = homeFD; self.fileFD = fileFD
+        self.rootNode = rootNode; self.homeNode = homeNode; self.fileNode = fileNode
+        self.filename = filename; self.binding = binding; self.fault = fault; self.probe = probe
+        keepRoot = true; keepHome = true; keepFile = true
+    }
+    deinit { close(fileFD); close(homeFD); close(rootFD) }
+    private static func safe(_ node: stat, directory: Bool) -> Bool {
+        node.st_uid == geteuid() && node.st_mode == (directory ? S_IFDIR | 0o700 : S_IFREG | 0o600)
+            && node.st_flags == 0 && (directory || node.st_nlink == 1)
+    }
+    private static func same(_ a: stat, _ b: stat) -> Bool {
+        a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_uid == b.st_uid && a.st_gid == b.st_gid
+            && a.st_mode == b.st_mode && a.st_flags == b.st_flags && a.st_nlink == b.st_nlink
+    }
+    func record(_ event: Event, fields: [String: Any]) {
+        guard !poisoned, !seen.contains(event.slot), seen.count < 3 else { return }
+        seen.insert(event.slot)
+        do {
+            var value = fields
+            value["schema"] = "shadow-sync-custodian-failure-observation/v1"
+            value["marker"] = "CUSTODIAN FIRST FAILURE WITNESS"
+            value["request"] = binding.requestID; value["generation"] = binding.generation
+            value["nonce_sha256"] = binding.nonceSHA256
+            guard JSONSerialization.isValidJSONObject(value) else { throw CustodyRecordError.fenced }
+            var bytes = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]); bytes.append(10)
+            guard bytes.count <= 2048, written + bytes.count <= 6144 else { throw CustodyRecordError.fenced }
+            var held = stat(), named = stat()
+            guard fstat(rootFD, &held) == 0, Self.same(rootNode, held),
+                  lstat(rootPath, &named) == 0, Self.same(rootNode, named),
+                  fstat(homeFD, &held) == 0, Self.same(homeNode, held),
+                  fstatat(rootFD, "home", &named, AT_SYMLINK_NOFOLLOW) == 0, Self.same(homeNode, named),
+                  fstat(fileFD, &held) == 0, Self.same(fileNode, held), held.st_size == written,
+                  fstatat(homeFD, filename, &named, AT_SYMLINK_NOFOLLOW) == 0, Self.same(fileNode, named),
+                  try PolicyAuthorityFile.privateStateACL(rootFD) == rootACL,
+                  try PolicyAuthorityFile.privateStateACL(homeFD) == homeACL,
+                  try PolicyAuthorityFile.privateStateACL(fileFD) == fileACL else { throw CustodyRecordError.fenced }
+            probe?.writeAttempts += 1
+            let count = bytes.withUnsafeBytes {
+                pwrite(fileFD, $0.baseAddress, fault == .shortWrite ? max(1, $0.count / 2) : $0.count, off_t(written))
+            }
+            guard count == bytes.count, fault != .recordSync, fsync(fileFD) == 0 else { throw CustodyRecordError.fenced }
+            written += count
+        } catch { poisoned = true }
+    }
+}
+#endif
+
+#if SHADOW_SYNC_TESTING
+/// Actual private witness files only. No command, helper, registry, host state or
+/// signing operation is launched; native helper drainage remains a separate gate.
+enum CustodianFailureWitnessFixtures {
+    static func admission() throws { try TestingCustodianFailureWitness.fixtureAdmission() }
+    static func substitution() throws { try TestingCustodianFailureWitness.fixtureSubstitution() }
+    static func metadata() throws { try TestingCustodianFailureWitness.fixtureMetadata() }
+    static func initialization() throws { try TestingCustodianFailureWitness.fixtureInitialization() }
+    static func slots() throws { try TestingCustodianFailureWitness.fixtureSlots() }
+    static func io() throws { try TestingCustodianFailureWitness.fixtureIO() }
+    static func limits() throws { try TestingCustodianFailureWitness.fixtureLimits() }
+}
+private extension TestingCustodianFailureWitness {
+    struct FixtureFailure: Error { let message: String }
+    static func check(_ value: Bool, _ message: String) throws {
+        if !value { throw FixtureFailure(message: message) }
+    }
+    static func refusal(_ body: () throws -> Void) throws {
+        do { try body() } catch is FixtureFailure { throw FixtureFailure(message: "witness fixture setup failed") }
+        catch { return }
+        throw FixtureFailure(message: "witness unexpectedly admitted")
+    }
+    // The roster is populated only at fixture-owned creation, never from a
+    // post-body directory snapshot. Unknown or substituted names retain all
+    // evidence and prevent any cleanup mutation.
+    final class FixtureNodes {
+        let root: String, home: String
+        let parentFD: OwnedFileDescriptor, rootFD: OwnedFileDescriptor, homeFD: OwnedFileDescriptor
+        let parentNode: stat
+        var nodes: [String: stat]
+        init(root: String, original: stat) throws {
+            self.root = root; home = root + "/home"
+            parentFD = try Self.directory("/private/tmp")
+            rootFD = try Self.directory(root); homeFD = try Self.directory(home)
+            var parent = stat(), heldRoot = stat(), heldHome = stat()
+            try check(fstat(parentFD.value, &parent) == 0 && fstat(rootFD.value, &heldRoot) == 0
+                && fstat(homeFD.value, &heldHome) == 0 && Self.stable(original, heldRoot), "witness original directories")
+            parentNode = parent; nodes = [root: original, home: heldHome]
+            try validate(root, original); try validate(home, heldHome)
+        }
+        static func directory(_ path: String) throws -> OwnedFileDescriptor {
+            let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try check(fd >= 0, "witness owned directory descriptor")
+            return OwnedFileDescriptor(fd)
+        }
+        static func stable(_ a: stat, _ b: stat) -> Bool {
+            a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_uid == b.st_uid
+                && a.st_gid == b.st_gid && a.st_mode == b.st_mode && a.st_flags == b.st_flags
+        }
+        func parent(_ path: String) throws -> (Int32, stat, String) {
+            if path == root { return (parentFD.value, parentNode, (path as NSString).lastPathComponent) }
+            if path == home { return (rootFD.value, nodes[root]!, "home") }
+            guard (path as NSString).deletingLastPathComponent == home else { throw FixtureFailure(message: "witness fixture path escaped") }
+            return (homeFD.value, nodes[home]!, (path as NSString).lastPathComponent)
+        }
+        func validate(_ path: String, _ expected: stat) throws {
+            let (fd, parent, name) = try self.parent(path)
+            var held = stat(), named = stat()
+            try check(fstat(fd, &held) == 0 && Self.stable(parent, held)
+                && fstatat(fd, name, &named, AT_SYMLINK_NOFOLLOW) == 0 && Self.stable(expected, named), "witness named/parent identity drift")
+        }
+        func pin(_ path: String, _ expected: stat) throws {
+            try check(nodes[path] == nil, "witness duplicate creation pin")
+            try validate(path, expected); nodes[path] = expected
+        }
+        func pinCreatedLink(_ path: String) throws {
+            let (fd, parent, name) = try self.parent(path); var held = stat(), node = stat()
+            try check(fstat(fd, &held) == 0 && Self.stable(parent, held)
+                && fstatat(fd, name, &node, AT_SYMLINK_NOFOLLOW) == 0, "witness created link identity")
+            try pin(path, node)
+        }
+        func file(_ path: String, data: Data) throws {
+            let (fd, parent, name) = try self.parent(path); var held = stat()
+            try check(fstat(fd, &held) == 0 && Self.stable(parent, held), "witness file parent identity")
+            let raw = openat(fd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            try check(raw >= 0, "witness exclusive fixture file"); defer { close(raw) }
+            var node = stat(); try check(fstat(raw, &node) == 0, "witness created file identity")
+            try pin(path, node)
+            let count = data.withUnsafeBytes { write(raw, $0.baseAddress, $0.count) }
+            try check(count == data.count, "witness fixture file bytes")
+        }
+        func witness(_ binding: CustodyRecordBinding, fault: Fault = .none, probe: Probe? = nil) throws -> TestingCustodianFailureWitness {
+            let observed = probe ?? Probe()
+            do {
+                let value = try TestingCustodianFailureWitness(home: home, binding: binding, fault: fault, probe: observed)
+                guard let created = observed.createdFile else { throw FixtureFailure(message: "witness created file observation missing") }
+                try pin(path(home, binding), created); return value
+            } catch {
+                if let created = observed.createdFile, nodes[path(home, binding)] == nil { try pin(path(home, binding), created) }
+                throw error
+            }
+        }
+        func remove(_ path: String, expected: stat) throws {
+            try validate(path, expected)
+            let (fd, _, name) = try parent(path)
+            try check(unlinkat(fd, name, expected.st_mode & S_IFMT == S_IFDIR ? AT_REMOVEDIR : 0) == 0, "witness exact owned removal")
+            nodes.removeValue(forKey: path)
+        }
+        func substitute(_ path: String, observe: () throws -> Void) throws {
+            guard let original = nodes[path] else { throw FixtureFailure(message: "witness unowned substitution") }
+            try validate(path, original)
+            let (fd, parent, name) = try self.parent(path); let moved = name + ".held"
+            try check(renameatx_np(fd, name, fd, moved, UInt32(RENAME_EXCL)) == 0, "witness exclusive substitution rename")
+            let isDirectory = original.st_mode & S_IFMT == S_IFDIR
+            var replacement = stat(), movedNode = stat(), held = stat()
+            if isDirectory {
+                try check(mkdirat(fd, name, 0o700) == 0 && fstatat(fd, name, &replacement, AT_SYMLINK_NOFOLLOW) == 0, "witness replacement directory")
+            } else {
+                let raw = openat(fd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                try check(raw >= 0, "witness replacement file"); defer { close(raw) }
+                try check(fstat(raw, &replacement) == 0, "witness replacement file identity")
+            }
+            try observe()
+            var named = stat()
+            try check(fstat(fd, &held) == 0 && Self.stable(parent, held)
+                && fstatat(fd, name, &named, AT_SYMLINK_NOFOLLOW) == 0 && Self.stable(replacement, named)
+                && fstatat(fd, moved, &movedNode, AT_SYMLINK_NOFOLLOW) == 0 && Self.stable(original, movedNode), "witness substitution ownership drift")
+            try check(unlinkat(fd, name, isDirectory ? AT_REMOVEDIR : 0) == 0, "witness owned replacement removal")
+            // Revalidate the held parent and moved original again at the second mutation.
+            try check(fstat(fd, &held) == 0 && Self.stable(parent, held)
+                && fstatat(fd, moved, &movedNode, AT_SYMLINK_NOFOLLOW) == 0 && Self.stable(original, movedNode)
+                && renameatx_np(fd, moved, fd, name, UInt32(RENAME_EXCL)) == 0, "witness owned original restoration")
+            try validate(path, original)
+        }
+        static func children(_ fd: Int32) throws -> Set<String> {
+            let raw = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try check(raw >= 0, "witness roster descriptor")
+            guard let directory = fdopendir(raw) else { close(raw); throw FixtureFailure(message: "witness roster stream") }
+            defer { closedir(directory) }; var result = Set<String>()
+            while true {
+                errno = 0
+                guard let entry = readdir(directory) else { try check(errno == 0, "witness roster read"); return result }
+                let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                    $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { String(cString: $0) }
+                }
+                if name != "." && name != ".." { result.insert(name) }
+                try check(result.count <= 16, "witness roster bound")
+            }
+        }
+        func cleanup() throws {
+            guard let rootNode = nodes[root], let homeNode = nodes[home] else { throw FixtureFailure(message: "witness original roster missing") }
+            try validate(root, rootNode); try validate(home, homeNode)
+            let names = Set(nodes.keys.filter { $0 != root && $0 != home }.map { ($0 as NSString).lastPathComponent })
+            try check(try Self.children(rootFD.value) == ["home"] && Self.children(homeFD.value) == names, "witness unknown cleanup roster")
+            for (name, expected) in nodes {
+                try validate(name, expected)
+                if expected.st_mode & S_IFMT == S_IFLNK { continue }
+                let (parent, _, component) = try self.parent(name)
+                let raw = openat(parent, component, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                try check(raw >= 0, "witness cleanup held node"); defer { close(raw) }
+                var node = stat(); try check(fstat(raw, &node) == 0 && Self.stable(expected, node), "witness cleanup held identity")
+                _ = try PolicyAuthorityFile.privateStateACL(raw)
+                if expected.st_mode & S_IFMT == S_IFREG {
+                    let links = nodes.values.filter { $0.st_dev == expected.st_dev && $0.st_ino == expected.st_ino }.count
+                    try check(Int(node.st_nlink) == links, "witness unknown cleanup hardlink")
+                }
+            }
+            for name in nodes.keys.sorted(by: { $0.count > $1.count }) {
+                guard let expected = nodes[name] else { throw FixtureFailure(message: "witness cleanup roster drift") }
+                try remove(name, expected: expected)
+            }
+        }
+    }
+    static func fixture(_ body: (String, String, CustodyRecordBinding, FixtureNodes) throws -> Void) throws {
+        var template = Array((try RuntimeFixtureSession.fixturePrefix("shadow-sync-policy-authority-") + "XXXXXX").utf8CString)
+        guard let raw = mkdtemp(&template) else { throw FixtureFailure(message: "witness fixture root") }
+        let root = String(cString: raw), home = root + "/home"
+        var original = stat(); try check(lstat(root, &original) == 0, "witness root identity")
+        try check(mkdir(home, 0o700) == 0, "witness fixture home")
+        let owned = try FixtureNodes(root: root, original: original)
+        let binding = try CustodyRecordBinding(wire: .object([
+            "request": .string(RunIdentity.make()), "scope": .string(RunIdentity.make()),
+            "nonce_sha256": .string(String(repeating: "a", count: 64)), "generation": .string(RunIdentity.make()),
+            "uid": .unsigned(UInt64(geteuid())), "boot": .string(RunIdentity.make()),
+            "release": .string(String(repeating: "b", count: 64))]))
+        try body(root, home, binding, owned)
+        try owned.cleanup()
+    }
+    static func path(_ home: String, _ binding: CustodyRecordBinding) -> String {
+        home + "/.shadow-sync-custodian-observation-" + binding.requestID + ".jsonl"
+    }
+    static func bytes(_ home: String, _ binding: CustodyRecordBinding) throws -> Data {
+        try Data(contentsOf: URL(fileURLWithPath: path(home, binding)))
+    }
+    static func emit(_ witness: TestingCustodianFailureWitness, _ event: Event) {
+        witness.record(event, fields: ["event": event.rawValue, "reason": "cancelled"])
+    }
+    static func fixtureAdmission() throws {
+        for kind in ["file", "symlink", "hardlink"] {
+            try fixture { _, home, binding, owned in
+                let target = path(home, binding), sentinel = home + "/sentinel"
+                try owned.file(sentinel, data: Data("unchanged".utf8))
+                if kind == "file" { try owned.file(target, data: Data()) }
+                if kind == "symlink" { try check(symlinkat(sentinel, owned.homeFD.value, (target as NSString).lastPathComponent) == 0, "witness symlink setup"); try owned.pinCreatedLink(target) }
+                if kind == "hardlink" { try check(linkat(owned.homeFD.value, "sentinel", owned.homeFD.value, (target as NSString).lastPathComponent, 0) == 0, "witness hardlink setup"); try owned.pinCreatedLink(target) }
+                guard let targetPin = owned.nodes[target], let sentinelPin = owned.nodes[sentinel] else {
+                    throw FixtureFailure(message: "witness admission pins missing")
+                }
+                try refusal { _ = try TestingCustodianFailureWitness(home: home, binding: binding) }
+                try owned.validate(target, targetPin); try owned.validate(sentinel, sentinelPin)
+                var after = stat()
+                try check(lstat(target, &after) == 0 && after.st_size == targetPin.st_size
+                    && after.st_nlink == targetPin.st_nlink
+                    && after.st_mtimespec.tv_sec == targetPin.st_mtimespec.tv_sec
+                    && after.st_mtimespec.tv_nsec == targetPin.st_mtimespec.tv_nsec
+                    && after.st_ctimespec.tv_sec == targetPin.st_ctimespec.tv_sec
+                    && after.st_ctimespec.tv_nsec == targetPin.st_ctimespec.tv_nsec, "witness changed existing target metadata")
+                try check(try Data(contentsOf: URL(fileURLWithPath: sentinel)) == Data("unchanged".utf8), "witness touched preexisting target")
+            }
+        }
+        try fixture { root, home, binding, owned in
+            try refusal { _ = try TestingCustodianFailureWitness(home: root, binding: binding) }
+            try check(fchmod(owned.homeFD.value, 0o755) == 0, "witness unsafe home mode")
+            try refusal { _ = try TestingCustodianFailureWitness(home: home, binding: binding) }
+            try check(fchmod(owned.homeFD.value, 0o700) == 0, "witness restore home mode")
+        }
+    }
+    static func fixtureSubstitution() throws {
+        for kind in ["root", "home", "file"] {
+            try fixture { root, home, binding, owned in
+                let witness = try owned.witness(binding)
+                let original = kind == "root" ? root : kind == "home" ? home : path(home, binding)
+                try owned.substitute(original) {
+                    emit(witness, .controlEOF)
+                    try check(witness.poisoned && witness.written == 0, "witness accepted substituted identity")
+                }
+                emit(witness, .terminalPublication)
+                try check(try bytes(home, binding).isEmpty, "witness unpoisoned after restoration")
+            }
+        }
+    }
+    static func fixtureMetadata() throws {
+        for node in ["root", "home", "file"] {
+            for mutation in ["mode", "flags", "acl"] {
+                try fixture { root, home, binding, owned in
+                    let witness = try owned.witness(binding)
+                    let target = node == "root" ? root : node == "home" ? home : path(home, binding)
+                    let mode: mode_t = node == "file" ? 0o600 : 0o700
+                    let retained = node == "root" ? witness.rootFD : node == "home" ? witness.homeFD : witness.fileFD
+                    if mutation == "mode" {
+                        try check(fchmod(retained, mode | 0o040) == 0, "witness mode mutation")
+                        emit(witness, .controlEOF)
+                        try check(fchmod(retained, mode) == 0, "witness mode restoration")
+                    } else if mutation == "flags" {
+                        try check(fchflags(retained, UInt32(UF_NODUMP)) == 0, "witness flags mutation")
+                        emit(witness, .controlEOF)
+                        try check(fchflags(retained, 0) == 0, "witness flags restoration")
+                    } else {
+                        try InstallationOwnershipFixtures.withACLGrant(target) { emit(witness, .controlEOF) }
+                    }
+                    try check(witness.poisoned && witness.written == 0 && (try bytes(home, binding)).isEmpty, "witness accepted metadata drift")
+                }
+            }
+        }
+        try fixture { _, home, binding, owned in
+            let witness = try owned.witness(binding)
+            let fd = open(path(home, binding), O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
+            try check(fd >= 0, "witness size mutation open"); defer { close(fd) }
+            try check(ftruncate(fd, 1) == 0, "witness size mutation")
+            emit(witness, .controlEOF)
+            try check(witness.poisoned && witness.written == 0 && (try bytes(home, binding)).count == 1, "witness accepted size drift")
+        }
+        try fixture { _, home, binding, owned in
+            let witness = try owned.witness(binding)
+            let alias = home + "/witness-alias"
+            try check(linkat(owned.homeFD.value, (path(home, binding) as NSString).lastPathComponent,
+                owned.homeFD.value, "witness-alias", 0) == 0, "witness retained hardlink mutation")
+            try owned.pinCreatedLink(alias)
+            emit(witness, .controlEOF)
+            try check(witness.poisoned && witness.written == 0 && (try bytes(home, binding)).isEmpty, "witness accepted retained hardlink")
+            guard let aliasNode = owned.nodes[alias] else { throw FixtureFailure(message: "witness alias pin missing") }
+            try owned.remove(alias, expected: aliasNode)
+        }
+        // Unprivileged fixtures cannot chown a real inode to another account.
+        // Exercise the exact metadata predicate without claiming native chown.
+        var node = stat(); node.st_uid = geteuid() == 0 ? 1 : 0; node.st_mode = S_IFREG | 0o600; node.st_nlink = 1
+        try check(!safe(node, directory: false), "witness wrong owner predicate")
+    }
+    static func fixtureInitialization() throws {
+        for fault in [Fault.afterRoot, .afterHome, .afterFile, .initialSync] {
+            try fixture { _, home, binding, owned in
+                let probe = Probe()
+                try refusal { _ = try owned.witness(binding, fault: fault, probe: probe) }
+                let expectedCount = fault == .afterRoot ? 1 : fault == .afterHome ? 2 : 3
+                try check(probe.reached == fault && probe.opened.count == expectedCount
+                    && Set(probe.opened).count == expectedCount, "witness exact init cut not reached")
+                for fd in probe.opened {
+                    errno = 0
+                    try check(fcntl(fd, F_GETFD) == -1 && errno == EBADF, "witness failed init leaked descriptor")
+                }
+            }
+        }
+    }
+    static func fixtureSlots() throws {
+        try fixture { _, home, binding, owned in
+            let probe = Probe(), witness = try owned.witness(binding, probe: probe)
+            for event in [Event.controlEOF, .controlEOF, .terminalPublication, .drainingPersistence, .pendingBoundary, .pendingPublication, .pendingBoundary] { emit(witness, event) }
+            let data = try bytes(home, binding)
+            let records = try data.split(separator: 10).map { try JSONSerialization.jsonObject(with: Data($0)) as? [String: Any] }
+            try check(records.count == 3 && probe.writeAttempts == 3 && !witness.poisoned, "witness independent slots")
+            try check(records.compactMap { $0?["event"] as? String } == ["controlEOF", "terminalPublication", "pendingBoundary"], "witness first failure overwritten")
+            try check(records.allSatisfy { $0?["request"] as? String == binding.requestID && $0?["generation"] as? String == binding.generation && $0?["nonce_sha256"] as? String == binding.nonceSHA256 }, "witness binding changed")
+            try check(data.count <= 6144 && witness.written == data.count, "witness byte bound")
+        }
+    }
+    static func fixtureIO() throws {
+        for fault in [Fault.shortWrite, .recordSync] {
+            try fixture { _, home, binding, owned in
+                let probe = Probe(), witness = try owned.witness(binding, fault: fault, probe: probe)
+                emit(witness, .controlEOF)
+                let first = try bytes(home, binding)
+                emit(witness, .terminalPublication); emit(witness, .pendingBoundary)
+                try check(witness.poisoned && witness.written == 0 && probe.writeAttempts == 1 && !first.isEmpty && (try bytes(home, binding)) == first, "witness I/O poison retried or erased partial evidence")
+                // record returned normally; actual helper drainage is separately
+                // exercised by the custody fixture, never synthesized here.
+            }
+        }
+    }
+    static func fixtureLimits() throws {
+        try fixture { _, home, binding, owned in
+            let probe = Probe(), witness = try owned.witness(binding, probe: probe)
+            witness.record(.controlEOF, fields: ["oversize": String(repeating: "x", count: 2048)])
+            emit(witness, .terminalPublication)
+            try check(witness.poisoned && probe.writeAttempts == 0 && (try bytes(home, binding)).isEmpty, "witness oversized record written")
+        }
+        try fixture { _, home, binding, owned in
+            let probe = Probe(), witness = try owned.witness(binding, probe: probe)
+            witness.record(.controlEOF, fields: ["notJSON": Date()])
+            emit(witness, .terminalPublication)
+            try check(witness.poisoned && probe.writeAttempts == 0 && (try bytes(home, binding)).isEmpty, "witness invalid serialization retried")
+        }
+    }
+}
+#endif

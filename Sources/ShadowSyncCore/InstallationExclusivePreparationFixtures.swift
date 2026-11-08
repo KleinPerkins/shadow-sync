@@ -240,6 +240,7 @@ enum InstallationExclusivePreparationFixtures {
                 process: ProcessIdentity.capture(processID: getpid(), generation: RunIdentity.make()), boot: CustodyBootIdentity.current())
             try owner.testingSetBindingSource(source)
             let registry = RetainedCleanupRegistry.testingInstance()
+            try RuntimeFixtureSession.installationRoot(root).retain(registry)
             var lifecycle: InstallationLifecycle? = try InstallationLifecycle(paths: .isolated(root: root),
                 launchAgent: InstallationSlotCaptureFixtures.NoCommands(), host: InstallationSlotCaptureFixtures.NoCommands())
             lifecycle!.testingExclusiveRoot = root; lifecycle!.testingExclusiveRegistry = registry

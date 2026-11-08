@@ -16,6 +16,11 @@ struct ConfigurationPolicyPlan {
         } else if requestID != nil { throw CustodyRecordError.invalidRecord }
         try self.init(paths: paths)
     }
+    init(preflight: GitConfigurationPreflight, account: EffectiveAccount,
+         repository: RepositoryGitCustodyInput) throws {
+        try repository.validate(account: account)
+        try self.init(paths: preflight.admissionPaths(account: account) + repository.resourcePaths)
+    }
     #if SHADOW_SYNC_TESTING
     init(preflight: GitConfigurationPreflight, account: EffectiveAccount,
          testingDiscovery: DiscoveryCustodyIntent, requestID: String) throws {
@@ -27,6 +32,10 @@ struct ConfigurationPolicyPlan {
         try self.init(paths: preflight.admissionPaths(account: account) + discovery.resourcePaths)
     }
     #endif
+    init(retentionPaths: [String]) throws { try self.init(paths: retentionPaths) }
+    init(preflight: GitConfigurationPreflight, account: EffectiveAccount, retention: RetentionArchiveInput) throws {
+        try self.init(paths: preflight.admissionPaths(account: account) + retention.resourcePaths)
+    }
     private init(paths: [String]) throws {
         var prefixes: [String] = [], seen = Set<Data>()
         for path in paths {

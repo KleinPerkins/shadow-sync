@@ -597,6 +597,7 @@ public final class RunAuthority: @unchecked Sendable {
     private var stagedLifecycle: OwnedFileDescriptor?
     private enum InstallationStagedBorrowingPhase { case start, closingStart, stop }
     private var installationStagedBorrowingPhase: InstallationStagedBorrowingPhase = .start
+    private var installationCompletionBorrowed = false
 
     public var stateDirectory: SecureStateDirectory { state }
 
@@ -1046,9 +1047,12 @@ public final class RunAuthority: @unchecked Sendable {
     }
     fileprivate func borrowStagedInstallation(_ owner: InstallationTransactionOwner,
                                              seal: InstallationOwnershipSeal,
-                                             mode: CustodyAuthorityMode) throws -> CustodyAuthorityLeaseSet {
+                                             mode: CustodyAuthorityMode,
+                                             forCompletion: Bool = false) throws -> CustodyAuthorityLeaseSet {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
-        guard installationSeal === seal, custodyAdmissionClosed, installationBorrowingClosed,
+        guard !installationCompletionBorrowed,
+              !forCompletion || (custodyBorrowCount == 0 && custodyAliasFamilies.allSatisfy({ $0.family == nil })),
+              installationSeal === seal, custodyAdmissionClosed, installationBorrowingClosed,
               installationAdmissionPhase == .staged,
               (mode == .installationStagedStart && installationStagedBorrowingPhase == .start)
                 || (mode == .installationStagedStop && installationStagedBorrowingPhase == .stop),
@@ -1061,13 +1065,23 @@ public final class RunAuthority: @unchecked Sendable {
             (.lifecycle, stagedLifecycle), (.operation, operation),
         ], mode: mode, onRelease: { [self, owner] in
             withExtendedLifetime(owner) {
-                custodyMutex.lock(); custodyBorrowCount -= 1; custodyMutex.unlock()
+                custodyMutex.lock(); custodyBorrowCount -= 1
+                if forCompletion { installationCompletionBorrowed = false }
+                custodyMutex.unlock()
             }
         })
         custodyAliasFamilies.removeAll { $0.family == nil }
         custodyAliasFamilies.append(WeakInstallationAliasFamily(result.initializationAliases))
         custodyBorrowCount += 1
+        if forCompletion { installationCompletionBorrowed = true }
         return result
+    }
+    fileprivate func validateStagedCommandAliasesRetired(_ seal: InstallationOwnershipSeal) throws {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal, installationAdmissionPhase == .staged,
+              installationBorrowingClosed, custodyBorrowCount == 0,
+              custodyAliasFamilies.allSatisfy({ $0.family == nil }) else { throw CustodyRecordError.fenced }
+        try validateInstallationDescriptions(seal.binding)
     }
     fileprivate func closeStagedInstallationStarts(_ seal: InstallationOwnershipSeal) throws {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
@@ -1203,13 +1217,13 @@ final class InstallationTransactionOwner: @unchecked Sendable {
         try original.validateInstallation(seal)
     }
     func revalidate() throws {
-        bindingMutex.lock(); defer { bindingMutex.unlock() }
+        bindingMutex.lock(); let expected = liveBinding; bindingMutex.unlock()
         try revalidateOriginal()
-        if let liveBinding {
-            guard try captureLiveBinding(generation: liveBinding.process.generation) == liveBinding else {
-                throw CustodyRecordError.fenced
-            }
+        if let expected {
+            guard try captureLiveBinding(generation: expected.process.generation) == expected else { throw CustodyRecordError.fenced }
         }
+        bindingMutex.lock(); defer { bindingMutex.unlock() }
+        guard liveBinding == expected else { throw CustodyRecordError.fenced }
     }
     /// Bind once, from live observations only. A later caller cannot choose a
     /// generation, source, candidate, process, boot or replacement state binding.
@@ -1277,11 +1291,12 @@ final class InstallationTransactionOwner: @unchecked Sendable {
         return InstallationLiveSnapshot(boot: boot, process: process, identity: identity, state: seal.binding)
     }
     fileprivate func validateLiveBinding(_ expected: InstallationLiveSnapshot) throws {
-        bindingMutex.lock(); defer { bindingMutex.unlock() }
-        guard liveBinding == expected,
-              try captureLiveBinding(generation: expected.process.generation) == expected else {
+        bindingMutex.lock(); let before = liveBinding; bindingMutex.unlock()
+        guard before == expected, try captureLiveBinding(generation: expected.process.generation) == expected else {
             throw CustodyRecordError.fenced
         }
+        bindingMutex.lock(); defer { bindingMutex.unlock() }
+        guard liveBinding == expected else { throw CustodyRecordError.fenced }
     }
     // Metadata/storage and future exclusive command contexts retain this family.
     // A lifecycleMutation lease alone remains blocked by an initial/active
@@ -1301,6 +1316,12 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     func installationCommandHelper() throws -> CustodyHelperExecutable {
         try original.requireExclusiveInstallation(seal)
         try revalidate()
+        guard let publisher else { throw CustodyRecordError.fenced }
+        return try CustodyHelperExecutable.lifecycle(publisher)
+    }
+    func stagedCommandHelper(mode: CustodyAuthorityMode) throws -> CustodyHelperExecutable {
+        guard mode.isInstallationStaged else { throw CustodyRecordError.fenced }
+        try validateStagedBorrowing(mode: mode)
         guard let publisher else { throw CustodyRecordError.fenced }
         return try CustodyHelperExecutable.lifecycle(publisher)
     }
@@ -1361,6 +1382,7 @@ final class InstallationTransactionOwner: @unchecked Sendable {
             throw error
         }
     }
+    func validateReadinessOwner() throws { try validateStagedAdmission() }
     fileprivate func validateStagedAdmission() throws {
         try revalidate(); try original.validateStagedInstallation(seal)
     }
@@ -1371,6 +1393,16 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     fileprivate func validateStagedBorrowing(mode: CustodyAuthorityMode) throws {
         try validateStagedAdmission()
         guard original.stagedInstallationCommandsOpen(seal, mode: mode) else { throw CustodyRecordError.fenced }
+    }
+    func validateStagedCommandAliasesRetired() throws {
+        try revalidate(); try original.validateStagedCommandAliasesRetired(seal)
+    }
+    func retainStagedCommandCompletionLeases(mode: CustodyAuthorityMode) throws -> CustodyAuthorityLeaseSet {
+        try validateStagedBorrowing(mode: mode)
+        // Atomically prove zero aliases and exclude every new staged borrow for
+        // this bounded metadata transition. Release clears only this temporary
+        // exclusion; the consumed command permit is never reopened.
+        return try original.borrowStagedInstallation(self, seal: seal, mode: mode, forCompletion: true)
     }
     fileprivate func closeStagedStarts() throws -> ClosedInstallationStagedStarts {
         try original.closeStagedInstallationStarts(seal)

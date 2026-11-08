@@ -27,16 +27,36 @@ trap 'cleanup "$?"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-snapshot_live_state() {
-  python3 - "$1" <<'PY'
+CANARY_HOME="$ROOT/untouched-fixture-home"
+python3 - "$CANARY_HOME" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+root.mkdir(mode=0o700)
+for name in (
+    ".local/state/shadow-sync/latest.log",
+    "Applications/ShadowSync.app/Contents/fixture",
+    "Library/LaunchAgents/com.kleinperkins.shadow-sync.plist",
+    "fixture-repository/.git/HEAD", "fixture-repository/.git/index",
+    "fixture-repository/.git/config", "fixture-repository/.git/refs/heads/main",
+    "fixture-repository/.git/logs/HEAD", "fixture-repository/.git/objects/fixture",
+    "fixture-repository/.git/worktrees/fixture/HEAD",
+):
+    path = root / name
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text("synthetic untouched canary\n")
+    path.chmod(0o600)
+PY
+
+snapshot_fixture_state() {
+  python3 - "$1" "$CANARY_HOME" <<'PY'
 import hashlib
 import json
 import os
-import pwd
 import stat
 import sys
 
-home = pwd.getpwuid(os.geteuid()).pw_dir
+home = sys.argv[2]
 roots = [
     os.path.join(home, ".local/state/shadow-sync"),
     os.path.join(home, "Applications/ShadowSync.app"),
@@ -75,7 +95,7 @@ for root in roots:
             for name in directories + files:
                 capture(os.path.join(current, name))
 
-git = os.path.join(home, "dev/.git")
+git = os.path.join(home, "fixture-repository/.git")
 git_roots = [
     os.path.join(git, "HEAD"),
     os.path.join(git, "index"),
@@ -97,7 +117,7 @@ for root in git_roots:
                 capture(os.path.join(current, name), git_control=True)
                 count += 1
                 if count > 4096:
-                    raise SystemExit("real ~/dev Git-control snapshot exceeded bound")
+                    raise SystemExit("fixture canary Git-control snapshot exceeded bound")
 worktrees = os.path.join(git, "worktrees")
 if os.path.isdir(worktrees) and not os.path.islink(worktrees):
     worktree_names = sorted(
@@ -132,7 +152,7 @@ if os.path.isdir(objects) and not os.path.islink(objects):
                 "mtime_ns": value.st_mtime_ns,
             })
             if len(inventory) > 4096:
-                raise SystemExit("real ~/dev object inventory exceeded bound")
+                raise SystemExit("fixture canary object inventory exceeded bound")
 snapshot[objects + "#bounded-inventory"] = {
     "entries": inventory,
     "complete": True,
@@ -143,7 +163,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
 PY
 }
 
-assert_live_state_unchanged() {
+assert_fixture_state_unchanged() {
   python3 - "$1" "$2" <<'PY'
 import json
 import sys
@@ -158,10 +178,10 @@ changed = sorted(
 )
 if changed:
     for path in changed[:20]:
-        print(f"live snapshot changed: {path}", file=sys.stderr)
+        print(f"fixture canary snapshot changed: {path}", file=sys.stderr)
         print(f"  before={before.get(path)!r}", file=sys.stderr)
         print(f"  after={after.get(path)!r}", file=sys.stderr)
-    raise SystemExit("live and Git-control snapshot changed")
+    raise SystemExit("fixture canary and Git-control snapshot changed")
 PY
 }
 
@@ -193,7 +213,7 @@ run_sandboxed_app() {
 run_harness() {
   local repository="$1" output="$2"
   local live_before="${output}.live-before" live_after="${output}.live-after"
-  snapshot_live_state "$live_before"
+  snapshot_fixture_state "$live_before"
   SHADOW_SYNC_EXECUTABLE="$TEST_EXECUTABLE" \
   SHADOW_SYNC_ROOT="$ROOT" \
   SHADOW_SYNC_REPOSITORY="$repository" \
@@ -268,15 +288,15 @@ with open(os.environ["SHADOW_SYNC_OUTPUT"], "w", encoding="utf-8") as handle:
     json.dump(result, handle, sort_keys=True)
     handle.write("\n")
 PY
-  snapshot_live_state "$live_after"
-  assert_live_state_unchanged "$live_before" "$live_after"
+  snapshot_fixture_state "$live_after"
+  assert_fixture_state_unchanged "$live_before" "$live_after"
   rm -f "$live_before" "$live_after"
 }
 
 run_appkit_driver() {
   local repository="$1" output="$2" crash_sentinel="${3:-}"
   local live_before="${output}.live-before" live_after="${output}.live-after"
-  snapshot_live_state "$live_before"
+  snapshot_fixture_state "$live_before"
   SHADOW_SYNC_EXECUTABLE="$TEST_EXECUTABLE" \
   SHADOW_SYNC_ROOT="$ROOT" \
   SHADOW_SYNC_REPOSITORY="$repository" \
@@ -344,8 +364,8 @@ with open(os.environ["SHADOW_SYNC_OUTPUT"], "w", encoding="utf-8") as handle:
     json.dump(result, handle, sort_keys=True)
     handle.write("\n")
 PY
-  snapshot_live_state "$live_after"
-  assert_live_state_unchanged "$live_before" "$live_after"
+  snapshot_fixture_state "$live_after"
+  assert_fixture_state_unchanged "$live_before" "$live_after"
   rm -f "$live_before" "$live_after"
 }
 
@@ -744,7 +764,11 @@ expected = {
     "Contents": ("directory", 0o700),
     "Contents/MacOS": ("directory", 0o700),
     "Contents/MacOS/ShadowSync": ("file", 0o700),
+    "Contents/Helpers": ("directory", 0o700),
+    "Contents/Helpers/ShadowSyncLifecycleCoordinator": ("file", 0o700),
     "Contents/Resources": ("directory", 0o700),
+    "Contents/Resources/release-contract.json": ("file", 0o600),
+    "Contents/Resources/command-graphs.json": ("file", 0o600),
     "Contents/Resources/ShadowSync.icns": ("file", 0o600),
     "Contents/Resources/THIRD_PARTY_NOTICES.md": ("file", 0o600),
     "Contents/Resources/com.kleinperkins.shadow-sync.plist.template": ("file", 0o600),
@@ -788,28 +812,19 @@ if strings "$PRODUCTION_EXECUTABLE" |
   exit 1
 fi
 
-BOOT_HOME="$ROOT/bootstrap-home"
-BOOT_REPO="$ROOT/bootstrap-primary"
-mkdir -p "$BOOT_HOME" "$BOOT_REPO/global/tools" "$BOOT_REPO/scripts"
-cp "$CAPABILITY/../../../bootstrap.sh" "$BOOT_REPO/bootstrap.sh"
-cp "$CAPABILITY/../../../scripts/capability_meta.py" "$BOOT_REPO/scripts/capability_meta.py"
-cp -R "$CAPABILITY" "$BOOT_REPO/global/tools/shadow-sync"
-BOOT_SENTINEL="$ROOT/bootstrap-installer-invoked"
-cat > "$BOOT_REPO/global/tools/shadow-sync/install.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-: "${SHADOW_SYNC_BOOTSTRAP_SENTINEL:?}"
-touch "$SHADOW_SYNC_BOOTSTRAP_SENTINEL"
-exit 97
-EOF
-chmod +x "$BOOT_REPO/global/tools/shadow-sync/install.sh"
-fixture_git -C "$BOOT_REPO" init --quiet --initial-branch=main
-SHADOW_SYNC_BOOTSTRAP_SENTINEL="$BOOT_SENTINEL" \
-  HOME="$BOOT_HOME" \
-  bash "$BOOT_REPO/bootstrap.sh" --reconcile --dry-run > "$ROOT/bootstrap.log"
-rg -q 'RECORD shadow-sync \(tool; no PATH install\)' "$ROOT/bootstrap.log"
-rg -q 'INSTALL shadow-sync \(flavor=1 post_mgmt=launchd\)' "$ROOT/bootstrap.log"
-test ! -e "$BOOT_SENTINEL"
+# Capability-parent bootstrap is outside the standalone source contract.
+# Assert the local production source-install route remains unavailable instead.
+SOURCE_REFUSAL="$ROOT/source-refusal"
+mkdir -m 700 "$SOURCE_REFUSAL"
+cp "$CAPABILITY/install.sh" "$SOURCE_REFUSAL/install.sh"
+for argument in --apply --repair --uninstall --source-identity --build-release-check; do
+  status=0
+  "$SOURCE_REFUSAL/install.sh" "$argument" >"$ROOT/source-refusal.log" 2>&1 || status=$?
+  [ "$status" -eq 64 ]
+  grep -q 'Source-built production installation and release attestation are retired' \
+    "$ROOT/source-refusal.log"
+  [ "$(ls -A "$SOURCE_REFUSAL")" = install.sh ]
+done
 
 printf 'm1-native-e2e: PASS\n'
 printf 'behind-before=%s\n' "$BEFORE"
@@ -821,8 +836,8 @@ printf 'pre-network-refusals=custom-ssh,upload-pack,dotted-upload-pack,replaceme
 printf 'log-mode=600 log-links=1\n'
 printf 'production-test-symbols=absent\n'
 printf 'appkit-driven-flow=PASS\n'
-printf 'bootstrap=RECORD+INSTALL installer-not-invoked\n'
+printf 'source-installation=RETIRED no-side-effects\n'
 printf 'transport-evidence=enforced-sandbox-network-denial+static-closed-environment+local-file-mapping\n'
-printf 'live-state-snapshot=UNCHANGED\n'
-printf 'real-dev-git-control-snapshot=UNCHANGED\n'
+printf 'fixture-canary-state-snapshot=UNCHANGED\n'
+printf 'fixture-canary-git-control-snapshot=UNCHANGED\n'
 printf 'production-bundle-allowlist=EXACT\n'

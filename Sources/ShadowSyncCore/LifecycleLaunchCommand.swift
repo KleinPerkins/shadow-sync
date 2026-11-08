@@ -95,6 +95,13 @@ struct LifecycleLaunchCommand {
         return .loaded(program: executable, processID: pid)
     }
 
+    /// Semantic convergence only. The caller must separately authenticate the
+    /// retained live socket and compare its full current process identity.
+    func validateReadyHost(_ state: LaunchAgentState, host: ProcessIdentity) throws {
+        guard case .loaded(let program, let pid) = state, program == executable,
+              pid == host.processID, host.processID > 1, host.userID == account.uid, host.executablePath == executable else { throw CustodyRecordError.fenced }
+    }
+
     func validateCompletion(_ result: CustodyRegistryResult) throws {
         guard result.phase == .finished, result.reason == nil,
               let journal = result.journal, journal.kind == .launchctlMutation,
@@ -108,6 +115,40 @@ struct LifecycleLaunchCommand {
         try validatePostflight(state(waitStatus: Int32(raw), stdout: result.stdout, stderr: result.stderr))
     }
 
+    // Separate from ordinary lifecycle completion. This validates semantics only;
+    // the registry-minted token supplies actual retirement and journal succession.
+    func validateStagedCompletion(_ result: CustodyRegistryResult, request: UnvalidatedCustodyRequest) throws {
+        guard request.authority.isInstallationStaged, request.kind == .launchctlMutation,
+              request.arguments == arguments, result.phase == .finished, result.reason == nil,
+              let journal = result.journal, journal.binding == (try CustodyRecordBinding(request.binding)),
+              journal.kind == request.kind, journal.authority == request.authority,
+              journal.budget == request.budget, journal.inputSHA256 == request.inputSHA256,
+              journal.resourcesSHA256 == request.resourcesSHA256,
+              journal.phase == .terminal, journal.ordinal == 5, journal.reason == CustodyReason.none,
+              journal.outcome == (operation == .bootout ? .commandFailed : .completed),
+              let raw = journal.waitStatus else { throw CustodyRecordError.fenced }
+        guard (operation == .bootout) == (request.authority == .installationStagedStop) else { throw CustodyRecordError.fenced }
+        try validatePostflight(state(waitStatus: Int32(raw), stdout: result.stdout, stderr: result.stderr))
+    }
+    enum RecoveryLayout { case before, after, unchangedLoaded }
+    /// Filesystem equality does not classify launchd state or prove no start ran.
+    /// Missing PID is an unchanged loaded layout, never authenticated readiness.
+    func recoveryLayout(action: InstallationAction, state: LaunchAgentState) throws -> RecoveryLayout {
+        switch (action, state) {
+        case (.bootstrapCandidate, .absent): return .before
+        case (.bootstrapCandidate, .loaded(let program, nil)):
+            guard program == executable else { throw CustodyRecordError.fenced }; return .after
+        case (.kickstartCandidate, .loaded(let program, nil)):
+            guard program == executable else { throw CustodyRecordError.fenced }; return .unchangedLoaded
+        case (.kickstartCandidate, .loaded(let program, let pid)):
+            guard program == executable, let pid,
+                  SystemLaunchAgentController().processDisposition(processID: pid, expectedProgram: executable) == .matching else {
+                throw CustodyRecordError.fenced
+            }
+            return .after
+        default: throw CustodyRecordError.fenced
+        }
+    }
     func validatePreflight(_ state: LaunchAgentState) throws {
         switch (operation, state) {
         case (.bootstrap, .absent): return
@@ -169,13 +210,23 @@ final class LifecycleLaunchAuthority {
     private let identity: PublisherCodeVerifier.Identity
     private let executable: PublisherExecutableSnapshot
     private let files: [PolicyAuthorityFile]
+    private let stagedCandidate: InstallationStagedCandidateAuthority?
 
-    init(request: UnvalidatedCustodyRequest, helper: CustodyHelperExecutable, account: EffectiveAccount) throws {
+    init(request: UnvalidatedCustodyRequest, helper: CustodyHelperExecutable, account: EffectiveAccount,
+         installation: InstallationCommandBinding? = nil) throws {
         guard helper.isLifecycleCoordinator, request.kind == .launchctlMutation,
-              request.authority == .lifecycleMutation,
+              request.authority == .lifecycleMutation || request.authority.isInstallationStaged,
               request.environment == ClosedProcessRunner.environment(account: account) else { throw CustodyRecordError.fenced }
         command = try LifecycleLaunchCommand(arguments: request.arguments, account: account)
         self.helper = helper
+        if request.authority.isInstallationStaged {
+            guard let installation else { throw CustodyRecordError.fenced }
+            try installation.validateStagedOperation(mode: request.authority, operation: command.operation)
+            stagedCandidate = try InstallationStagedCandidateAuthority(binding: installation, helper: helper, account: account)
+        } else {
+            guard installation == nil else { throw CustodyRecordError.fenced }
+            stagedCandidate = nil
+        }
         readGraph = try QualifiedCommandGraph.production(kind: .launchctlRead, helper: helper)
         mutationGraph = try QualifiedCommandGraph.production(kind: .launchctlMutation, helper: helper)
         executable = try PublisherExecutableSnapshot.capture(path: command.executable, owner: account.uid)
@@ -190,7 +241,7 @@ final class LifecycleLaunchAuthority {
         }
         let release = try ReleaseIdentity(infoDictionary: dictionary); try release.validate(requireProduction: true)
         guard release.releaseContractSHA256 == contract.sha256,
-              command.operation == .bootout || contract.sha256 == helper.releaseSHA256 else { throw PublisherPolicyError.unavailable }
+              (command.operation == .bootout && !request.authority.isInstallationStaged) || contract.sha256 == helper.releaseSHA256 else { throw PublisherPolicyError.unavailable }
         try PublisherCodeVerifier.sealed(contract, relativePath: "Resources/release-contract.json", code: code)
         let plist = try InstallationLifecycle.captureCurrentLaunchAgent(command.plist, executable: command.executable)
         files = [info, contract, seal, plist]
@@ -198,11 +249,61 @@ final class LifecycleLaunchAuthority {
     }
     func revalidate() throws {
         try helper.revalidate(); try readGraph.revalidate(); try mutationGraph.revalidate()
+        try stagedCandidate?.revalidate()
         for file in files { try file.revalidate() }
         guard executable == (try PublisherExecutableSnapshot.capture(path: command.executable, owner: command.account.uid)),
               identity == (try PublisherCodeVerifier.verifiedStatic(path: command.app,
                 identifier: ReleaseIdentity.bundleIdentifier, team: ReleaseIdentity.publisherTeamIdentifier).1) else {
             throw PublisherPolicyError.unavailable
         }
+    }
+}
+
+/// Candidate-only identity for BOTH staged start and stop, including fixed
+/// diagnostics. The live owner or authenticated inherited publisher supplies
+/// authority; this observation only narrows it to the promoted bytes/inodes.
+final class InstallationStagedCandidateAuthority {
+    private let binding: InstallationCommandBinding
+    private let helper: CustodyHelperExecutable
+    private let command: LifecycleLaunchCommand
+    private let slots: InstallationStagedCandidateSlots
+    private let plist: PolicyAuthorityFile
+    init(binding: InstallationCommandBinding, helper: CustodyHelperExecutable, account: EffectiveAccount) throws {
+        try binding.validate()
+        guard binding.stagedMode != nil else { throw CustodyRecordError.fenced }
+        self.binding = binding; self.helper = helper
+        command = LifecycleLaunchCommand(operation: .bootstrap, account: account)
+        slots = try InstallationStagedCandidateSlots(binding: binding, account: account)
+        plist = try InstallationLifecycle.captureCurrentLaunchAgent(command.plist, executable: command.executable)
+        try revalidate()
+    }
+    func revalidate() throws {
+        guard let transaction = binding.control.transaction, let candidate = transaction.candidate,
+              transaction.sourceReleaseDigest == helper.releaseSHA256,
+              candidate.release.releaseContractSHA256 == helper.releaseSHA256,
+              let app = transaction.slots.images[.application], let launch = transaction.slots.images[.launchPlist] else {
+            throw CustodyRecordError.fenced
+        }
+        try helper.validateInstallationPublisher(transaction); try slots.revalidate(); try plist.revalidate()
+        let artifact = try BundleArtifactIdentity.inspect(bundlePath: command.app, requireProduction: true)
+        guard artifact.release == candidate.release, artifact.canonicalSHA256 == candidate.bundleDigest,
+              app.contentDigest == artifact.canonicalSHA256, launch.contentDigest == plist.sha256,
+              launch.size == UInt64(plist.bytes.count) else { throw CustodyRecordError.fenced }
+        #if SHADOW_SYNC_TESTING
+        if helper.testingInstallationSourceRoot != nil {
+            // Only the already authenticated disposable custodian fixture can
+            // use inert unsigned bytes. Production always checks both CDHashes.
+            try slots.revalidate(); return
+        }
+        #endif
+        let appCode = try PublisherCodeVerifier.verifiedStatic(path: command.app,
+            identifier: ReleaseIdentity.bundleIdentifier, team: ReleaseIdentity.publisherTeamIdentifier).1
+        let coordinatorCode = try PublisherCodeVerifier.verifiedStatic(path: command.app + LifecyclePublisher.relativeExecutable,
+            identifier: LifecyclePublisher.identifier, team: ReleaseIdentity.publisherTeamIdentifier).1
+        guard appCode.codeDirectory.map({ String(format: "%02x", $0) }).joined() == candidate.appCDHash,
+              coordinatorCode.codeDirectory.map({ String(format: "%02x", $0) }).joined() == candidate.coordinatorCDHash else {
+            throw CustodyRecordError.fenced
+        }
+        try slots.revalidate(); try plist.revalidate(); try helper.validateInstallationPublisher(transaction)
     }
 }

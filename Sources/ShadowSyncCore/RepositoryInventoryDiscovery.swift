@@ -108,6 +108,13 @@ final class RepositoryInventoryProgress: @unchecked Sendable {
         return true
     }
 
+    func observeRepository(_ event: RepositoryCommandObservation) -> Bool {
+        guard event.phase == .admission else { return true }
+        lock.lock(); childCount += 1; let count = childCount; let phase = phase; lock.unlock()
+        observer?(.childStarted(count: count, phase: phase))
+        return true
+    }
+
     var count: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -563,7 +570,8 @@ public final class RepositoryInventoryDiscovery:
             outputLimit: Self.inventoryOutputLimit,
             processObserver: { identity in
                 progress.observe(identity)
-            }
+            },
+            repositoryObserver: { progress.observeRepository($0) }
         )
         #if SHADOW_SYNC_TESTING
         let session = RepositoryReadSession(
@@ -722,7 +730,8 @@ public final class RepositoryInventoryDiscovery:
             outputLimit: Self.inventoryOutputLimit,
             processObserver: { identity in
                 progress?.observe(identity) ?? true
-            }
+            },
+            repositoryObserver: { progress?.observeRepository($0) ?? true }
         )
         #if SHADOW_SYNC_TESTING
         let session = RepositoryReadSession(
@@ -3895,7 +3904,12 @@ final class RepositoryReadSession: @unchecked Sendable {
             frozenConfigPath: frozen.snapshot.frozenPath
         )
         progress?.prepare(phase: Self.inventoryPhase(arguments))
-        let result = try runner.run(
+        let result: ProcessResult
+        if let configurationProbe {
+            result = try runner.runRepository(arguments: admitted, context: configurationProbe.repositoryContext(account: account),
+                handle: handle, frozen: frozen, snapshot: snapshot, timeout: timeout, cancellation: cancellation)
+        } else {
+        result = try runner.run(
             ProcessRequest(
                 executable: DescriptorProcessRunner.gitPath,
                 arguments: admitted,
@@ -3910,6 +3924,7 @@ final class RepositoryReadSession: @unchecked Sendable {
             ),
             cancellation: cancellation
         )
+        }
         try validatePhaseCompletion()
         if let configurationProbe {
             try handle.validateExecutionSnapshot(snapshot, account: account,
@@ -4022,6 +4037,7 @@ final class RepositoryReadSession: @unchecked Sendable {
         if path == primary {
             return .canonicalPrimary
         }
+        #if SHADOW_SYNC_TESTING
         if path.hasPrefix(account.homeDirectory + "/dev/") {
             return .dev
         }
@@ -4033,6 +4049,7 @@ final class RepositoryReadSession: @unchecked Sendable {
         ) {
             return .awaManaged
         }
+        #endif
         return .external
     }
 

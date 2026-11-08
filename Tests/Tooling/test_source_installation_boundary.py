@@ -62,6 +62,18 @@ class SourceInstallationBoundaryTests(unittest.TestCase):
                 self.assertIn(b'retired', result.stderr)
                 self.assertEqual(sorted(p.name for p in isolated.iterdir()), ['install.sh'])
 
+        for name in ('verify-m6.sh', 'installer-scratch-cleanup-tests.sh'):
+            retired = isolated / name
+            shutil.copyfile(ROOT / 'scripts' / name, retired)
+            before = sorted(p.name for p in isolated.iterdir())
+            for args in ([], ['--reuse-current-foundation-evidence'], ['--live']):
+                with self.subTest(retired_verifier=name, args=args):
+                    result = subprocess.run(['/bin/bash', str(retired), *args], cwd=isolated,
+                        env={'PATH': '/usr/bin:/bin', 'HOME': str(isolated)}, capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode, 64)
+                    self.assertIn(b'retired entrypoint', result.stderr)
+                    self.assertEqual(sorted(p.name for p in isolated.iterdir()), before)
+
     def test_invalid_or_extra_arguments_cannot_select_an_old_mutation_path(self):
         for args in (['--check', '--apply'], ['--help', '--apply'], ['--unknown'],
                      ['--m1-stage'], ['--doctor', '--test-root']):

@@ -18,6 +18,7 @@ if let status = RuntimeSuiteGuardianEntrypoint.dispatch(arguments, catalog: Self
             onFailure: { name in FileHandle.standardError.write(Data("FAIL \(name)\n".utf8)) })
     }) { exit(status) }
 if let status = CommandCustodian.testingDispatch(arguments) { exit(status) }
+if let status = DiscoveryCallerSelfTestRunner.dispatchRetentionWorker(arguments) { exit(status) }
 if let status = M6SelfTestRunner.dispatchInitializationFixture(arguments) { exit(status) }
 if let status = M6SelfTestRunner.dispatchCustodyParentFixture(arguments) { exit(status) }
 if let status = M6SelfTestRunner.dispatchResourceFixture(arguments) { exit(status) }

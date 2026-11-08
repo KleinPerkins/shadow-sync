@@ -30,6 +30,46 @@ public enum M6SelfTestRunner {
             record(name)
         }
 
+        try run("m6-legacy-state-observation-authority-values") { try LegacyStateDocumentFixtures.authorityValues() }
+        try run("m6-legacy-state-observation-selection-values") { try LegacyStateDocumentFixtures.selectionValues() }
+        try run("m6-legacy-state-observation-original-bytes") { try LegacyStateDocumentFixtures.originalBytes() }
+        try run("m6-legacy-state-observation-schemas") { try LegacyStateDocumentFixtures.schemas() }
+        try run("m6-legacy-state-observation-closed-fields") { try LegacyStateDocumentFixtures.closedFields() }
+        try run("m6-legacy-state-observation-duplicate-keys") { try LegacyStateDocumentFixtures.duplicateKeys() }
+        try run("m6-legacy-state-observation-integer-shapes") { try LegacyStateDocumentFixtures.integerShapes() }
+        try run("m6-legacy-state-observation-authority-records") { try LegacyStateDocumentFixtures.authorityRecords() }
+        try run("m6-legacy-state-observation-selection-locators") { try LegacyStateDocumentFixtures.selectionLocators() }
+        try run("m6-legacy-state-observation-selection-invariants") { try LegacyStateDocumentFixtures.selectionInvariants() }
+        try run("m6-legacy-state-observation-source-bounds") { try LegacyStateDocumentFixtures.sourceBounds() }
+        try run("m6-legacy-state-observation-opaque-refusals") { try LegacyStateDocumentFixtures.opaqueRefusals() }
+
+        try run("m6-fixed-parents-absent") { try InstallationParentPreparationFixtures.absent() }
+        try run("m6-fixed-parents-present") { try InstallationParentPreparationFixtures.present() }
+        try run("m6-fixed-parents-partial") { try InstallationParentPreparationFixtures.partial() }
+        try run("m6-fixed-parents-unsafe") { try InstallationParentPreparationFixtures.unsafe() }
+        try run("m6-fixed-parents-links") { try InstallationParentPreparationFixtures.links() }
+        try run("m6-fixed-parents-ancestors") { try InstallationParentPreparationFixtures.ancestors() }
+        try run("m6-fixed-parents-acl") { try InstallationParentPreparationFixtures.acl() }
+        try run("m6-fixed-parents-wrong-owner") { try InstallationParentPreparationFixtures.wrongOwner() }
+        try run("m6-fixed-parents-substitution") { try InstallationParentPreparationFixtures.substitution() }
+        try run("m6-fixed-parents-concurrent") { try InstallationParentPreparationFixtures.concurrent() }
+        try run("m6-fixed-parents-creation-race") { try InstallationParentPreparationFixtures.creationRace() }
+        try run("m6-fixed-parents-indeterminate") { try InstallationParentPreparationFixtures.indeterminate() }
+        try run("m6-fixed-parents-cuts") { try InstallationParentPreparationFixtures.cuts() }
+        try run("m6-fixed-parents-sync-failure") { try InstallationParentPreparationFixtures.syncFailure() }
+        try run("m6-fixed-parents-cut-substitution") { try InstallationParentPreparationFixtures.cutSubstitution() }
+        try run("m6-fixed-parents-unknown-data") { try InstallationParentPreparationFixtures.unknownData() }
+        try run("m6-fixed-parents-publisher-boundary") { try InstallationParentPreparationFixtures.publisherBoundary() }
+        try run("m6-fixed-parents-production-refusal") { try InstallationParentPreparationFixtures.productionRefusal() }
+        try run("m6-fixed-parents-successor") { try InstallationParentPreparationFixtures.successor() }
+        try run("m6-custodian-failure-witness-admission") { try CustodianFailureWitnessFixtures.admission() }
+        try run("m6-custodian-failure-witness-substitution") { try CustodianFailureWitnessFixtures.substitution() }
+        try run("m6-custodian-failure-witness-metadata") { try CustodianFailureWitnessFixtures.metadata() }
+        try run("m6-custodian-failure-witness-initialization") { try CustodianFailureWitnessFixtures.initialization() }
+        try run("m6-custodian-failure-witness-slots") { try CustodianFailureWitnessFixtures.slots() }
+        try run("m6-custodian-failure-witness-io") { try CustodianFailureWitnessFixtures.io() }
+        try run("m6-custodian-failure-witness-limits") { try CustodianFailureWitnessFixtures.limits() }
+
         try run("m6-installation-initial-fenced-roundtrip") { try InstallationControlFixtures.initial() }
         try run("m6-installation-first-reserve-intent") { try InstallationControlFixtures.firstIntent() }
         try run("m6-installation-canonical-refusals") { try InstallationControlFixtures.malformed() }
@@ -117,6 +157,53 @@ public enum M6SelfTestRunner {
         try run("m6-installation-staged-journal-binding-refusals") { try InstallationStagedJournalFixtures.bindingRefusals() }
         try run("m6-installation-staged-journal-substitution-refusals") { try InstallationStagedJournalFixtures.substitutionRefusals() }
         try run("m6-installation-staged-journal-persistence-cuts") { try InstallationStagedJournalFixtures.persistenceCuts() }
+        try run("m6-installation-staged-command-transport-closure") { try InstallationStagedCommandFixtures.transportAndClosure() }
+        try run("m6-installation-staged-command-stop-transport") { try InstallationStagedCommandFixtures.stopTransport() }
+        try run("m6-installation-staged-command-owner-candidate-refusals") { try InstallationStagedCommandFixtures.ownersAndCandidate() }
+        try run("m6-installation-staged-command-changed-evidence") { try InstallationStagedCommandFixtures.changedEvidence() }
+        try run("m6-installation-staged-command-helper-substitution") { try InstallationStagedCommandFixtures.helperSubstitution() }
+        try run("m6-installation-staged-completion-sequence") { try InstallationStagedCompletionFixtures.sequence() }
+        try run("m6-installation-staged-completion-diagnostic-failure") { try InstallationStagedCompletionFixtures.diagnosticAndFailure() }
+        try run("m6-installation-staged-completion-pending-eof") { try InstallationStagedCompletionFixtures.pendingEOF() }
+        try run("m6-installation-staged-completion-retained-alias") { try InstallationStagedCompletionFixtures.retainedAlias() }
+        try run("m6-installation-staged-completion-wrong-binding") { try InstallationStagedCompletionFixtures.wrongBinding() }
+        try run("m6-installation-staged-completion-substitution-stale-proof") { try InstallationStagedCompletionFixtures.substitution() }
+        try run("m6-installation-staged-completion-durable-cuts") { try InstallationStagedCompletionFixtures.durableCuts() }
+        try run("m6-installation-staged-reconciliation-unclaimed-absent-stop") { try InstallationStagedReconciliationFixtures.unclaimedAndAbsentStop() }
+        try run("m6-installation-staged-reconciliation-retired-starts") { try InstallationStagedReconciliationFixtures.retiredStarts() }
+        try run("m6-installation-staged-reconciliation-resumed-outcomes") { try InstallationStagedReconciliationFixtures.resumedOutcomes() }
+        try run("m6-installation-staged-reconciliation-semantic-states") { try InstallationStagedReconciliationFixtures.semanticStates() }
+        try run("m6-installation-staged-reconciliation-action-classifier") { try InstallationStagedReconciliationFixtures.actionClassifier() }
+        try run("m6-installation-staged-reconciliation-aliases-eof") { try InstallationStagedReconciliationFixtures.aliasesAndEOF() }
+        try run("m6-installation-staged-reconciliation-substitutions") { try InstallationStagedReconciliationFixtures.substitutions() }
+        try run("m6-installation-staged-reconciliation-receipt-cuts") { try InstallationStagedReconciliationFixtures.receiptCuts() }
+        try run("m6-installation-commit-delivery-ordering") { try InstallationPrecommitFixtures.deliveryOrdering() }
+        try run("m6-installation-commit-delivery-binding") { try InstallationPrecommitFixtures.deliveryBinding() }
+        try run("m6-installation-commit-delivery-unready") { try InstallationPrecommitFixtures.deliveryUnready() }
+        try run("m6-installation-host-commit-launcher-ownership") { try InstallationPrecommitFixtures.commitLauncherOwnership() }
+        try run("m6-installation-host-commit-eof-distinction") { try InstallationPrecommitFixtures.commitEOFDistinction() }
+        try run("m6-installation-host-commit-binding") { try InstallationPrecommitFixtures.commitBinding() }
+        try run("m6-installation-host-commit-stored-readback") { try InstallationPrecommitFixtures.commitStoredReadback() }
+        try run("m6-installation-precommit-order") { try InstallationPrecommitFixtures.order() }
+        try run("m6-installation-precommit-bindings") { try InstallationPrecommitFixtures.bindings() }
+        try run("m6-installation-precommit-deadline-eof-backpressure") { try InstallationPrecommitFixtures.deadlineAndEOF() }
+        try run("m6-installation-precommit-endpoint-postimage") { try InstallationPrecommitFixtures.endpoint() }
+        try run("m6-installation-precommit-endpoint-unknown") { try InstallationPrecommitFixtures.unknownEndpoint() }
+        try run("m6-installation-precommit-endpoint-substitution") { try InstallationPrecommitFixtures.substitution() }
+        try run("m6-installation-precommit-endpoint-partial-publication") { try InstallationPrecommitFixtures.partialPublication() }
+        try run("m6-installation-precommit-untrusted-peer-teardown") { try InstallationPrecommitFixtures.extraPeer() }
+        try run("m6-installation-precommit-published-cancel-join") { try InstallationPrecommitFixtures.publicationCancellation() }
+        try run("m6-installation-precommit-verification-cancel") { try InstallationPrecommitFixtures.verificationCancellation() }
+        try run("m6-installation-precommit-failed-join-root-custody") { try InstallationPrecommitFixtures.failedJoinRetainsRoot() }
+        try run("m6-installation-precommit-pending-host-budget") { try InstallationPrecommitFixtures.pendingHostWait() }
+        try run("m6-installation-precommit-retirement-before-dispatch") { try InstallationStagedCompletionFixtures.readinessRetirementScheduling() }
+        try run("m6-installation-candidate-ready-unready") { try InstallationCandidateReadyFixtures.unready() }
+        try run("m6-installation-candidate-ready-diagnostic") { try InstallationCandidateReadyFixtures.diagnostic() }
+        try run("m6-installation-candidate-ready-lifetime-budget") { try InstallationCandidateReadyFixtures.quietLifetime() }
+        try run("m6-installation-candidate-ready-retired-wrong-edge") { try InstallationCandidateReadyFixtures.retiredWrongEdge() }
+        try run("m6-installation-candidate-ready-receipt-cuts") { try InstallationCandidateReadyFixtures.receiptCuts() }
+        try run("m6-installation-candidate-ready-live-publication-close") { try InstallationCandidateReadyFixtures.livePublicationClose() }
+        try run("m6-installation-candidate-ready-harness-authentic-prerequisite") { try InstallationCandidateReadyFixtures.harnessRequiresActualReady() }
         try run("m6-installation-readiness-wire-roundtrip") { try InstallationReadinessWireFixtures.roundtrip() }
         try run("m6-installation-readiness-wire-canonical-refusals") { try InstallationReadinessWireFixtures.canonicalRefusals() }
         try run("m6-installation-readiness-wire-field-refusals") { try InstallationReadinessWireFixtures.fieldRefusals() }
@@ -592,6 +679,15 @@ public enum M6SelfTestRunner {
         try run("m6-inspection-completion-pending-wins") { try SystemConfigCommandSelfTests.retainedCompletion("pending") }
         try run("m6-inspection-completion-failure-wins") { try SystemConfigCommandSelfTests.retainedCompletion("failure") }
         try run("m6-inspection-completion-account-refusal") { try SystemConfigCommandSelfTests.retainedCompletion("account") }
+        try run("m6-config-retained-caller-roundtrip") { try SystemConfigCommandSelfTests.configurationCapture("retained-roundtrip") }
+        try run("m6-config-retained-caller-absent") { try SystemConfigCommandSelfTests.configurationCapture("retained-absent") }
+        try run("m6-config-retained-caller-account") { try SystemConfigCommandSelfTests.configurationCapture("retained-account") }
+        try run("m6-config-retained-caller-closed") { try SystemConfigCommandSelfTests.configurationCapture("retained-closed") }
+        try run("m6-config-retained-caller-cancel") { try SystemConfigCommandSelfTests.configurationCapture("retained-cancel") }
+        try run("m6-config-retained-caller-cancel-before") { try SystemConfigCommandSelfTests.configurationCapture("retained-cancel-before") }
+        try run("m6-config-retained-caller-drift") { try SystemConfigCommandSelfTests.configurationCapture("retained-drift") }
+        try run("m6-config-retained-caller-resource") { try SystemConfigCommandSelfTests.configurationCapture("retained-resource") }
+        try run("m6-config-default-before-access") { try SystemConfigCommandSelfTests.configurationCapture("default-refusal") }
         try run("m6-config-caller-capture-postflight") { try SystemConfigCommandSelfTests.configurationCapture("roundtrip") }
         try run("m6-config-caller-absent-system") { try SystemConfigCommandSelfTests.configurationCapture("absent") }
         try run("m6-config-caller-changed-origin-refusal") { try SystemConfigCommandSelfTests.configurationCapture("origin") }
@@ -4782,7 +4878,7 @@ private enum SystemConfigCommandSelfTests {
                 id: "fixture-owner/config-caller", displayName: "Config caller", rawOrigin: origin)
             let handle = try RepositoryHandle.open(candidate)
             let token = CancellationToken()
-            let absent = scenario == "absent" || scenario == "child-absent"
+            let absent = scenario == "retained-absent" || scenario == "absent" || scenario == "child-absent"
                 || scenario == "captured-absent" || scenario == "captured-snapshot-absent"
             var calls = 0, selected: String? = absent ? nil : system
             let probe = SystemGitConfigurationProbe(testingContext: context, cancellation: token) {
@@ -4795,6 +4891,68 @@ private enum SystemConfigCommandSelfTests {
                 return selected
             }
             func exercise() throws {
+                if scenario.hasPrefix("retained-") || scenario == "default-refusal" {
+                    try GitConfigurationValidationTesting.$forbidRawProbe.withValue(true) {
+                        if scenario == "default-refusal" {
+                            // Refusal must beat missing repository resources and must
+                            // never resolve system config from a production default.
+                            try FileManager.default.removeItem(atPath: local)
+                            do {
+                                _ = try handle.freezeConfiguration(account: account)
+                                throw Failure(message: "default capture reached repository access")
+                            } catch SystemGitConfigurationError.unavailable {}
+                            try check(calls == 0, "default capture resolved system configuration")
+                            return
+                        }
+                        if scenario == "retained-cancel-before" {
+                            token.cancel()
+                            do {
+                                _ = try handle.freezeConfiguration(account: account, retainedConfigurationProbe: probe)
+                                throw Failure(message: "cancelled caller captured configuration")
+                            } catch SystemGitConfigurationError.unavailable {}
+                            try check(calls == 0, "cancelled caller started configuration probe")
+                            return
+                        }
+                        let frozen = try handle.freezeConfiguration(account: account, retainedConfigurationProbe: probe)
+                        let snapshot = try handle.executionSnapshot(account: account, frozenConfiguration: frozen, admission: nil)
+                        try handle.validateExecutionSnapshot(snapshot, account: account, requirePackedIdentity: true,
+                                                             frozenConfiguration: frozen)
+                        try check(calls == 1, "retained caller renewed system probe budget")
+                        if scenario == "retained-account" || scenario == "retained-closed" || scenario == "retained-cancel" {
+                            let expected = scenario == "retained-account"
+                                ? try EffectiveAccount.isolated(homeDirectory: root + "/other-home") : account
+                            if scenario == "retained-closed" { context.close() }
+                            if scenario == "retained-cancel" { token.cancel() }
+                            do {
+                                _ = try handle.executionSnapshot(account: expected, frozenConfiguration: frozen, admission: nil)
+                                throw Failure(message: "invalid retained phase admitted new work")
+                            } catch SystemGitConfigurationError.unavailable {}
+                            if scenario == "retained-cancel" {
+                                // Cancellation forbids new work but permits validation
+                                // of complete already-held evidence without a new probe.
+                                try handle.validateExecutionSnapshot(snapshot, account: account, requirePackedIdentity: true,
+                                                                     frozenConfiguration: frozen)
+                            } else {
+                                do {
+                                    try handle.validateExecutionSnapshot(snapshot, account: expected, requirePackedIdentity: true,
+                                                                         frozenConfiguration: frozen)
+                                    throw Failure(message: "invalid retained phase validated postflight")
+                                } catch SystemGitConfigurationError.unavailable {}
+                            }
+                        } else if scenario == "retained-drift" || scenario == "retained-resource" {
+                            if scenario == "retained-drift" { try write(global, "[fixture]\nuser = changed\n") }
+                            else { try check(fchflags(frozen.descriptor, 0) == 0, "change frozen fixture seal") }
+                            defer { if scenario == "retained-resource" { _ = fchflags(frozen.descriptor, UInt32(UF_IMMUTABLE)) } }
+                            do {
+                                try handle.validateExecutionSnapshot(snapshot, account: account, requirePackedIdentity: true,
+                                                                     frozenConfiguration: frozen)
+                                throw Failure(message: "changed retained configuration accepted")
+                            } catch GitSafetyError.unsafeRepository {}
+                        }
+                        try check(calls == 1, "retained refusal started another probe")
+                    }
+                    return
+                }
                 if scenario.hasPrefix("captured-") {
                     try GitConfigurationValidationTesting.$forbidRawProbe.withValue(true) {
                         let preflight = try GitConfigurationPreflight.testing(systemPath: selected, account: account)

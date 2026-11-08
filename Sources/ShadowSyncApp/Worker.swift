@@ -119,11 +119,13 @@ struct WorkerWireMessage: Codable, Sendable {
         case ownership
         case childOwnership
         case childReleased
+        case repositoryCommand
         case event
         case completion
         case failure
     }
 
+    var repositoryCommand: RepositoryCommandObservation? = nil
     let kind: Kind
     let event: RunEvent?
     let report: RunReport?
@@ -173,6 +175,13 @@ struct WorkerWireMessage: Codable, Sendable {
             childIdentity: identity,
             runID: nil
         )
+    }
+
+    static func repositoryCommand(_ observation: RepositoryCommandObservation) -> WorkerWireMessage {
+        var message = WorkerWireMessage(kind: .repositoryCommand, event: nil, report: nil, error: nil,
+            workerPID: nil, workerIdentity: nil, childIdentity: nil, runID: nil)
+        message.repositoryCommand = observation
+        return message
     }
 
     static func childReleased() -> WorkerWireMessage {
@@ -469,6 +478,12 @@ enum WorkerMain {
                         return false
                     }
                 },
+                repositoryObserver: { observation in
+                    do {
+                        try JSONLineChannel.write(WorkerWireMessage.repositoryCommand(observation), descriptor: eventFD)
+                        return true
+                    } catch { return false }
+                },
                 account: account
             )
             let report: RunReport
@@ -503,6 +518,7 @@ enum WorkerMain {
                     }
                 }
             }
+            if report.hasCleanupPending { throw SelectedRepositoryScopeError.cleanupPending }
             try JSONLineChannel.write(
                 WorkerWireMessage.completion(report),
                 descriptor: eventFD
@@ -603,6 +619,7 @@ final class WorkerSession: @unchecked Sendable {
     private let lock = NSLock()
     private var closed = false
     private var activeChild: ProcessIdentity?
+    private var repositoryCommands: Set<String> = []
     private let exitCondition = NSCondition()
     private var exitStatus: Int32?
     private var exitOwnershipFailed = false
@@ -699,6 +716,15 @@ final class WorkerSession: @unchecked Sendable {
         lock.unlock()
     }
 
+    func recordRepositoryCommand(_ event: RepositoryCommandObservation) -> Bool {
+        guard RunIdentity.isValid(event.requestID) else { return false }
+        lock.lock(); defer { lock.unlock() }
+        switch event.phase {
+        case .admission: return repositoryCommands.insert(event.requestID).inserted
+        case .retired: return repositoryCommands.remove(event.requestID) != nil
+        }
+    }
+
     func recordChild(_ identity: ProcessIdentity?) {
         lock.lock()
         activeChild = identity
@@ -780,9 +806,10 @@ final class WorkerSession: @unchecked Sendable {
         let recordedChildDrained = drainRecordedChildAfterWorkerLoss()
         lock.lock()
         let protocolComplete = ownershipProtocolComplete
+        let repositoryPending = !repositoryCommands.isEmpty
         lock.unlock()
         let childEvidence: RecordedChildDrainEvidence
-        switch recordedChildDrained {
+        switch repositoryPending ? .some(false) : recordedChildDrained {
         case .some(true):
             childEvidence = .verified
         case .some(false):
@@ -1317,6 +1344,10 @@ final class WorkerClient {
                             break
                         }
                         continue
+                    } else if message.kind == .repositoryCommand {
+                        guard let event = message.repositoryCommand, session.recordRepositoryCommand(event) else {
+                            reportOwnershipFailure(); break
+                        }
                     } else if message.kind == .childOwnership,
                        let child = message.childIdentity {
                         session.recordChild(child)

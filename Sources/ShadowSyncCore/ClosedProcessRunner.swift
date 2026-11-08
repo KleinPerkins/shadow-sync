@@ -65,6 +65,11 @@ public final class ClosedProcessRunner: @unchecked Sendable {
     }
     #endif
 
+    func recordRetainedArchive(arguments: [String], environment: [String: String]) throws {
+        try RetentionGitCommandPolicy.validate(arguments)
+        audit?.record(CommandInvocation(executable: "/usr/bin/git", arguments: arguments, environmentKeys: environment.keys.sorted()))
+    }
+
     public func run(
         command: ClosedProcessCommand,
         environment: [String: String],
@@ -366,17 +371,21 @@ public final class ClosedProcessRunner: @unchecked Sendable {
         ]
     }
 
+    #if SHADOW_SYNC_TESTING
+    // Synthetic fixture overlay only. Production integration remains unavailable.
     public static func awaEnvironment(
         account: EffectiveAccount
     ) -> [String: String] {
         var result = environment(account: account)
         result["AWA_POLICY"] =
             account.homeDirectory
-                + "/dev/_ops/policy/worktree-policy.yml"
+                + "/fixture-policy.yml"
         result["AWA_GOVERNED_ROOT"] =
-            account.homeDirectory + "/dev"
+            account.homeDirectory + "/fixture-workspace"
         return result
     }
+
+    #endif
 
     private static func validateEnvironment(
         _ environment: [String: String],
@@ -384,18 +393,22 @@ public final class ClosedProcessRunner: @unchecked Sendable {
     ) throws {
         let required = Self.environment(account: account)
         let baseKeys = Set(required.keys)
+        let observedKeys = Set(environment.keys)
+        #if SHADOW_SYNC_TESTING
         let awaKeys = Set([
             "AWA_POLICY",
             "AWA_GOVERNED_ROOT",
         ])
-        let observedKeys = Set(environment.keys)
         let hasClosedAWAOverlay =
             observedKeys == baseKeys.union(awaKeys)
                 && environment["AWA_POLICY"]
                     == account.homeDirectory
-                        + "/dev/_ops/policy/worktree-policy.yml"
+                        + "/fixture-policy.yml"
                 && environment["AWA_GOVERNED_ROOT"]
-                    == account.homeDirectory + "/dev"
+                    == account.homeDirectory + "/fixture-workspace"
+        #else
+        let hasClosedAWAOverlay = false
+        #endif
         guard (
                 observedKeys == baseKeys
                     || hasClosedAWAOverlay

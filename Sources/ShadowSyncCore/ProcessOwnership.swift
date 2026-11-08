@@ -303,6 +303,29 @@ public final class LauncherAuthority: @unchecked Sendable {
         )
     }
 
+    /// Read-only check of this actual retained launcher description. Matching
+    /// serialized state never constructs, reopens or transfers its authority.
+    func validateRetainedInstallation(_ expected: InstallationStateBinding) throws {
+        let held = try lock.duplicate(); defer { close(held) }
+        let state = try stateDirectory.descriptor.duplicate(); defer { close(state) }
+        let live = try InstallationStateBinding.capture(stateDescriptor: state, uid: stateDirectory.uid)
+        let a = expected.directory, b = live.directory
+        var named = stat(), descriptor = stat()
+        guard a.device == b.device, a.inode == b.inode, a.type == b.type,
+              a.uid == b.uid, a.mode == b.mode, a.aclDigest == b.aclDigest,
+              a.links > 0, b.links > 0, live.launcher == expected.launcher,
+              lstat(stateDirectory.path, &named) == 0,
+              UInt64(named.st_dev) == b.device, UInt64(named.st_ino) == b.inode,
+              UInt32(named.st_mode) == b.mode, named.st_uid == b.uid,
+              fstat(held, &descriptor) == 0, descriptor.st_flags == 0,
+              UInt64(descriptor.st_dev) == expected.launcher.device,
+              UInt64(descriptor.st_ino) == expected.launcher.inode,
+              UInt32(descriptor.st_mode) == expected.launcher.mode,
+              descriptor.st_uid == expected.launcher.uid, UInt64(descriptor.st_nlink) == expected.launcher.links,
+              CustodyRecordBinding.digest(Data(try PolicyAuthorityFile.privateStateACL(held).utf8)) == expected.launcher.aclDigest,
+              lock.value >= 0 else { throw CustodyRecordError.fenced }
+    }
+
     public func release() {
         lock.closeNow()
         namespace?.closeNow()

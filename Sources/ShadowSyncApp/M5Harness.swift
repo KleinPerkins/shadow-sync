@@ -2473,8 +2473,16 @@ enum M5AppKitDriver {
                   reducer.rows[0].result == result,
                   rowView.testingStatusText == RunRowStatus.result(code).label,
                   rowView.testingDetailText.contains("Result: \(code.rawValue)"),
-                  rowView.testingSymbolDescription?.isEmpty == false,
-                  try reducer.apply(RunEvent(
+                  rowView.testingSymbolDescription?.isEmpty == false else { return false }
+            if code == .cleanupPending {
+                guard reducer.rows[0].status == .cleanupPending, !reducer.rows[0].status.isTerminal else { return false }
+                do {
+                    _ = try reducer.apply(RunEvent(run: run, sequence: 3, type: .runFinished, message: "terminal"))
+                    return false
+                } catch RunPresentationError.incompleteTerminalEvent {}
+                continue
+            }
+            guard try reducer.apply(RunEvent(
                       run: run,
                       sequence: 3,
                       type: .runFinished,

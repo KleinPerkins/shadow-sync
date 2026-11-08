@@ -5,17 +5,60 @@ import Foundation
 enum InstallationStagedJournalFixtures {
     typealias H = InstallationStorageFixtures
     typealias J = CustodyCatalogStore.InstallationStagedJournal
-    private static func fixture(bindingSource: ((InstallationBindingTestingSource) -> Void)? = nil,
+    // Only orderAndOwners opts in. Closed values, at most 96 lines per case,
+    // no fixture paths or error text, and no operation/deadline changes.
+    private enum OrderPart: String { case bootstrap, kickstart, stale, owner, otherOwner }
+    private enum OrderPhase: String {
+        case fixtureEntry, preparedIntent, retired, transferred, continued
+        case bodyComplete, exclusionComplete, cleanupComplete
+        case readBefore, readAfter, bootstrapBefore, bootstrapRefused
+        case completeBefore, completeAfter, kickstartBefore, kickstartRefused
+        case continueBefore, continueRefused, leasesBefore, leasesRefused
+        case wrongOwnerBefore, wrongOwnerRefused, closeBefore, closeAfter
+        case stopBefore, stopAfter, wrongStopBefore, wrongStopRefused
+        case revalidateBefore, revalidateAfter, otherRevalidateAfter, otherExcluded
+    }
+    private final class OrderDiagnostic {
+        private let enabled = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_M6_DIAGNOSTICS"] == "1"
+        private var records = 0
+        func record(_ part: OrderPart, _ phase: OrderPhase) {
+            guard enabled, records < 96 else { return }
+            records += 1
+            fputs("M6 STAGED ORDER DIAGNOSTIC part=\(part.rawValue) phase=\(phase.rawValue)\n", stderr)
+            fflush(stderr)
+        }
+    }
+    static func fixture(bindingSource: ((InstallationBindingTestingSource) -> Void)? = nil,
         _ body: (String, StateLocation, InstallationTransactionOwner,
         CustodyCatalogStore.InstallationStagedAdmissionIntent, InstallationStagedAdmission,
         J, RetainedCleanupRegistry) throws -> Void) throws {
+        try diagnosticFixture(bindingSource: bindingSource, body)
+    }
+    private static func diagnosticFixture(diagnostic: ((OrderPhase) -> Void)? = nil, bindingSource: ((InstallationBindingTestingSource) -> Void)? = nil,
+        _ body: (String, StateLocation, InstallationTransactionOwner,
+        CustodyCatalogStore.InstallationStagedAdmissionIntent, InstallationStagedAdmission,
+        J, RetainedCleanupRegistry) throws -> Void) throws {
+        diagnostic?(.fixtureEntry)
         try InstallationExclusivePreparationFixtures.withPreparedIntent(bindingSource: bindingSource) { root, location, owner, intent, registry in
+            diagnostic?(.preparedIntent)
             let retired = try registry.installationRetirement(after: owner.closeBorrowing())
+            diagnostic?(.retired)
             let admission = try owner.transferToStagedAdmission(intent: intent, after: retired, deadline: .init(seconds: 3))
+            diagnostic?(.transferred)
             let journal = try admission.continueJournal(deadline: .init(seconds: 3))
-            try body(root, location, owner, intent, admission, journal, registry)
+            diagnostic?(.continued)
+            try RuntimeFixtureSession.installationRoot(root).retain(journal)
+            do { try body(root, location, owner, intent, admission, journal, registry) }
+            catch {
+                try journal.closeReadiness(deadline: .init(seconds: 3))
+                throw error
+            }
+            try journal.closeReadiness(deadline: .init(seconds: 3))
+            diagnostic?(.bodyComplete)
             try InstallationOwnershipFixtures.excluded(location)
+            diagnostic?(.exclusionComplete)
         }
+        diagnostic?(.cleanupComplete)
     }
     private static func record(_ location: StateLocation) throws -> InstallationControlRecord {
         try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")))
@@ -28,8 +71,10 @@ enum InstallationStagedJournalFixtures {
             try H.check(completed.revision == before.revision + 1 && completed.step?.ordinal == 12
                 && completed.step?.action == .openStagedAdmission && completed.step?.status == .complete,
                 "staged continuation did not complete exact transferred intent")
-            try H.check(completed.transaction == before.transaction && completed.state == before.state
-                && completed.readinessCommit == nil && completed.phase == .active, "staged continuation changed transaction")
+            try H.check(completed.transaction?.sameBinding(as: before.transaction!) == true && completed.state == before.state
+                && completed.transaction?.slots.images[.installationSocket]?.node?.type == .socket
+                && before.transaction?.slots.images[.installationSocket]?.node == nil
+                && completed.readinessCommit == nil && completed.phase == .active, "staged continuation socket binding")
             try H.check(try record(location) == completed, "staged completion not durable")
             try H.refuses { try intent.revalidate(for: owner, deadline: .init(seconds: 3)) }
             try H.refuses { _ = try owner.retainExclusiveLeases() }
@@ -50,36 +95,75 @@ enum InstallationStagedJournalFixtures {
         }
     }
     static func orderAndOwners() throws {
-        try fixture { _, location, _, _, admission, journal, _ in
-            let before = try record(location)
+        let diagnostic = OrderDiagnostic()
+        func read(_ location: StateLocation, _ part: OrderPart) throws -> InstallationControlRecord {
+            diagnostic.record(part, .readBefore)
+            let value = try record(location)
+            diagnostic.record(part, .readAfter)
+            return value
+        }
+        try diagnosticFixture(diagnostic: { diagnostic.record(.bootstrap, $0) }) { _, location, _, _, admission, journal, _ in
+            let before = try read(location, .bootstrap)
+            diagnostic.record(.bootstrap, .bootstrapBefore)
             try H.refuses { _ = try journal.bootstrapCandidateIntent(deadline: .init(seconds: 3)) }
-            try H.check(try record(location) == before, "bootstrap before open completion wrote control")
+            diagnostic.record(.bootstrap, .bootstrapRefused)
+            try H.check(try read(location, .bootstrap) == before, "bootstrap before open completion wrote control")
+            diagnostic.record(.bootstrap, .leasesBefore)
             try H.refuses { _ = try admission.retainStartLeases() }
+            diagnostic.record(.bootstrap, .leasesRefused)
         }
-        try fixture { _, location, _, _, admission, journal, _ in
+        try diagnosticFixture(diagnostic: { diagnostic.record(.kickstart, $0) }) { _, location, _, _, admission, journal, _ in
+            diagnostic.record(.kickstart, .completeBefore)
             _ = try journal.completeAdmission(deadline: .init(seconds: 3))
-            let before = try record(location)
+            diagnostic.record(.kickstart, .completeAfter)
+            let before = try read(location, .kickstart)
+            diagnostic.record(.kickstart, .kickstartBefore)
             try H.refuses { _ = try journal.kickstartCandidateIntent(deadline: .init(seconds: 3)) }
-            try H.check(try record(location) == before, "kickstart skipped typed bootstrap completion")
+            diagnostic.record(.kickstart, .kickstartRefused)
+            try H.check(try read(location, .kickstart) == before, "kickstart skipped typed bootstrap completion")
+            diagnostic.record(.kickstart, .leasesBefore)
             try H.refuses { _ = try admission.retainStartLeases() }
+            diagnostic.record(.kickstart, .leasesRefused)
         }
-        try fixture { _, location, _, _, admission, journal, _ in
+        try diagnosticFixture(diagnostic: { diagnostic.record(.stale, $0) }) { _, location, _, _, admission, journal, _ in
+            diagnostic.record(.stale, .completeBefore)
             _ = try journal.completeAdmission(deadline: .init(seconds: 3))
-            let before = try record(location)
+            diagnostic.record(.stale, .completeAfter)
+            let before = try read(location, .stale)
+            diagnostic.record(.stale, .continueBefore)
             try H.refuses { _ = try admission.continueJournal(deadline: .init(seconds: 3)) }
-            try H.check(try record(location) == before, "stale intent changed durable control")
+            diagnostic.record(.stale, .continueRefused)
+            try H.check(try read(location, .stale) == before, "stale intent changed durable control")
+            diagnostic.record(.stale, .leasesBefore)
             try H.refuses { _ = try admission.retainStartLeases() }
+            diagnostic.record(.stale, .leasesRefused)
         }
-        try fixture { _, location, owner, intent, _, journal, _ in
-            try fixture { _, otherLocation, other, _, otherAdmission, _, otherRegistry in
+        try diagnosticFixture(diagnostic: { diagnostic.record(.owner, $0) }) { _, location, owner, intent, _, journal, _ in
+            try diagnosticFixture(diagnostic: { diagnostic.record(.otherOwner, $0) }) { _, otherLocation, other, _, otherAdmission, _, otherRegistry in
+                diagnostic.record(.otherOwner, .wrongOwnerBefore)
                 try H.refuses { _ = try intent.continueJournal(admission: otherAdmission, deadline: .init(seconds: 3)) }
+                diagnostic.record(.otherOwner, .wrongOwnerRefused)
+                diagnostic.record(.otherOwner, .closeBefore)
                 let otherRetirement = try otherRegistry.installationStagedStartRetirement(after: otherAdmission.closeStarts())
+                diagnostic.record(.otherOwner, .closeAfter)
+                diagnostic.record(.otherOwner, .stopBefore)
                 let otherStop = try otherAdmission.stopOnly(after: otherRetirement)
+                diagnostic.record(.otherOwner, .stopAfter)
+                diagnostic.record(.owner, .completeBefore)
                 _ = try journal.completeAdmission(deadline: .init(seconds: 3))
-                let before = try record(location)
+                diagnostic.record(.owner, .completeAfter)
+                let before = try read(location, .owner)
+                diagnostic.record(.owner, .wrongStopBefore)
                 try H.refuses { _ = try journal.candidateStopIntent(admission: otherStop, deadline: .init(seconds: 3)) }
-                try H.check(try record(location) == before, "wrong stop owner changed control")
-                try owner.revalidate(); try other.revalidate(); try InstallationOwnershipFixtures.excluded(otherLocation)
+                diagnostic.record(.owner, .wrongStopRefused)
+                try H.check(try read(location, .owner) == before, "wrong stop owner changed control")
+                diagnostic.record(.owner, .revalidateBefore)
+                try owner.revalidate()
+                diagnostic.record(.owner, .revalidateAfter)
+                try other.revalidate()
+                diagnostic.record(.otherOwner, .otherRevalidateAfter)
+                try InstallationOwnershipFixtures.excluded(otherLocation)
+                diagnostic.record(.otherOwner, .otherExcluded)
             }
         }
     }

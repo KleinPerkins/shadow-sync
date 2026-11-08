@@ -792,7 +792,8 @@ public final class SelectedRepositoryScopeBinder:
                 started: diagnosticStart, deadline: deadline, succeeded: diagnosticPassed)
         }
         #endif
-        let root = try openRoot(deadline: deadline)
+        let root = try openRoot(deadline: deadline,
+            lexicalHints: Array(intent.entries.prefix(63).map(\.locator)))
         defer { close(root.descriptor) }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .projection
@@ -1196,7 +1197,7 @@ public final class SelectedRepositoryScopeBinder:
     private func openRoot(deadline: UInt64, lexicalHints: [RepositorySelectionLocator] = []) throws -> OpenedRoot {
         try revalidatePhase()
         do {
-            // Only rebind supplies hints. Classify them with the required root
+            // Bind and rebind supply lexical hints. Classify them with the required root
             // in this invocation's first batch, before any root filesystem I/O.
             // Hint decisions never grant access; later exact admissions and
             // physical identity checks remain mandatory, including for root.
@@ -1318,15 +1319,15 @@ public final class SelectedRepositoryScopeBinder:
             ? [
                 ["capabilities"],
                 ["personal"],
-                ["affirm", "src"],
-                ["affirm", "vendor"],
+                ["fixture-owner", "src"],
+                ["fixture-owner", "vendor"],
             ]
             : [
                 policyPathPrefix,
                 policyPathPrefix + ["capabilities"],
                 policyPathPrefix + ["personal"],
-                policyPathPrefix + ["affirm", "src"],
-                policyPathPrefix + ["affirm", "vendor"],
+                policyPathPrefix + ["fixture-owner", "src"],
+                policyPathPrefix + ["fixture-owner", "vendor"],
             ]
         return try RepositorySelectionPolicy(
             shelfPaths: shelves,
