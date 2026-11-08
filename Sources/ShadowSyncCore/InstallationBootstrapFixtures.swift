@@ -431,5 +431,305 @@ enum InstallationBootstrapFixtures {
             try unchangedExclusiveReplay(root, bootstrap)
         }
     }
+    private static func sharedProbe(_ location: StateLocation, _ name: String, succeeds: Bool) throws {
+        let fd = open(location.path + "/" + name, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        try H.check(fd >= 0, "bootstrap staged shared probe"); defer { close(fd) }
+        let result = flock(fd, LOCK_SH | LOCK_NB), code = errno
+        try H.check(succeeds ? result == 0 : result == -1 && code == EWOULDBLOCK,
+                    "bootstrap staged shared admission")
+    }
+    private static func stagedFence(_ location: StateLocation, _ bootstrap: B) throws {
+        let current = try stored(location)
+        try H.check(current.phase == .active && current.readinessCommit == nil,
+                    "bootstrap staged transition invented readiness")
+        try InstallationOwnershipFixtures.excluded(location)
+        try sharedProbe(location, "operation.lock", succeeds: false)
+        try H.check(bootstrap.testingRetained()[3], "bootstrap staged lost consumed owner")
+    }
+    private static func refusedStagedReplay(_ root: String, _ bootstrap: B) throws {
+        let disk = try H.snapshot(root), observation = bootstrap.observation(), transfer = bootstrap.stagedObservation()
+        try H.refuses { try bootstrap.transferToStagedAdmission() }
+        try H.refuses { try bootstrap.prepareExclusive() }
+        try H.refuses { try bootstrap.reserve(deadline: .init(seconds: 30)) }
+        try H.check(try H.snapshot(root) == disk && bootstrap.observation() == observation
+            && bootstrap.stagedObservation() == transfer, "bootstrap staged replay replaced outcome")
+    }
+    static func stagedBeforePreparation() throws {
+        try fixture { root, location, bootstrap in
+            try H.refuses { try bootstrap.transferToStagedAdmission() }
+            try bootstrap.reserve(deadline: .init(seconds: 0.750))
+            let disk = try H.snapshot(root)
+            try H.refuses { try bootstrap.transferToStagedAdmission() }
+            try H.check(try H.snapshot(root) == disk && bootstrap.stagedObservation() == .notAttempted
+                && stored(location).step?.action == .reserve && !bootstrap.observation().failedClosed,
+                "bootstrap staged wrong order mutated reservation")
+        }
+    }
+    // These same callbacks serve the transfer assertions and the early-failure
+    // lifetime regression. Fixture custody, not a self-capture, retains the owner
+    // until real registry drainage and identity-bound root cleanup finish.
+    private static func configureStagedPositive(_ root: String, _ location: StateLocation, _ bootstrap: B) throws {
+        try bootstrap.testingConfigureStagedTransfer(checkpoint: { [weak bootstrap] point in
+            guard let bootstrap else { throw H.Failure(message: "bootstrap staged callback owner missing") }
+            if point == .aliasesReleased {
+                try H.check(bootstrap.testingStagedRetention().prefix(3).allSatisfy { $0 },
+                            "bootstrap staged actual aliases remain")
+                // Prove the actual initializer guard was released, rather
+                // than merely hiding its owner from an observation array.
+                let fd = open(root + "/state/.shadow-sync-initialization.lock", O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+                try H.check(fd >= 0, "bootstrap released initializer probe"); defer { close(fd) }
+                try H.check(flock(fd, LOCK_EX | LOCK_NB) == 0, "bootstrap initializer still live")
+            }
+        }, acquisition: { [weak bootstrap] in
+            guard let bootstrap else { throw H.Failure(message: "bootstrap staged callback owner missing") }
+            try H.check(bootstrap.stagedObservation() == .running, "bootstrap staged mutex spans acquisition")
+            try stagedFence(location, bootstrap)
+        })
+    }
+    private static func configureStagedReentrant(_ bootstrap: B) throws {
+        try bootstrap.testingConfigureStagedTransfer(checkpoint: { [weak bootstrap] point in
+            guard let bootstrap else { throw H.Failure(message: "bootstrap staged callback owner missing") }
+            if point == .claimed {
+                try H.check(bootstrap.stagedObservation() == .running, "bootstrap staged claim invisible")
+                try H.refuses { try bootstrap.transferToStagedAdmission() }
+                try H.refuses { try bootstrap.prepareExclusive() }
+            }
+        })
+    }
+    private static func configureStagedFailure(_ location: StateLocation, _ bootstrap: B, postflight: Bool) throws {
+        let fail: () throws -> Void = { [weak bootstrap] in
+            guard let bootstrap else { throw H.Failure(message: "bootstrap staged callback owner missing") }
+            try H.check(bootstrap.testingStagedRetention().prefix(3).allSatisfy { $0 },
+                        "bootstrap transfer hook retained actual exclusive aliases")
+            try stagedFence(location, bootstrap)
+            throw CustodyRecordError.injectedFailure
+        }
+        try bootstrap.testingConfigureStagedTransfer(acquisition: postflight ? nil : fail,
+            postflight: postflight ? fail : nil)
+    }
+    private static func stagedCallbackLifetime(reserveFailure: Bool,
+        configure: (String, StateLocation, B) throws -> Void) throws {
+        weak var releasedBootstrap: B?
+        var initializerProbe: Int32 = -1
+        var removedRoot = ""
+        defer { if initializerProbe >= 0 { close(initializerProbe) } }
+        try exclusiveFixture(afterClaim: { throw CustodyRecordError.injectedFailure }) { root, location, bootstrap, registry in
+            releasedBootstrap = bootstrap; removedRoot = root
+            try configure(root, location, bootstrap)
+            if reserveFailure { try bootstrap.testingConfigure(cut: .reserveComplete) }
+            do {
+                try bootstrap.reserve(deadline: .init(seconds: 30))
+                try bootstrap.prepareExclusive()
+                throw H.Failure(message: "bootstrap pre-transfer injection not reached")
+            } catch CustodyRecordError.injectedFailure {}
+            try H.check(bootstrap.observation().failedClosed && bootstrap.stagedObservation() == .notAttempted
+                && bootstrap.exclusiveObservation() == (reserveFailure ? .notAttempted : .failed),
+                "bootstrap pre-transfer failure stage changed")
+            try assertExclusiveFence(root, location, bootstrap)
+            try sharedProbe(location, "operation.lock", succeeds: false)
+            try H.check(!registry.hasRetainedWork && registry.testingCount == 0 && registry.testingOriginalHelpersReaped,
+                        "bootstrap pre-transfer registry not drained")
+            initializerProbe = open(root + "/state/.shadow-sync-initialization.lock", O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+            try H.check(initializerProbe >= 0, "bootstrap pre-transfer initializer probe")
+            let acquired = flock(initializerProbe, LOCK_EX | LOCK_NB), code = errno
+            try H.check(acquired == -1 && code == EWOULDBLOCK,
+                        "bootstrap pre-transfer initializer released before cleanup")
+            // No transfer call or callback clearing: exercise the actual failure
+            // path that formerly retained the bootstrap through its own closure.
+        }
+        try H.check(releasedBootstrap == nil, "bootstrap pre-transfer callback retained owner after cleanup")
+        try H.check(!FileManager.default.fileExists(atPath: removedRoot), "bootstrap pre-transfer root cleanup incomplete")
+        var retired = stat()
+        try H.check(fstat(initializerProbe, &retired) == 0 && retired.st_nlink == 0,
+                    "bootstrap pre-transfer initializer probe lost removed inode")
+        try H.check(flock(initializerProbe, LOCK_EX | LOCK_NB) == 0,
+                    "bootstrap pre-transfer initializer remains locked after cleanup")
+    }
+    static func stagedPositive() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            try configureStagedPositive(root, location, bootstrap)
+            try bootstrap.reserve(deadline: .init(seconds: 30)); try bootstrap.prepareExclusive()
+            let prepared = try stored(location)
+            try bootstrap.transferToStagedAdmission()
+            let staged = try stored(location)
+            try H.check(bootstrap.stagedObservation() == .complete && !bootstrap.observation().failedClosed
+                && bootstrap.exclusiveObservation() == .complete && bootstrap.observation().stage == .reserveComplete,
+                "bootstrap staged observation conflated stages")
+            try H.check(bootstrap.testingRetained() == [true, false, true, true, false, false]
+                && bootstrap.testingStagedRetention().allSatisfy { $0 }
+                && bootstrap.testingStagedIdentity(), "bootstrap staged same actual owners/intent missing")
+            try H.check(staged.transaction?.id == prepared.transaction?.id && staged.state == prepared.state
+                && staged.step?.action == .openStagedAdmission && staged.step?.status == .intent
+                && staged.step?.ordinal == 12 && staged.revision == prepared.revision + 1,
+                "bootstrap staged replaced transaction or fabricated completion")
+            try H.check(!registry.hasRetainedWork && registry.testingCount == 0 && registry.testingOriginalHelpersReaped,
+                        "bootstrap staged actual preparation registry pending")
+            try sharedProbe(location, "latest.log", succeeds: true)
+            try sharedProbe(location, "lifecycle.lock", succeeds: true)
+            try InstallationOwnershipFixtures.excluded(location, name: "run.lock", expected: false)
+            try stagedFence(location, bootstrap); try refusedStagedReplay(root, bootstrap)
+        }
+    }
+    static func stagedOriginalDeadline() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            // Expire precisely after real preparation, using the invocation's
+            // same budget; the continuation accepts no replacement deadline.
+            let original = MonotonicDeadline(seconds: 3)
+            try bootstrap.reserve(deadline: original); try bootstrap.prepareExclusive()
+            let disk = try H.snapshot(root), prepared = try stored(location)
+            while !original.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+            try H.refuses { try bootstrap.transferToStagedAdmission() }
+            try H.check(try H.snapshot(root) == disk && stored(location) == prepared
+                && bootstrap.stagedObservation() == .failed && bootstrap.observation().failedClosed,
+                "bootstrap staged extended original deadline")
+            try stagedFence(location, bootstrap); try refusedStagedReplay(root, bootstrap)
+        }
+        try exclusiveFixture { root, location, bootstrap, _ in
+            let original = MonotonicDeadline(seconds: 3)
+            try bootstrap.testingConfigureStagedTransfer(acquisition: {
+                while !original.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+            })
+            try bootstrap.reserve(deadline: original); try bootstrap.prepareExclusive()
+            try H.refuses { try bootstrap.transferToStagedAdmission() }
+            try H.check(bootstrap.stagedObservation() == .failed && bootstrap.observation().failedClosed
+                && bootstrap.testingStagedRetention() == [true, true, true, true, false, true, true]
+                && stored(location).step?.action == .openStagedAdmission
+                && stored(location).step?.status == .intent,
+                "bootstrap acquisition extended original deadline or lost durable fence")
+            try stagedFence(location, bootstrap); try refusedStagedReplay(root, bootstrap)
+        }
+    }
+    static func stagedReentrantClaim() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            try configureStagedReentrant(bootstrap)
+            try bootstrap.reserve(deadline: .init(seconds: 30)); try bootstrap.prepareExclusive()
+            try bootstrap.transferToStagedAdmission()
+            try H.check(bootstrap.stagedObservation() == .complete, "bootstrap staged reentry displaced first call")
+            try stagedFence(location, bootstrap); try refusedStagedReplay(root, bootstrap)
+        }
+    }
+    static func stagedLiveBorrowRefuses() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            try bootstrap.testingConfigureStagedTransfer(holdBorrow: true)
+            defer { bootstrap.testingReleaseTransferBorrow() }
+            try bootstrap.reserve(deadline: .init(seconds: 30)); try bootstrap.prepareExclusive()
+            try H.refuses { try bootstrap.transferToStagedAdmission() }
+            try H.check(bootstrap.stagedObservation() == .failed && bootstrap.observation().failedClosed
+                && bootstrap.testingStagedRetention() == [true, true, true, true, false, true, true]
+                && bootstrap.testingStagedIdentity(), "bootstrap live borrow did not close actual owner")
+            try sharedProbe(location, "lifecycle.lock", succeeds: false)
+            bootstrap.testingReleaseTransferBorrow()
+            try stagedFence(location, bootstrap); try refusedStagedReplay(root, bootstrap)
+        }
+    }
+    static func stagedPendingRegistryRefuses() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            try bootstrap.reserve(deadline: .init(seconds: 30)); try bootstrap.prepareExclusive()
+            // A separate disposable read scope creates actual pending work in
+            // the SAME registry, with no lease alias of this installation.
+            try InstallationStorageFixtures.fixture { otherRoot, otherLocation in
+                try TestIsolation.initializeState(at: otherLocation)
+                let original = try RunAuthority.acquireRun(at: otherLocation)
+                do { try CustodyCatalogStore.testingInitialize(leases: original.retainCommandLeases(), root: otherRoot) }
+                catch { original.release(); throw error }
+                original.release()
+                let scope = try CustodyMetadataScope(leases: .retainReadLeases(at: otherLocation),
+                    releaseSHA256: String(repeating: "c", count: 64), generation: RunIdentity.make())
+                let cwd = try scope.leases.duplicateStateDirectory().0
+                let resources = try CustodyRequestResources(scope: scope, kind: .launchctlRead,
+                    arguments: ["resist"], environment: [:],
+                    budget: .make(kind: .launchctlRead, workSeconds: 2, termSeconds: 0.1, killSeconds: 0.2, receiptSeconds: 0.2),
+                    stdoutLimit: 65_536, stderrLimit: 65_536, workingDirectory: cwd)
+                try RuntimeFixtureSession.installationRoot(otherRoot).retain(registry)
+                let handle = try registry.start(resources: resources, helper: .testingCustodian())
+                var failure: Error?
+                do {
+                    let ready = MonotonicDeadline(seconds: 3)
+                    while handle.snapshot().stdout.isEmpty {
+                        guard !ready.hasExpired else { throw H.Failure(message: "bootstrap pending registry fixture not running") }
+                        Thread.sleep(forTimeInterval: 0.005)
+                    }
+                    try H.check(registry.hasRetainedWork, "bootstrap pending registry reservation absent")
+                    try H.refuses { try bootstrap.transferToStagedAdmission() }
+                    try H.check(bootstrap.testingStagedRetention() == [true, true, true, true, false, true, true]
+                        && bootstrap.testingStagedIdentity() && bootstrap.stagedObservation() == .failed,
+                        "bootstrap accepted pending actual registry")
+                    try stagedFence(location, bootstrap); try refusedStagedReplay(root, bootstrap)
+                } catch { failure = error }
+                handle.cancel(); _ = handle.wait(); scope.close()
+                let cleanup = MonotonicDeadline(seconds: 8)
+                while registry.hasRetainedWork || !registry.testingOriginalHelpersReaped {
+                    guard !cleanup.hasExpired else { throw H.Failure(message: "bootstrap pending registry owned cleanup") }
+                    Thread.sleep(forTimeInterval: 0.005)
+                }
+                if let failure { throw failure }
+            }
+        }
+    }
+    static func stagedIntentCuts() throws {
+        for receiptCut in [false, true] {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                try bootstrap.testingConfigureStagedTransfer(intentReceiptCut: receiptCut, checkpoint: { point in
+                    if !receiptCut && point == .intentRetained { throw CustodyRecordError.injectedFailure }
+                })
+                try bootstrap.reserve(deadline: .init(seconds: 30)); try bootstrap.prepareExclusive()
+                try H.refuses { try bootstrap.transferToStagedAdmission() }
+                let current = try stored(location)
+                try H.check(current.step?.action == (receiptCut ? .promotePlist : .openStagedAdmission)
+                    && current.step?.status == (receiptCut ? .complete : .intent)
+                    && bootstrap.testingRetained().allSatisfy { $0 }
+                    && bootstrap.stagedObservation() == .failed && bootstrap.observation().failedClosed,
+                    "bootstrap intent cut invented transfer or dropped original owners")
+                let receipts = try FileManager.default.contentsOfDirectory(atPath: location.path + "/custody/receipts")
+                try H.check(receipts.filter { $0.hasPrefix(InstallationStepReceipt.prefix) }.count == 23,
+                            "bootstrap intent cut discarded durable receipt")
+                try stagedFence(location, bootstrap); try refusedStagedReplay(root, bootstrap)
+            }
+        }
+    }
+    static func stagedIdentityDrift() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            let path = location.path + "/custody/installation.json", retained = root + "/bootstrap-retained-control"
+            try bootstrap.testingConfigureStagedTransfer(acquisition: {
+                let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+                try H.check(rename(path, retained) == 0, "bootstrap staged retain control")
+                try bytes.write(to: URL(fileURLWithPath: path), options: .withoutOverwriting)
+                try H.check(chmod(path, 0o600) == 0, "bootstrap staged replacement mode")
+            })
+            try bootstrap.reserve(deadline: .init(seconds: 30)); try bootstrap.prepareExclusive()
+            try H.refuses { try bootstrap.transferToStagedAdmission() }
+            try H.check(bootstrap.stagedObservation() == .failed && bootstrap.observation().failedClosed,
+                        "bootstrap staged adopted same-byte replacement")
+            try H.check(unlink(path) == 0 && rename(retained, path) == 0, "bootstrap staged restore fixture control")
+            try stagedFence(location, bootstrap); try refusedStagedReplay(root, bootstrap)
+        }
+    }
+    static func stagedTransferFailures() throws {
+        for reserveFailure in [true, false] {
+            try stagedCallbackLifetime(reserveFailure: reserveFailure, configure: configureStagedPositive)
+            try stagedCallbackLifetime(reserveFailure: reserveFailure) { _, _, bootstrap in
+                try configureStagedReentrant(bootstrap)
+            }
+            for postflight in [false, true] {
+                try stagedCallbackLifetime(reserveFailure: reserveFailure) { _, location, bootstrap in
+                    try configureStagedFailure(location, bootstrap, postflight: postflight)
+                }
+            }
+        }
+        for postflight in [false, true] {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                try configureStagedFailure(location, bootstrap, postflight: postflight)
+                try bootstrap.reserve(deadline: .init(seconds: 30)); try bootstrap.prepareExclusive()
+                try H.refuses { try bootstrap.transferToStagedAdmission() }
+                try H.check(bootstrap.stagedObservation() == .failed && bootstrap.observation().failedClosed
+                    && bootstrap.testingStagedRetention() == [true, true, true, true, false, true, true],
+                    "bootstrap transfer failure lost intent/owner fence")
+                try H.check(try stored(location).step?.action == .openStagedAdmission
+                    && stored(location).step?.status == .intent, "bootstrap failed transfer invented completion")
+                try stagedFence(location, bootstrap); try refusedStagedReplay(root, bootstrap)
+            }
+        }
+    }
+
 }
 #endif

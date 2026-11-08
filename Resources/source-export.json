@@ -38,8 +38,8 @@
     "Sources/ShadowSyncCore/GitTransaction.swift": "Carry optional actual typed command context internally alongside existing transaction settings; raw operation descriptors never construct context. Route commands through typed context where present; retain captured configuration evidence for parent postflight. Route candidate configuration capture through the retained phase probe and preserve pending through every result mapping.",
     "Sources/ShadowSyncCore/HostControl.swift": "Retain bounded frames across a persistent installation socket and accept one caller-supplied absolute deadline; preserve the existing single-frame typed host-control wrappers. Reject blocking descriptors before raw IO. Add testing-only observation of the original M4 fixture server connection and closed rejection cut with already observed frame bytes; preserve production projection and original socket/frame/deadline behavior.",
     "Sources/ShadowSyncCore/HostPolicySnapshotSelfTests.swift": "Retain rebind-prefetch and existing safety cases; add fixed-read first-batch roster and fresh-stage helper checks, protected/stale/replaced identity and postflight refusals, original deadline expiry and bounded request/cache cases. Extend the existing saturation fixture to cover preparation and publication success and failure routing without changing its case roster. Extend first-batch and root-denial fixtures to initial binding, repeated fresh deadlines and protected selection refusal. Verify the closed pending reason/status/state encoding without conflating absent and successful reaping. Verify phase failure-stage routing after ordinary diagnostic capacity is exhausted.",
-    "Sources/ShadowSyncCore/InstallationBootstrap.swift": "Compose authenticated parent preparation, fresh initialization, original authority consumption and one journal through completed reserve. Preserve reserve-only behavior; separately claim a one-use continuation on that exact retained journal through existing exclusive preparation to promotePlist. Keep the original absolute invocation deadline, run command execution and retirement outside the bootstrap mutex, and retain original owners and durable failure fences. No staged transfer, recovery, owner accessor or CLI activation. Preserve the existing lifecycle Sendable callback contract end-to-end in the testing-only exclusive fault seam.",
-    "Sources/ShadowSyncCore/InstallationBootstrapFixtures.swift": "Register isolated actual owner, guard and journal fixtures for ordering, one-use replay, partial publication, retained failure cuts, unsafe substitution and production refusal. Synthetic source binding and the isolated state layout do not establish signed or runtime qualification. Add seven registered exclusive-continuation fixtures using the existing installation-root guardian and actual cleanup registry. Cover before-reserve refusal, ordered original transaction, unextended deadline, concurrent/replayed claim, partial effects, substitution and failed service absence. Preserve all reserve-only assertions; source fixtures do not qualify native or signed behavior. Give the Sendable fault callback action log a private locked owner; preserve ordered-action assertions and all fixture behavior.",
+    "Sources/ShadowSyncCore/InstallationBootstrap.swift": "Compose authenticated parent preparation, fresh initialization, original authority consumption and one journal through completed reserve. Preserve reserve-only behavior; separately claim a one-use continuation on that exact retained journal through existing exclusive preparation to promotePlist. Keep the original absolute invocation deadline, run command execution and retirement outside the bootstrap mutex, and retain original owners and durable failure fences. No staged transfer, recovery, owner accessor or CLI activation. Preserve the existing lifecycle Sendable callback contract end-to-end in the testing-only exclusive fault seam. Add one retained one-use staged continuation using the same detached journal intent, consumed owner, preparation registry and absolute deadline. Release initializer/journal/lifecycle aliases before actual borrowing closure and registry retirement; retain private admission and durable failure fences. No owner accessor, production command, readiness or startup activation. Keep synchronous testing-only transfer observations and actual alias-retirement controls excluded from production. Retain the two testing-only staged-transfer helper call boundaries with inline-never annotations for optimized binary exclusion controls; preserve their bodies and call sites.",
+    "Sources/ShadowSyncCore/InstallationBootstrapFixtures.swift": "Register isolated actual owner, guard and journal fixtures for ordering, one-use replay, partial publication, retained failure cuts, unsafe substitution and production refusal. Synthetic source binding and the isolated state layout do not establish signed or runtime qualification. Add seven registered exclusive-continuation fixtures using the existing installation-root guardian and actual cleanup registry. Cover before-reserve refusal, ordered original transaction, unextended deadline, concurrent/replayed claim, partial effects, substitution and failed service absence. Preserve all reserve-only assertions; source fixtures do not qualify native or signed behavior. Give the Sendable fault callback action log a private locked owner; preserve ordered-action assertions and all fixture behavior. Append nine synchronous disposable staged-continuation cases for same-owner positive transfer, real initializer/journal/lifecycle retirement, order/replay, original deadline, live borrowing, actual pending shared registry, receipt/intent cuts, identity substitution and transfer/postflight failure. Preserve all existing cases and guarded cleanup. Source registration does not establish runtime or signed-byte qualification. Use weak bootstrap captures with explicit missing-owner failure in staged callbacks. Reuse those exact callback configurations in the existing transfer-failures case for injected reserve/preparation failures; assert actual bootstrap deallocation and initializer lock release only after existing registry drainage and identity-bound fixture cleanup. Runtime qualification remains separate.",
     "Sources/ShadowSyncCore/InstallationCandidateReadyFixtures.swift": " Add owner-bound post-ready observation, fixed diagnostic retirement and durable noncircular commit primitives or their isolated registered refusal/value fixtures. Native authenticated positive and runtime persistence-cut qualification remain separate. Join reserved readiness publications before closure completes; add actual-publication cut and replacement harness without minting native ready authority.",
     "Sources/ShadowSyncCore/InstallationCommandBinding.swift": "Bind staged action observations to exact finite receipt identities beyond reservation diagnostics; validate full live receipt/document chains and action/mode compatibility while preserving existing sealed-input bounds. Decoded metadata remains non-authoritative. Add original-live-owner staged recovery reconciliation, fresh stop-only diagnostic evidence, or registered disposable fixtures; preserve actual outcomes and closed production command graphs. Add owner-bound post-ready observation, fixed diagnostic retirement and durable noncircular commit primitives or their isolated registered refusal/value fixtures. Native authenticated positive and runtime persistence-cut qualification remain separate.",
     "Sources/ShadowSyncCore/InstallationCommitDelivery.swift": " Add one-shot journal-authorized delivery of the exact durable commit on the existing session queue, preserving the original deadline, cancellation joins and transport-only observations; native and startup qualification remain open.",
@@ -632,12 +632,12 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationBootstrap.swift",
-      "sha256": "ac1bd5ada934ecd3ac23410a014d1bb09836faf743ca8ffaad0806b2f2af56b3"
+      "sha256": "a325dc9d2e2348c9fc03ba762737061b01b6fdd30b260459421f6c812b9375fc"
     },
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationBootstrapFixtures.swift",
-      "sha256": "daf4cb22d303407c841ce6671259a56ce753ab9db6cb6b6c52eb7ce1afa29673"
+      "sha256": "b0bd32534484c815a45bcdcb75bb8e3cab5747af0bd2d86d772e2e7a90f19a2d"
     },
     {
       "mode": "100644",
@@ -847,7 +847,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "829cbdebbb5b834eca69d288ab5bf8ccd43872e1d561e440d99a4446df396248"
+      "sha256": "80e411883d8d560f1ffe8a203527b746fdf77cfac40adf1d6b0e6835c90a7e0a"
     },
     {
       "mode": "100644",
@@ -1137,7 +1137,7 @@
     {
       "mode": "100644",
       "path": "Tests/Fixtures/production-test-markers.json",
-      "sha256": "85e4d51102da8596bfdccad356534d5aef967d9304681921e8511747ad9a3860"
+      "sha256": "a0d6c70d17d1704e7cee6252f81ebf800ffc601447853e4a26887de6abb9be71"
     },
     {
       "mode": "100644",
@@ -1147,7 +1147,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "74c425d5121aa5ee1252b80e0b7f2ba17be28db3075d5792becbfe55a6bd6ebd"
+      "sha256": "bfe890511b009fc9b100b4d98d6b76703419f952d4dee42308af3ecf005c4971"
     },
     {
       "mode": "100644",
@@ -1182,7 +1182,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_application_ci.py",
-      "sha256": "75218b1a474f687a330b306f9c7fcc965fb17fdcbafb969a394267c8bfe422fe"
+      "sha256": "ae9989f52cc26e726bb852d977c640efc0c2bec30874c48755abfc43849ca550"
     },
     {
       "mode": "100644",
@@ -1302,7 +1302,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "482e4b76d8065899ed8f5ca384dbf1edabcdcf57cca6988d81b54c734a7842d7"
+      "sha256": "00b2c9db76a331a7dba0a066523e8de6b9dcdd6a37bf874fb815305bfb4e414b"
     },
     {
       "mode": "100644",
@@ -1317,7 +1317,7 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "18f485e0b599fbed31b1c8707985a4598d190844ba9091cec09281b9b9375045"
+      "sha256": "1b83832573ce1278e67fc24c769f031677eaacb11e4b50a07042f0fa3a3f09dc"
     },
     {
       "mode": "100644",

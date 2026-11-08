@@ -3,7 +3,8 @@ import Foundation
 /// Retain this coordinator-owned object BEFORE calling reserve. It connects the
 /// existing fresh-install owners. reserve stops at the completed reserve action;
 /// prepareExclusive continues that same journal once through promotePlist.
-/// No owner accessor, staged transfer, release or recovery entry is exposed.
+/// transferToStagedAdmission then retains the existing detached intent/admission.
+/// No owner accessor, release, recovery or command entry is exposed.
 /// A failed attempt retains its actual owners for the coordinator's lifetime;
 /// durable initialization/control records, not this lifetime, fence process loss.
 final class InstallationBootstrap {
@@ -21,6 +22,10 @@ final class InstallationBootstrap {
     }
     enum ExclusivePreparation: String { case notAttempted, running, complete, failed }
     private var exclusivePreparation: ExclusivePreparation = .notAttempted
+    enum StagedTransfer: String { case notAttempted, running, complete, failed }
+    private var stagedTransfer: StagedTransfer = .notAttempted
+    private var stagedIntent: CustodyCatalogStore.InstallationStagedAdmissionIntent?
+    private var stagedAdmission: InstallationStagedAdmission?
     private var invocationDeadline: MonotonicDeadline?
     private let publisher: LifecyclePublisher?
     private let source: LifecyclePublisher.InstallationIdentity?
@@ -48,6 +53,14 @@ final class InstallationBootstrap {
     private var exclusiveDiagnostic = "installation-absent"
     private var exclusiveFault: @Sendable (String) throws -> Void = { _ in }
     private var exclusiveAfterClaim: (() throws -> Void)?
+    enum TransferCheckpoint { case claimed, intentRetained, aliasesReleased, borrowingClosed, retired }
+    private var transferCheckpoint: ((TransferCheckpoint) throws -> Void)?
+    private var transferObservation: (() throws -> Void)?
+    private var transferPostflight: (() throws -> Void)?
+    private var transferIntentCut = false
+    private var transferBorrow = false
+    private var transferAlias: CustodyAuthorityLeaseSet?
+    private var actualAliasesRetired = [false, false, false]
     #endif
 
     private init(publisher: LifecyclePublisher?, source: LifecyclePublisher.InstallationIdentity?) {
@@ -249,7 +262,105 @@ final class InstallationBootstrap {
         }
     }
 
+    func stagedObservation() -> StagedTransfer {
+        mutex.lock(); defer { mutex.unlock() }
+        return stagedTransfer
+    }
+    /// Claim once on this retained instance. Keep the original operation owner
+    /// and deadline; only the old admission aliases are retired here. Failure
+    /// never resets the claim, drops the durable intent, or reopens borrowing.
+    func transferToStagedAdmission() throws {
+        guard mutex.try() else { throw CustodyRecordError.busy }
+        guard attempted, !failedClosed, exclusivePreparation == .complete,
+              stagedTransfer == .notAttempted, journal != nil,
+              let owner, let deadline = invocationDeadline else {
+            mutex.unlock(); throw CustodyRecordError.fenced
+        }
+        stagedTransfer = .running
+        mutex.unlock()
+        #if SHADOW_SYNC_TESTING
+        defer {
+            transferCheckpoint = nil; transferObservation = nil; transferPostflight = nil
+            owner.testingObserveAdmissionTransfer(nil)
+            owner.testingObserveAdmissionPostflight(nil)
+        }
+        #endif
+        do {
+            try boundary(deadline)
+            #if SHADOW_SYNC_TESTING
+            try transferCheckpoint?(.claimed)
+            owner.testingObserveAdmissionTransfer(transferObservation)
+            owner.testingObserveAdmissionPostflight(transferPostflight)
+            transferObservation = nil; transferPostflight = nil
+            if transferIntentCut { journal!.testingCut(.afterReceipt) }
+            if transferBorrow { transferAlias = try owner.retainExclusiveLeases() }
+            #endif
+            // Do not bind journal/lifecycle/initializer to local strong aliases:
+            // their fields must be the last owners before closeBorrowing.
+            stagedIntent = try journal!.stagedAdmissionIntent(deadline: deadline)
+            #if SHADOW_SYNC_TESTING
+            try transferCheckpoint?(.intentRetained)
+            weak var releasedInitializer = initializer
+            weak var releasedJournal = journal
+            weak var releasedLifecycle = lifecycle
+            #endif
+            journal = nil; lifecycle = nil; initializer = nil
+            #if SHADOW_SYNC_TESTING
+            actualAliasesRetired = [releasedInitializer == nil, releasedJournal == nil, releasedLifecycle == nil]
+            try transferCheckpoint?(.aliasesReleased)
+            #endif
+            try boundary(deadline)
+            let closed = try owner.closeBorrowing()
+            #if SHADOW_SYNC_TESTING
+            try transferCheckpoint?(.borrowingClosed)
+            let registry = exclusiveRegistry ?? RetainedCleanupRegistry.shared
+            #else
+            let registry = RetainedCleanupRegistry.shared
+            #endif
+            // This is the actual preparation registry (shared in production,
+            // injected into the existing lifecycle in disposable fixtures).
+            let retirement = try registry.installationRetirement(after: closed)
+            #if SHADOW_SYNC_TESTING
+            try transferCheckpoint?(.retired)
+            #endif
+            try boundary(deadline)
+            stagedAdmission = try owner.transferToStagedAdmission(intent: stagedIntent!,
+                after: retirement, deadline: deadline)
+            try stagedAdmission!.revalidate()
+            try boundary(deadline)
+            mutex.lock(); stagedTransfer = .complete; mutex.unlock()
+        } catch {
+            // A checkpoint or intent-publication cut may precede alias release.
+            // Close the same owner's gate even then; live aliases may refuse
+            // drainage, but can never make this bootstrap retryable.
+            _ = try? owner.closeBorrowing()
+            mutex.lock(); failedClosed = true; stagedTransfer = .failed; mutex.unlock()
+            throw error
+        }
+    }
+
     #if SHADOW_SYNC_TESTING
+    @inline(never)
+    func testingConfigureStagedTransfer(holdBorrow: Bool = false, intentReceiptCut: Bool = false,
+        checkpoint: ((TransferCheckpoint) throws -> Void)? = nil,
+        acquisition: (() throws -> Void)? = nil, postflight: (() throws -> Void)? = nil) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        guard !attempted, !failedClosed else { throw CustodyRecordError.fenced }
+        transferBorrow = holdBorrow; transferIntentCut = intentReceiptCut; transferCheckpoint = checkpoint
+        transferObservation = acquisition; transferPostflight = postflight
+    }
+    func testingStagedRetention() -> [Bool] {
+        mutex.lock(); defer { mutex.unlock() }
+        return actualAliasesRetired + [stagedIntent != nil, stagedAdmission != nil, owner != nil, original != nil]
+    }
+    @inline(never)
+    func testingReleaseTransferBorrow() { transferAlias = nil }
+    func testingStagedIdentity() throws -> Bool {
+        guard let stagedIntent, let owner else { throw CustodyRecordError.fenced }
+        if let stagedAdmission { try stagedAdmission.validateOwner(owner, intent: stagedIntent) }
+        else { try stagedIntent.revalidate(for: owner, deadline: invocationDeadline!) }
+        return !owner.commandAdmissionIsOpen
+    }
     /// Configured before reservation only, on an existing owned fixture root.
     /// The root retains both this bootstrap and the actual command registry.
     func testingConfigureExclusive(candidate: InstallationCandidate, registry: RetainedCleanupRegistry,

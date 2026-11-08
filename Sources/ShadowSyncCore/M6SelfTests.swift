@@ -808,6 +808,15 @@ public enum M6SelfTestRunner {
         try run("m6-strict-admission-mode-log-writer", StrictStateAdmissionSelfTests.modeLogWriter)
         try run("m6-strict-admission-closed-log-writer", StrictStateAdmissionSelfTests.closedLogWriter)
         try run("m6-strict-admission-existing-log-writer", StrictStateAdmissionSelfTests.existingLogWriter)
+        try run("m6-installation-bootstrap-staged-before-preparation") { try InstallationBootstrapFixtures.stagedBeforePreparation() }
+        try run("m6-installation-bootstrap-staged-positive") { try InstallationBootstrapFixtures.stagedPositive() }
+        try run("m6-installation-bootstrap-staged-original-deadline") { try InstallationBootstrapFixtures.stagedOriginalDeadline() }
+        try run("m6-installation-bootstrap-staged-reentrant-claim") { try InstallationBootstrapFixtures.stagedReentrantClaim() }
+        try run("m6-installation-bootstrap-staged-live-borrow-refuses") { try InstallationBootstrapFixtures.stagedLiveBorrowRefuses() }
+        try run("m6-installation-bootstrap-staged-pending-registry-refuses") { try InstallationBootstrapFixtures.stagedPendingRegistryRefuses() }
+        try run("m6-installation-bootstrap-staged-intent-cuts") { try InstallationBootstrapFixtures.stagedIntentCuts() }
+        try run("m6-installation-bootstrap-staged-identity-drift") { try InstallationBootstrapFixtures.stagedIdentityDrift() }
+        try run("m6-installation-bootstrap-staged-transfer-failures") { try InstallationBootstrapFixtures.stagedTransferFailures() }
         return passed
     }
 

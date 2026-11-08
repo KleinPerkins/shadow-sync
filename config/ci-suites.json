@@ -2811,7 +2811,16 @@
           "m6-strict-admission-replaced-log-writer",
           "m6-strict-admission-mode-log-writer",
           "m6-strict-admission-closed-log-writer",
-          "m6-strict-admission-existing-log-writer"
+          "m6-strict-admission-existing-log-writer",
+          "m6-installation-bootstrap-staged-before-preparation",
+          "m6-installation-bootstrap-staged-positive",
+          "m6-installation-bootstrap-staged-original-deadline",
+          "m6-installation-bootstrap-staged-reentrant-claim",
+          "m6-installation-bootstrap-staged-live-borrow-refuses",
+          "m6-installation-bootstrap-staged-pending-registry-refuses",
+          "m6-installation-bootstrap-staged-intent-cuts",
+          "m6-installation-bootstrap-staged-identity-drift",
+          "m6-installation-bootstrap-staged-transfer-failures"
         ],
         "kind": "runtime"
       },
