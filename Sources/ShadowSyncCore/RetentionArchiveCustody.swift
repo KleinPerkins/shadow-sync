@@ -207,16 +207,31 @@ final class InheritedRetentionArchiveResources {
          helper: CustodyHelperExecutable, account: EffectiveAccount, statePath: String, parent: ProcessIdentity,
          source: OwnedFileDescriptor, target: OwnedFileDescriptor, destination: OwnedFileDescriptor,
          directory: OwnedFileDescriptor, file: OwnedFileDescriptor) throws {
+        #if SHADOW_SYNC_TESTING
+        CustodyInheritedCommand.testingRecordConstructionStage(.retentionDecode)
+        #endif
         input = try RetentionArchiveInput.decode(bytes)
         self.policy = policy; self.account = account; self.source = source; self.target = target; self.destination = destination
         self.directory = directory; self.file = file
+        #if SHADOW_SYNC_TESTING
+        CustodyInheritedCommand.testingRecordConstructionStage(.retentionShape)
+        #endif
         try input.validate(account: account, statePath: statePath, arguments: request.arguments)
+        #if SHADOW_SYNC_TESTING
+        CustodyInheritedCommand.testingRecordConstructionStage(.retentionRequest)
+        #endif
         guard request.kind == .retentionArchive, request.authority == .mutation,
               input.source.configuration.frozenOwnerPID == parent.processID,
               request.traceLimit == 0, request.stdoutLimit == 16_777_216, request.stderrLimit == 16_777_216,
               request.environment == input.environment(account: account) else { throw CustodyResourceError.invalidResource }
+        #if SHADOW_SYNC_TESTING
+        CustodyInheritedCommand.testingRecordConstructionStage(.retentionGraphs)
+        #endif
         systemGraph = try QualifiedCommandGraph.forHelper(kind: .systemGitConfig, helper: helper)
         archiveGraph = try QualifiedCommandGraph.forHelper(kind: .retentionArchive, helper: helper)
+        #if SHADOW_SYNC_TESTING
+        CustodyInheritedCommand.testingRecordConstructionStage(.retentionPolicy)
+        #endif
         try revalidate()
     }
     func revalidate() throws {

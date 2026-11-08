@@ -32,6 +32,7 @@ public enum CommandCustodian {
         }
         if arguments.count == 2 && arguments[1] == "--shadow-sync-discovery-custodian-fixture" {
             // Closed testing-only constructor discrimination; no protocol output.
+            CustodyInheritedCommand.testingRecordConstructionStage(.helper)
             var failureCode: Int32 = 81
             do {
                 let inherited = try CustodyInheritedCommand.testingDiscovery()
@@ -39,7 +40,9 @@ public enum CommandCustodian {
                 let loop = try CustodianLoop(inherited: inherited)
                 failureCode = 83
                 return try loop.run()
-            } catch { return failureCode }
+            } catch {
+                return failureCode == 81 ? CustodyInheritedCommand.testingConstructionFailureCode : failureCode
+            }
         }
         if arguments.count == 2 && arguments[1] == "--shadow-sync-custodian-fixture" {
             do { return try CustodianLoop(inherited: CustodyInheritedCommand.testing()).run() }

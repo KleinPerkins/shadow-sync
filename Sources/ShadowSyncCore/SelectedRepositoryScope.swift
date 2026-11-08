@@ -747,6 +747,8 @@ public final class SelectedRepositoryScopeBinder:
     ) throws -> RepositorySelectionCatalogResult {
         let deadline = boundedMetadataDeadline(deadlineLimit)
         #if SHADOW_SYNC_TESTING
+        let previousDiagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.catalog)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(previousDiagnosticCaller) }
         let diagnosticStart = DispatchTime.now().uptimeNanoseconds
         var diagnosticStage = DiscoveryFixtureDiagnostic.Stage.root
         var diagnosticPassed = false

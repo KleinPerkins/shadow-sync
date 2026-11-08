@@ -5,6 +5,36 @@ import Security
 /// Authenticated resources of this actual helper process. Only the closed
 /// inherited entrypoint constructs this object; decoded claims are not authority.
 final class CustodyInheritedCommand {
+    #if SHADOW_SYNC_TESTING
+    // One scalar in the disposable helper process, reset by its fixed entrypoint.
+    // It is only a failure-location observation, never resource or run authority.
+    enum TestingConstructionStage: Int32 {
+        case helper = 81, descriptors = 84, request = 85, roles = 86, input = 87
+        case claims = 88, streams = 89, parent = 90, account = 91, publisher = 92
+        case retention = 93, retentionDecode = 94, retentionShape = 95
+        case retentionRequest = 96, retentionGraphs = 97, retentionPolicy = 98
+        case resourcePostflight = 99, parentPostflight = 100
+        case retentionSource = 101, retentionDestination = 102, retentionWorktree = 103
+        case inheritedRetirement = 104
+    }
+    private final class TestingConstructionObservation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stage = TestingConstructionStage.helper
+        func record(_ value: TestingConstructionStage) {
+            lock.lock(); defer { lock.unlock() }; stage = value
+        }
+        var failureCode: Int32 {
+            lock.lock(); defer { lock.unlock() }; return stage.rawValue
+        }
+    }
+    private static let testingConstructionObservation = TestingConstructionObservation()
+    static func testingRecordConstructionStage(_ stage: TestingConstructionStage) {
+        testingConstructionObservation.record(stage)
+    }
+    static var testingConstructionFailureCode: Int32 {
+        testingConstructionObservation.failureCode
+    }
+    #endif
     let request: UnvalidatedCustodyRequest
     let helper: CustodyHelperExecutable
     let identity: ProcessIdentity
@@ -95,6 +125,9 @@ final class CustodyInheritedCommand {
         let usesRealWire = !fixture || discoveryFixture
         // Validate the original inherited set before creating any copies. Runtime
         // framework descriptors are not silently accepted as authority.
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.descriptors)
+        #endif
         let actual = try Self.openDescriptors()
         let permitted: Set<Int32> = [0,1,2,7,8,9,10,11,12,190,191,192,193,194,195,196,197,198,199,200]
         guard actual.isSubset(of: permitted), Set([0,1,2,190,191,192,193,194,197,200]).isSubset(of: actual) else {
@@ -105,6 +138,9 @@ final class CustodyInheritedCommand {
         guard fstat(0, &nullInfo) == 0, lstat("/dev/null", &observedNull) == 0,
               nullInfo.st_dev == observedNull.st_dev, nullInfo.st_ino == observedNull.st_ino,
               fcntl(0, F_GETFL) & O_ACCMODE == O_RDONLY else { throw CustodyResourceError.invalidResource }
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.request)
+        #endif
         let raw = try Self.readSealed(190)
         let object = try CustodyWire.decode(raw, maximum: 1_048_576).object(keys: ["schema","binding","command","budget","limits","descriptors"])
         let binding = try CustodyBinding(wire: CustodyWire.required(object["binding"]))
@@ -120,6 +156,9 @@ final class CustodyInheritedCommand {
         // ten-second ceiling is invalid for the two-second policy contract.
         let request = try UnvalidatedCustodyRequest.decode(raw, expected: binding,
             permittedWorkSeconds: [.repositoryGit, .retentionArchive].contains(kind) ? kind.maximumWorkSeconds : (kind == .discoveryGit ? DiscoveryGitCommand.maximumWorkSeconds : min(10, kind.maximumWorkSeconds)))
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.roles)
+        #endif
         let hasFrozenConfiguration = request.descriptors.contains { $0.role == .gitFile }
         let installationInput = request.authority.isInstallationStaged
             || (request.authority == .lifecycleMutation && request.kind == .launchctlRead && request.inputSHA256 != nil)
@@ -169,6 +208,9 @@ final class CustodyInheritedCommand {
         }
         // Content hashes are derived from actual inherited, unlinked read-only
         // resources. Decoded metadata alone cannot authenticate input or code.
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.input)
+        #endif
         sealedInput = request.inputSHA256 != nil ? try Self.readSealed(8, role: .input) : nil
         sealedCode = request.kind == .policyClassify ? try Self.readSealed(9, role: .code) : nil
         if installationInput {
@@ -180,8 +222,19 @@ final class CustodyInheritedCommand {
               try CustodyRequestResources.resourceDigest(request.descriptors, input: inputHash, code: codeHash) == request.resourcesSHA256 else {
             throw CustodyResourceError.invalidResource
         }
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.claims)
+        #endif
         var owned: [CustodyDescriptorClaim.Role: OwnedFileDescriptor] = [:], snapshots: [CustodyDescriptorClaim.Role: Snapshot] = [:]
         for claim in request.descriptors {
+            #if SHADOW_SYNC_TESTING
+            switch claim.role {
+            case .retentionSource: Self.testingRecordConstructionStage(.retentionSource)
+            case .retentionDestination: Self.testingRecordConstructionStage(.retentionDestination)
+            case .retentionWorktree: Self.testingRecordConstructionStage(.retentionWorktree)
+            default: Self.testingRecordConstructionStage(.claims)
+            }
+            #endif
             let fd = Int32(claim.role.number), snapshot = try Snapshot.capture(fd, role: claim.role, uid: geteuid())
             guard snapshot.claim(claim.role) == claim else { throw CustodyResourceError.invalidResource }
             let copy = fcntl(fd, F_DUPFD_CLOEXEC, 201); guard copy >= 0 else { throw CustodyResourceError.invalidResource }
@@ -195,14 +248,23 @@ final class CustodyInheritedCommand {
             let copy = fcntl(fd, F_DUPFD_CLOEXEC, 201); guard copy >= 0 else { throw CustodyResourceError.invalidResource }
             return OwnedFileDescriptor(copy)
         }
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.streams)
+        #endif
         output = try outputCopy(1); error = try outputCopy(2)
         if let trace = owned[.traceOutput], fcntl(trace.value, F_SETNOSIGPIPE, 1) != 0 { throw CustodyResourceError.invalidResource }
         guard let status = owned[.status], fcntl(status.value, F_SETNOSIGPIPE, 1) == 0 else { throw CustodyResourceError.invalidResource }
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.parent)
+        #endif
         let parentID = getppid(); guard parentID > 1 else { throw CustodyRecordError.fenced }
         parent = try helper.authenticateParent(parentID, generation: binding.callerGeneration)
         identity = try ProcessIdentity.capture(processID: getpid(), generation: binding.callerGeneration, expectedExecutablePath: helper.path)
         guard identity.processGroupID == getpid(), identity.userID == binding.trustedUID else { throw CustodyRecordError.fenced }
         self.helper = helper; self.request = request; descriptors = owned; self.snapshots = snapshots; sealedBytes = raw
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.account)
+        #endif
         #if SHADOW_SYNC_TESTING
         if fixture {
             guard let home = request.environment["HOME"] else { throw CustodyResourceError.invalidResource }
@@ -263,6 +325,9 @@ final class CustodyInheritedCommand {
         let expectedEnvironment = request.kind == .systemGitConfig
             ? SystemGitConfigurationCommand.environment(account: account) : ClosedProcessRunner.environment(account: account)
         guard request.kind == .retentionArchive || request.environment == expectedEnvironment else { throw CustodyResourceError.invalidResource }
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.publisher)
+        #endif
         if usesRealWire, [.repositoryGit, .retentionArchive, .policyClassify, .discoveryGit].contains(request.kind) {
             guard request.authority == .read || request.authority == .mutation, let sealedInput else {
                 throw CustodyResourceError.invalidResource
@@ -296,6 +361,9 @@ final class CustodyInheritedCommand {
                     helper: helper, account: account, parent: parent, directory: directory, file: file)
                 discovery = nil; retention = nil
             } else if request.kind == .retentionArchive {
+                #if SHADOW_SYNC_TESTING
+                Self.testingRecordConstructionStage(.retention)
+                #endif
                 guard let source = owned[.retentionSource], let target = owned[.retentionWorktree], let destination = owned[.retentionDestination],
                       let directory = owned[.gitDirectory], let file = owned[.gitFile], sealedCode == nil else { throw CustodyResourceError.invalidResource }
                 discovery = nil; repository = nil
@@ -337,6 +405,9 @@ final class CustodyInheritedCommand {
         #endif
         // No inherited original survives into a target. The retained duplicates
         // describe the same held locks; none is unlocked or reacquired.
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.inheritedRetirement)
+        #endif
         for fd in actual where fd > 2 { close(fd) }
         if let installation {
             #if SHADOW_SYNC_TESTING
@@ -356,7 +427,13 @@ final class CustodyInheritedCommand {
             }
             installationStore = try CustodyCatalogStore(leases: CustodyAuthorityLeaseSet.importing(self))
         }
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.resourcePostflight)
+        #endif
         try revalidateResources()
+        #if SHADOW_SYNC_TESTING
+        Self.testingRecordConstructionStage(.parentPostflight)
+        #endif
         try revalidateParent()
     }
     static func production() throws -> CustodyInheritedCommand { try Self(helper: CustodyHelperExecutable.production(), fixture: false) }

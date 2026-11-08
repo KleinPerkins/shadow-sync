@@ -155,6 +155,7 @@ enum DiscoveryFixtureDiagnostic {
     // current call, restored on return/throw; there is no history or cross-call
     // sample. No diagnostic context is propagated to dispatched work.
     enum AdmissionCaller: String {
+        case catalog
         case initial, validate, requireAllowed, prepareAccess, willAccess
         case policyRelativePath, requireSelected, preparationFailure, finalValidation, errorValidation
     }
