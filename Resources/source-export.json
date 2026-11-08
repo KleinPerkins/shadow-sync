@@ -9,6 +9,7 @@
     "Sources/ShadowSyncApp/NativeFixtureProcess.swift": "Extend the existing registered real owned-worker retirement fixture with typed admission/retirement duplicate refusal and pending-versus-retired drain evidence, without signaling a command identifier.",
     "Sources/ShadowSyncApp/RunPresentation.swift": "Present explicit cleanup pending as requiring attention rather than an ordinary failed inspection. Include cleanup pending in report totals and label the last observation without claiming command completion.",
     "Sources/ShadowSyncApp/Worker.swift": "Transport typed command observations without process signaling authority; require once-only command retirement before worker drain evidence and refuse completed report publication for pending cleanup.",
+    "Sources/ShadowSyncCatalog/RepositorySelectionPathAdmission.swift": " Add bounded opt-in testing-only first-failure observations with closed tags and current-call timing; production predicates, deadlines and assertions are unchanged. Runtime qualification remains separate.",
     "Sources/ShadowSyncCore/Body3Batch.swift": "Represent cleanup pending as nonterminal while settling its callback without counting it as terminal progress.",
     "Sources/ShadowSyncCore/Body3Coordinator.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration. Borrow configuration custody from the actual held run authority and pass it through Fast-forward, maintenance and retention preparation without recursive acquisition. Thread per-worker typed repository observations and refuse completed batch publication while shared cleanup remains pending. Remove implicit private manager path; adapter unavailable pending policy-bound integration. Borrow configuration custody from the actual held run authority and pass it through Fast-forward, maintenance and retention preparation without recursive acquisition. Join the closed retention-archive caller to actual borrowed mutation custody, retained source/worktree/destination and immutable configuration; preserve pending recovery and fixture-only validation without enrolling production tools. Publish explicit cleanup-pending node/run evidence and report; suppress complete/drained claims while context remains pending.",
     "Sources/ShadowSyncCore/Body3RunLog.swift": "Decode and reconstruct explicit pending reports without changing them to completed interrupted work.",
@@ -70,6 +71,7 @@
     "Sources/ShadowSyncCore/Models.swift": "Represent CLEANUP_PENDING explicitly and prevent completed-run summary text while that outcome is present.",
     "Sources/ShadowSyncCore/OwnedDirectChild.swift": " Add testing-only live original-owner WNOWAIT and graph-image observation bracketing bounded complete group and positive non-zombie PPID ancestry, without signal tokens, PID adoption or reap changes.",
     "Sources/ShadowSyncCore/PolicyAuthorityFile.swift": "Expose captured owner-private mode for lifecycle plist validation; byte, file, ACL and parent snapshot revalidation remain unchanged.",
+    "Sources/ShadowSyncCore/PolicyCatalogSession.swift": " Add bounded opt-in testing-only first-failure observations with closed tags and current-call timing; production predicates, deadlines and assertions are unchanged. Runtime qualification remains separate.",
     "Sources/ShadowSyncCore/PolicyCommandWire.swift": "Reuse existing repository preflight clipping for optional enclosing budgets; nil retains prior deadline and grace behavior.",
     "Sources/ShadowSyncCore/PolicyHelperTransport.swift": "Optional enclosing-budget propagation preserves original freeze work and cleanup endpoints for retained configuration callers; default callers remain unchanged. Bind failed policy fixture results to the bounded closed-field diagnostic without altering admission or deadlines.",
     "Sources/ShadowSyncCore/PolicyProtocol.swift": " Add only a closed legacy-state observation profile with historical one-MiB document/string budget and byte-derived array ceiling; preserve all four existing parser profiles and callers.",
@@ -111,7 +113,7 @@
     "config/identity-exceptions.json": " Remove inherited deployment defaults from public execution; preserve production refusal, synthetic fixture-only adapter behavior and mandatory current CI coverage.",
     "scripts/auto-merge.py": "Keep installation, custody, publisher, policy and mandatory CI registration families on the protected owner/admin technical-review route, including both names of renames; privileged App activation remains separately gated.",
     "scripts/build-app.sh": "Build all three executable products in one package invocation with shared compilation; verify every product architecture and minimum OS. Preserve real fixture paths only in nondistributed testing builds; production retains source-path sanitization and separate native qualification.",
-    "scripts/ci-runtime.py": "Retain the existing bounded registry and successful policy-helper phase diagnostics for discovery admission without changing deadlines, policies or assertions. Register isolated precommit mechanism fixtures and a bounded Unix socket-compatible fixture namespace. Source registration and parsing do not establish native qualification.",
+    "scripts/ci-runtime.py": "Retain the existing bounded registry and successful policy-helper phase diagnostics for discovery admission without changing deadlines, policies or assertions. Register isolated precommit mechanism fixtures and a bounded Unix socket-compatible fixture namespace. Source registration and parsing do not establish native qualification. Construct the explicit fixture environment in one tested path and enable the same bounded diagnostic opt-in for retention-custody as discovery-caller; unrelated suites do not inherit host flags.",
     "scripts/ci-shards.py": "All mandatory jobs use macOS 26 arm64 because tooling includes native fixtures; deterministic complete-suite partition and fail-closed aggregate remain unchanged.",
     "scripts/installer-scratch-cleanup-tests.sh": " Standalone wrapper correction: remove private parent governance/bootstrap dependencies; use synthetic canary observations; preserve remaining native assertions and strict current development-bundle inventory. Obsolete source-installer harness refuses immediately. No signed lifecycle, cleanup, source-race or native coverage qualification is implied.",
     "scripts/m1-native-e2e.sh": " Standalone wrapper correction: remove private parent governance/bootstrap dependencies; use synthetic canary observations; preserve remaining native assertions and strict current development-bundle inventory. Obsolete source-installer harness refuses immediately. No signed lifecycle, cleanup, source-race or native coverage qualification is implied.",
@@ -121,9 +123,7 @@
     "scripts/run-native-appkit.py": "Stage and verify only the exact AppDelegate and native-acceptance contract files inside the owned fixture; preserve all native assertions, source bindings, isolation and cleanup.",
     "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs. Include registered retention-custody in the executor closed suite list.",
     "scripts/v3-preflight-acceptance.sh": " Standalone wrapper correction: remove private parent governance/bootstrap dependencies; use synthetic canary observations; preserve remaining native assertions and strict current development-bundle inventory. Obsolete source-installer harness refuses immediately. No signed lifecycle, cleanup, source-race or native coverage qualification is implied.",
-    "scripts/verify-m6.sh": " Remove inherited deployment defaults from public execution; preserve production refusal, synthetic fixture-only adapter behavior and mandatory current CI coverage.",
-    "Sources/ShadowSyncCatalog/RepositorySelectionPathAdmission.swift": " Add bounded opt-in testing-only first-failure observations with closed tags and current-call timing; production predicates, deadlines and assertions are unchanged. Runtime qualification remains separate.",
-    "Sources/ShadowSyncCore/PolicyCatalogSession.swift": " Add bounded opt-in testing-only first-failure observations with closed tags and current-call timing; production predicates, deadlines and assertions are unchanged. Runtime qualification remains separate."
+    "scripts/verify-m6.sh": " Remove inherited deployment defaults from public execution; preserve production refusal, synthetic fixture-only adapter behavior and mandatory current CI coverage."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
   "files": [
@@ -1305,7 +1305,7 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "3e59c6194d8ec9122f70018f194c7dbf5dd2c758459791b284a3e2e303dd85a5"
+      "sha256": "891401c23ddf152225b953640c49c6ec794a62fec3fa8ff5039c53afddb4b6f3"
     },
     {
       "mode": "100644",
@@ -1365,7 +1365,7 @@
     {
       "mode": "100644",
       "path": "scripts/ci-runtime.py",
-      "sha256": "427564b62e0fdac17dd478aca769656d26e984350f3f411b9900ebcb6c511b70"
+      "sha256": "5e90530221482ed91282ccd78ea830ccfe5819d2127e92b65da94b044e8e73c8"
     },
     {
       "mode": "100644",

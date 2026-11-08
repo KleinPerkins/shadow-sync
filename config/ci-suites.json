@@ -3383,6 +3383,7 @@
           "test_ci_runtime.CIRuntimeTests.test_incomplete_attempt_preserves_only_observed_cases",
           "test_ci_runtime.CIRuntimeTests.test_local_ipc_permission_is_namespace_and_socket_name_bound",
           "test_ci_runtime.CIRuntimeTests.test_private_staging_preserves_build_bytes_and_required_publisher_mode",
+          "test_ci_runtime.CIRuntimeTests.test_runner_environment_enables_only_registered_diagnostic_consumers",
           "test_ci_runtime.CIRuntimeTests.test_unsafe_mode_fixture_grant_cannot_reach_other_files",
           "test_ci_runtime.CIRuntimeTests.test_var_alias_fixture_is_explicit_nonce_bound_and_cleanup_registered"
         ],

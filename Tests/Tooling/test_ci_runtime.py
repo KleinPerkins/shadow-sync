@@ -13,6 +13,27 @@ SPEC.loader.exec_module(runtime)
 
 
 class CIRuntimeTests(unittest.TestCase):
+    def test_runner_environment_enables_only_registered_diagnostic_consumers(self):
+        root = Path('/fixture/work')
+        with patch.dict(runtime.os.environ, {'SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS': 'costs',
+                'SHADOW_SYNC_TEST_M6_DIAGNOSTICS': 'foreign', 'UNRELATED_HOST_VALUE': 'private'}):
+            for suite in ('retention-custody', 'discovery-caller', 'm6', 'body3'):
+                with self.subTest(suite=suite):
+                    env = runtime.fixture_environment(suite, root, 'a' * 32,
+                        Path('/fixture/python'), Path('/fixture/build'),
+                        Path('/fixture/framework'), Path('/fixture/policy.json'))
+                    self.assertEqual(env.get('SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'),
+                        '1' if suite in ('retention-custody', 'discovery-caller') else None)
+                    self.assertEqual(env.get('SHADOW_SYNC_TEST_M6_DIAGNOSTICS'),
+                        '1' if suite == 'm6' else None)
+                    self.assertNotIn('UNRELATED_HOST_VALUE', env)
+                    self.assertEqual(env['HOME'], '/fixture/work/home')
+                    self.assertEqual(env['TMPDIR'], '/fixture/work/tmp')
+                    self.assertEqual(env['SHADOW_SYNC_RUNTIME_FIXTURE_NAMESPACE'], 'a' * 32)
+                    self.assertEqual(env['GIT_CONFIG_NOSYSTEM'], '1')
+                    self.assertEqual(env['GIT_CONFIG_GLOBAL'], '/dev/null')
+                    self.assertEqual(env['GIT_CONFIG_SYSTEM'], '/dev/null')
+
     def test_complete_roster_allows_actual_composite_execution_order(self):
         result = runtime.canonical_output('beta-v07', ['sources', 'body'],
             b'PASS beta-v07/body\nPASS beta-v07/sources\n', complete=True)

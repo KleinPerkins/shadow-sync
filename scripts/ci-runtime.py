@@ -120,6 +120,24 @@ def stage_runtime_executable(root, source):
     return target
 
 
+def fixture_environment(suite, root, nonce, python, build_root, framework, policy_source):
+    env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'),
+        SHADOW_SYNC_RUNTIME_FIXTURE_NAMESPACE=nonce, LANG='C', LC_ALL='C',
+        GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_SYSTEM='/dev/null',
+        SHADOW_SYNC_TEST_POLICY_PYTHON=str(python),
+        SHADOW_SYNC_TEST_PUBLISHER_EXECUTABLE=str(build_root / 'publisher-executable'),
+        SHADOW_SYNC_TEST_POLICY_FRAMEWORK=str(framework),
+        SHADOW_SYNC_TEST_POLICY_SOURCE=str(policy_source))
+    if suite == 'm6':
+        # Closed test-only markers preserve the failing planner path and result.
+        env['SHADOW_SYNC_TEST_M6_DIAGNOSTICS'] = '1'
+    if suite in ('discovery-caller', 'retention-custody'):
+        # Both suites consume the bounded testing-only command/registry trace.
+        # Keep the opt-in explicit; unrelated suites do not inherit host flags.
+        env['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'] = '1'
+    return env
+
+
 def run_suite(suite, root, build_root, record, context):
     inventory = load('runtime-suite-inventory')
     catalog = inventory.inspect(ROOT)
@@ -146,21 +164,7 @@ def run_suite(suite, root, build_root, record, context):
     policy_source = stage_policy_source(root)
     isolation = root / 'fixture.sb'
     isolation.write_text(profile(root, nonce, executable, app, python))
-    env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'),
-        SHADOW_SYNC_RUNTIME_FIXTURE_NAMESPACE=nonce, LANG='C', LC_ALL='C',
-        GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_SYSTEM='/dev/null',
-        SHADOW_SYNC_TEST_POLICY_PYTHON=str(python),
-        SHADOW_SYNC_TEST_PUBLISHER_EXECUTABLE=str(build_root / 'publisher-executable'),
-        SHADOW_SYNC_TEST_POLICY_FRAMEWORK=str(framework),
-        SHADOW_SYNC_TEST_POLICY_SOURCE=str(policy_source))
-    if suite == 'm6':
-        # Closed test-only markers preserve the failing planner path and result.
-        env['SHADOW_SYNC_TEST_M6_DIAGNOSTICS'] = '1'
-    if suite == 'discovery-caller':
-        # Retain the existing bounded successful-helper and registry phase trace
-        # without candidate paths, request contents or child output. Cost mode
-        # suppresses those phases and cannot locate hosted admission latency.
-        env['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'] = '1'
+    env = fixture_environment(suite, root, nonce, python, build_root, framework, policy_source)
     native = load('run-native-appkit')
     def plain(name, binary, args):
         value = native.child(['/usr/bin/sandbox-exec', '-f', str(isolation), str(binary), *args],
