@@ -909,7 +909,9 @@ public enum DiscoveryCallerSelfTestRunner {
             && posix_spawnattr_setsigdefault(&attr, &defaults) == 0 && posix_spawnattr_setsigmask(&attr, &empty) == 0,
             "retention worker closed flags")
         let path = try ProcessIdentity.capture(processID: getpid(), generation: RunIdentity.make()).executablePath
-        let args = [path, "--shadow-sync-retention-worker-fixture", root, phase].map { strdup($0) }
+        let args = ([path, "--shadow-sync-retention-worker-fixture", root, phase] as [String]).map { value in
+            value.withCString { strdup($0) }
+        }
         var environmentValues = ["PATH=/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR=/private/tmp"]
         if let namespace = ProcessInfo.processInfo.environment["SHADOW_SYNC_RUNTIME_FIXTURE_NAMESPACE"] {
             _ = try RuntimeFixtureSession.fixturePrefix("shadow-sync-fixture-config.", namespace: namespace)
@@ -1487,7 +1489,9 @@ public enum DiscoveryCallerSelfTestRunner {
             && posix_spawnattr_setsigdefault(&attr, &defaults) == 0 && posix_spawnattr_setsigmask(&attr, &empty) == 0,
             "repository worker closed flags")
         let path = try ProcessIdentity.capture(processID: getpid(), generation: RunIdentity.make()).executablePath
-        let args = [path, "--shadow-sync-repository-git-worker-fixture", root, phase].map { strdup($0) }
+        let args = ([path, "--shadow-sync-repository-git-worker-fixture", root, phase] as [String]).map { value in
+            value.withCString { strdup($0) }
+        }
         var environmentValues = ["PATH=/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR=/private/tmp"]
         if let namespace = ProcessInfo.processInfo.environment["SHADOW_SYNC_RUNTIME_FIXTURE_NAMESPACE"] {
             _ = try RuntimeFixtureSession.fixturePrefix("shadow-sync-fixture-config.", namespace: namespace)
