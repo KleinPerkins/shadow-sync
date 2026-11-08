@@ -521,6 +521,15 @@ public enum DiscoveryCallerSelfTestRunner {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         // Disposable fixture setup, never a product Git mutation path.
         try write(repository + "/.git/refs/heads/recovery-fixture", Data((tip + "\n").utf8))
+        // The recovery branch is a fixture-owned, unclaimed copy of the actual main tip.
+        let actualHead = try String(contentsOfFile: repository + "/.git/HEAD", encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let recoveryTip = try String(contentsOfFile: repository + "/.git/refs/heads/recovery-fixture", encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentMainTip = try String(contentsOfFile: repository + "/.git/refs/heads/main", encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try require(actualHead == "ref: refs/heads/main" && recoveryTip == tip && currentMainTip == tip,
+            "retention fixture branch identity or equality changed")
         let original = try RepositoryHandle.testingBoundCandidate(path: repository, id: "fixture-owner/ready",
             displayName: "Fixture", rawOrigin: "https://github.com/fixture-owner/ready.git")
         let candidate = RepositoryCandidate(id: original.id, displayName: original.displayName, path: original.path,
@@ -529,7 +538,11 @@ public enum DiscoveryCallerSelfTestRunner {
             policyAdmissionSHA256: policyDigest)
         guard let common = candidate.commonDirectoryIdentity else { throw Failure.assertion("fixture common identity") }
         let branch = try Branch(cloneID: LocalClone.id(for: common), fullRef: "refs/heads/recovery-fixture", tipOID: tip,
-            claimingWorktreeIDs: [], removalPreview: RemovalPreview(recommendation: .recovery, permission: .previewOnly,
+            claimingWorktreeIDs: [],
+            relationToDefault: DefaultBranchRelation(kind: .equal, aheadCount: 0, behindCount: 0),
+            // Closed fixture PR evidence; no network lookup or production evidence inference.
+            pullRequests: [], pullRequestAvailability: .available,
+            removalPreview: RemovalPreview(recommendation: .recovery, permission: .previewOnly,
                 explanation: "Fixture history requires recovery.", recoveryConsequence: "Preserve the fixture tip."))
         let clone = try LocalClone(repositoryID: candidate.id, sourceSnapshot: candidate, effectiveOrigin: candidate.rawOrigin,
             originParityVerified: true, policyCategory: .writable, kind: .primaryCheckout,
@@ -537,6 +550,8 @@ public enum DiscoveryCallerSelfTestRunner {
         let remote = try RemoteRepository(id: candidate.id, origins: [candidate.rawOrigin], policyCategory: .writable,
             resolvedDefault: RemoteDefaultBranch(name: "main", advertisedOID: tip), defaultUnavailableReason: nil)
         let removal = try RemovalCandidate(repository: remote, clone: clone, branch: branch)
+        try require(removal.hardExclusion == nil && removal.canSelect,
+            "retention fixture complete branch evidence is not selectable")
         let selection = try RemovalSelection(candidate: removal, intent: .removeWithRecovery, includePossibleSecrets: true)
         let card = try RepositoryCard(repository: remote,
             authority: CanonicalAuthorityState(status: .usable, record: RepositoryAuthorityRecord(clone: clone), explanation: "Fixture authority."),
