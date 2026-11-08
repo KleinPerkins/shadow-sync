@@ -500,6 +500,16 @@ public enum DiscoveryCallerSelfTestRunner {
         }
         func event(_ record: Body3LogRecord) { lock.lock(); events.append(record); lock.unlock() }
         func observe(_ value: CommandCustodyContext) { lock.lock(); context = value; scopes.insert(value.id); lock.unlock() }
+        func recordMissingBody3Entry(_ report: Body3BatchReport) {
+            guard DiscoveryFixtureDiagnostic.isEnabled else { return }
+            let savedErrno = errno; defer { errno = savedErrno }
+            lock.lock()
+            let beforePrepare = !first, afterStart = !commands.isEmpty
+            let contextObserved = !scopes.isEmpty
+            lock.unlock()
+            DiscoveryFixtureDiagnostic.recordRetentionBody3Entry(report,
+                beforePrepare: beforePrepare, afterStart: afterStart, contextObserved: contextObserved)
+        }
         func drain() throws {
             for handle in handles {
                 RetainedCleanupRegistry.shared.testingReleaseDeferredRead(handle)
@@ -617,6 +627,7 @@ public enum DiscoveryCallerSelfTestRunner {
                                 if let record = event.record { observed.event(record) }
                                 event.confirmation?.cancel()
                             }
+                        observed.recordMissingBody3Entry(report)
                         try require(!observed.commands.isEmpty, "Body 3 never entered actual retention Store")
                         if pending {
                             let roundTrip = try JSONDecoder().decode(Body3BatchReport.self, from: JSONEncoder().encode(report))

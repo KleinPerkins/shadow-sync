@@ -1503,7 +1503,7 @@ private extension TestingCustodianFailureWitness {
         func substitute(_ path: String, observe: () throws -> Void) throws {
             guard let original = nodes[path] else { throw FixtureFailure(message: "witness unowned substitution") }
             try validate(path, original)
-            let (fd, parent, name) = try self.parent(path); let moved = name + ".held"
+            let (fd, parent, name) = try self.parent(path); let moved = name + "-held"
             try check(renameatx_np(fd, name, fd, moved, UInt32(RENAME_EXCL)) == 0, "witness exclusive substitution rename")
             let isDirectory = original.st_mode & S_IFMT == S_IFDIR
             var replacement = stat(), movedNode = stat(), held = stat()

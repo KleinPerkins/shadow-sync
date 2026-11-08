@@ -661,7 +661,8 @@
     "RETENTION FIXTURE COMMAND",
     "ShadowSync.DiscoveryFixtureDiagnostic.admission",
     "ShadowSync.DiscoveryFixtureDiagnostic.caller",
-    "DISCOVERY REPOSITORY WORKER COMPARISON"
+    "DISCOVERY REPOSITORY WORKER COMPARISON",
+    "RETENTION BODY3 PRE-STORE node_kind=retention"
   ],
   "schema": "shadow-sync-production-test-markers/v1"
 }

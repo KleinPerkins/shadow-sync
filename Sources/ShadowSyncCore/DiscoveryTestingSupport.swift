@@ -295,6 +295,18 @@ enum DiscoveryFixtureDiagnostic {
             + " journal_reason=\(result.journal?.reason?.rawValue ?? "absent")"
             + " wait_status=\(result.journal?.waitStatus.map { String($0) } ?? "absent")\n")
     }
+    static func recordRetentionBody3Entry(_ report: Body3BatchReport,
+        beforePrepare: Bool, afterStart: Bool, contextObserved: Bool) {
+        guard isEnabled, !afterStart else { return }
+        // One closed record at the existing failing fixture assertion. The
+        // shared failure allowance and actual retention opt-in remain unchanged.
+        let node = report.results.first { $0.node.kind == .retention }
+        failureSink.emit("RETENTION BODY3 PRE-STORE node_kind=retention"
+            + " node_present=\(node != nil) status=\(node?.status.rawValue ?? "absent")"
+            + " before_prepare=\(beforePrepare) after_start=\(afterStart)"
+            + " context_observed=\(contextObserved) cancelled=\(report.cancelled) paused=\(report.paused)\n")
+    }
+
     static func recordFixtureCleanup(registryEmpty: Bool, scopeTerminal: Bool,
                                      unsubmittedClosed: Bool, catalogEmpty: Bool?) {
         guard isEnabled, !(registryEmpty && (scopeTerminal || unsubmittedClosed) && catalogEmpty == true) else { return }
