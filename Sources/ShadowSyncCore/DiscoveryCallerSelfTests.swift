@@ -1552,6 +1552,16 @@ public enum DiscoveryCallerSelfTestRunner {
             usleep(5_000)
         }
         guard let final else { throw Failure.assertion("repository terminal missing") }
+        let observedBudgets = [final.budget.issued, final.budget.work, final.budget.term,
+            final.budget.kill, final.budget.receipt]
+        let budgetMatchMask = observedBudgets.enumerated().reduce(UInt8(0)) { mask, entry in
+            guard entry.offset < ready.budget.count, entry.element == ready.budget[entry.offset] else { return mask }
+            return mask | (UInt8(1) << entry.offset)
+        }
+        DiscoveryFixtureDiagnostic.recordRepositoryWorkerComparison(final,
+            helperMatches: final.custodian.map(RepositoryWorkerObservation.init) == ready.helper,
+            targetMatches: final.target.map(RepositoryWorkerObservation.init) == ready.target,
+            budgetMatchMask: budgetMatchMask, budgetCountMatches: ready.budget.count == observedBudgets.count)
         try require(final.kind == .repositoryGit && final.outcome == .cancelledDrained && final.reason == .cancelled
             && final.custodian.map(RepositoryWorkerObservation.init) == ready.helper
             && final.target.map(RepositoryWorkerObservation.init) == ready.target

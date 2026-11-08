@@ -302,6 +302,18 @@ enum DiscoveryFixtureDiagnostic {
             + " catalog_empty=\(catalogEmpty.map { String($0) } ?? "unknown")\n")
     }
 
+    static func recordRepositoryWorkerComparison(_ journal: CustodyJournal,
+        helperMatches: Bool, targetMatches: Bool, budgetMatchMask: UInt8,
+        budgetCountMatches: Bool) {
+        guard isEnabled, !(journal.kind == .repositoryGit
+            && journal.outcome == .cancelledDrained && journal.reason == .cancelled
+            && helperMatches && targetMatches && budgetCountMatches && budgetMatchMask == 31) else { return }
+        failureSink.emit("DISCOVERY REPOSITORY WORKER COMPARISON kind=\(journal.kind.rawValue)"
+            + " outcome=\(journal.outcome?.rawValue ?? "absent") reason=\(journal.reason?.rawValue ?? "absent")"
+            + " helper_match=\(helperMatches) target_match=\(targetMatches)"
+            + " budget_match_mask=\(budgetMatchMask) budget_count_match=\(budgetCountMatches)\n")
+    }
+
     /// Exact closed result fields for failed fixture commands. No process IDs,
     /// request data, paths, child output or arbitrary errors enter this record.
     static func recordCustodyResult(_ result: CustodyRegistryResult) {

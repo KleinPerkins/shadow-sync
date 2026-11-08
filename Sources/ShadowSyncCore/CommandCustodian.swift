@@ -31,8 +31,15 @@ public enum CommandCustodian {
             return DiscoveryCallerSelfTestRunner.repositoryWorker(root: arguments[2], phase: arguments[3])
         }
         if arguments.count == 2 && arguments[1] == "--shadow-sync-discovery-custodian-fixture" {
-            do { return try CustodianLoop(inherited: CustodyInheritedCommand.testingDiscovery()).run() }
-            catch { return 71 }
+            // Closed testing-only constructor discrimination; no protocol output.
+            var failureCode: Int32 = 81
+            do {
+                let inherited = try CustodyInheritedCommand.testingDiscovery()
+                failureCode = 82
+                let loop = try CustodianLoop(inherited: inherited)
+                failureCode = 83
+                return try loop.run()
+            } catch { return failureCode }
         }
         if arguments.count == 2 && arguments[1] == "--shadow-sync-custodian-fixture" {
             do { return try CustodianLoop(inherited: CustodyInheritedCommand.testing()).run() }

@@ -660,7 +660,8 @@
     "RETENTION DISCOVERY FIXTURE CLEANUP",
     "RETENTION FIXTURE COMMAND",
     "ShadowSync.DiscoveryFixtureDiagnostic.admission",
-    "ShadowSync.DiscoveryFixtureDiagnostic.caller"
+    "ShadowSync.DiscoveryFixtureDiagnostic.caller",
+    "DISCOVERY REPOSITORY WORKER COMPARISON"
   ],
   "schema": "shadow-sync-production-test-markers/v1"
 }
