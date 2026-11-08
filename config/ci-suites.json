@@ -2820,7 +2820,14 @@
           "m6-installation-bootstrap-staged-pending-registry-refuses",
           "m6-installation-bootstrap-staged-intent-cuts",
           "m6-installation-bootstrap-staged-identity-drift",
-          "m6-installation-bootstrap-staged-transfer-failures"
+          "m6-installation-bootstrap-staged-transfer-failures",
+          "m6-installation-bootstrap-journal-before-transfer",
+          "m6-installation-bootstrap-journal-positive",
+          "m6-installation-bootstrap-journal-reentrant-replay",
+          "m6-installation-bootstrap-journal-original-deadline",
+          "m6-installation-bootstrap-journal-durable-drift",
+          "m6-installation-bootstrap-journal-claim-failure",
+          "m6-installation-bootstrap-journal-returned-failure"
         ],
         "kind": "runtime"
       },

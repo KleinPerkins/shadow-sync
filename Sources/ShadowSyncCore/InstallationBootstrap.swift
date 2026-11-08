@@ -4,6 +4,7 @@ import Foundation
 /// existing fresh-install owners. reserve stops at the completed reserve action;
 /// prepareExclusive continues that same journal once through promotePlist.
 /// transferToStagedAdmission then retains the existing detached intent/admission.
+/// continueStagedJournal retains its actual journal without completing admission.
 /// No owner accessor, release, recovery or command entry is exposed.
 /// A failed attempt retains its actual owners for the coordinator's lifetime;
 /// durable initialization/control records, not this lifetime, fence process loss.
@@ -26,6 +27,9 @@ final class InstallationBootstrap {
     private var stagedTransfer: StagedTransfer = .notAttempted
     private var stagedIntent: CustodyCatalogStore.InstallationStagedAdmissionIntent?
     private var stagedAdmission: InstallationStagedAdmission?
+    enum StagedJournalContinuation: String { case notAttempted, running, complete, failed }
+    private var stagedJournalContinuation: StagedJournalContinuation = .notAttempted
+    private var stagedJournal: CustodyCatalogStore.InstallationStagedJournal?
     private var invocationDeadline: MonotonicDeadline?
     private let publisher: LifecyclePublisher?
     private let source: LifecyclePublisher.InstallationIdentity?
@@ -61,6 +65,10 @@ final class InstallationBootstrap {
     private var transferBorrow = false
     private var transferAlias: CustodyAuthorityLeaseSet?
     private var actualAliasesRetired = [false, false, false]
+    private var stagedJournalAfterClaim: (() throws -> Void)?
+    private var stagedJournalAfterReturn: (() throws -> Void)?
+    private var stagedJournalHoldBorrow = false
+    private var stagedJournalAlias: CustodyAuthorityLeaseSet?
     #endif
 
     private init(publisher: LifecyclePublisher?, source: LifecyclePublisher.InstallationIdentity?) {
@@ -339,7 +347,78 @@ final class InstallationBootstrap {
         }
     }
 
+    func stagedJournalObservation() -> StagedJournalContinuation {
+        mutex.lock(); defer { mutex.unlock() }
+        return stagedJournalContinuation
+    }
+    /// Continue the actual retained admission once, using reserve's original
+    /// absolute deadline. A successful constructor is retained before postflight;
+    /// it neither completes ordinal 12 nor creates readiness or command resources.
+    func continueStagedJournal() throws {
+        guard mutex.try() else { throw CustodyRecordError.busy }
+        guard attempted, !failedClosed, exclusivePreparation == .complete,
+              stagedTransfer == .complete, stagedJournalContinuation == .notAttempted,
+              let admission = stagedAdmission, let intent = stagedIntent,
+              let owner, let deadline = invocationDeadline else {
+            mutex.unlock(); throw CustodyRecordError.fenced
+        }
+        stagedJournalContinuation = .running
+        #if SHADOW_SYNC_TESTING
+        // Consume synchronous hooks before invoking them outside every bootstrap
+        // lock. Reentry observes running and cannot reach a second constructor.
+        let afterClaim = stagedJournalAfterClaim, afterReturn = stagedJournalAfterReturn
+        stagedJournalAfterClaim = nil; stagedJournalAfterReturn = nil
+        #endif
+        mutex.unlock()
+        do {
+            try boundary(deadline)
+            #if SHADOW_SYNC_TESTING
+            try afterClaim?()
+            #endif
+            try boundary(deadline)
+            let continued = try admission.continueJournal(deadline: deadline)
+            mutex.lock(); stagedJournal = continued; mutex.unlock()
+            #if SHADOW_SYNC_TESTING
+            if stagedJournalHoldBorrow { stagedJournalAlias = try admission.retainStartLeases() }
+            try afterReturn?()
+            #endif
+            try boundary(deadline)
+            try admission.validateOwner(owner, intent: intent)
+            try intent.revalidate(for: owner, deadline: deadline)
+            try boundary(deadline)
+            mutex.lock(); stagedJournalContinuation = .complete; mutex.unlock()
+        } catch {
+            mutex.lock(); failedClosed = true; stagedJournalContinuation = .failed; mutex.unlock()
+            // Closing this same admission fences future starts even if outstanding
+            // aliases make drainage refuse. A failed close is never cleanup proof.
+            // Keep owner, intent, admission and any actual returned journal.
+            _ = try? admission.closeStarts()
+            throw error
+        }
+    }
+
     #if SHADOW_SYNC_TESTING
+    @inline(never)
+    func testingConfigureStagedJournal(holdBorrow: Bool = false,
+        afterClaim: (() throws -> Void)? = nil, afterReturn: (() throws -> Void)? = nil) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        guard !attempted, !failedClosed else { throw CustodyRecordError.fenced }
+        stagedJournalAfterClaim = afterClaim; stagedJournalAfterReturn = afterReturn
+        stagedJournalHoldBorrow = holdBorrow
+    }
+    @inline(never)
+    func testingStagedJournalRetention() -> [Bool] {
+        mutex.lock(); defer { mutex.unlock() }
+        return [stagedJournal != nil, stagedIntent != nil, stagedAdmission != nil,
+                owner != nil, original != nil, stagedJournalAlias != nil]
+    }
+    @inline(never)
+    func testingStagedJournalStartsRefused() throws -> Bool {
+        guard let stagedAdmission else { throw CustodyRecordError.fenced }
+        do { _ = try stagedAdmission.retainStartLeases(); return false } catch { return true }
+    }
+    @inline(never)
+    func testingReleaseStagedJournalBorrow() { stagedJournalAlias = nil }
     @inline(never)
     func testingConfigureStagedTransfer(holdBorrow: Bool = false, intentReceiptCut: Bool = false,
         checkpoint: ((TransferCheckpoint) throws -> Void)? = nil,

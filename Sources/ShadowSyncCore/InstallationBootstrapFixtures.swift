@@ -731,5 +731,227 @@ enum InstallationBootstrapFixtures {
         }
     }
 
+
+    private static func journalTransferred(_ bootstrap: B, deadline: MonotonicDeadline = .init(seconds: 30)) throws {
+        try bootstrap.reserve(deadline: deadline)
+        try bootstrap.prepareExclusive()
+        try bootstrap.transferToStagedAdmission()
+    }
+    private static func journalIntentFence(_ location: StateLocation, _ bootstrap: B) throws {
+        let current = try stored(location)
+        try H.check(current.step?.action == .openStagedAdmission && current.step?.status == .intent
+            && current.step?.ordinal == 12 && current.readinessCommit == nil,
+            "bootstrap journal completed admission or invented readiness")
+        try stagedFence(location, bootstrap)
+    }
+    private static func journalReplayRefuses(_ root: String, _ bootstrap: B) throws {
+        let disk = try H.snapshot(root), observation = bootstrap.observation()
+        let continuation = bootstrap.stagedJournalObservation(), retained = bootstrap.testingStagedJournalRetention()
+        try H.refuses { try bootstrap.continueStagedJournal() }
+        try H.check(try H.snapshot(root) == disk && bootstrap.observation() == observation
+            && bootstrap.stagedJournalObservation() == continuation && bootstrap.testingStagedJournalRetention() == retained,
+            "bootstrap journal replay reconstructed or discarded actual owners")
+        try refusedStagedReplay(root, bootstrap)
+    }
+    static func journalBeforeTransfer() throws {
+        try exclusiveFixture { root, _, bootstrap, _ in
+            func refusesUnclaimed() throws {
+                let disk = try H.snapshot(root), observation = bootstrap.observation()
+                let retained = bootstrap.testingRetained(), staged = bootstrap.testingStagedRetention()
+                try H.refuses { try bootstrap.continueStagedJournal() }
+                try H.check(try H.snapshot(root) == disk && bootstrap.observation() == observation
+                    && bootstrap.testingRetained() == retained && bootstrap.testingStagedRetention() == staged
+                    && bootstrap.stagedJournalObservation() == .notAttempted,
+                    "bootstrap journal invalid order consumed ownership or continuation")
+            }
+            try refusesUnclaimed()
+            try bootstrap.reserve(deadline: .init(seconds: 30)); try refusesUnclaimed()
+            try bootstrap.prepareExclusive(); try refusesUnclaimed()
+            // Preclaim refusals leave the one real continuation available.
+            try bootstrap.transferToStagedAdmission(); try bootstrap.continueStagedJournal()
+            try H.check(bootstrap.stagedJournalObservation() == .complete, "bootstrap journal preclaim refusal poisoned success")
+        }
+    }
+    static func journalPositive() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            try journalTransferred(bootstrap)
+            let disk = try H.snapshot(root), intent = try stored(location)
+            try bootstrap.continueStagedJournal()
+            try H.check(bootstrap.stagedJournalObservation() == .complete && !bootstrap.observation().failedClosed
+                && bootstrap.stagedObservation() == .complete && bootstrap.exclusiveObservation() == .complete,
+                "bootstrap journal conflated transfer, continuation or admission")
+            try H.check(bootstrap.testingStagedJournalRetention() == [true, true, true, true, true, false]
+                && bootstrap.testingStagedRetention().allSatisfy { $0 } && bootstrap.testingStagedIdentity(),
+                "bootstrap journal did not retain same consumed owner, intent and actual journal")
+            try H.check(try H.snapshot(root) == disk && stored(location) == intent,
+                        "bootstrap journal changed exact nodes, receipt bytes or file set")
+            try H.check(!registry.hasRetainedWork && registry.testingCount == 0 && registry.testingOriginalHelpersReaped,
+                        "bootstrap journal created command or registry work")
+            try H.check(try !bootstrap.testingStagedJournalStartsRefused(), "bootstrap successful journal closed staged admission")
+            try journalIntentFence(location, bootstrap); try journalReplayRefuses(root, bootstrap)
+        }
+    }
+    static func journalReentrantReplay() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            var claims = 0, returns = 0
+            try bootstrap.testingConfigureStagedJournal(afterClaim: { [weak bootstrap] in
+                guard let bootstrap else { throw H.Failure(message: "bootstrap journal claim callback owner missing") }
+                claims += 1
+                try H.check(bootstrap.stagedJournalObservation() == .running
+                    && !bootstrap.testingStagedJournalRetention()[0], "bootstrap journal claim hidden or constructor ran early")
+                try journalReplayRefuses(root, bootstrap)
+            }, afterReturn: { [weak bootstrap] in
+                guard let bootstrap else { throw H.Failure(message: "bootstrap journal return callback owner missing") }
+                returns += 1
+                try H.check(bootstrap.stagedJournalObservation() == .running
+                    && bootstrap.testingStagedJournalRetention()[0], "bootstrap journal return not retained before postflight")
+                try journalReplayRefuses(root, bootstrap)
+            })
+            try journalTransferred(bootstrap); try bootstrap.continueStagedJournal()
+            try journalReplayRefuses(root, bootstrap)
+            try H.check(claims == 1 && returns == 1 && bootstrap.stagedJournalObservation() == .complete,
+                        "bootstrap journal reentry invoked a second constructor or hook")
+            try journalIntentFence(location, bootstrap)
+        }
+    }
+    static func journalOriginalDeadline() throws {
+        // Expire before continuation, after claim, and after actual return.
+        // All three use reserve's absolute budget; no replacement is accepted.
+        for point in 0..<3 {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                let original = MonotonicDeadline(seconds: 3)
+                let expire: () throws -> Void = {
+                    while !original.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+                }
+                try bootstrap.testingConfigureStagedJournal(afterClaim: point == 1 ? expire : nil,
+                    afterReturn: point == 2 ? expire : nil)
+                try journalTransferred(bootstrap, deadline: original)
+                let disk = try H.snapshot(root)
+                if point == 0 { try expire() }
+                try H.refuses { try bootstrap.continueStagedJournal() }
+                try H.check(bootstrap.stagedJournalObservation() == .failed && bootstrap.observation().failedClosed
+                    && bootstrap.testingStagedJournalRetention() == [point == 2, true, true, true, true, false]
+                    && bootstrap.testingStagedJournalStartsRefused(), "bootstrap journal refreshed budget or lost returned owner")
+                try H.check(try H.snapshot(root) == disk, "bootstrap journal expired continuation changed disk")
+                try journalIntentFence(location, bootstrap); try journalReplayRefuses(root, bootstrap)
+            }
+        }
+    }
+    static func journalDurableDrift() throws {
+        // Same-byte replacement still changes the pinned durable node. The app
+        // root replacement tests detached prepared-slot identity independently.
+        for kind in ["control", "catalog", "guard", "receipt", "slot"] {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                try journalTransferred(bootstrap)
+                let path: String
+                if kind == "slot" { path = root + "/home/Applications/ShadowSync.app" }
+                else if kind == "receipt" {
+                    let names = try FileManager.default.contentsOfDirectory(atPath: location.path + "/custody/receipts")
+                    guard let name = names.sorted().first(where: { $0.hasPrefix(InstallationStepReceipt.prefix) }) else {
+                        throw H.Failure(message: "bootstrap journal actual receipt missing")
+                    }
+                    path = location.path + "/custody/receipts/" + name
+                } else {
+                    let name = kind == "control" ? "installation.json" : (kind == "catalog" ? "catalog.json" : "catalog.lock")
+                    path = location.path + "/custody/" + name
+                }
+                let retained = root + "/bootstrap-journal-retained-node"
+                let bytes = kind == "slot" ? nil : try Data(contentsOf: URL(fileURLWithPath: path))
+                try H.check(rename(path, retained) == 0, "bootstrap journal retain substituted node")
+                if let bytes {
+                    try bytes.write(to: URL(fileURLWithPath: path), options: .withoutOverwriting)
+                    try H.check(chmod(path, 0o600) == 0, "bootstrap journal replacement mode")
+                } else { try H.check(mkdir(path, 0o700) == 0, "bootstrap journal replacement slot") }
+                let disk = try H.snapshot(root)
+                try H.refuses { try bootstrap.continueStagedJournal() }
+                try H.check(bootstrap.stagedJournalObservation() == .failed && bootstrap.observation().failedClosed
+                    && bootstrap.testingStagedJournalRetention() == [false, true, true, true, true, false]
+                    && bootstrap.testingStagedJournalStartsRefused(), "bootstrap journal adopted drift or dropped actual owner")
+                try H.check(try H.snapshot(root) == disk, "bootstrap journal drift refusal changed evidence")
+                try journalReplayRefuses(root, bootstrap)
+                // Restore only the fixture-created replacement so the original
+                // pinned fence can be observed. This never reopens the bootstrap.
+                try H.check((kind == "slot" ? rmdir(path) : unlink(path)) == 0 && rename(retained, path) == 0,
+                            "bootstrap journal restore fixture node")
+                try H.check(try bootstrap.testingStagedJournalStartsRefused(),
+                            "bootstrap journal restored durable node reopened staged starts")
+                try journalIntentFence(location, bootstrap)
+            }
+        }
+    }
+    static func journalClaimFailure() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            var claims = 0
+            try bootstrap.testingConfigureStagedJournal(afterClaim: { [weak bootstrap] in
+                guard let bootstrap else { throw H.Failure(message: "bootstrap journal failing claim owner missing") }
+                claims += 1
+                try H.check(bootstrap.stagedJournalObservation() == .running, "bootstrap journal failure claim missing")
+                throw CustodyRecordError.injectedFailure
+            })
+            try journalTransferred(bootstrap)
+            let disk = try H.snapshot(root)
+            try H.refuses { try bootstrap.continueStagedJournal() }
+            try H.check(bootstrap.stagedJournalObservation() == .failed && bootstrap.observation().failedClosed
+                && bootstrap.testingStagedJournalRetention() == [false, true, true, true, true, false]
+                && bootstrap.testingStagedJournalStartsRefused(), "bootstrap journal preconstructor failure reopened starts")
+            try journalReplayRefuses(root, bootstrap)
+            try H.check(claims == 1 && H.snapshot(root) == disk, "bootstrap journal failed claim retried or changed disk")
+            try journalIntentFence(location, bootstrap)
+        }
+    }
+    static func journalReturnedFailure() throws {
+        for holdBorrow in [false, true] {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                var returns = 0
+                try bootstrap.testingConfigureStagedJournal(holdBorrow: holdBorrow, afterReturn: { [weak bootstrap] in
+                    guard let bootstrap else { throw H.Failure(message: "bootstrap journal failing return owner missing") }
+                    returns += 1
+                    try H.check(bootstrap.testingStagedJournalRetention() == [true, true, true, true, true, holdBorrow],
+                                "bootstrap journal actual result missing before failing postflight")
+                    throw CustodyRecordError.injectedFailure
+                })
+                defer { bootstrap.testingReleaseStagedJournalBorrow() }
+                try journalTransferred(bootstrap)
+                let disk = try H.snapshot(root)
+                try H.refuses { try bootstrap.continueStagedJournal() }
+                try H.check(bootstrap.stagedJournalObservation() == .failed && bootstrap.observation().failedClosed
+                    && bootstrap.testingStagedJournalRetention() == [true, true, true, true, true, holdBorrow]
+                    && bootstrap.testingStagedJournalStartsRefused(), "bootstrap journal failure dropped result or reopened starts")
+                // With a live actual alias, closeStarts refuses drainage. The
+                // alias remains retained while all future borrowing is fenced;
+                // no retirement or cleanup result is manufactured here.
+                try journalReplayRefuses(root, bootstrap)
+                try H.check(returns == 1 && H.snapshot(root) == disk, "bootstrap journal failed postflight retried or changed disk")
+                bootstrap.testingReleaseStagedJournalBorrow()
+                try H.check(bootstrap.testingStagedJournalRetention() == [true, true, true, true, true, false]
+                    && bootstrap.testingStagedJournalStartsRefused(), "bootstrap journal fixture alias release reopened starts")
+                try journalIntentFence(location, bootstrap)
+            }
+        }
+        // A real metadata postflight failure, rather than an injected throw:
+        // the returned journal must already be held when the mode drifts.
+        try exclusiveFixture { root, location, bootstrap, _ in
+            let path = location.path + "/custody/installation.json"
+            var postflightDisk: [String: H.Snapshot]?
+            try bootstrap.testingConfigureStagedJournal(afterReturn: { [weak bootstrap] in
+                guard let bootstrap else { throw H.Failure(message: "bootstrap journal metadata callback owner missing") }
+                try H.check(bootstrap.testingStagedJournalRetention()[0], "bootstrap journal result missing before metadata drift")
+                try H.check(chmod(path, 0o644) == 0, "bootstrap journal fixture postflight mode drift")
+                postflightDisk = try H.snapshot(root)
+            })
+            try journalTransferred(bootstrap)
+            try H.refuses { try bootstrap.continueStagedJournal() }
+            try H.check(bootstrap.stagedJournalObservation() == .failed && bootstrap.observation().failedClosed
+                && bootstrap.testingStagedJournalRetention() == [true, true, true, true, true, false]
+                && bootstrap.testingStagedJournalStartsRefused(), "bootstrap journal postflight adopted drift or lost result")
+            guard let postflightDisk else { throw H.Failure(message: "bootstrap journal metadata postflight not reached") }
+            try H.check(try H.snapshot(root) == postflightDisk, "bootstrap journal postflight refusal rewrote evidence")
+            try journalReplayRefuses(root, bootstrap)
+            try H.check(chmod(path, 0o600) == 0, "bootstrap journal restore fixture control mode")
+            try H.check(try bootstrap.testingStagedJournalStartsRefused(), "bootstrap journal restored metadata reopened starts")
+            try journalIntentFence(location, bootstrap)
+        }
+    }
+
 }
 #endif

@@ -817,6 +817,13 @@ public enum M6SelfTestRunner {
         try run("m6-installation-bootstrap-staged-intent-cuts") { try InstallationBootstrapFixtures.stagedIntentCuts() }
         try run("m6-installation-bootstrap-staged-identity-drift") { try InstallationBootstrapFixtures.stagedIdentityDrift() }
         try run("m6-installation-bootstrap-staged-transfer-failures") { try InstallationBootstrapFixtures.stagedTransferFailures() }
+        try run("m6-installation-bootstrap-journal-before-transfer") { try InstallationBootstrapFixtures.journalBeforeTransfer() }
+        try run("m6-installation-bootstrap-journal-positive") { try InstallationBootstrapFixtures.journalPositive() }
+        try run("m6-installation-bootstrap-journal-reentrant-replay") { try InstallationBootstrapFixtures.journalReentrantReplay() }
+        try run("m6-installation-bootstrap-journal-original-deadline") { try InstallationBootstrapFixtures.journalOriginalDeadline() }
+        try run("m6-installation-bootstrap-journal-durable-drift") { try InstallationBootstrapFixtures.journalDurableDrift() }
+        try run("m6-installation-bootstrap-journal-claim-failure") { try InstallationBootstrapFixtures.journalClaimFailure() }
+        try run("m6-installation-bootstrap-journal-returned-failure") { try InstallationBootstrapFixtures.journalReturnedFailure() }
         return passed
     }
 
