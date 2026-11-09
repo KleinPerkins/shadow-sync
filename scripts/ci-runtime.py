@@ -74,6 +74,9 @@ def profile(root, nonce, executable, app, python):
     for prefix in ('shadow-sync-m4.', 'shadow-sync-self-tests.'):
         escaped = prefix.replace('.', '[.]')
         result += '(allow network-bind network-inbound network-outbound (regex #"^/private/tmp/' + escaped + nonce + '[.][A-Za-z0-9-]+(/[^/]+)*/(host[.]sock|agent[.]sock)$"))\n'
+    # Installation fixtures create this one endpoint in the fixed state layout.
+    # Keep it separate from ordinary host IPC and from arbitrary local sockets.
+    result += '(allow network-bind network-inbound network-outbound (regex #"^/private/tmp/shadow-sync-ic[.]' + nonce + '[.][A-Za-z0-9-]+/state/shadow-sync/installation[.]sock$"))\n'
     return result + '(allow process-exec (regex #"^/private/tmp/shadow-sync-publisher-policy-' + nonce + '[.][A-Za-z0-9-]+/executable$"))\n'
 
 

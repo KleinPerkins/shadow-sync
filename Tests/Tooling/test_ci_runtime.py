@@ -131,12 +131,25 @@ class CIRuntimeTests(unittest.TestCase):
                                   '/fixture/tests', '/fixture/app', '/fixture/python')
         self.assertIn('(deny network*)', profile)
         grants = [line for line in profile.splitlines() if line.startswith('(allow network')]
-        self.assertEqual(len(grants), 2)
-        for prefix, line in zip(('shadow-sync-m4[.]', 'shadow-sync-self-tests[.]'), grants):
+        self.assertEqual(len(grants), 3)
+        for prefix, line in zip(('shadow-sync-m4[.]', 'shadow-sync-self-tests[.]'), grants[:2]):
             self.assertIn('^/private/tmp/' + prefix + nonce + '[.]', line)
             self.assertIn('/(host[.]sock|agent[.]sock)$', line)
             self.assertNotIn('ip)', line)
             self.assertNotIn('unix-socket)', line)
+
+        patterns = [line.split('regex #"', 1)[1].split('"', 1)[0] for line in grants]
+        own = '/private/tmp/shadow-sync-ic.' + nonce + '.case/state/shadow-sync/'
+        self.assertIsNotNone(re.fullmatch(patterns[2], own + 'installation.sock'))
+        self.assertTrue(all(re.fullmatch(pattern, own + 'installation.sock') is None
+                            for pattern in patterns[:2]))
+        for path in (own.replace(nonce, 'b' * 32) + 'installation.sock',
+                     own.replace('shadow-sync-ic.', 'shadow-sync-self-tests.') + 'installation.sock',
+                     own.replace('/state/shadow-sync/', '/state/other/') + 'installation.sock',
+                     own + 'nested/installation.sock', own + 'host.sock',
+                     own + 'installation.sock.extra', own + 'other.sock',
+                     '127.0.0.1:443', 'example.invalid:443'):
+            self.assertTrue(all(re.fullmatch(pattern, path) is None for pattern in patterns), path)
 
 
 if __name__ == '__main__':
