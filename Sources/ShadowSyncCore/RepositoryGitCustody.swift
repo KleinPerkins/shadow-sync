@@ -308,6 +308,9 @@ extension DescriptorProcessRunner {
         defer { cancellation.removeCustodyCancellation(observer) }
         let result = retained.wait()
         if result.phase == .cleanupPending {
+            #if SHADOW_SYNC_TESTING
+            DiscoveryFixtureDiagnostic.recordRepositoryResult(result)
+            #endif
             context.recordCleanupPending(); cancellation.closeFutureChildAdmissions()
             throw SelectedRepositoryScopeError.cleanupPending
         }
@@ -317,6 +320,9 @@ extension DescriptorProcessRunner {
               journal.kind == .repositoryGit, let reason = journal.reason,
               [CustodyReason.none, .cancelled, .timeout, .outputLimit].contains(reason),
               let raw = journal.waitStatus else {
+            #if SHADOW_SYNC_TESTING
+            DiscoveryFixtureDiagnostic.recordRepositoryResult(result)
+            #endif
             throw RepositoryGitCommandError.unavailable
         }
         try context.validatePhaseAdmission()

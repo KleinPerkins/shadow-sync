@@ -373,7 +373,8 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         var reapedObservations = 0
         let diagnosticStarted = DispatchTime.now().uptimeNanoseconds
         private var diagnosticKind: DiscoveryFixtureDiagnostic.RegistryKind {
-            resources.request.kind == .retentionArchive ? .retentionArchive : .policyClassify
+            resources.request.kind == .repositoryGit ? .repositoryGit
+                : (resources.request.kind == .retentionArchive ? .retentionArchive : .policyClassify)
         }
         func diagnostic(_ stage: DiscoveryFixtureDiagnostic.Stage) {
             guard command != nil, resources.request.kind == .policyClassify else { return }
@@ -382,7 +383,8 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         }
         private var diagnosticFailures: UInt8 = 0
         func diagnosticFailure(_ error: Error, retiring: Bool) {
-            guard command != nil, (resources.request.kind == .policyClassify || resources.request.kind == .retentionArchive) else { return }
+            guard command != nil, (resources.request.kind == .policyClassify || resources.request.kind == .retentionArchive
+                || resources.request.kind == .repositoryGit) else { return }
             let flag: UInt8 = retiring ? 2 : 1
             guard diagnosticFailures & flag == 0 else { return }
             diagnosticFailures |= flag
@@ -423,7 +425,8 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                 resultBits: bits | (code << 8) | (systemCode << 16), kind: diagnosticKind)
         }
         func diagnosticPending() {
-            guard command != nil, (resources.request.kind == .policyClassify || resources.request.kind == .retentionArchive),
+            guard command != nil, (resources.request.kind == .policyClassify || resources.request.kind == .retentionArchive
+                || resources.request.kind == .repositoryGit),
                   let reason else { return }
             let observation = owner?.observation
             let reaped: Bool

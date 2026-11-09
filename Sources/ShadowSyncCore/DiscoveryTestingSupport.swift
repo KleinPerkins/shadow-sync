@@ -277,7 +277,7 @@ enum DiscoveryFixtureDiagnostic {
             + " admitted=\(admitted) retired=\(retired)\n")
     }
 
-    enum RegistryKind: String { case policyClassify, retentionArchive }
+    enum RegistryKind: String { case policyClassify, retentionArchive, repositoryGit }
     enum RetentionCommand: Int {
         case statusFirst = 1, statusReplay, bundleCreate, bundleVerify, clone
         case checkout, revision, connectivity, restoredStatus
@@ -341,6 +341,29 @@ enum DiscoveryFixtureDiagnostic {
             + " outcome=\(journal.outcome?.rawValue ?? "absent") reason=\(journal.reason?.rawValue ?? "absent")"
             + " helper_match=\(helperMatches) target_match=\(targetMatches)"
             + " budget_match_mask=\(budgetMatchMask) budget_count_match=\(budgetCountMatches)\n")
+    }
+
+    // Reuse the one-shot latch and the existing shared failure allowance. This
+    // observes only an actual failing runRepository wait result, never a reread.
+    private static let firstRepositoryResultFailure = FirstAdmissionFailure()
+    static func recordRepositoryResult(_ result: CustodyRegistryResult) {
+        guard isEnabled, firstRepositoryResultFailure.take() else { return }
+        let phase: String
+        switch result.phase {
+        case .starting: phase = "starting"
+        case .ready: phase = "ready"
+        case .running: phase = "running"
+        case .cleanupPending: phase = "cleanup-pending"
+        case .finished: phase = "finished"
+        }
+        failureSink.emit("DISCOVERY REPOSITORY WAIT FIRST FAILURE phase=\(phase)"
+            + " reason=\(result.reason?.rawValue ?? "absent")"
+            + " journal_present=\(result.journal != nil)"
+            + " journal_phase=\(result.journal?.phase.rawValue ?? "absent")"
+            + " journal_kind=\(result.journal?.kind.rawValue ?? "absent")"
+            + " journal_reason=\(result.journal?.reason?.rawValue ?? "absent")"
+            + " outcome=\(result.journal?.outcome?.rawValue ?? "absent")"
+            + " wait_status=\(result.journal?.waitStatus.map { String($0) } ?? "absent")\n")
     }
 
     /// Exact closed result fields for failed fixture commands. No process IDs,
