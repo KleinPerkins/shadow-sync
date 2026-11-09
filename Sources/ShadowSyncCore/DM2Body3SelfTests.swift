@@ -896,6 +896,441 @@ public enum V2Body3SelfTestRunner {
         )
     }
 
+    /// These cuts retain the exact fixture-created descriptors while mutating
+    /// permissions/flags. Only that fixture can restore its original metadata;
+    /// production cleanup never clears a protected node to make progress.
+    private static func retentionCleanupMetadataCuts(fixture: Body3Fixture, selection: RemovalSelection,
+                                                     completedCount: Int) throws {
+        for cut in ["protected-later-leaf", "late-directory-flags", "unsafe-root-mode", "unsafe-node-mode"] {
+            let store = try fixture.retentionStore()
+            var hooks = RetentionArtifactStore.TestingCleanupHooks()
+            var slot: Int32 = -1, parent: Int32 = -1, slotName = ""
+            var changed: OwnedFileDescriptor?, original = stat(), changedName = ""
+            var changedParent: Int32 = -1, mutatedFlags: UInt32?, mutatedMode: mode_t?
+            var lastDeleted = 0, mutationObserved = false
+            func makeFile(_ parent: Int32, _ name: String) throws -> OwnedFileDescriptor {
+                let fd = openat(parent, name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                try expect(fd >= 0, "metadata cut exclusive file")
+                let held = OwnedFileDescriptor(fd)
+                var byte: UInt8 = 0x61
+                try expect(Darwin.write(fd, &byte, 1) == 1 && fsync(fd) == 0, "metadata cut file bytes")
+                return held
+            }
+            func validateChanged() throws {
+                guard let changed else { throw Body3SelfTestError("metadata cut lost original descriptor") }
+                var held = stat(), named = stat()
+                try expect(fstat(changed.value, &held) == 0
+                    && fstatat(changedParent, changedName, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                    "metadata cut original observations")
+                for current in [held, named] {
+                    try expect(current.st_dev == original.st_dev && current.st_ino == original.st_ino
+                        && current.st_uid == original.st_uid && current.st_gid == original.st_gid
+                        && current.st_nlink == original.st_nlink
+                        && current.st_mode == (mutatedMode ?? original.st_mode)
+                        && current.st_flags == (mutatedFlags ?? original.st_flags),
+                        "metadata cut identity or mutation differs")
+                }
+            }
+            hooks.afterOpen = { p, d, n in
+                parent = p; slot = d; slotName = n
+                _ = try makeFile(d, "a")
+                if cut == "late-directory-flags" {
+                    try expect(mkdirat(d, "nested", 0o700) == 0, "metadata cut nested directory")
+                    let fd = openat(d, "nested", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "metadata cut retained directory")
+                    changed = OwnedFileDescriptor(fd); changedParent = d; changedName = "nested"
+                    _ = try makeFile(fd, "b")
+                } else if cut == "unsafe-root-mode" {
+                    changed = OwnedFileDescriptor(try RetentionArchiveCommandAuthority.copy(d))
+                    changedParent = p; changedName = n
+                } else {
+                    changed = try makeFile(d, "z-later")
+                    changedParent = d; changedName = "z-later"
+                }
+                try expect(fstat(changed!.value, &original) == 0 && original.st_uid == fixture.account.uid,
+                    "metadata cut original owner")
+                try validateChanged()
+                if cut == "protected-later-leaf" {
+                    mutatedFlags = original.st_flags | UInt32(UF_IMMUTABLE)
+                    try expect(fchflags(changed!.value, mutatedFlags!) == 0, "metadata cut protect later leaf")
+                    mutationObserved = true
+                    try validateChanged()
+                } else if cut.hasPrefix("unsafe-") {
+                    let permission: mode_t = cut == "unsafe-root-mode" ? 0o770 : 0o664
+                    mutatedMode = (original.st_mode & S_IFMT) | permission
+                    try expect(fchmod(changed!.value, permission) == 0, "metadata cut unsafe mode")
+                    mutationObserved = true
+                    try validateChanged()
+                }
+                throw Body3SelfTestError("metadata cut ordinary failure after owned slot")
+            }
+            hooks.beforeDelete = { _, _, deleted in
+                lastDeleted = deleted
+                if cut == "late-directory-flags", deleted == 1, !mutationObserved {
+                    try validateChanged()
+                    mutatedFlags = original.st_flags ^ UInt32(UF_NODUMP)
+                    try expect(fchflags(changed!.value, mutatedFlags!) == 0, "metadata cut late directory flag")
+                    mutationObserved = true
+                    try validateChanged()
+                }
+            }
+            store.testingCleanupHooks = hooks
+            let result = store.prepare(selection: selection, cancellation: CancellationToken())
+            store.testingCleanupHooks = nil
+            try expect(result == .cleanupPending && mutationObserved, "metadata cut did not retain original pending attempt")
+            try validateChanged()
+            if cut == "protected-later-leaf" || cut == "unsafe-node-mode" {
+                try expect(try store.testingUnsealedCleanupPlanRetained(),
+                    "failed complete preflight lost actual anonymous plan writers")
+            }
+            let other = try fixture.retentionStore()
+            try expect(other.prepare(selection: selection, cancellation: CancellationToken()) == .cleanupPending,
+                "metadata cut reopened fenced admission")
+            var info = stat()
+            try expect(fstat(slot, &info) == 0 && info.st_nlink > 0
+                && fstatat(parent, slotName, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                "metadata cut lost original slot")
+            if cut == "late-directory-flags" {
+                let progress = try store.testingCleanupPlanObservation()
+                try expect(progress.retired == 1 && progress.anonymousReadOnly,
+                    "late flag drift lost exact sealed-plan progress")
+                try expect(lastDeleted == 1 && fstatat(slot, "a", &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT
+                    && fstatat(changed!.value, "b", &info, AT_SYMLINK_NOFOLLOW) == 0,
+                    "late flag drift changed exact deletion progress or remaining child")
+            } else {
+                try expect(lastDeleted == 0 && fstatat(slot, "a", &info, AT_SYMLINK_NOFOLLOW) == 0,
+                    "unsafe complete preflight removed an earlier file")
+            }
+            // Check exact named/held identity and observed mutation immediately
+            // before restoring only this fixture's original flags/mode.
+            try validateChanged()
+            if mutatedFlags != nil {
+                try expect(fchflags(changed!.value, original.st_flags) == 0, "metadata cut restore exact original flags")
+                mutatedFlags = nil
+            }
+            if mutatedMode != nil {
+                try expect(fchmod(changed!.value, original.st_mode & 0o7777) == 0, "metadata cut restore exact original mode")
+                mutatedMode = nil
+            }
+            try validateChanged()
+            try store.testingRetireOriginalAttempt()
+            try expect(try store.list().count == completedCount, "metadata cut left a slot or changed published artifacts")
+        }
+    }
+
+    /// An accepted 10,000-entry payload plus actual cloned Git metadata must
+    /// fit retirement accounting. No deadline is extended for this fixture.
+    private static func retentionMaximumPayload(executable: String) throws {
+        let fixture = try Body3Fixture(repositoryName: "body3-t09-capacity")
+        defer { fixture.remove() }
+        let path = try fixture.addWorktree("maximum-payload", managedByAWA: false)
+        let root = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        try expect(root >= 0, "maximum payload root descriptor")
+        defer { close(root) }
+        let initialNames = try FileManager.default.contentsOfDirectory(atPath: path).sorted()
+        try expect(initialNames == [".git", ".gitignore", "tracked.txt"], "maximum payload fixture initial envelope")
+        // Two existing files, two directories and 9,996 new files = 10,000.
+        for directoryName in ["payload-a", "payload-b"] {
+            try expect(mkdirat(root, directoryName, 0o700) == 0, "maximum payload directory creation")
+            let directory = openat(root, directoryName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try expect(directory >= 0, "maximum payload directory descriptor")
+            defer { close(directory) }
+            for index in 0..<4_998 {
+                let name = "file-\(index)"
+                let file = openat(directory, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                try expect(file >= 0, "maximum payload exclusive file creation")
+                try expect(close(file) == 0, "maximum payload file close")
+            }
+            try expect(fsync(directory) == 0, "maximum payload directory durability")
+        }
+        try expect(fsync(root) == 0, "maximum payload root durability")
+        let inventory = try fixture.cleanupInventory(executable: executable)
+        let preview = RemovalPreviewOracle.worktree(isResolvedDefaultClaim: false,
+            policyCategory: .writable, verification: .verified,
+            fileState: WorktreeFileState(trackedChanges: 0, untrackedFiles: 9_996, ignoredFiles: 0,
+                hiddenIndexState: false, operationState: .clear),
+            awa: .notManaged, purpose: .completed, activity: .idle, branchTipPreserved: true)
+        let candidate = try fixture.worktreeCandidate(inventory: inventory, path: path, preview: preview)
+        let selection = try RemovalSelection(candidate: candidate, intent: .removeWithRecovery, includePossibleSecrets: true)
+        let store = try fixture.retentionStore()
+        var hooks = RetentionArtifactStore.TestingCleanupHooks()
+        var metadataObserved = false
+        hooks.afterPreflight = { _, proof, name in
+            guard name == ".restore-proof" else { return }
+            let observedPlan = try store.testingCleanupPlanObservation()
+            try expect(observedPlan.nodes > 10_003 && observedPlan.retired == 0 && observedPlan.anonymousReadOnly,
+                "maximum payload plan omitted metadata or retained a writer")
+            let repository = openat(proof, "repository", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try expect(repository >= 0, "maximum payload actual proof repository")
+            defer { close(repository) }
+            let git = openat(repository, ".git", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try expect(git >= 0, "maximum payload actual Git metadata")
+            defer { close(git) }
+            var head = stat()
+            try expect(fstatat(git, "HEAD", &head, AT_SYMLINK_NOFOLLOW) == 0
+                && head.st_uid == fixture.account.uid && (head.st_mode & S_IFMT) == S_IFREG
+                && head.st_nlink == 1, "maximum payload generated metadata overhead missing")
+            metadataObserved = true
+        }
+        store.testingCleanupHooks = hooks
+        let result = store.prepare(selection: selection, cancellation: CancellationToken())
+        store.testingCleanupHooks = nil
+        guard case let .completed(summary) = result else {
+            store.testingRecordMaximumPayloadFailure(result, metadataObserved: metadataObserved)
+            throw Body3SelfTestError("accepted maximum payload failed mandatory proof retirement")
+        }
+        let manifest = try JSONDecoder().decode(RetentionManifest.self,
+            from: Data(contentsOf: URL(fileURLWithPath: summary.path + "/manifest.json")))
+        try expect(manifest.entries.count == 10_000 && metadataObserved && manifest.restoreProof.isComplete,
+            "maximum payload did not exercise all accepted entries plus generated metadata")
+        try expect(try store.verify(summary) && store.list().count == 1,
+            "maximum payload published artifact failed validation")
+        let names = try FileManager.default.contentsOfDirectory(atPath: fixture.stateLocation.path + "/retention")
+        try expect(!names.contains { $0.hasPrefix(".incomplete-") }, "maximum payload left an incomplete slot")
+    }
+
+    private static func retentionCleanupFinalizationCuts(fixture: Body3Fixture, selection: RemovalSelection,
+                                                         completedCount: Int) throws {
+        for cut in ["postflight-expiry", "close-expiry"] {
+            let store = try fixture.retentionStore()
+            var hooks = RetentionArtifactStore.TestingCleanupHooks()
+            var reached = false
+            hooks.afterOpen = { _, _, _ in
+                throw Body3SelfTestError("retention finalization ordinary failure after owned slot")
+            }
+            func crossOriginalDeadline(_ deadline: MonotonicDeadline) {
+                reached = true
+                // Expire the actual original five-second budget at the real
+                // finalization boundary; do not inject an exception or clock.
+                while !deadline.hasExpired { usleep(1_000) }
+            }
+            if cut == "postflight-expiry" {
+                hooks.afterPostflightDurability = { deadline in crossOriginalDeadline(deadline) }
+            } else {
+                hooks.afterPlanClose = { deadline in crossOriginalDeadline(deadline) }
+            }
+            store.testingCleanupHooks = hooks
+            let result = store.prepare(selection: selection, cancellation: CancellationToken())
+            store.testingCleanupHooks = nil
+            try expect(reached && result == .cleanupPending, "retention finalization expiry retained owner")
+            let progress = try store.testingCleanupFinalizationObservation()
+            try expect(progress.rootRemoved && progress.nodes > 0 && progress.retired == progress.nodes,
+                "retention finalization original unlink progress lost")
+            if cut == "postflight-expiry" {
+                try expect(progress.pendingPostflight && !progress.endpointsClosed,
+                    "retention finalization pending postflight changed")
+            } else {
+                try expect(!progress.pendingPostflight && progress.endpointsClosed,
+                    "retention finalization closed endpoint state lost")
+            }
+            let other = try fixture.retentionStore()
+            try expect(other.prepare(selection: selection, cancellation: CancellationToken()) == .cleanupPending,
+                "retention finalization expiry released state fence")
+            // Existing fixture-only recovery uses this same retained owner and
+            // actual closed endpoint states; no recorded descriptor is retried.
+            try store.testingRetireOriginalAttempt()
+            try expect(try store.list().count == completedCount,
+                "retention finalization expiry changed completed artifacts")
+        }
+    }
+
+    /// Actual-effect cuts inside the existing DM2-T09 case; no runtime case or
+    /// deadline is removed. Every fault belongs to this fixture's retained nodes.
+    private static func retentionOwnedCleanup(fixture: Body3Fixture, selection: RemovalSelection,
+                                               completedCount: Int) throws {
+        let enumerationStore = try fixture.retentionStore()
+        let beforeEnumeration = try FileManager.default.contentsOfDirectory(atPath: fixture.stateLocation.path).sorted()
+        var expiredEnumerationRefused = false
+        do {
+            _ = try enumerationStore.testingCleanupDirectoryNames(deadline: MonotonicDeadline(seconds: 0))
+        } catch SelectedRepositoryScopeError.cleanupPending {
+            expiredEnumerationRefused = true
+        }
+        try expect(expiredEnumerationRefused, "retention cleanup enumeration expiry refused")
+        let actualEnumeration = try enumerationStore.testingCleanupDirectoryNames(deadline: MonotonicDeadline(seconds: 5))
+        let afterEnumeration = try FileManager.default.contentsOfDirectory(atPath: fixture.stateLocation.path).sorted()
+        try expect(actualEnumeration == beforeEnumeration && !actualEnumeration.isEmpty
+            && afterEnumeration == beforeEnumeration,
+            "retention cleanup enumeration preserves current owned state")
+        try retentionCleanupMetadataCuts(fixture: fixture, selection: selection, completedCount: completedCount)
+        try retentionCleanupFinalizationCuts(fixture: fixture, selection: selection, completedCount: completedCount)
+        for cut in ["ordinary", "wide-tree", "cancel", "collision", "root-replacement", "internal-replacement",
+                    "hardlink", "symlink", "unsafe", "partial"] {
+            let store = try fixture.retentionStore()
+            var hooks = RetentionArtifactStore.TestingCleanupHooks()
+            var parent: Int32 = -1, slot: Int32 = -1, name = ""
+            var foreign: OwnedFileDescriptor?, foreignIdentity: FileIdentity?
+            var replacement: OwnedFileDescriptor?, replacementIdentity: FileIdentity?
+            var originalNested: OwnedFileDescriptor?
+            func makeFile(_ parent: Int32, _ name: String) throws -> OwnedFileDescriptor {
+                let fd = openat(parent, name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                try expect(fd >= 0, "retention cleanup fixture file creation")
+                let held = OwnedFileDescriptor(fd)
+                var byte: UInt8 = 0x61
+                try expect(Darwin.write(fd, &byte, 1) == 1 && fsync(fd) == 0, "retention cleanup fixture write")
+                return held
+            }
+            func identity(_ fd: Int32) throws -> FileIdentity {
+                var info = stat()
+                try expect(fstat(fd, &info) == 0, "retention cleanup fixture identity")
+                return FileIdentity(info)
+            }
+            func removeFixtureNode(_ parent: Int32, _ name: String, _ held: OwnedFileDescriptor,
+                                   _ expected: FileIdentity, directory: Bool = false) throws {
+                var named = stat()
+                try expect(fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0
+                    && FileIdentity(named).matchesStableNode(expected)
+                    && (try identity(held.value)).matchesStableNode(expected), "fixture replacement identity changed")
+                try expect(unlinkat(parent, name, directory ? AT_REMOVEDIR : 0) == 0,
+                    "fixture replacement removal failed")
+            }
+            let token = CancellationToken()
+            if cut == "collision" {
+                hooks.beforeCreate = { p, n in
+                    parent = p; name = n
+                    try expect(mkdirat(p, n, 0o700) == 0, "collision fixture creation")
+                    let fd = openat(p, n, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "collision fixture original descriptor")
+                    foreign = OwnedFileDescriptor(fd); foreignIdentity = try identity(fd)
+                }
+            }
+            hooks.afterOpen = { p, d, n in
+                parent = p; slot = d; name = n
+                _ = try makeFile(d, "a")
+                if cut == "wide-tree" {
+                    for index in 0..<300 { _ = try makeFile(d, "file-\(index)") }
+                }
+                if cut == "root-replacement" {
+                    try expect(renameat(p, n, p, n + "-saved") == 0 && mkdirat(p, n, 0o700) == 0,
+                        "root replacement fixture setup")
+                    let fd = openat(p, n, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "replacement original descriptor")
+                    replacement = OwnedFileDescriptor(fd); replacementIdentity = try identity(fd)
+                }
+                if cut == "internal-replacement" {
+                    try expect(mkdirat(d, "nested", 0o700) == 0, "internal fixture creation")
+                    let fd = openat(d, "nested", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "internal original descriptor")
+                    originalNested = OwnedFileDescriptor(fd)
+                    _ = try makeFile(fd, "inside")
+                }
+                if cut == "hardlink" {
+                    try expect(linkat(d, "a", p, "outside-owned", 0) == 0, "hardlink fixture creation")
+                    let fd = openat(p, "outside-owned", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "hardlink original descriptor")
+                    foreign = OwnedFileDescriptor(fd); foreignIdentity = try identity(fd)
+                }
+                if cut == "symlink" {
+                    foreign = try makeFile(p, "outside-owned"); foreignIdentity = try identity(foreign!.value)
+                    try expect(symlinkat("../outside-owned", d, "link") == 0, "symlink fixture creation")
+                }
+                if cut == "unsafe" { try expect(mkfifoat(d, "z-fifo", 0o600) == 0, "unsafe fixture creation") }
+                if cut == "partial" { _ = try makeFile(d, "b") }
+                if cut == "cancel" { token.cancel(); throw GitSafetyError.cancelled }
+                throw Body3SelfTestError("retention cleanup injected ordinary failure")
+            }
+            if cut == "internal-replacement" {
+                hooks.afterPreflight = { _, d, _ in
+                    try expect(renameat(d, "nested", d, "nested-saved") == 0 && mkdirat(d, "nested", 0o700) == 0,
+                        "internal replacement setup")
+                    let fd = openat(d, "nested", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "internal replacement descriptor")
+                    replacement = OwnedFileDescriptor(fd); replacementIdentity = try identity(fd)
+                }
+            }
+            if cut == "partial" {
+                hooks.beforeDelete = { _, _, deleted in
+                    if deleted == 1 { throw Body3SelfTestError("retention cleanup partial refusal") }
+                }
+            }
+            store.testingCleanupHooks = hooks
+            let result = store.prepare(selection: selection, cancellation: token)
+            store.testingCleanupHooks = nil
+            let pending = ["root-replacement", "internal-replacement", "hardlink", "unsafe", "partial"].contains(cut)
+            if pending {
+                try expect(result == .cleanupPending, "unsafe cleanup was reported ordinary")
+                let other = try fixture.retentionStore()
+                try expect(other.prepare(selection: selection, cancellation: CancellationToken()) == .cleanupPending,
+                    "new Store bypassed original owner's state fence")
+                var info = stat()
+                try expect(fstat(slot, &info) == 0 && info.st_nlink > 0, "unresolved original slot descriptor lost")
+                if cut == "partial" {
+                    try expect(fstatat(slot, "a", &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT
+                        && fstatat(slot, "b", &info, AT_SYMLINK_NOFOLLOW) == 0,
+                        "partial cleanup did not preserve remaining actual file")
+                } else if cut != "internal-replacement" {
+                    try expect(fstatat(slot, "a", &info, AT_SYMLINK_NOFOLLOW) == 0,
+                        "unsafe preflight deleted original file")
+                }
+                if cut == "root-replacement" {
+                    try removeFixtureNode(parent, name, replacement!, replacementIdentity!, directory: true)
+                    try expect(renameat(parent, name + "-saved", parent, name) == 0, "restore original root")
+                }
+                if cut == "internal-replacement" {
+                    try removeFixtureNode(slot, "nested", replacement!, replacementIdentity!, directory: true)
+                    try expect(renameat(slot, "nested-saved", slot, "nested") == 0
+                        && originalNested != nil, "restore original internal directory")
+                }
+                if cut == "hardlink" { try removeFixtureNode(parent, "outside-owned", foreign!, foreignIdentity!) }
+                if cut == "unsafe" {
+                    try expect(fstatat(slot, "z-fifo", &info, AT_SYMLINK_NOFOLLOW) == 0
+                        && (info.st_mode & S_IFMT) == S_IFIFO && info.st_uid == fixture.account.uid
+                        && unlinkat(slot, "z-fifo", 0) == 0, "remove fixture-owned FIFO")
+                }
+                try store.testingRetireOriginalAttempt()
+            } else if cut == "cancel" {
+                try expect(result == .cancelled, "ordinary cancellation did not clean its slot")
+            } else {
+                guard case .incomplete = result else { throw Body3SelfTestError("ordinary cleanup did not complete") }
+            }
+            if cut == "collision" {
+                // The Store never acquired this node; only its fixture creator removes it.
+                let state = try SecureStateDirectory.open(fixture.stateLocation)
+                let p = openat(state.descriptor.value, "retention", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try expect(p >= 0, "collision teardown parent"); defer { close(p) }
+                try removeFixtureNode(p, name, foreign!, foreignIdentity!, directory: true)
+            }
+            if cut == "symlink" {
+                let state = try SecureStateDirectory.open(fixture.stateLocation)
+                let p = openat(state.descriptor.value, "retention", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try expect(p >= 0, "symlink teardown parent"); defer { close(p) }
+                try removeFixtureNode(p, "outside-owned", foreign!, foreignIdentity!)
+            }
+            try expect(try store.list().count == completedCount, "cleanup cut changed completed artifacts or left a slot")
+        }
+        // A successfully verified payload still cannot publish if proof-tree
+        // retirement fails. Conversely, publication cannot be undone on a later
+        // durability failure. Both cuts use the real successful preparation path.
+        for cut in ["proof-cleanup", "after-publish"] {
+            let store = try fixture.retentionStore()
+            var hooks = RetentionArtifactStore.TestingCleanupHooks()
+            if cut == "proof-cleanup" {
+                hooks.beforeDelete = { _, name, _ in
+                    if name == ".restore-proof" { throw Body3SelfTestError("proof cleanup fault") }
+                }
+            } else {
+                hooks.afterPublish = { throw SecureStateError.systemCall("fixture publication durability fault", EIO) }
+            }
+            store.testingCleanupHooks = hooks
+            try expect(store.prepare(selection: selection, cancellation: CancellationToken()) == .cleanupPending,
+                "cleanup or publication uncertainty reported ordinary completion")
+            store.testingCleanupHooks = nil
+            let names = try FileManager.default.contentsOfDirectory(atPath: fixture.stateLocation.path + "/retention")
+            if cut == "proof-cleanup" {
+                try expect(names.filter { $0.hasPrefix(".incomplete-") }.count == 1
+                    && names.filter { $0.hasPrefix("ret-") }.count == completedCount,
+                    "failed proof cleanup published an artifact")
+            } else {
+                try expect(!names.contains { $0.hasPrefix(".incomplete-") }
+                    && (try store.list()).count == completedCount + 1,
+                    "post-publication failure deleted the completed artifact")
+            }
+            try store.testingRetireOriginalAttempt()
+            try expect((try store.list()).count == completedCount + (cut == "after-publish" ? 1 : 0),
+                "original-owner fixture retirement changed published artifacts")
+        }
+    }
+
     private static func recoveryArtifact(
         executable: String
     ) throws {
@@ -909,6 +1344,26 @@ public enum V2Body3SelfTestRunner {
             uniqueCommit: true
         )
         try fixture.makeRecoveryState(at: path)
+        // Exercise the actual archive/extract/proof/publication path with an
+        // already-supported owner-owned, single-link group-writable payload.
+        let supportedModeFD = open(path + "/untracked.txt", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        try expect(supportedModeFD >= 0, "supported payload mode descriptor")
+        defer { close(supportedModeFD) }
+        var supportedModeInfo = stat()
+        try expect(fstat(supportedModeFD, &supportedModeInfo) == 0
+            && supportedModeInfo.st_uid == fixture.account.uid && supportedModeInfo.st_nlink == 1
+            && (supportedModeInfo.st_mode & S_IFMT) == S_IFREG
+            && fchmod(supportedModeFD, 0o664) == 0,
+            "supported payload mode setup")
+        let supportedDirectoryFD = open(path + "/empty", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        try expect(supportedDirectoryFD >= 0, "supported payload directory mode descriptor")
+        defer { close(supportedDirectoryFD) }
+        var supportedDirectoryInfo = stat()
+        try expect(fstat(supportedDirectoryFD, &supportedDirectoryInfo) == 0
+            && supportedDirectoryInfo.st_uid == fixture.account.uid
+            && (supportedDirectoryInfo.st_mode & S_IFMT) == S_IFDIR
+            && fchmod(supportedDirectoryFD, 0o775) == 0,
+            "supported payload directory mode setup")
         let inventory = try fixture.cleanupInventory(
             executable: executable
         )
@@ -1087,6 +1542,10 @@ public enum V2Body3SelfTestRunner {
             from: Data(contentsOf: manifestURL)
         )
         let paths = Set(manifest.entries.map(\.path))
+        try expect(manifest.entries.first { $0.path == "untracked.txt" }?.mode == 0o664,
+            "supported payload mode was altered or omitted from successful proof")
+        try expect(manifest.entries.first { $0.path == "empty" }?.mode == 0o775,
+            "supported payload directory mode was altered or omitted from successful proof")
         try expect(
             manifest.schema == shadowSyncRetentionSchema
                 && manifest.possibleSecretsAuthorized
@@ -1340,6 +1799,7 @@ public enum V2Body3SelfTestRunner {
             },
             "failed recovery left an owned incomplete slot"
         )
+        try retentionOwnedCleanup(fixture: fixture, selection: accepted, completedCount: completedCount)
         try InstallationLifecycle
             .testingPreserveAuthorityDuringRemoval(
                 at: fixture.stateLocation
@@ -1373,6 +1833,7 @@ public enum V2Body3SelfTestRunner {
             corruptionRejected,
             "corrupted completed artifact remained trusted"
         )
+        try retentionMaximumPayload(executable: executable)
     }
 
     private static func awaAdvisoryOverride(

@@ -487,7 +487,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body3SelfTests.swift",
-      "sha256": "08f04a57166921b283dd9a8ce488f43210df878b302aafa03e0910754e2975cf"
+      "sha256": "d813651f04ab8a3737ece5573a75176f58166f2feee28aabf10bc2ab3b37dc4f"
     },
     {
       "mode": "100644",
@@ -507,7 +507,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DiscoveryCallerSelfTests.swift",
-      "sha256": "792772326e1dd9a2b1de33ea2a6c16773d36c79eaf327b9275b823c8ba9825f4"
+      "sha256": "a94957a885519c99e092b715dd5d61c76d41e37e216220478e55be2950c2e214"
     },
     {
       "mode": "100644",
@@ -1042,7 +1042,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RetentionArtifact.swift",
-      "sha256": "48396fe8ccfd63d9aab8cad2ef04dd37bc29b41c68f97ca93fa742576c911ee1"
+      "sha256": "fc9101e573899e6a5f019b60b12ef84c4648735002d4032dfd3f33e1522335d5"
     },
     {
       "mode": "100644",
@@ -1137,7 +1137,7 @@
     {
       "mode": "100644",
       "path": "Tests/Fixtures/production-test-markers.json",
-      "sha256": "385d8b6efe24281b47525470010f0af74352ed84905e0a8a78d0c2f3b34cf0aa"
+      "sha256": "74b0d89eff244db5481437b4964f93ba4e3ae1efd7568f0fb3bd300862b4897e"
     },
     {
       "mode": "100644",

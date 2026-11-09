@@ -522,6 +522,10 @@ public enum DiscoveryCallerSelfTestRunner {
                 "actual caller cleanup unresolved; fixture retained")
             try DiscoveryCallerSelfTestRunner.require(commands.allSatisfy { $0.resources.testingResourcesRetired },
                 "actual caller retained command aliases")
+            for handle in handles {
+                try DiscoveryCallerSelfTestRunner.require(handle.wait().phase == .finished,
+                    "actual caller original handle has not delivered retirement")
+            }
             handles.removeAll(); commands.removeAll()
         }
     }
@@ -728,6 +732,8 @@ public enum DiscoveryCallerSelfTestRunner {
                      "body3-pending-generic-error", "body3-pending-cancel"] {
             let id = "RETENTION-CALLER-" + test
             try RuntimeFixtureSession.withCase(id) {
+              for variant in (test == "store-success" ? ["normal", "throw-after-start"]
+                    : test == "store-pending" ? ["normal", "throw-unflagged-pending"] : ["normal"]) {
                 let body3 = test.hasPrefix("body3"), pending = test.contains("pending")
                 let fixture = try Fixture(systemConfiguration: true, retention: !body3)
                 let observed = RetentionCallerObservations()
@@ -745,6 +751,9 @@ public enum DiscoveryCallerSelfTestRunner {
                     }
                     hooks.afterStart = { command, handle, token in
                         observed.append(command, handle)
+                        if variant == "throw-after-start" {
+                            throw Failure.assertion("fixture throw after actual retained start")
+                        }
                         if pending {
                             // Cancel shortens cleanup inside the original budget; deferred
                             // actual output EOF keeps the registry and owners pending.
@@ -752,6 +761,9 @@ public enum DiscoveryCallerSelfTestRunner {
                             let result = handle.wait()
                             try require(result.phase == .cleanupPending && RetainedCleanupRegistry.shared.hasRetainedWork,
                                 "actual Store command did not enter retained cleanup")
+                            if variant == "throw-unflagged-pending" {
+                                throw Failure.assertion("fixture pending hook before context flag")
+                            }
                             if test.hasSuffix("generic-error") {
                                 observed.context?.recordCleanupPending()
                                 throw Failure.assertion("fixture error after actual pending")
@@ -811,6 +823,11 @@ public enum DiscoveryCallerSelfTestRunner {
                                 "Store erased actual cleanup pending")
                             let names = try FileManager.default.contentsOfDirectory(atPath: location.path + "/retention")
                             try require(names.contains { $0.hasPrefix(".incomplete-") }, "pending Store lost incomplete slot")
+                        } else if variant == "throw-after-start" {
+                            guard case .incomplete = result else { throw Failure.assertion("throwing start did not retire before ordinary result") }
+                            try require(observed.handles.allSatisfy { $0.snapshot().phase == .finished }
+                                && !RetainedCleanupRegistry.shared.hasRetainedWork && (try store.list()).isEmpty,
+                                "throwing hook lost actual handle, retired status or owned slot cleanup")
                         } else {
                             guard case .completed(let summary) = result else { throw Failure.assertion("actual Store did not complete: \(result)") }
                             try require(summary.restoreProven && (try store.verify(summary)), "Store restore proof missing")
@@ -818,8 +835,15 @@ public enum DiscoveryCallerSelfTestRunner {
                     }
                 } catch { failure = error }
                 try observed.drain()
+                if pending, failure == nil {
+                    let cleanupStore = RetentionArtifactStore(state: try SecureStateDirectory.open(try StateLocation.isolated(root: fixture.root)),
+                        account: fixture.account)
+                    try cleanupStore.testingRetireOriginalAttempt()
+                    try require((try cleanupStore.list()).isEmpty, "original pending slot did not retire after fixture-owned drainage")
+                }
                 try fixture.remove(expectDiscovery: false, allowUnsubmitted: true, additionalScopeIDs: observed.scopes)
                 if let failure { throw failure }
+              }
             }
             onPass(id)
         }
