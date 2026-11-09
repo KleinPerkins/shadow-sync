@@ -17,13 +17,14 @@ class CIRuntimeTests(unittest.TestCase):
         root = Path('/fixture/work')
         with patch.dict(runtime.os.environ, {'SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS': 'costs',
                 'SHADOW_SYNC_TEST_M6_DIAGNOSTICS': 'foreign', 'UNRELATED_HOST_VALUE': 'private'}):
-            for suite in ('retention-custody', 'discovery-caller', 'm6', 'body3'):
+            for suite in ('retention-custody', 'discovery-caller', 'm6', 'body3',
+                          'beta-v07', 'fixture-unknown'):
                 with self.subTest(suite=suite):
                     env = runtime.fixture_environment(suite, root, 'a' * 32,
                         Path('/fixture/python'), Path('/fixture/build'),
                         Path('/fixture/framework'), Path('/fixture/policy.json'))
                     self.assertEqual(env.get('SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'),
-                        '1' if suite in ('retention-custody', 'discovery-caller') else None)
+                        '1' if suite in ('retention-custody', 'discovery-caller', 'body3') else None)
                     self.assertEqual(env.get('SHADOW_SYNC_TEST_M6_DIAGNOSTICS'),
                         '1' if suite == 'm6' else None)
                     self.assertNotIn('UNRELATED_HOST_VALUE', env)

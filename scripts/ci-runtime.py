@@ -134,8 +134,8 @@ def fixture_environment(suite, root, nonce, python, build_root, framework, polic
     if suite == 'm6':
         # Closed test-only markers preserve the failing planner path and result.
         env['SHADOW_SYNC_TEST_M6_DIAGNOSTICS'] = '1'
-    if suite in ('discovery-caller', 'retention-custody'):
-        # Both suites consume the bounded testing-only command/registry trace.
+    if suite in ('discovery-caller', 'retention-custody', 'body3'):
+        # Caller suites and Body 3 consume the bounded testing-only trace.
         # Keep the opt-in explicit; unrelated suites do not inherit host flags.
         env['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'] = '1'
     return env
