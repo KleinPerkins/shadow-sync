@@ -507,10 +507,11 @@ private final class CustodianLoop {
     #if SHADOW_SYNC_TESTING
     private var testingExpiredControlObserved = false
     private func testingObserveFailure(_ event: TestingCustodianFailureWitness.Event, error: Error?) {
-        guard let witness = testingFailureWitness else { return }
+        guard event.observes(after: reason), let witness = testingFailureWitness else { return }
         var fields: [String: Any] = [
             "event": event.rawValue, "stage_index": stageIndex,
             "stage": stage.repositoryFixturePhase ?? "other", "reason": reason.rawValue,
+            "command_kind": inherited.request.kind.rawValue,
             "journal_phase": journal.current.phase.rawValue, "journal_ordinal": journal.current.ordinal,
             "terminal_stage": journal.testingTerminalStage.rawValue,
             "control_ended": controlEnded, "status_broken": statusBroken,
@@ -535,22 +536,7 @@ private final class CustodianLoop {
             fields["recorded_owner_matches"] = journal.testingRecordedOwnerMatches(owner)
             fields["durable_target_matches"] = (try? CustodyProcessObservation(owner.identity)) == journal.current.target
         } else { fields["owner"] = "absent" }
-        fields["error"] = "none"
-        if let error {
-            if let record = error as? CustodyRecordError {
-                switch record {
-                case .invalidRecord: fields["error"] = "invalid-record"
-                case .invalidTransition: fields["error"] = "invalid-transition"
-                case .conflict: fields["error"] = "conflict"
-                case .fenced: fields["error"] = "fenced"
-                case .busy: fields["error"] = "busy"
-                case .unsafeMetadata: fields["error"] = "unsafe-metadata"
-                case .persistence(let value): fields["error"] = "persistence"; fields["error_value"] = value
-                case .committedCleanupFailure(let value): fields["error"] = "committed-cleanup"; fields["error_value"] = value
-                case .injectedFailure: fields["error"] = "injected"
-                }
-            } else { fields["error"] = "other" }
-        }
+        for (key, value) in TestingCustodianFailureWitness.errorFields(error) { fields[key] = value }
         // Snapshot-only owner reads above release their mutexes before file I/O.
         // Diagnostic failure cannot change cancellation, persistence or drainage.
         witness.record(event, fields: fields)
@@ -1166,12 +1152,22 @@ private final class CustodianLoop {
                         try spawnTarget()
                         consumeControl()
                     }
-                    catch { beginDrain(reason == .none ? .invalidResource : reason) }
+                    catch {
+                        #if SHADOW_SYNC_TESTING
+                        testingObserveFailure(.spawnTargetFailure, error: error)
+                        #endif
+                        beginDrain(reason == .none ? .invalidResource : reason)
+                    }
                 }
                 relay(false); relay(true); relayTrace(); drainTarget()
                 if targetDrained, stage.isIntermediate, reason == .none, spawned {
                     do { if try advanceStage() { continue } }
-                    catch { beginDrain(reason == .none ? .invalidResource : reason) }
+                    catch {
+                        #if SHADOW_SYNC_TESTING
+                        testingObserveFailure(.advanceStageFailure, error: error)
+                        #endif
+                        beginDrain(reason == .none ? .invalidResource : reason)
+                    }
                 }
                 if stage == .lifecyclePostflight, targetDrained, reason == .none, spawned, !lifecyclePostflightComplete {
                     do { try completeLifecyclePostflight() }
@@ -1203,7 +1199,12 @@ private final class CustodianLoop {
                                     try testingRepositoryPause("postflight")
                                     #endif
                                 }
-                                catch { beginDrain(.invalidResource) }
+                                catch {
+                                    #if SHADOW_SYNC_TESTING
+                                    testingObserveFailure(.repositoryPostflightFailure, error: error)
+                                    #endif
+                                    beginDrain(.invalidResource)
+                                }
                             }
                             #if SHADOW_SYNC_TESTING
                             if reason == .none, inherited.fixtureMode?.hasPrefix("serial-postflight-") == true {
@@ -1294,6 +1295,17 @@ private final class TestingCustodianFailureWitness {
     enum Event: String {
         case controlEOF, drainingPersistence, resourceRetirement
         case terminalPublication, pendingBoundary, pendingPublication
+        case spawnTargetFailure, advanceStageFailure, repositoryPostflightFailure
+        func observes(after reason: CustodyReason) -> Bool {
+            switch self {
+            case .spawnTargetFailure, .advanceStageFailure, .repositoryPostflightFailure:
+                // Expected cancellation/expiry can throw through these catches.
+                // Keep their first-failure slot available for actual drainage
+                // or persistence errors observed after that normal transition.
+                return reason != .cancelled && reason != .timeout
+            default: return true
+            }
+        }
         var slot: String {
             switch self {
             case .controlEOF: return "eof"
@@ -1301,6 +1313,71 @@ private final class TestingCustodianFailureWitness {
             default: return "failure"
             }
         }
+    }
+    /// A closed error projection. Associated messages and framework descriptions
+    /// can contain paths, arguments or policy input and are never serialized.
+    static func errorFields(_ error: Error?) -> [String: Any] {
+        guard let error else { return ["error": "none"] }
+        var fields: [String: Any] = ["error": "other"]
+        if let record = error as? CustodyRecordError {
+            switch record {
+            case .invalidRecord: fields["error"] = "invalid-record"
+            case .invalidTransition: fields["error"] = "invalid-transition"
+            case .conflict: fields["error"] = "conflict"
+            case .fenced: fields["error"] = "fenced"
+            case .busy: fields["error"] = "busy"
+            case .unsafeMetadata: fields["error"] = "unsafe-metadata"
+            case .persistence(let value): fields["error"] = "persistence"; fields["error_value"] = value
+            case .committedCleanupFailure(let value): fields["error"] = "committed-cleanup"; fields["error_value"] = value
+            case .injectedFailure: fields["error"] = "injected"
+            }
+        } else if let resource = error as? CustodyResourceError {
+            switch resource {
+            case .invalidResource: fields["error"] = "resource-invalid"
+            case .closed: fields["error"] = "resource-closed"
+            case .limit: fields["error"] = "resource-limit"
+            case .systemCall(let value): fields["error"] = "resource-system-call"; fields["error_value"] = value
+            }
+        } else if let protocolError = error as? CustodyProtocolError {
+            switch protocolError {
+            case .invalidMessage: fields["error"] = "protocol-message"
+            case .invalidBudget: fields["error"] = "protocol-budget"
+            case .invalidSequence: fields["error"] = "protocol-sequence"
+            }
+        } else if let git = error as? GitSafetyError {
+            switch git {
+            case .repositoryRemoved: fields["error"] = "git-repository-removed"
+            case .unsafeRepository: fields["error"] = "git-unsafe-repository"
+            case .malformedConfig: fields["error"] = "git-malformed-config"
+            case .originChanged: fields["error"] = "git-origin-changed"
+            case .customTransport: fields["error"] = "git-custom-transport"
+            case .replacementOrGraft: fields["error"] = "git-replacement-or-graft"
+            case .busy: fields["error"] = "git-busy"
+            case .hiddenIndex: fields["error"] = "git-hidden-index"
+            case .dirty: fields["error"] = "git-dirty"
+            case .detached: fields["error"] = "git-detached"
+            case .primaryNotOnMain: fields["error"] = "git-primary-not-main"
+            case .mainInLinkedWorktree: fields["error"] = "git-main-linked"
+            case .localMainMissing: fields["error"] = "git-local-main-missing"
+            case .remoteMainMissing: fields["error"] = "git-remote-main-missing"
+            case .unsupportedHookFramework: fields["error"] = "git-unsupported-hook"
+            case .commandFailed(_, let value, _): fields["error"] = "git-command-failed"; fields["error_value"] = value
+            case .cancelled: fields["error"] = "git-cancelled"
+            }
+        } else if let helper = error as? PolicyHelperError {
+            switch helper {
+            case .unavailable: fields["error"] = "policy-helper-unavailable"
+            case .cleanupPending: fields["error"] = "policy-helper-cleanup-pending"
+            }
+        } else if let policy = error as? PolicyProtocolError {
+            switch policy {
+            case .invalidRequest: fields["error"] = "policy-invalid-request"
+            case .invalidResponse: fields["error"] = "policy-invalid-response"
+            }
+        } else if error is PublisherPolicyError { fields["error"] = "publisher-unavailable" }
+        else if error is HostPolicyBindingError { fields["error"] = "host-policy-unavailable" }
+        else if error is PolicyAuthorityFileError { fields["error"] = "policy-file-unavailable" }
+        return fields
     }
     private let rootPath: String
     private let rootFD: Int32, homeFD: Int32, fileFD: Int32
@@ -1353,6 +1430,13 @@ private final class TestingCustodianFailureWitness {
         let rootACL = try PolicyAuthorityFile.privateStateACL(rootFD)
         let homeACL = try PolicyAuthorityFile.privateStateACL(homeFD)
         let filename = ".shadow-sync-custodian-observation-" + binding.requestID + ".jsonl"
+        // The home is private, but not assumed to have a single writer. Account
+        // for this exact exclusive creation before replacing its preimage pin.
+        let beforeEntries = try Self.homeEntries(homeFD)
+        guard beforeEntries[filename] == nil, beforeEntries.count < 64,
+              fstat(homeFD, &named) == 0, Self.same(homeNode, named),
+              fstatat(rootFD, "home", &named, AT_SYMLINK_NOFOLLOW) == 0, Self.same(homeNode, named),
+              try PolicyAuthorityFile.privateStateACL(homeFD) == homeACL else { throw CustodyRecordError.fenced }
         let fileFD = openat(homeFD, filename, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fileFD >= 0 else { throw CustodyRecordError.fenced }
         var keepFile = false; defer { if !keepFile { close(fileFD) } }
@@ -1369,6 +1453,26 @@ private final class TestingCustodianFailureWitness {
         if fault == .initialSync { probe?.reached = fault; throw CustodyRecordError.injectedFailure }
         guard fsync(fileFD) == 0, fsync(homeFD) == 0 else { throw CustodyRecordError.fenced }
         let fileACL = try PolicyAuthorityFile.privateStateACL(fileFD)
+        // Pin the checked postcreation metadata BEFORE sampling the entry
+        // postimage. Later nlink drift cannot be adopted as the own-create delta.
+        var createdHome = stat(), held = stat()
+        guard fstat(homeFD, &createdHome) == 0, Self.creationHome(homeNode, createdHome),
+              fstatat(rootFD, "home", &named, AT_SYMLINK_NOFOLLOW) == 0, Self.same(createdHome, named),
+              try PolicyAuthorityFile.privateStateACL(homeFD) == homeACL else { throw CustodyRecordError.fenced }
+        let afterEntries = try Self.homeEntries(homeFD)
+        guard fstat(homeFD, &held) == 0, Self.same(createdHome, held),
+              Self.creationEntries(beforeEntries, afterEntries, filename: filename, file: fileNode),
+              fstatat(rootFD, "home", &named, AT_SYMLINK_NOFOLLOW) == 0, Self.same(createdHome, named),
+              fstat(rootFD, &held) == 0, Self.same(rootNode, held),
+              lstat(root, &named) == 0, Self.same(rootNode, named),
+              fstat(fileFD, &held) == 0, Self.same(fileNode, held), held.st_size == 0,
+              fstatat(homeFD, filename, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              Self.same(fileNode, named), named.st_size == 0,
+              try PolicyAuthorityFile.privateStateACL(rootFD) == rootACL,
+              try PolicyAuthorityFile.privateStateACL(homeFD) == homeACL,
+              try PolicyAuthorityFile.privateStateACL(fileFD) == fileACL,
+              fstat(homeFD, &held) == 0, Self.same(createdHome, held) else { throw CustodyRecordError.fenced }
+        homeNode = createdHome
         self.rootACL = rootACL; self.homeACL = homeACL; self.fileACL = fileACL
         self.rootPath = root; self.rootFD = rootFD; self.homeFD = homeFD; self.fileFD = fileFD
         self.rootNode = rootNode; self.homeNode = homeNode; self.fileNode = fileNode
@@ -1383,6 +1487,51 @@ private final class TestingCustodianFailureWitness {
     private static func same(_ a: stat, _ b: stat) -> Bool {
         a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_uid == b.st_uid && a.st_gid == b.st_gid
             && a.st_mode == b.st_mode && a.st_flags == b.st_flags && a.st_nlink == b.st_nlink
+    }
+    // A regular-file creation leaves directory link count unchanged on some
+    // filesystems and adds one on others. Only this one accounted entry may be
+    // added; all prior entry identities and parent authority fields stay pinned.
+    private static func creationHome(_ before: stat, _ after: stat) -> Bool {
+        var accounted = before
+        guard after.st_nlink == before.st_nlink
+            || UInt64(after.st_nlink) == UInt64(before.st_nlink) + 1 else { return false }
+        accounted.st_nlink = after.st_nlink
+        return safe(after, directory: true) && same(accounted, after)
+    }
+    private static func creationEntries(_ before: [String: stat], _ after: [String: stat], filename: String, file: stat) -> Bool {
+        guard before[filename] == nil, before.count < 64, after.count <= 64,
+              Set(after.keys) == Set(before.keys).union([filename]),
+              let created = after[filename], same(file, created), created.st_size == 0 else { return false }
+        return before.allSatisfy { name, node in
+            guard let current = after[name] else { return false }
+            return same(node, current) && node.st_size == current.st_size
+        }
+    }
+    private static func homeEntries(_ fd: Int32) throws -> [String: stat] {
+        let raw = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard raw >= 0 else { throw CustodyRecordError.fenced }
+        guard let directory = fdopendir(raw) else { close(raw); throw CustodyRecordError.fenced }
+        defer { closedir(directory) }
+        var result: [String: stat] = [:], reads = 0
+        while true {
+            // Include dot entries and EOF in the syscall bound, not only unique
+            // names. A changing or malformed roster cannot make this unbounded.
+            guard reads < 67 else { throw CustodyRecordError.fenced }
+            reads += 1; errno = 0
+            guard let entry = readdir(directory) else {
+                guard errno == 0 else { throw CustodyRecordError.fenced }
+                return result
+            }
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { String(validatingUTF8: $0) }
+            }
+            guard let name, !name.isEmpty, !name.contains("/"), name.utf8.count <= Int(MAXNAMLEN) else { throw CustodyRecordError.fenced }
+            if name == "." || name == ".." { continue }
+            var node = stat()
+            guard result.count < 64, result[name] == nil,
+                  fstatat(fd, name, &node, AT_SYMLINK_NOFOLLOW) == 0 else { throw CustodyRecordError.fenced }
+            result[name] = node
+        }
     }
     func record(_ event: Event, fields: [String: Any]) {
         guard !poisoned, !seen.contains(event.slot), seen.count < 3 else { return }
@@ -1752,6 +1901,76 @@ private extension TestingCustodianFailureWitness {
             try check(records.compactMap { $0?["event"] as? String } == ["controlEOF", "terminalPublication", "pendingBoundary"], "witness first failure overwritten")
             try check(records.allSatisfy { $0?["request"] as? String == binding.requestID && $0?["generation"] as? String == binding.generation && $0?["nonce_sha256"] as? String == binding.nonceSHA256 }, "witness binding changed")
             try check(data.count <= 6144 && witness.written == data.count, "witness byte bound")
+            // Pure comparator negatives are distinct from live filesystem
+            // admission: none of these synthetic values reaches an owner API.
+            let parent = witness.homeNode, file = witness.fileNode
+            var changed = parent
+            changed.st_nlink = parent.st_nlink + 2
+            try check(!creationHome(parent, changed), "witness unaccounted parent links")
+            changed = parent; changed.st_mode ^= 0o020
+            try check(!creationHome(parent, changed), "witness parent authority recaptured")
+            let name = witness.filename, prior = ["existing": file]
+            let expected = ["existing": file, name: file]
+            try check(creationEntries(prior, expected, filename: name, file: file), "witness exact creation comparison")
+            var drift = expected; drift["foreign"] = file
+            try check(!creationEntries(prior, drift, filename: name, file: file), "witness unknown entry accepted")
+            drift = expected; drift.removeValue(forKey: "existing")
+            try check(!creationEntries(prior, drift, filename: name, file: file), "witness missing entry accepted")
+            var replaced = file; replaced.st_ino ^= 1
+            drift = expected; drift["existing"] = replaced
+            try check(!creationEntries(prior, drift, filename: name, file: file), "witness replaced entry accepted")
+            drift = expected; drift[name] = replaced
+            try check(!creationEntries(prior, drift, filename: name, file: file), "witness new file identity accepted")
+        }
+        for event in [Event.spawnTargetFailure, .advanceStageFailure, .repositoryPostflightFailure] {
+            try fixture { _, home, binding, owned in
+                let probe = Probe(), witness = try owned.witness(binding, probe: probe)
+                // A real error with associated command/output text must retain
+                // only its closed case and numeric result in the actual file.
+                var fields = errorFields(GitSafetyError.commandFailed("fixture-command-detail", 17,
+                    "fixture-output-detail"))
+                fields["event"] = event.rawValue
+                fields["stage"] = "policy"; fields["stage_index"] = 1
+                fields["command_kind"] = "repository-git"
+                emit(witness, .controlEOF)
+                for reason in [CustodyReason.cancelled, .timeout] {
+                    if event.observes(after: reason) { witness.record(event, fields: fields) }
+                }
+                try check(witness.seen == Set(["eof"]) && probe.writeAttempts == 1,
+                    "witness cancellation consumed catch failure slot")
+                try check(event.observes(after: .none) && event.observes(after: .invalidResource),
+                    "witness actual caught failure suppressed")
+                witness.record(event, fields: fields)
+                emit(witness, .drainingPersistence); emit(witness, .terminalPublication)
+                emit(witness, .pendingBoundary)
+                let data = try bytes(home, binding)
+                let records = try data.split(separator: 10).map {
+                    try JSONSerialization.jsonObject(with: Data($0)) as? [String: Any]
+                }
+                try check(records.count == 3 && probe.writeAttempts == 3 && !witness.poisoned,
+                    "witness catch failure slots")
+                try check(records.compactMap { $0?["event"] as? String }
+                    == ["controlEOF", event.rawValue, "pendingBoundary"],
+                    "witness caught error replaced by drain error")
+                try check(records[1]?["error"] as? String == "git-command-failed"
+                    && records[1]?["error_value"] as? Int == 17
+                    && records[1]?["stage"] as? String == "policy"
+                    && records[1]?["stage_index"] as? Int == 1
+                    && records[1]?["command_kind"] as? String == "repository-git",
+                    "witness caught error detail missing")
+                try check(data.range(of: Data("fixture-command-detail".utf8)) == nil
+                    && data.range(of: Data("fixture-output-detail".utf8)) == nil,
+                    "witness serialized associated error text")
+                let unknown = errorFields(NSError(domain: "fixture-private-domain", code: 23,
+                    userInfo: [NSLocalizedDescriptionKey: "fixture-private-description"]))
+                try check(unknown.count == 1 && unknown["error"] as? String == "other",
+                    "witness unknown error reflected")
+                try check(records.allSatisfy { $0?["request"] as? String == binding.requestID
+                    && $0?["generation"] as? String == binding.generation
+                    && $0?["nonce_sha256"] as? String == binding.nonceSHA256 }
+                    && data.count <= 6144 && witness.written == data.count,
+                    "witness catch binding or bounds changed")
+            }
         }
     }
     static func fixtureIO() throws {
