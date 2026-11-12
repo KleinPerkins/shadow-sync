@@ -439,7 +439,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CommandCustodian.swift",
-      "sha256": "531e20d13bd931703e794e73f779f7aba593a8d330ab0a174fbe68b112c225da"
+      "sha256": "9aa5de16c8c5f945fefc21b1ce8080f649568f1d0893f24d4451170d697cf945"
     },
     {
       "mode": "100644",
@@ -499,7 +499,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body3SelfTests.swift",
-      "sha256": "dd5ca74cc0d070970150e1025074b238aab2b6abf0686c05eb58837e67373015"
+      "sha256": "e00641ff224b7c2e603216e670d0a564fbf0131ef33fdcb1b23786605026e319"
     },
     {
       "mode": "100644",
@@ -519,7 +519,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DiscoveryCallerSelfTests.swift",
-      "sha256": "a94957a885519c99e092b715dd5d61c76d41e37e216220478e55be2950c2e214"
+      "sha256": "1e757c2cbf6da9efdc3e559ed3560bb62179bcb237d40fe1e237410dcb934b22"
     },
     {
       "mode": "100644",
@@ -704,7 +704,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
-      "sha256": "8bba2a4848a85e430342852dfde499ed53fc36e69c841ba020f41e73fb0758fa"
+      "sha256": "6e07353e2e611b3c16557bdb3174d8a2371ad8245beee76863d315fe00f5f1d0"
     },
     {
       "mode": "100644",
@@ -784,7 +784,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationStagedJournalFixtures.swift",
-      "sha256": "bef6a77a86610b23ce2632547199bde67860590c3d1d7b7e768323ccd0d34c32"
+      "sha256": "1816d26805f3493b429ff6b65e08feb885f4bdcaa4bb172dd6c2451e06be3511"
     },
     {
       "mode": "100644",
@@ -1019,7 +1019,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RepositoryGitCustody.swift",
-      "sha256": "ae3d87f3457d6b94e35a9280506907ddfd16904bcc01104dba010f63d798220e"
+      "sha256": "229d32012d565d22a2870a04d66e189b389c148e18d8ad713b6b555917bac060"
     },
     {
       "mode": "100644",
@@ -1169,7 +1169,7 @@
     {
       "mode": "100644",
       "path": "Tests/Fixtures/production-test-markers.json",
-      "sha256": "e41a9ef7d109c42890bc61a2508bf84cab857130be0345376c9634d93ea2ae2c"
+      "sha256": "c1107f36c61f474178fb6a0f3000e7999045a10b2a43dcc2ee39693fc6a20b48"
     },
     {
       "mode": "100644",
@@ -1304,7 +1304,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_policy_runtime_build.py",
-      "sha256": "650804fdf46b640919027766bf7caf1171eff24614ac107ad13d7451a7fb41d9"
+      "sha256": "6ffe58eb4f9816264051ce9e8c6010d4da6ca68fb217186cf2d4989ec9f72577"
     },
     {
       "path": "Tests/Tooling/test_private_delivery.py",
@@ -1354,12 +1354,12 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "70d19a94616b674180f093b0bfe1576428a36663b37521823d167638dee4b0dd"
+      "sha256": "782bcaace3210bd732a545d45d4053deac585d798802ca047f0688e8d2524c04"
     },
     {
       "mode": "100644",
       "path": "config/identity-exceptions.json",
-      "sha256": "dd01768aa1b6dd5cbbc305196c95e2161363679614794e92f9489339f1925057"
+      "sha256": "11849f177973b97d1e9006930c437d4e1ba79daaad2801f950564854d136ee99"
     },
     {
       "path": "delivery/PROVENANCE.json",
@@ -1449,7 +1449,7 @@
     {
       "mode": "100644",
       "path": "scripts/build-policy-runtime.py",
-      "sha256": "e0605a66318546d07356161eb35923ea223f255f3eda60aa00e7acf22376f05a"
+      "sha256": "be4feada9daef93f88db552c771d0ecb4301b3eedab7e8eaf1f505b5808135c4"
     },
     {
       "mode": "100644",

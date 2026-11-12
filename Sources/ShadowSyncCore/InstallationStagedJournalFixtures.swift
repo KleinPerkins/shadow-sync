@@ -172,21 +172,43 @@ enum InstallationStagedJournalFixtures {
     }
     static func stopIntent() throws {
         try fixture { _, location, owner, _, admission, journal, registry in
-            _ = try journal.completeAdmission(deadline: .init(seconds: 3))
-            let retirement = try registry.installationStagedStartRetirement(after: admission.closeStarts())
-            let stop = try admission.stopOnly(after: retirement)
-            let observation = try journal.candidateStopIntent(admission: stop, deadline: .init(seconds: 3))
-            let binding = try InstallationCommandBinding.decode(observation.sealedInput(deadline: .init(seconds: 3)))
-            try H.check(binding.control.phase == .recovery && binding.control.step?.action == .candidateStop
-                && binding.control.step?.status == .intent && binding.control.readinessCommit == nil,
-                "stop intent invented candidate exit or readiness")
-            try H.check(try record(location) == binding.control, "stop intent not durable")
-            try binding.validateStagedOperation(mode: .installationStagedStop, operation: .bootout)
-            try H.refuses { try binding.validateStagedOperation(mode: .installationStagedStart, operation: .bootstrap) }
-            try H.refuses { _ = try journal.candidateStopIntent(admission: stop, deadline: .init(seconds: 3)) }
-            try H.refuses { _ = try owner.retainExclusiveLeases() }
-            try H.refuses { _ = try CustodyMetadataScope(leases: stop.retainStopLeases(),
-                releaseSHA256: String(repeating: "a", count: 64), generation: RunIdentity.make()) }
+            var diagnosticStage: UInt8 = 1
+            do {
+                _ = try journal.completeAdmission(deadline: .init(seconds: 3))
+                diagnosticStage = 2
+                let retirement = try registry.installationStagedStartRetirement(after: admission.closeStarts())
+                diagnosticStage = 3
+                let stop = try admission.stopOnly(after: retirement)
+                diagnosticStage = 4
+                let observation = try journal.candidateStopIntent(admission: stop, deadline: .init(seconds: 3))
+                diagnosticStage = 5
+                let binding = try InstallationCommandBinding.decode(observation.sealedInput(deadline: .init(seconds: 3)))
+                diagnosticStage = 6
+                try H.check(binding.control.phase == .recovery && binding.control.step?.action == .candidateStop
+                    && binding.control.step?.status == .intent && binding.control.readinessCommit == nil,
+                    "stop intent invented candidate exit or readiness")
+                diagnosticStage = 7
+                try H.check(try record(location) == binding.control, "stop intent not durable")
+                diagnosticStage = 8
+                try binding.validateStagedOperation(mode: .installationStagedStop, operation: .bootout)
+                diagnosticStage = 9
+                try H.refuses { try binding.validateStagedOperation(mode: .installationStagedStart, operation: .bootstrap) }
+                diagnosticStage = 10
+                try H.refuses { _ = try journal.candidateStopIntent(admission: stop, deadline: .init(seconds: 3)) }
+                diagnosticStage = 11
+                try H.refuses { _ = try owner.retainExclusiveLeases() }
+                diagnosticStage = 12
+                try H.refuses { _ = try CustodyMetadataScope(leases: stop.retainStopLeases(),
+                    releaseSHA256: String(repeating: "a", count: 64), generation: RunIdentity.make()) }
+            } catch {
+                let savedDiagnosticErrno = errno
+                defer { errno = savedDiagnosticErrno }
+                if ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_M6_DIAGNOSTICS"] == "1" {
+                    fputs("M6 STOP INTENT FIRST FAILURE stage=\(diagnosticStage)\n", stderr)
+                    fflush(stderr)
+                }
+                throw error
+            }
         }
     }
     static func bindingRefusals() throws {

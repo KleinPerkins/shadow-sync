@@ -40,7 +40,7 @@ struct RepositoryGitCustodyInput: Codable {
         let prefix: String
         #if SHADOW_SYNC_TESTING
         prefix = "/private/tmp/shadow-sync-fixture-config."
-        guard testingPausePhase == nil || ["system", "policy", "root", "origin", "transport", "command", "postflight"].contains(testingPausePhase!) else {
+        guard testingPausePhase == nil || ["system", "policy", "root", "origin", "transport", "command", "postflight", "observe"].contains(testingPausePhase!) else {
             throw CustodyResourceError.invalidResource
         }
         #else

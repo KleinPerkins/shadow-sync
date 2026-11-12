@@ -107,7 +107,7 @@
       "reason": "Recognizes historical app, backup and quarantine inputs. Rollback may restore the preserved predecessor bytes to their original path only while stopped and unregistered. Newly created backup and quarantine slots use the permanent product namespace.",
       "retirement": "After at least two verified standalone releases and 90 days, known-installation migration and a reviewed retirement receipt. Historical preimages remain recoverable; this exception never authorizes legacy execution or new legacy-format active state.",
       "scope": "content",
-      "sha256": "8bba2a4848a85e430342852dfde499ed53fc36e69c841ba020f41e73fb0758fa",
+      "sha256": "6e07353e2e611b3c16557bdb3174d8a2371ad8245beee76863d315fe00f5f1d0",
       "token": "Dev Main Sync"
     },
     {

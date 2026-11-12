@@ -59,6 +59,29 @@ class RuntimeBuildTests(unittest.TestCase):
                 os.umask(previous)
             self.assertEqual(root.stat().st_mode & 0o777, 0o700)
 
+    def test_install_name_rewrite_modes_survive_private_parent_mask(self):
+        # Exercise the actual replacing tool, not a mocked permission result.
+        # The resulting fixture dylib is signed/inspected but never executed.
+        with tempfile.TemporaryDirectory(prefix="shadow-sync-policy-rewrite-") as temporary:
+            root = Path(temporary).resolve()
+            previous = os.umask(0o077)
+            try:
+                source = root / "fixture.c"
+                source.write_text("int shadow_sync_fixture(void) { return 0; }\n")
+                executable = root / "fixture.dylib"
+                module.run(["/usr/bin/xcrun", "clang", "-dynamiclib", "-arch", "arm64",
+                            "-install_name", "@rpath/fixture-original.dylib", str(source), "-o", str(executable)])
+                executable.chmod(0o755)
+                module.run(["/usr/bin/install_name_tool", "-id", "@rpath/fixture-rewritten.dylib", str(executable)])
+                self.assertEqual(executable.stat().st_mode & 0o777, 0o755)
+                module.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(executable)])
+                module.run(["/usr/bin/codesign", "--verify", "--strict", str(executable)])
+                self.assertEqual(os.umask(0o077), 0o077)
+                self.assertEqual(int(module.run(["/bin/sh", "-c", "umask"]).strip(), 8), 0o077)
+                self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            finally:
+                os.umask(previous)
+
     def archive_inputs(self, root):
         source, bytecode = root / 'source', root / 'bytecode'
         source.mkdir(); bytecode.mkdir()

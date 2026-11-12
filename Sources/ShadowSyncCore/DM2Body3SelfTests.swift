@@ -1959,21 +1959,36 @@ public enum V2Body3SelfTestRunner {
             confirmation: successConfirmation,
             executable: executable
         )
-        try expect(
-            successResult.status == .succeeded
+        var successPathObservation: Bool?
+        let preferredPostflightSucceeded = successResult.status == .succeeded
                 && successResult.awaDisposition
                     == .succeeded
                 && successResult.commands.count == 1
                 && successResult.commands[0].executable
                     == fixture.home
                         + "/fixture-tools/cleanup.sh"
-                && !FileManager.default.fileExists(
-                    atPath: successPath
-                )
-                && successResult.residue
-                    .worktreeRegistrationPresent == false,
-            "successful preferred AWA removal was not independently postflighted"
-        )
+                && {
+                    let absent = !FileManager.default.fileExists(atPath: successPath)
+                    successPathObservation = absent
+                    return absent
+                }()
+                && successResult.residue.worktreeRegistrationPresent == false
+        if !preferredPostflightSucceeded, DiscoveryFixtureDiagnostic.isEnabled {
+            let savedDiagnosticErrno = errno
+            defer { errno = savedDiagnosticErrno }
+            var fields: UInt16 = 0
+            if successResult.status != .succeeded { fields |= 1 << 0 }
+            if successResult.awaDisposition != .succeeded { fields |= 1 << 1 }
+            if successResult.commands.count != 1 { fields |= 1 << 2 }
+            if successResult.commands.first?.executable != fixture.home + "/fixture-tools/cleanup.sh" { fields |= 1 << 3 }
+            if successPathObservation == false { fields |= 1 << 4 }
+            if successPathObservation == nil { fields |= 1 << 5 }
+            if successResult.residue.worktreeRegistrationPresent != false { fields |= 1 << 6 }
+            fputs("BODY3 PREFERRED AWA FIRST MISMATCH status=\(successResult.status.rawValue) awa=\(successResult.awaDisposition.rawValue) fields=\(fields)\n", stderr)
+            fflush(stderr)
+        }
+        try expect(preferredPostflightSucceeded,
+            "successful preferred AWA removal was not independently postflighted")
     }
 
     private static func batchCancelPolicy(

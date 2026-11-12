@@ -1429,6 +1429,7 @@ public enum DiscoveryCallerSelfTestRunner {
                 try require(frozen.snapshot.frozenSize > 0, "nonempty fixture froze no bytes")
                 let args = ["--no-replace-objects", "--no-lazy-fetch", "remote", "get-url", "--all", "origin"]
                 if test == "nonempty-parallel-config" {
+                    if DiscoveryFixtureDiagnostic.isEnabled { fixture.context.testingRepositoryPausePhase = "observe" }
                     diagnosticStage = .parallelCommands
                     let group = DispatchGroup()
                     for _ in 0..<2 {

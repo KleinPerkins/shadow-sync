@@ -430,6 +430,7 @@ private final class CustodianLoop {
     #if SHADOW_SYNC_TESTING
     private var serialReadyPublished = false
     private var testingFailureWitness: TestingCustodianFailureWitness?
+    private var testingRepositoryFailureEmitted = false
     #endif
     private var stageBudget: CustodyBudget
     private var stage: CustodianStage { stages[stageIndex] }
@@ -481,7 +482,8 @@ private final class CustodianLoop {
         let savedDiagnosticErrno = errno
         defer { errno = savedDiagnosticErrno }
         if inherited.testingPolicyTiming != nil || (inherited.testingDiscovery && inherited.request.kind == .repositoryGit
-            && inherited.repository?.input.testingPausePhase != nil) {
+            && inherited.repository?.input.testingPausePhase != nil
+            && inherited.repository?.input.testingPausePhase != "observe") {
             testingFailureWitness = try? TestingCustodianFailureWitness(
                 home: inherited.account.homeDirectory, binding: journal.current.binding)
         }
@@ -520,7 +522,19 @@ private final class CustodianLoop {
     private func testingObserveFailure(_ event: TestingCustodianFailureWitness.Event, error: Error?) {
         let savedErrno = errno
         defer { errno = savedErrno }
-        guard event.observes(after: reason), let witness = testingFailureWitness else { return }
+        guard event.observes(after: reason) else { return }
+        // Explicit closed fixture mode observes one actual throw without creating
+        // a witness file, pausing a child, or changing its failure/drain path.
+        if inherited.testingDiscovery, inherited.request.kind == .repositoryGit,
+           inherited.repository?.input.testingPausePhase == "observe", !testingRepositoryFailureEmitted,
+           [TestingCustodianFailureWitness.Event.spawnTargetFailure, .advanceStageFailure,
+            .repositoryPostflightFailure].contains(event) {
+            testingRepositoryFailureEmitted = true
+            let family = TestingCustodianFailureWitness.errorFields(error)["error"] as? String ?? "other"
+            fputs("DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE event=\(event.rawValue) error=\(family)\n", stderr)
+            fflush(stderr)
+        }
+        guard let witness = testingFailureWitness else { return }
         if let timing = inherited.testingPolicyTiming {
             // EOF and expected cancellation never consume the actual failure slot.
             guard event != .controlEOF, event != .pendingBoundary else { return }

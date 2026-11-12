@@ -4254,18 +4254,49 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
             && parent.identity.aclDigest == other.aclDigest && other.links > 0
     }
     func revalidate(deadline budget: MonotonicDeadline) throws {
+        #if SHADOW_SYNC_TESTING
+        var diagnosticStage: UInt8 = 1
+        var diagnosticPassed = false
+        defer {
+            if !diagnosticPassed {
+                let savedErrno = errno
+                Self.testingRecordFailure(part: .endpoint, stage: diagnosticStage)
+                errno = savedErrno
+            }
+        }
+        #endif
         guard serviceLock.try() else { throw CustodyRecordError.busy }; defer { serviceLock.unlock() }
+        #if SHADOW_SYNC_TESTING
+        diagnosticStage = 2
+        #endif
         guard !budget.hasExpired else { throw CustodyRecordError.busy }
+        #if SHADOW_SYNC_TESTING
+        diagnosticStage = 3
+        #endif
         guard let address, let observed, phase == .listening else { throw CustodyRecordError.fenced }
         #if SHADOW_SYNC_TESTING
+        diagnosticStage = 4
         guard testingMetadataDeadlines.count < 512 else { throw CustodyRecordError.busy }
         testingMetadataDeadlines.append(budget.absoluteUptimeNanoseconds)
+        diagnosticStage = 5
         #endif
         try validateParents(observationDeadline: budget)
+        #if SHADOW_SYNC_TESTING
+        diagnosticStage = 6
+        #endif
         let current = try InstallationNamedSocketObservation.read(address: address, retainedAncestors: ancestors,
             uid: geteuid(), deadline: budget)
+        #if SHADOW_SYNC_TESTING
+        diagnosticStage = 7
+        #endif
         guard observed.matchesNamedGeneration(current) else { throw CustodyRecordError.conflict }
+        #if SHADOW_SYNC_TESTING
+        diagnosticStage = 8
+        #endif
         try validateParents(observationDeadline: budget)
+        #if SHADOW_SYNC_TESTING
+        diagnosticPassed = true
+        #endif
     }
     // Service closure is not node retirement. The original owner, chain, pending
     // state and real close result stay retained by the pre-enrolled endpoint.
@@ -4297,7 +4328,7 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
         }
     }
     #if SHADOW_SYNC_TESTING
-    enum TestingFailurePart: UInt8 { case slots = 1, publisher, journal }
+    enum TestingFailurePart: UInt8 { case slots = 1, publisher, journal, endpoint }
     private final class TestingFailureSink: @unchecked Sendable {
         private let lock = NSLock()
         private let enabled = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_M6_DIAGNOSTICS"] == "1"

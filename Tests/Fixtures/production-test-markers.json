@@ -785,7 +785,10 @@
     "testingTotalCount",
     "testingWriteFault",
     "throwing hook lost actual handle, retired status or owned slot cleanup",
-    "worker-admission-ready"
+    "worker-admission-ready",
+    "DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE",
+    "M6 STOP INTENT FIRST FAILURE",
+    "BODY3 PREFERRED AWA FIRST MISMATCH"
   ],
   "schema": "shadow-sync-production-test-markers/v1"
 }

@@ -3712,6 +3712,7 @@
           "test_policy_runtime_build.RuntimeBuildTests.test_archive_rejects_missing_wrong_source_bytecode_and_header_before_creation",
           "test_policy_runtime_build.RuntimeBuildTests.test_archive_verification_rejects_rewritten_bytes_duplicate_extra_or_compressed_members",
           "test_policy_runtime_build.RuntimeBuildTests.test_dependencies_are_internal_or_canonical_system_paths",
+          "test_policy_runtime_build.RuntimeBuildTests.test_install_name_rewrite_modes_survive_private_parent_mask",
           "test_policy_runtime_build.RuntimeBuildTests.test_intended_publisher_configuration_rejects_another_team",
           "test_policy_runtime_build.RuntimeBuildTests.test_invalid_payload_path",
           "test_policy_runtime_build.RuntimeBuildTests.test_inventory_and_selected_copy_are_byte_bound",
