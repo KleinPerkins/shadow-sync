@@ -1,0 +1,66 @@
+{
+  "files": {
+    "Tests/Fixtures/private_delivery_worker.mjs": {
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "source_path": "tests/helpers/update_worker.mjs",
+      "source_sha256": "485c50f7c406ded7aec3acda10a375b8cbcc71ba4fdab11644e6e82560efc805"
+    },
+    "Tests/Tooling/test_private_delivery.py": {
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "source_path": "tests/test_update_channel.py",
+      "source_sha256": "98bcb666e6ef6d4547be98bd4656788e873a2061ff1eacf5f05bc4c102448272"
+    },
+    "delivery/contract.mjs": {
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "source_path": "delivery/contract.mjs",
+      "source_sha256": "92a49cd1d5638f47cb3a40463395660b42cfa33fec978101679e23026bf691bd"
+    },
+    "delivery/owner-config.example.json": {
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "source_path": "delivery/owner-config.example.json",
+      "source_sha256": "fa91f94cba86799434a603a088a217b394fde22062208ed194062422b80c8f65"
+    },
+    "delivery/schema.sql": {
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "source_path": "delivery/schema.sql",
+      "source_sha256": "1d11e29896fef68ad2ae07fd5082ed6fea5712dbcda3b9967e2116bbedaef3f6"
+    },
+    "delivery/web.mjs": {
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "source_path": "delivery/web.mjs",
+      "source_sha256": "d0cc91cafc03ebaef2dc818799c1e190158ab912f884010a8e8d2130e1f03eb5"
+    },
+    "delivery/worker.mjs": {
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "source_path": "delivery/worker.mjs",
+      "source_sha256": "63cbb28c59736f6f9fb506717c89f83a4e24bdf0df856dc4e31c5e11b529847c"
+    },
+    "delivery/wrangler.template.json": {
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "source_path": "delivery/wrangler.template.json",
+      "source_sha256": "5dfc2fb6667843adf293a3aadde4f71c6a9147afa5cdb7e6c8c011f76045a781"
+    },
+    "scripts/delivery-toolchain.py": {
+      "adaptation": "Same official Node26.4.0 archive/hash/cache verification, product env name and explicit task-owned test cache; no global installation.",
+      "source_path": "scripts/toolchain.py",
+      "source_sha256": "dfa946a7289fcaee644b4855da8c9e3cb1345ca4fcf589291427b51c06b19636"
+    },
+    "scripts/delivery.py": {
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "source_path": "scripts/delivery.py",
+      "source_sha256": "9c11d28ab1d722519bd01d50964e826ce59ee55735da383a2a1d12c33cd63af2"
+    }
+  },
+  "product_adaptations": [
+    "Product identity and access-file extension",
+    "Browser copy reflects signed coordinator installation and no automatic updates",
+    "Friend-channel qualification requires standalone install/recovery/migration/operator acceptance; separate Sparkle installed-update proof remains post-MVP",
+    "Existing signed artifact descriptor and private Free-only publication protections retained",
+    "Synthetic test-root paths and isolated Git configuration; no real user Git config"
+  ],
+  "schema": "shadow-sync-delivery-provenance/v1",
+  "scope": "Copied private delivery/access component only. No native updater, Recovery app, account/resource/origin settings, grants, access files or credentials copied.",
+  "source_repository": "https://github.com/KleinPerkins/machine-monitor",
+  "source_revision": "f76323e372a239f8da923940808fefeb1e1d9987",
+  "status": "Source/synthetic implementation under qualification. No provider resource, release, installation or operator acceptance is established."
+}

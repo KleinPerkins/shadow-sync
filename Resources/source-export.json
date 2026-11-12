@@ -125,7 +125,19 @@
     "scripts/run-native-appkit.py": "Stage and verify only the exact AppDelegate and native-acceptance contract files inside the owned fixture; preserve all native assertions, source bindings, isolation and cleanup.",
     "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs. Include registered retention-custody in the executor closed suite list.",
     "scripts/v3-preflight-acceptance.sh": " Standalone wrapper correction: remove private parent governance/bootstrap dependencies; use synthetic canary observations; preserve remaining native assertions and strict current development-bundle inventory. Obsolete source-installer harness refuses immediately. No signed lifecycle, cleanup, source-race or native coverage qualification is implied.",
-    "scripts/verify-m6.sh": " Remove inherited deployment defaults from public execution; preserve production refusal, synthetic fixture-only adapter behavior and mandatory current CI coverage."
+    "scripts/verify-m6.sh": " Remove inherited deployment defaults from public execution; preserve production refusal, synthetic fixture-only adapter behavior and mandatory current CI coverage.",
+    "Tests/Fixtures/private_delivery_worker.mjs": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "Tests/Tooling/test_private_delivery.py": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/PROVENANCE.json": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/README.md": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/contract.mjs": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/owner-config.example.json": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/schema.sql": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/web.mjs": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/worker.mjs": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/wrangler.template.json": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "scripts/delivery-toolchain.py": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "scripts/delivery.py": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
   "files": [
@@ -1135,6 +1147,11 @@
       "sha256": "2a0063b7ecf416aead1eea5856cbe1e6998124df5b73d441061d60a1315accc9"
     },
     {
+      "path": "Tests/Fixtures/private_delivery_worker.mjs",
+      "mode": "100644",
+      "sha256": "fef7755f6ea05b074d077d81f6e4efb4761acd297234353910a2848f7d49c3c0"
+    },
+    {
       "mode": "100644",
       "path": "Tests/Fixtures/production-test-markers.json",
       "sha256": "d825304b2326d3fc590f231f84f12c82f29775fb4f8e8e6090f2bf0975cd9bb1"
@@ -1275,6 +1292,11 @@
       "sha256": "723d044570a6c6c2d03dc42cc4e8736157106482bda01d224d6213d4c475be9c"
     },
     {
+      "path": "Tests/Tooling/test_private_delivery.py",
+      "mode": "100644",
+      "sha256": "68c6c3820d8469dbba4133597d0bcc89b02a4a43fcb7220de92871eecce4fa16"
+    },
+    {
       "mode": "100644",
       "path": "Tests/Tooling/test_python_test_suites.py",
       "sha256": "5907f8f9a198c5d2b19ef29f931aa3dc6d2a6b48ec156875de83ddd91e8b1b8b"
@@ -1317,12 +1339,52 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "db0ca7a57e4a26f3c68845f989e4bd025ac67fd5e373fe017b9e563693bde8a1"
+      "sha256": "25f5e7e4916c739bf24fde5adfca5324ada963a68e48608c1144cecd9d1676fb"
     },
     {
       "mode": "100644",
       "path": "config/identity-exceptions.json",
       "sha256": "7f8b2c2121744c51b8e957f871f195ec5dc1d66acc25fda4c629d500f9a1bb2e"
+    },
+    {
+      "path": "delivery/PROVENANCE.json",
+      "mode": "100644",
+      "sha256": "abfd0870b4b81ed5607af960c1611e88258a8b3ef47fd1f61c67e90577e29943"
+    },
+    {
+      "path": "delivery/README.md",
+      "mode": "100644",
+      "sha256": "a824438813c1ee488ec0fd542917d453643f341ae227dba6ba4a53fe4a331c13"
+    },
+    {
+      "path": "delivery/contract.mjs",
+      "mode": "100644",
+      "sha256": "e65a4fc320cb30849606d0183f036506ac1092ba3ea8b8cb7b48f55e5f3e4ca5"
+    },
+    {
+      "path": "delivery/owner-config.example.json",
+      "mode": "100644",
+      "sha256": "fa91f94cba86799434a603a088a217b394fde22062208ed194062422b80c8f65"
+    },
+    {
+      "path": "delivery/schema.sql",
+      "mode": "100644",
+      "sha256": "80ba73edd474d3fb20a6dc0a9ef3cda19d195fa821b29b7483f6c40851ac899d"
+    },
+    {
+      "path": "delivery/web.mjs",
+      "mode": "100644",
+      "sha256": "03b4837c270427a0ef0ec28b5ac9452acf2c2913b30da4bb2fc050ae8fa26d5f"
+    },
+    {
+      "path": "delivery/worker.mjs",
+      "mode": "100644",
+      "sha256": "4369d7b14d1a3e3a5464e3be3618cd283db24ccf6f85322147cdf4186209eeb5"
+    },
+    {
+      "path": "delivery/wrangler.template.json",
+      "mode": "100644",
+      "sha256": "26a71ecb3667c601cede5d84efb9e3c5956c8b0d756729b53ee8c4e0d04055fe"
     },
     {
       "mode": "100644",
@@ -1393,6 +1455,16 @@
       "mode": "100644",
       "path": "scripts/compile-runtime-bytecode.py",
       "sha256": "42d5697c733c07419f6069ae9062598ca3bb4a3bcb865a1bfa81b0f31bce99d9"
+    },
+    {
+      "path": "scripts/delivery-toolchain.py",
+      "mode": "100644",
+      "sha256": "4a86e003707ce0cd36a1c99d1c2bc4f59c5cf7f1911def302a44ca5bb8878071"
+    },
+    {
+      "path": "scripts/delivery.py",
+      "mode": "100755",
+      "sha256": "ac7a06e517930b9535e9305d20902d0165732a847f127121f9ed47d1b8a3775c"
     },
     {
       "mode": "100644",

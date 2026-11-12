@@ -1230,6 +1230,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-private-delivery": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_private_delivery"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-python-test-suites": {
       "argv": [
         "python3",
@@ -1421,6 +1433,7 @@
         "tooling-test-policy-batch",
         "tooling-test-policy-entry",
         "tooling-test-policy-runtime-build",
+        "tooling-test-private-delivery",
         "tooling-test-python-test-suites",
         "tooling-test-release-assembly",
         "tooling-test-release-candidate",
@@ -3700,6 +3713,37 @@
           "test_policy_runtime_build.RuntimeBuildTests.test_sqlite_notice_contains_actual_copyright_disclaimer",
           "test_policy_runtime_build.RuntimeBuildTests.test_upstream_identity_requires_trusted_psf_leaf_and_timestamp",
           "test_policy_runtime_build.RuntimeBuildTests.test_wrong_publisher_refuses_before_package_access_or_output"
+        ],
+        "kind": "static"
+      },
+      "tooling-test-private-delivery": {
+        "cases": [
+          "test_private_delivery.ChannelTests.test_access_file_and_config_cannot_be_written_under_git_or_symlinks",
+          "test_private_delivery.ChannelTests.test_active_version_including_zero_percent_and_provider_source_readback",
+          "test_private_delivery.ChannelTests.test_actual_worker_primary_reads_auth_cache_isolation_and_errors",
+          "test_private_delivery.ChannelTests.test_bootstrap_only_creates_new_free_resources_with_capacity",
+          "test_private_delivery.ChannelTests.test_closed_wire_contract_rejects_cross_release_and_unknown_fields",
+          "test_private_delivery.ChannelTests.test_default_node_locator_is_bound_to_verified_absolute_executable",
+          "test_private_delivery.ChannelTests.test_deployment_requires_unconditional_private_worker_first_and_owned_origin",
+          "test_private_delivery.ChannelTests.test_exact_qualification_then_stable_promotion_and_downgrade_refusal",
+          "test_private_delivery.ChannelTests.test_existing_worker_with_lost_receipt_cannot_be_replaced",
+          "test_private_delivery.ChannelTests.test_free_proof_blocks_every_mutation_and_no_boolean_bypass",
+          "test_private_delivery.ChannelTests.test_friend_channel_requires_every_standalone_acceptance_gate",
+          "test_private_delivery.ChannelTests.test_grant_credential_256_bits_hashed_at_rest_and_private_output",
+          "test_private_delivery.ChannelTests.test_initial_missing_resource_requires_exact_provider_error",
+          "test_private_delivery.ChannelTests.test_interrupted_protocol_publication_retries_without_relabeling_legacy",
+          "test_private_delivery.ChannelTests.test_legacy_identity_cannot_be_relabeled_even_for_tiny_artifacts",
+          "test_private_delivery.ChannelTests.test_maximum_v2_metadata_and_canonical_asset_indexes",
+          "test_private_delivery.ChannelTests.test_pinned_wrangler_auth_is_captured_without_argv_secrets",
+          "test_private_delivery.ChannelTests.test_private_assets_bounded_immutable_retained_and_no_routing_files",
+          "test_private_delivery.ChannelTests.test_private_readback_identifies_application_and_revokes_temporary_grant",
+          "test_private_delivery.ChannelTests.test_qualification_grants_are_owner_only_and_finite",
+          "test_private_delivery.ChannelTests.test_readback_failure_never_advances_channel_and_stable_cannot_replace_bytes",
+          "test_private_delivery.ChannelTests.test_unqualified_or_mismatched_artifact_never_published",
+          "test_private_delivery.ChannelTests.test_verification_runtime_rejects_changed_cached_binary_before_execution",
+          "test_private_delivery.ChannelTests.test_verification_runtime_rejects_corrupt_download_before_extraction",
+          "test_private_delivery.ChannelTests.test_wrangler_runs_the_verified_node_despite_conflicting_path",
+          "test_private_delivery.ChannelTests.test_zone_routes_are_exhaustive_read_only_and_fail_closed"
         ],
         "kind": "static"
       },
