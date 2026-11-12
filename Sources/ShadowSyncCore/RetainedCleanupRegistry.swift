@@ -134,6 +134,9 @@ final class CustodyHelperExecutable: @unchecked Sendable {
         return [path, "--shadow-sync-command-custodian"]
     }
     #if SHADOW_SYNC_TESTING
+    var testingPolicyTimingEligible: Bool {
+        discoveryFixture && arguments == [path, "--shadow-sync-discovery-custodian-fixture"]
+    }
     var testingInstallationSourceRoot: String? { fixture ? installationFixtureRoot : nil }
     func bindTestingInstallationSource(root: String) throws {
         guard fixture, installationFixtureRoot == nil else { throw CustodyRecordError.fenced }
@@ -630,8 +633,8 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         var diagnosticStage = DiscoveryFixtureDiagnostic.Stage.resources
         var diagnosticPassed = false
         var diagnosticMilestones: [UInt64] = []
-        // Parent-side suspended-helper verification only. The helper receives
-        // no diagnostic environment, descriptor or protocol extension.
+        // The fixed testing discovery policy helper may receive one observation
+        // opt-in. Request/control/status schemas and policy target streams stay fixed.
         defer {
             if entry.resources.request.kind == .policyClassify {
                 DiscoveryFixtureDiagnostic.record(.helperPreparation, stage: diagnosticStage,
@@ -654,6 +657,15 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         guard strings.allSatisfy({ $0 != nil }) else { throw CustodyResourceError.limit }
         var args = strings + [nil], env: [UnsafeMutablePointer<CChar>?] = [nil]
         #if SHADOW_SYNC_TESTING
+        // Failure to allocate this optional one-entry environment skips diagnostics.
+        // It must not replace the original spawn errno/result or acquire authority.
+        let savedEnvironmentErrno = errno
+        let timingEnvironment = TestingPolicyHelperTiming.activation(parentEnabled: DiscoveryFixtureDiagnostic.isEnabled,
+            fixedHelper: entry.helper.testingPolicyTimingEligible, kind: entry.resources.request.kind)
+            ? strdup(TestingPolicyHelperTiming.environmentEntry) : nil
+        defer { free(timingEnvironment) }
+        if let timingEnvironment { env = [timingEnvironment, nil] }
+        errno = savedEnvironmentErrno
         diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds)
         diagnosticStage = .suspendedSpawn
         #endif
@@ -991,6 +1003,18 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                 result: CustodyRegistryResult(phase: .finished, reason: entry.reason, journal: entry.resultJournal,
                     stdout: entry.stdout, stderr: entry.stderr, trace: entry.trace), account: account)
         } else { recovery = nil }
+        #if SHADOW_SYNC_TESTING
+        // Every caller of retirement passes here; no-spawn and never-resumed
+        // routes cannot satisfy this actual-owner/EOF guard. Synchronous lexical
+        // reader ownership ends before resource, entry and alias release below.
+        if entry.resumed, entry.helper.testingPolicyTimingEligible,
+           entry.resources.request.kind == .policyClassify,
+           TestingPolicyHelperWitness.shouldObserve(parentReason: entry.reason, terminalReason: entry.resultJournal?.reason),
+           let owner = entry.owner, case .reaped = owner.observation,
+           entry.statusEnded, entry.stdoutEnded, entry.stderrEnded, entry.traceEnded {
+            TestingPolicyHelperWitness.observe(entry.resources.request)
+        }
+        #endif
         entry.mapping?.releaseChildCopies(); entry.mapping = nil
         entry.resources.retire(); entry.command?.retireRepositoryResources()
         entry.anchor = nil; entry.owner = nil; entry.metadata = nil

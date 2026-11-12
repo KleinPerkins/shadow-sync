@@ -458,6 +458,9 @@ private final class CustodianLoop {
     init(inherited: CustodyInheritedCommand) throws {
         self.inherited = inherited
         journal = try CustodyHelperJournal.begin(inherited)
+        #if SHADOW_SYNC_TESTING
+        inherited.testingPolicyTiming?.mark(.journalClaimFinished)
+        #endif
         var serial = inherited.discovery != nil || inherited.retention != nil || inherited.repository != nil
         #if SHADOW_SYNC_TESTING
         serial = serial || inherited.fixtureMode?.hasPrefix("serial-") == true
@@ -475,8 +478,10 @@ private final class CustodianLoop {
         target = try CustodianTarget(inherited, stage: stages[0])
         state = try CustodyAdmissionState(binding: inherited.request.binding, budget: inherited.request.budget)
         #if SHADOW_SYNC_TESTING
-        if inherited.testingDiscovery, inherited.request.kind == .repositoryGit,
-           inherited.repository?.input.testingPausePhase != nil {
+        let savedDiagnosticErrno = errno
+        defer { errno = savedDiagnosticErrno }
+        if inherited.testingPolicyTiming != nil || (inherited.testingDiscovery && inherited.request.kind == .repositoryGit
+            && inherited.repository?.input.testingPausePhase != nil) {
             testingFailureWitness = try? TestingCustodianFailureWitness(
                 home: inherited.account.homeDirectory, binding: journal.current.binding)
         }
@@ -493,7 +498,13 @@ private final class CustodianLoop {
         statusQueue.append(frame)
     }
     private func beginDrain(_ cause: CustodyReason) {
+        #if SHADOW_SYNC_TESTING
+        let firstTimeout = reason == .none && cause == .timeout
+        #endif
         if reason == .none { reason = cause }
+        #if SHADOW_SYNC_TESTING
+        if firstTimeout, inherited.testingPolicyTiming != nil { testingObserveFailure(.policyTimingFailure, error: nil) }
+        #endif
         if state.phase != .terminal { try? state.closeAdmission(now: now) }
         if let clipped = try? stageBudget.draining(at: now) { stageBudget = clipped }
         do { try journal.draining(reason: reason) }
@@ -507,7 +518,22 @@ private final class CustodianLoop {
     #if SHADOW_SYNC_TESTING
     private var testingExpiredControlObserved = false
     private func testingObserveFailure(_ event: TestingCustodianFailureWitness.Event, error: Error?) {
+        let savedErrno = errno
+        defer { errno = savedErrno }
         guard event.observes(after: reason), let witness = testingFailureWitness else { return }
+        if let timing = inherited.testingPolicyTiming {
+            // EOF and expected cancellation never consume the actual failure slot.
+            guard event != .controlEOF, event != .pendingBoundary else { return }
+            var fields = timing.snapshot().fields
+            fields["event"] = TestingCustodianFailureWitness.Event.policyTimingFailure.rawValue
+            fields["trigger"] = event.rawValue
+            fields["reason"] = reason.rawValue
+            fields["observed"] = now
+            fields["issued"] = inherited.request.budget.issued
+            fields["work"] = inherited.request.budget.work
+            witness.record(.policyTimingFailure, fields: fields)
+            return
+        }
         var fields: [String: Any] = [
             "event": event.rawValue, "stage_index": stageIndex,
             "stage": stage.repositoryFixturePhase ?? "other", "reason": reason.rawValue,
@@ -609,6 +635,9 @@ private final class CustodianLoop {
                 for bytes in try decoder.append(Data(bytes.prefix(n))) {
                     let message = try CustodyMessage.decode(bytes, expected: inherited.request.binding, channel: .control)
                     try state.accept(message, now: now)
+                    #if SHADOW_SYNC_TESTING
+                    if message.event == .admit { inherited.testingPolicyTiming?.mark(.admitConsumed) }
+                    #endif
                     if message.event == .cancel { beginDrain(.cancelled) }
                 }
             } catch { beginDrain(.protocolFault) }
@@ -734,6 +763,9 @@ private final class CustodianLoop {
             try command.validatePreflight(preflight)
         }
         try inherited.revalidateResources(); try inherited.revalidateParent(); try target.validate(anchor)
+        #if SHADOW_SYNC_TESTING
+        inherited.testingPolicyTiming?.mark(.suspendedVerificationFinished)
+        #endif
         guard owner!.prepareGraphSignal() == .ready else { throw CustodyRecordError.fenced }
         #if SHADOW_SYNC_TESTING
         if inherited.retention?.input.testingPauseBeforeResume == true, stage == .command { try testingAwaitFinalControl() }
@@ -751,6 +783,7 @@ private final class CustodianLoop {
               owner!.resume(before: MonotonicDeadline(uptimeNanoseconds: min(state.budget.work, stageBudget.work))) else { throw CustodyRecordError.fenced }
         resumed = true
         #if SHADOW_SYNC_TESTING
+        inherited.testingPolicyTiming?.mark(.resumed)
         if inherited.retention?.input.testingPauseAfterResume == true, stage == .command { try testingAwaitFinalControl() }
         if let phase = stage.repositoryFixturePhase { try testingRepositoryPause(phase) }
 
@@ -1143,6 +1176,9 @@ private final class CustodianLoop {
     }
     func run() throws -> Int32 {
         try status(.ready)
+        #if SHADOW_SYNC_TESTING
+        inherited.testingPolicyTiming?.mark(.readyQueued)
+        #endif
         while true {
             if !terminalPublished {
                 consumeControl()
@@ -1160,6 +1196,9 @@ private final class CustodianLoop {
                     }
                 }
                 relay(false); relay(true); relayTrace(); drainTarget()
+                #if SHADOW_SYNC_TESTING
+                if targetDrained, spawned { inherited.testingPolicyTiming?.mark(.drained) }
+                #endif
                 if targetDrained, stage.isIntermediate, reason == .none, spawned {
                     do { if try advanceStage() { continue } }
                     catch {
@@ -1245,6 +1284,7 @@ private final class CustodianLoop {
                             // crosses the work deadline. Never advance it again.
                             terminalPublished = true
                             #if SHADOW_SYNC_TESTING
+                            inherited.testingPolicyTiming?.mark(.terminalCommitted)
                             if inherited.fixtureMode == "terminal-delay" {
                                 while now < inherited.request.budget.work + 50_000_000 { usleep(1_000) }
                             }
@@ -1294,7 +1334,7 @@ private final class CustodianLoop {
 private final class TestingCustodianFailureWitness {
     enum Event: String {
         case controlEOF, drainingPersistence, resourceRetirement
-        case terminalPublication, pendingBoundary, pendingPublication
+        case terminalPublication, pendingBoundary, pendingPublication, policyTimingFailure
         case spawnTargetFailure, advanceStageFailure, repositoryPostflightFailure
         func observes(after reason: CustodyReason) -> Bool {
             switch self {
@@ -1886,6 +1926,7 @@ private extension TestingCustodianFailureWitness {
     }
     static func fixtureSlots() throws {
         try fixture { _, home, binding, owned in
+            try fixtureTimingCodec(binding)
             let probe = Probe(), witness = try owned.witness(binding, probe: probe)
             for event in [Event.controlEOF, .controlEOF, .terminalPublication, .drainingPersistence, .pendingBoundary, .pendingPublication, .pendingBoundary] { emit(witness, event) }
             let data = try bytes(home, binding)
@@ -2002,6 +2043,233 @@ private extension TestingCustodianFailureWitness {
             emit(witness, .terminalPublication)
             try check(witness.poisoned && probe.writeAttempts == 0 && (try bytes(home, binding)).isEmpty, "witness invalid serialization retried")
         }
+    }
+}
+#endif
+
+#if SHADOW_SYNC_TESTING
+/// Optional snapshot only. This adapter has no custody, signaling or cleanup API.
+enum TestingPolicyHelperWitness {
+    // Parent cancellation and the already verified helper terminal are separate
+    // observations. A target timeout may finish before the parent records one.
+    static func shouldObserve(parentReason: CustodyReason?, terminalReason: CustodyReason?) -> Bool {
+        parentReason.map({ $0 != CustodyReason.none }) == true || terminalReason == .timeout
+    }
+    static func observe(_ request: UnvalidatedCustodyRequest) {
+        let savedErrno = errno
+        defer { errno = savedErrno }
+        guard request.kind == .policyClassify, DiscoveryFixtureDiagnostic.takePolicyTimingRead() else { return }
+        let snapshot = TestingCustodianFailureWitness.readTiming(request)
+        DiscoveryFixtureDiagnostic.recordPolicyTiming(snapshot, issued: request.budget.issued)
+    }
+}
+private extension TestingCustodianFailureWitness {
+    static func readTiming(_ request: UnvalidatedCustodyRequest) -> TestingPolicyHelperTiming.Snapshot? {
+        // Bounded lexical owners: at most root/home/file, one read, no retry,
+        // wait, pathname polling, descriptor probe or asynchronous continuation.
+        var descriptors: [Int32] = []
+        var result: TestingPolicyHelperTiming.Snapshot?
+        do {
+            guard let home = request.environment["HOME"], home.hasSuffix("/home") else { throw CustodyRecordError.fenced }
+            let root = String(home.dropLast(5))
+            let prefix = try RuntimeFixtureSession.fixturePrefix("shadow-sync-policy-authority-")
+            guard root.hasPrefix(prefix), root.utf8.count == prefix.utf8.count + 6,
+                  root.dropFirst(prefix.count).utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) }),
+                  try TestIsolation.validateRoot(root) == root else { throw CustodyRecordError.fenced }
+            let binding = try CustodyRecordBinding(request.binding)
+            let filename = ".shadow-sync-custodian-observation-" + binding.requestID + ".jsonl"
+            let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+            func owned(_ fd: Int32) throws -> Int32 {
+                guard fd >= 0 else { throw CustodyRecordError.fenced }
+                descriptors.append(fd); return fd
+            }
+            let rootFD = try owned(open(root, flags | O_DIRECTORY))
+            let homeFD = try owned(openat(rootFD, "home", flags | O_DIRECTORY))
+            let fileFD = try owned(openat(homeFD, filename, flags))
+            var rootNode = stat(), homeNode = stat(), fileNode = stat()
+            guard fstat(rootFD, &rootNode) == 0, fstat(homeFD, &homeNode) == 0, fstat(fileFD, &fileNode) == 0,
+                  safe(rootNode, directory: true), safe(homeNode, directory: true), safe(fileNode, directory: false),
+                  fileNode.st_size > 0, fileNode.st_size <= 6144 else { throw CustodyRecordError.fenced }
+            let rootACL = try PolicyAuthorityFile.privateStateACL(rootFD)
+            let homeACL = try PolicyAuthorityFile.privateStateACL(homeFD)
+            let fileACL = try PolicyAuthorityFile.privateStateACL(fileFD)
+            func stable(_ a: stat, _ b: stat) -> Bool {
+                same(a, b) && a.st_size == b.st_size
+                    && a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec
+                    && a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec
+            }
+            func validate() throws {
+                var held = stat(), named = stat()
+                guard fstat(rootFD, &held) == 0, stable(rootNode, held),
+                      lstat(root, &named) == 0, stable(rootNode, named),
+                      fstat(homeFD, &held) == 0, stable(homeNode, held),
+                      fstatat(rootFD, "home", &named, AT_SYMLINK_NOFOLLOW) == 0, stable(homeNode, named),
+                      fstat(fileFD, &held) == 0, stable(fileNode, held),
+                      fstatat(homeFD, filename, &named, AT_SYMLINK_NOFOLLOW) == 0, stable(fileNode, named),
+                      try PolicyAuthorityFile.privateStateACL(rootFD) == rootACL,
+                      try PolicyAuthorityFile.privateStateACL(homeFD) == homeACL,
+                      try PolicyAuthorityFile.privateStateACL(fileFD) == fileACL else { throw CustodyRecordError.fenced }
+            }
+            try validate()
+            var bytes = [UInt8](repeating: 0, count: Int(fileNode.st_size))
+            let count = bytes.withUnsafeMutableBytes { pread(fileFD, $0.baseAddress, $0.count, 0) }
+            guard count == Int(fileNode.st_size) else { throw CustodyRecordError.fenced }
+            try validate()
+            result = try parseTiming(Data(bytes.prefix(count)), binding: binding,
+                budget: request.budget, observedBefore: DispatchTime.now().uptimeNanoseconds)
+        } catch { result = nil }
+        // These are scoped close attempts, not kernel retirement capabilities.
+        // Any observed error suppresses the observation. Never retry detached FDs.
+        for fd in descriptors.reversed() { if close(fd) != 0 { result = nil } }
+        return result
+    }
+
+    static func parseTiming(_ bytes: Data, binding: CustodyRecordBinding, budget: CustodyBudget,
+                            observedBefore: UInt64) throws -> TestingPolicyHelperTiming.Snapshot {
+        guard !bytes.isEmpty, bytes.count <= 6144, bytes.last == 10 else { throw CustodyRecordError.fenced }
+        let lines = bytes.dropLast().split(separator: 10, omittingEmptySubsequences: false)
+        guard (1...3).contains(lines.count) else { throw CustodyRecordError.fenced }
+        var result: TestingPolicyHelperTiming.Snapshot?
+        let names = TestingPolicyHelperTiming.Snapshot.names
+        let keys = Set(names).union(["schema", "marker", "request", "generation", "nonce_sha256",
+            "event", "trigger", "reason", "presence", "observed", "issued", "work"])
+        for line in lines {
+            guard !line.isEmpty, line.count + 1 <= 2048, result == nil else { throw CustodyRecordError.fenced }
+            // Existing strict parser rejects duplicate keys, unsupported types,
+            // signed/fractional/overflow numbers, trailing values and malformed UTF8.
+            // Twenty fixed scalar fields exceed the configuration profile's 16-key cap.
+            // The existing larger object profile is still bounded here by 2047 bytes
+            // and exact keys; it grants no bundle or filesystem authority.
+            var parser = try PolicyWireParser(Data(line), profile: .bundleLayout)
+            let value = try parser.parse().object(keys: keys)
+            guard try CustodyWire.text(value["schema"]) == "shadow-sync-custodian-failure-observation/v1",
+                  try CustodyWire.text(value["marker"]) == "CUSTODIAN FIRST FAILURE WITNESS",
+                  try CustodyWire.text(value["request"]) == binding.requestID,
+                  try CustodyWire.text(value["generation"]) == binding.generation,
+                  try CustodyWire.text(value["nonce_sha256"]) == binding.nonceSHA256,
+                  try CustodyWire.text(value["event"]) == Event.policyTimingFailure.rawValue,
+                  [Event.policyTimingFailure.rawValue, Event.drainingPersistence.rawValue,
+                   Event.resourceRetirement.rawValue, Event.terminalPublication.rawValue,
+                   Event.pendingPublication.rawValue, Event.spawnTargetFailure.rawValue,
+                   Event.advanceStageFailure.rawValue, Event.repositoryPostflightFailure.rawValue]
+                    .contains(try CustodyWire.text(value["trigger"])),
+                  CustodyReason(rawValue: try CustodyWire.text(value["reason"])) != nil,
+                  try CustodyWire.uint(value["issued"]) == budget.issued,
+                  try CustodyWire.uint(value["work"]) == budget.work else { throw CustodyRecordError.fenced }
+            let presence = try CustodyWire.uint(value["presence"]), observed = try CustodyWire.uint(value["observed"])
+            guard presence <= 255, presence & 3 == 3, budget.issued <= observed, observed <= observedBefore else { throw CustodyRecordError.fenced }
+            if try CustodyWire.text(value["trigger"]) == Event.policyTimingFailure.rawValue {
+                guard try CustodyWire.text(value["reason"]) == CustodyReason.timeout.rawValue,
+                      observed >= budget.work else { throw CustodyRecordError.fenced }
+            }
+            if let trigger = Event(rawValue: try CustodyWire.text(value["trigger"])),
+               [Event.spawnTargetFailure, .advanceStageFailure, .repositoryPostflightFailure].contains(trigger) {
+                guard let reason = CustodyReason(rawValue: try CustodyWire.text(value["reason"])),
+                      trigger.observes(after: reason) else { throw CustodyRecordError.fenced }
+            }
+            let stamps = try names.map { try CustodyWire.uint(value[$0]) }
+            var previous = budget.issued
+            for (index, stamp) in stamps.enumerated() {
+                if presence & (UInt64(1) << index) == 0 {
+                    guard stamp == 0 else { throw CustodyRecordError.fenced }
+                } else {
+                    guard stamp >= previous, stamp <= observed else { throw CustodyRecordError.fenced }
+                    previous = stamp
+                }
+            }
+            result = TestingPolicyHelperTiming.Snapshot(presence: presence,
+                constructorFinished: stamps[0], journalClaimFinished: stamps[1], readyQueued: stamps[2], admitConsumed: stamps[3],
+                suspendedVerificationFinished: stamps[4], resumed: stamps[5], drained: stamps[6], terminalCommitted: stamps[7])
+        }
+        guard let result else { throw CustodyRecordError.fenced }
+        return result
+    }
+}
+#endif
+
+#if SHADOW_SYNC_TESTING
+private extension TestingCustodianFailureWitness {
+    /// Pure codec/activation checks; invoked by the existing witness-slot case.
+    /// No synthetic timestamp is passed to the live timing recorder.
+    static func fixtureTimingCodec(_ binding: CustodyRecordBinding) throws {
+        try check(TestingPolicyHelperWitness.shouldObserve(parentReason: nil, terminalReason: .timeout),
+            "verified helper timeout reason lost without parent cancellation")
+        try check(TestingPolicyHelperWitness.shouldObserve(parentReason: .timeout, terminalReason: nil),
+            "parent timeout observation lost")
+        try check(!TestingPolicyHelperWitness.shouldObserve(parentReason: nil, terminalReason: nil)
+            && !TestingPolicyHelperWitness.shouldObserve(parentReason: CustodyReason.none, terminalReason: CustodyReason.none)
+            && !TestingPolicyHelperWitness.shouldObserve(parentReason: nil, terminalReason: CustodyReason.none)
+            && !TestingPolicyHelperWitness.shouldObserve(parentReason: nil, terminalReason: .invalidResource),
+            "successful terminal enabled timing observation")
+        let budget = try CustodyBudget(wire: .object(["issued": .unsigned(10), "work": .unsigned(100),
+            "term": .unsigned(200), "kill": .unsigned(300), "receipt": .unsigned(400)]))
+        let snapshot = TestingPolicyHelperTiming.Snapshot(presence: 63,
+            constructorFinished: 20, journalClaimFinished: 30, readyQueued: 40, admitConsumed: 50,
+            suspendedVerificationFinished: 60, resumed: 70)
+        var fields = snapshot.fields
+        fields["schema"] = "shadow-sync-custodian-failure-observation/v1"
+        fields["marker"] = "CUSTODIAN FIRST FAILURE WITNESS"
+        fields["request"] = binding.requestID; fields["generation"] = binding.generation
+        fields["nonce_sha256"] = binding.nonceSHA256
+        fields["event"] = Event.policyTimingFailure.rawValue; fields["trigger"] = Event.policyTimingFailure.rawValue
+        fields["reason"] = CustodyReason.timeout.rawValue; fields["observed"] = UInt64(110)
+        fields["issued"] = budget.issued; fields["work"] = budget.work
+        func encode(_ value: [String: Any]) throws -> Data {
+            var data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]); data.append(10); return data
+        }
+        func parse(_ data: Data) throws -> TestingPolicyHelperTiming.Snapshot {
+            try parseTiming(data, binding: binding, budget: budget, observedBefore: 120)
+        }
+        let good = try encode(fields), decoded = try parse(good)
+        try check(decoded.presence == 63 && decoded.values == snapshot.values, "timing codec changed presence")
+        try check(decoded.line(issued: 10) == "DISCOVERY POLICY HELPER TIMING presence=63 elapsed_ns=10,20,30,40,50,60,absent,absent\n",
+            "timing absent phase became zero")
+        try check(good.count <= 2048 && decoded.line(issued: 10).utf8.count <= 512, "timing codec ceilings")
+        for (key, value) in [("request", "foreign" as Any), ("generation", "foreign"),
+            ("nonce_sha256", String(repeating: "0", count: 64)), ("extra", 1), ("presence", 256),
+            ("presence", 1), ("presence", true), ("presence", -1), ("presence", 1.5),
+            ("resumed", 39), ("drained", 90), ("ready_queued", 121), ("observed", 99),
+            ("observed", 121), ("issued", 11), ("work", 101), ("event", "controlEOF"),
+            ("trigger", "controlEOF"), ("reason", "cancelled")] {
+            var bad = fields; bad[key] = value
+            try refusal { _ = try parse(encode(bad)) }
+        }
+        // Existing caught-error hooks can win the one-shot slot before timeout.
+        // Accept their actual trigger while retaining the same cancellation filter.
+        for trigger in [Event.spawnTargetFailure, .advanceStageFailure, .repositoryPostflightFailure] {
+            var caught = fields
+            caught["trigger"] = trigger.rawValue; caught["reason"] = CustodyReason.none.rawValue
+            let caughtSnapshot = try parse(encode(caught))
+            try check(caughtSnapshot.presence == snapshot.presence && caughtSnapshot.values == snapshot.values,
+                "timing codec changed presence")
+            for reason in [CustodyReason.cancelled, .timeout] {
+                var refused = caught; refused["reason"] = reason.rawValue
+                try refusal { _ = try parse(encode(refused)) }
+            }
+        }
+        var missing = fields; missing.removeValue(forKey: "drained")
+        try refusal { _ = try parse(encode(missing)) }
+        try refusal { _ = try parse(good + good) }
+        try refusal { _ = try parse(Data(good.dropLast())) }
+        try refusal { _ = try parse(good + Data("{}\n".utf8)) }
+        try refusal { _ = try parse(Data(repeating: 32, count: 6145)) }
+        var long = fields; long["marker"] = String(repeating: "x", count: 2048)
+        try refusal { _ = try parse(encode(long)) }
+        let duplicate = Data(("{\"presence\":63," + String(decoding: good.dropFirst(), as: UTF8.self)).utf8)
+        try refusal { _ = try parse(duplicate) }
+        let malformed = Data([0xff, 10])
+        try refusal { _ = try parse(malformed) }
+        let maximum = TestingPolicyHelperTiming.Snapshot(presence: 255,
+            constructorFinished: UInt64.max, journalClaimFinished: UInt64.max, readyQueued: UInt64.max,
+            admitConsumed: UInt64.max, suspendedVerificationFinished: UInt64.max, resumed: UInt64.max,
+            drained: UInt64.max, terminalCommitted: UInt64.max)
+        try check(maximum.line(issued: 0).utf8.count <= 512, "maximum timing render exceeds cap")
+        try check(TestingPolicyHelperTiming.activation(parentEnabled: true, fixedHelper: true, kind: .policyClassify),
+            "fixed policy timing activation missing")
+        try check(!TestingPolicyHelperTiming.activation(parentEnabled: false, fixedHelper: true, kind: .policyClassify)
+            && !TestingPolicyHelperTiming.activation(parentEnabled: true, fixedHelper: false, kind: .policyClassify)
+            && !TestingPolicyHelperTiming.activation(parentEnabled: true, fixedHelper: true, kind: .repositoryGit),
+            "timing activation escaped closed helper")
     }
 }
 #endif

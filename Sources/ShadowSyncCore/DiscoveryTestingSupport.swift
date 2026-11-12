@@ -39,6 +39,12 @@ enum DiscoveryFixtureDiagnostic {
             writer(text)
         }
 
+        func permitsObservation() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            return enabled && !closed && records < Self.maximumRecords
+                && bytes + Self.maximumLineBytes + Self.suppression.utf8.count <= Self.maximumBytes
+        }
+
         private func suppress() {
             closed = true
             writer(Self.suppression)
@@ -110,6 +116,15 @@ enum DiscoveryFixtureDiagnostic {
         writer: { fputs($0, stderr); fflush(stderr) })
     private static let revalidationSamples = SampleBudget(enabled: mode == "costs")
     private static let publisherSamples = SampleBudget(enabled: mode == "costs")
+    // At most eight optional synchronous snapshots per process, including missing
+    // or malformed files. Sink exhaustion cannot trigger more filesystem work.
+    private static let policyTimingReads = SampleBudget(enabled: isEnabled)
+    static func takePolicyTimingRead() -> Bool {
+        isEnabled && failureSink.permitsObservation() && policyTimingReads.take()
+    }
+    static func recordPolicyTiming(_ snapshot: TestingPolicyHelperTiming.Snapshot?, issued: UInt64) {
+        failureSink.emit(snapshot?.line(issued: issued) ?? "DISCOVERY POLICY HELPER TIMING unavailable=true\n")
+    }
 
     static var isEnabled: Bool { mode == "1" || mode == "boundaries" || mode == "costs" }
 
@@ -499,6 +514,70 @@ enum DiscoveryFixtureResources {
 
     static func systemConfiguration(home: String) throws -> String {
         try directory(home: home) + "/fixture-system-config"
+    }
+}
+#endif
+
+#if SHADOW_SYNC_TESTING
+/// Eight scalar slots on the actual validated inherited request. Zero is merely
+/// storage for an absent slot; presence is always reported separately.
+final class TestingPolicyHelperTiming: @unchecked Sendable {
+    static let environmentEntry = "SHADOW_SYNC_TEST_POLICY_HELPER_TIMING=1"
+    static var childOptedIn: Bool {
+        ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_HELPER_TIMING"] == "1"
+    }
+    static func activation(parentEnabled: Bool, fixedHelper: Bool, kind: CustodyCommandKind) -> Bool {
+        parentEnabled && fixedHelper && kind == .policyClassify
+    }
+    enum Phase: Int { case constructorFinished, journalClaimFinished, readyQueued, admitConsumed
+        case suspendedVerificationFinished, resumed, drained, terminalCommitted }
+    struct Snapshot {
+        var presence: UInt64 = 0
+        var constructorFinished: UInt64 = 0, journalClaimFinished: UInt64 = 0
+        var readyQueued: UInt64 = 0, admitConsumed: UInt64 = 0
+        var suspendedVerificationFinished: UInt64 = 0, resumed: UInt64 = 0
+        var drained: UInt64 = 0, terminalCommitted: UInt64 = 0
+        var values: [UInt64] { [constructorFinished, journalClaimFinished, readyQueued, admitConsumed,
+            suspendedVerificationFinished, resumed, drained, terminalCommitted] }
+        static let names = ["constructor_finished", "journal_claim_finished", "ready_queued", "admit_consumed",
+            "suspended_verification_finished", "resumed", "drained", "terminal_committed"]
+        var fields: [String: Any] {
+            var value: [String: Any] = ["presence": presence]
+            for (name, stamp) in zip(Self.names, values) { value[name] = stamp }
+            return value
+        }
+        func line(issued: UInt64) -> String {
+            // Closed positional elapsed nanoseconds in the documented phase order.
+            // Absent slots stay explicit; no timestamp, path or request is emitted.
+            let elapsed = values.enumerated().map { index, stamp in
+                presence & (UInt64(1) << index) == 0 ? "absent" : String(stamp - issued)
+            }.joined(separator: ",")
+            return "DISCOVERY POLICY HELPER TIMING presence=\(presence) elapsed_ns=\(elapsed)\n"
+        }
+    }
+    private let lock = NSLock()
+    private var value = Snapshot()
+    func mark(_ phase: Phase) {
+        let savedErrno = errno
+        defer { errno = savedErrno }
+        lock.lock(); defer { lock.unlock() }
+        let bit = UInt64(1) << phase.rawValue
+        guard value.presence & bit == 0 else { return }
+        let stamp = DispatchTime.now().uptimeNanoseconds
+        switch phase {
+        case .constructorFinished: value.constructorFinished = stamp
+        case .journalClaimFinished: value.journalClaimFinished = stamp
+        case .readyQueued: value.readyQueued = stamp
+        case .admitConsumed: value.admitConsumed = stamp
+        case .suspendedVerificationFinished: value.suspendedVerificationFinished = stamp
+        case .resumed: value.resumed = stamp
+        case .drained: value.drained = stamp
+        case .terminalCommitted: value.terminalCommitted = stamp
+        }
+        value.presence |= bit
+    }
+    func snapshot() -> Snapshot {
+        lock.lock(); defer { lock.unlock() }; return value
     }
 }
 #endif

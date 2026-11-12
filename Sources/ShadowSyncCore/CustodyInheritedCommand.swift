@@ -35,6 +35,9 @@ final class CustodyInheritedCommand {
         testingConstructionObservation.failureCode
     }
     #endif
+    #if SHADOW_SYNC_TESTING
+    private(set) var testingPolicyTiming: TestingPolicyHelperTiming?
+    #endif
     let request: UnvalidatedCustodyRequest
     let helper: CustodyHelperExecutable
     let identity: ProcessIdentity
@@ -435,6 +438,16 @@ final class CustodyInheritedCommand {
         Self.testingRecordConstructionStage(.parentPostflight)
         #endif
         try revalidateParent()
+        #if SHADOW_SYNC_TESTING
+        let savedTimingErrno = errno
+        defer { errno = savedTimingErrno }
+        if testingDiscovery, helper.testingPolicyTimingEligible, request.kind == .policyClassify,
+           TestingPolicyHelperTiming.childOptedIn {
+            let timing = TestingPolicyHelperTiming()
+            timing.mark(.constructorFinished)
+            testingPolicyTiming = timing
+        }
+        #endif
     }
     static func production() throws -> CustodyInheritedCommand { try Self(helper: CustodyHelperExecutable.production(), fixture: false) }
     static func lifecycle() throws -> CustodyInheritedCommand {
