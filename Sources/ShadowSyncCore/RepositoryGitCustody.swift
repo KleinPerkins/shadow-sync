@@ -309,7 +309,8 @@ extension DescriptorProcessRunner {
         let result = retained.wait()
         if result.phase == .cleanupPending {
             #if SHADOW_SYNC_TESTING
-            DiscoveryFixtureDiagnostic.recordRepositoryResult(result)
+            DiscoveryFixtureDiagnostic.recordRepositoryResult(result,
+                observeCustodianFailure: context.testingRepositoryPausePhase == "observe")
             #endif
             context.recordCleanupPending(); cancellation.closeFutureChildAdmissions()
             throw SelectedRepositoryScopeError.cleanupPending
@@ -321,7 +322,8 @@ extension DescriptorProcessRunner {
               [CustodyReason.none, .cancelled, .timeout, .outputLimit].contains(reason),
               let raw = journal.waitStatus else {
             #if SHADOW_SYNC_TESTING
-            DiscoveryFixtureDiagnostic.recordRepositoryResult(result)
+            DiscoveryFixtureDiagnostic.recordRepositoryResult(result,
+                observeCustodianFailure: context.testingRepositoryPausePhase == "observe")
             #endif
             throw RepositoryGitCommandError.unavailable
         }

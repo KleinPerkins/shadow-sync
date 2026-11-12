@@ -399,8 +399,42 @@ enum DiscoveryFixtureDiagnostic {
 
     // Reuse the one-shot latch and the existing shared failure allowance. This
     // observes only an actual failing runRepository wait result, never a reread.
+    // The helper's diagnostic shares the captured stderr carrier with target
+    // output. Project only a complete, final, LF-delimited closed frame; never
+    // forward raw bytes or treat this observation as authenticated authority.
+    private static let repositoryCustodianFailureProjections: [(bytes: Data, event: String, error: String)] = {
+        let events = ["spawnTargetFailure", "advanceStageFailure", "repositoryPostflightFailure"]
+        let families = [
+            "busy", "committed-cleanup", "conflict", "fenced", "git-busy",
+            "git-cancelled", "git-command-failed", "git-custom-transport", "git-detached", "git-dirty",
+            "git-hidden-index", "git-local-main-missing", "git-main-linked", "git-malformed-config", "git-origin-changed",
+            "git-primary-not-main", "git-remote-main-missing", "git-replacement-or-graft", "git-repository-removed", "git-unsafe-repository",
+            "git-unsupported-hook", "host-policy-unavailable", "injected", "invalid-record", "invalid-transition",
+            "none", "other", "persistence", "policy-file-unavailable", "policy-helper-cleanup-pending",
+            "policy-helper-unavailable", "policy-invalid-request", "policy-invalid-response", "protocol-budget", "protocol-message",
+            "protocol-sequence", "publisher-unavailable", "resource-closed", "resource-invalid", "resource-limit",
+            "resource-system-call", "unsafe-metadata",
+        ]
+        return events.flatMap { event in
+            families.map { error in
+                let line = "DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE event=\(event) error=\(error)\n"
+                return (bytes: Data(line.utf8), event: event, error: error)
+            }
+        }
+    }()
+    private static func repositoryCustodianFailureProjection(_ bytes: Data) -> (event: String, error: String)? {
+        for row in repositoryCustodianFailureProjections {
+            guard bytes.count >= row.bytes.count,
+                  bytes.suffix(row.bytes.count).elementsEqual(row.bytes),
+                  bytes.count == row.bytes.count || bytes[bytes.endIndex - row.bytes.count - 1] == 10 else { continue }
+            return (event: row.event, error: row.error)
+        }
+        return nil
+    }
     private static let firstRepositoryResultFailure = FirstAdmissionFailure()
-    static func recordRepositoryResult(_ result: CustodyRegistryResult) {
+    static func recordRepositoryResult(_ result: CustodyRegistryResult, observeCustodianFailure: Bool = false) {
+        let savedErrno = errno
+        defer { errno = savedErrno }
         guard isEnabled, firstRepositoryResultFailure.take() else { return }
         let phase: String
         switch result.phase {
@@ -418,6 +452,14 @@ enum DiscoveryFixtureDiagnostic {
             + " journal_reason=\(result.journal?.reason?.rawValue ?? "absent")"
             + " outcome=\(result.journal?.outcome?.rawValue ?? "absent")"
             + " wait_status=\(result.journal?.waitStatus.map { String($0) } ?? "absent")\n")
+        if observeCustodianFailure, result.phase == .finished, result.journal?.kind == .repositoryGit {
+            if let projection = repositoryCustodianFailureProjection(result.stderr) {
+                failureSink.emit("DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE carrier=stderr present=true"
+                    + " event=\(projection.event) error=\(projection.error)\n")
+            } else {
+                failureSink.emit("DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE carrier=stderr present=false\n")
+            }
+        }
     }
 
     /// Exact closed result fields for failed fixture commands. No process IDs,

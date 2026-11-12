@@ -2843,8 +2843,19 @@ extension CustodyCatalogStore {
             }
             let generation = metadataGeneration; mutex.unlock()
             try stop.validateOwner(owner)
+            // Join the original readiness service before slot revalidation. Its
+            // accept queue also validates this endpoint, independently of journal
+            // serialization. No metadata/catalog/service lock spans this join.
+            // Closure is not candidate-stop proof; the durable stop command and
+            // its authenticated retirement remain required below.
+            try closeReadiness(deadline: deadline)
+            try stop.validateOwner(owner)
             guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
-            guard !serializing, metadataGeneration == generation, !failed else {
+            guard !serializing, metadataGeneration == generation, !failed, pending == nil,
+                  (self.stop == nil && current.phase == .active)
+                    || (self.stop === stop && current.phase == .recovery && reconciledStart),
+                  current.step?.status == .complete,
+                  [.openStagedAdmission, .bootstrapCandidate, .kickstartCandidate].contains(current.step!.action) else {
                 mutex.unlock(); throw CustodyRecordError.fenced
             }
             self.stop = stop; metadataGeneration += 1; mutex.unlock()

@@ -156,10 +156,12 @@ enum InstallationStagedJournalFixtures {
                 _ = try journal.completeAdmission(deadline: .init(seconds: 3))
                 diagnostic.record(.owner, .completeAfter)
                 let before = try read(location, .owner)
+                guard let originalSession = journal.testingSession else { throw H.Failure(message: "missing wrong-owner session") }
                 diagnostic.record(.owner, .wrongStopBefore)
                 try H.refuses { _ = try journal.candidateStopIntent(admission: otherStop, deadline: .init(seconds: 3)) }
                 diagnostic.record(.owner, .wrongStopRefused)
                 try H.check(try read(location, .owner) == before, "wrong stop owner changed control")
+                try H.check(journal.testingSession === originalSession, "wrong stop owner joined valid session")
                 diagnostic.record(.owner, .revalidateBefore)
                 try owner.revalidate()
                 diagnostic.record(.owner, .revalidateAfter)
@@ -174,14 +176,22 @@ enum InstallationStagedJournalFixtures {
         try fixture { _, location, owner, _, admission, journal, registry in
             var diagnosticStage: UInt8 = 1
             do {
-                _ = try journal.completeAdmission(deadline: .init(seconds: 3))
+                let completed = try journal.completeAdmission(deadline: .init(seconds: 3))
                 diagnosticStage = 2
+                guard let originalSession = journal.testingSession, let endpoint = journal.testingEndpoint,
+                      let endpointImage = completed.transaction?.slots.images[.installationSocket] else {
+                    throw H.Failure(message: "missing original stop session or endpoint")
+                }
                 let retirement = try registry.installationStagedStartRetirement(after: admission.closeStarts())
                 diagnosticStage = 3
                 let stop = try admission.stopOnly(after: retirement)
                 diagnosticStage = 4
                 let observation = try journal.candidateStopIntent(admission: stop, deadline: .init(seconds: 3))
                 diagnosticStage = 5
+                try H.check(journal.testingSession == nil && !originalSession.start(), "stop intent did not join original session")
+                try endpoint.requireServiceClosed()
+                try H.check(journal.testingEndpoint === endpoint && (try endpoint.image) == endpointImage,
+                    "service closure replaced or retired the named endpoint")
                 let binding = try InstallationCommandBinding.decode(observation.sealedInput(deadline: .init(seconds: 3)))
                 diagnosticStage = 6
                 try H.check(binding.control.phase == .recovery && binding.control.step?.action == .candidateStop
@@ -209,6 +219,39 @@ enum InstallationStagedJournalFixtures {
                 }
                 throw error
             }
+        }
+        try fixture { root, location, _, _, admission, journal, registry in
+            let deadline = MonotonicDeadline(seconds: 3)
+            _ = try journal.completeAdmission(deadline: deadline)
+            guard let session = journal.testingSession, let endpoint = journal.testingEndpoint else {
+                throw H.Failure(message: "missing failed-stop session")
+            }
+            let barrier = CustodyLeaseTestingBarrier()
+            defer { barrier.release() }
+            session.testingPauseVerification(barrier)
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard fd >= 0 else { throw H.Failure(message: "failed-stop fixture socket") }
+            defer { close(fd) }
+            var address = try HostControlIO.address(path: location.path + "/installation.sock")
+            let connected = withUnsafePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            try H.check(connected == 0 && barrier.waitUntilEntered(), "failed-stop verifier did not enter")
+            let retirement = try registry.installationStagedStartRetirement(after: admission.closeStarts())
+            let stop = try admission.stopOnly(after: retirement)
+            let before = try persistenceSnapshot(location)
+            let rootBefore = try node(root)
+            try H.refuses { _ = try journal.candidateStopIntent(admission: stop, deadline: .init(seconds: 0.02)) }
+            try H.check(try persistenceSnapshot(location) == before, "failed join wrote stop intent or recovery evidence")
+            try H.check(journal.testingSession === session && journal.testingEndpoint === endpoint,
+                "failed join lost original readiness owners")
+            try H.check(try node(root) == rootBefore, "failed join lost retained fixture root")
+            try InstallationOwnershipFixtures.excluded(location)
+            barrier.release()
+            try journal.closeReadiness(deadline: deadline)
+            try H.check(journal.testingSession == nil, "released failed-stop verifier did not join")
         }
     }
     static func bindingRefusals() throws {
@@ -395,19 +438,36 @@ enum InstallationStagedJournalFixtures {
         }
         return PersistenceSnapshot(directories: directories, files: files)
     }
-    private static func expectedAdmissionCompletion(_ before: InstallationControlRecord)
+    private static func expectedAdmissionCompletion(_ before: InstallationControlRecord,
+        endpoint: InstallationReadinessEndpoint?)
         throws -> (InstallationStepReceipt.CanonicalObservation, InstallationControlRecord) {
         guard let transaction = before.transaction, before.step?.action == .openStagedAdmission,
-              before.step?.status == .intent, before.step?.ordinal == 12 else {
+              before.step?.status == .intent, before.step?.ordinal == 12,
+              let endpoint, let priorSocket = transaction.slots.images[.installationSocket] else {
             throw H.Failure(message: "persistence fixture has wrong admission intent")
         }
+        // Derive only the newly created socket from its original retained
+        // endpoint owner after the cut. Every other expected image comes from
+        // the independently captured old control, never the proposed receipt.
+        let socket = try endpoint.image
+        try socket.validate(slot: .installationSocket, uid: before.state.directory.uid)
+        try H.check(priorSocket.node == nil && socket.node?.type == .socket
+            && socket.parentDevice == priorSocket.parentDevice && socket.parentInode == priorSocket.parentInode,
+            "staged continuation socket binding")
+        var images = transaction.slots.images
+        images[.installationSocket] = socket
+        let postimage = InstallationSlotSnapshot(images: images)
+        try postimage.validate(uid: before.state.directory.uid)
         let receipt = InstallationStepReceipt(transactionID: transaction.id, ordinal: 12,
             previousReceiptDigest: before.latestReceiptDigest, action: .openStagedAdmission, status: .complete,
-            preimage: transaction.slots, postimage: transaction.slots,
+            preimage: transaction.slots, postimage: postimage,
             bindingDigest: try transaction.bindingDigest(state: before.state))
         let canonical = try InstallationStepReceipt.CanonicalObservation(validating: receipt, uid: before.state.directory.uid)
+        let successor = InstallationTransaction(id: transaction.id, boot: transaction.boot, intent: transaction.intent,
+            coordinator: transaction.coordinator, sourceReleaseDigest: transaction.sourceReleaseDigest,
+            candidate: transaction.candidate, priorCommitDigest: transaction.priorCommitDigest, slots: postimage)
         let control = InstallationControlRecord(revision: before.revision + 1, phase: .active,
-            state: before.state, transaction: transaction, step: try receipt.step(), latestReceiptDigest: canonical.digest,
+            state: before.state, transaction: successor, step: try receipt.step(), latestReceiptDigest: canonical.digest,
             readinessCommit: nil, recoveryReason: nil)
         return (canonical, control)
     }
@@ -493,10 +553,10 @@ enum InstallationStagedJournalFixtures {
         for cut: J.Cut in [.afterReceipt, .beforeControl] {
             try fixture { _, location, _, _, admission, journal, _ in
                 let before = try persistenceSnapshot(location), control = try record(location)
-                let expected = try expectedAdmissionCompletion(control)
                 try InstallationOwnershipFixtures.excluded(location)
                 journal.testingCut(cut)
                 try H.refuses { _ = try journal.completeAdmission(deadline: .init(seconds: 3)) }
+                let expected = try expectedAdmissionCompletion(control, endpoint: journal.testingEndpoint)
                 let after = try assertPersistenceState(location, before: before,
                     expectedControl: control, controlPublished: false, receipt: expected.0, retainedPreimage: false)
                 try assertStickyPersistence(location, admission: admission, journal: journal, expected: after, pending: true)
@@ -508,11 +568,11 @@ enum InstallationStagedJournalFixtures {
             for cut in receiptWrite ? receiptCuts : controlCuts {
                 try fixture { _, location, _, _, admission, journal, _ in
                     let before = try persistenceSnapshot(location), control = try record(location)
-                    let expected = try expectedAdmissionCompletion(control)
                     try InstallationOwnershipFixtures.excluded(location)
                     if receiptWrite { journal.testingWriteFault(receipt: cut) }
                     else { journal.testingWriteFault(control: cut) }
                     try H.refuses { _ = try journal.completeAdmission(deadline: .init(seconds: 3)) }
+                    let expected = try expectedAdmissionCompletion(control, endpoint: journal.testingEndpoint)
                     let controlPublished = !receiptWrite && cut != .beforeSwap
                     let receiptPublished = !receiptWrite || cut != .beforeSwap
                     let retained = !receiptWrite && (cut == .afterSwap || cut == .afterDirectorySync)
