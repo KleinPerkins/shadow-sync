@@ -2705,12 +2705,18 @@ public final class RetentionArtifactStore:
         flags & ~(UInt32(UF_NODUMP) | UInt32(UF_HIDDEN)) == 0
     }
     private func validateAttempt(_ owner: Attempt, requireSlot: Bool = true) throws {
-        let stateNow = try cleanupSnapshot(owner.state.descriptor.value)
-        guard let parent = owner.parent, let expected = owner.parentIdentity, let parentFlags = owner.parentFlags,
-              FileIdentity(stateNow).matchesStableNode(owner.stateIdentity),
-              stateNow.st_flags == owner.stateFlags, Self.cleanupFlagsAllowed(stateNow.st_flags),
-              (stateNow.st_mode & 0o7777) == 0o700 else { throw SelectedRepositoryScopeError.cleanupPending }
-        _ = try PolicyAuthorityFile.privateStateACL(owner.state.descriptor.value)
+        _ = try PolicyAuthorityFile.privateStateACLObservation(owner.state.descriptor.value) { observed in
+            guard let stateNow = observed else {
+                throw SecureStateError.systemCall("inspect owned retention descriptor", errno)
+            }
+            guard owner.parent != nil, owner.parentIdentity != nil, owner.parentFlags != nil,
+                  FileIdentity(stateNow).matchesStableNode(owner.stateIdentity),
+                  stateNow.st_flags == owner.stateFlags, Self.cleanupFlagsAllowed(stateNow.st_flags),
+                  (stateNow.st_mode & 0o7777) == 0o700 else { throw SelectedRepositoryScopeError.cleanupPending }
+        }
+        guard let parent = owner.parent, let expected = owner.parentIdentity, let parentFlags = owner.parentFlags else {
+            throw SelectedRepositoryScopeError.cleanupPending
+        }
         try validateCleanupDirectory(named: "retention", parent: owner.state.descriptor.value,
             descriptor: parent.value, identity: expected, flags: parentFlags)
         if requireSlot {
@@ -2722,31 +2728,33 @@ public final class RetentionArtifactStore:
     }
     private func validateCleanupDirectory(named name: String, parent: Int32,
                                           descriptor: Int32, identity: FileIdentity, flags: UInt32) throws {
-        var held = stat(), named = stat()
-        guard fstat(descriptor, &held) == 0,
-              fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
-              identity.matchesStableNode(FileIdentity(held)), identity.matchesStableNode(FileIdentity(named)),
-              held.st_uid == account.uid, (held.st_mode & S_IFMT) == S_IFDIR,
-              (held.st_mode & 0o7777) == 0o700,
-              held.st_flags == flags, named.st_flags == flags, Self.cleanupFlagsAllowed(flags) else {
-            throw GitSafetyError.unsafeRepository("retention cleanup directory identity changed")
+        _ = try PolicyAuthorityFile.privateStateACLObservation(descriptor) { observed in
+            var named = stat()
+            guard let held = observed,
+                  fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  identity.matchesStableNode(FileIdentity(held)), identity.matchesStableNode(FileIdentity(named)),
+                  held.st_uid == account.uid, (held.st_mode & S_IFMT) == S_IFDIR,
+                  (held.st_mode & 0o7777) == 0o700,
+                  held.st_flags == flags, named.st_flags == flags, Self.cleanupFlagsAllowed(flags) else {
+                throw GitSafetyError.unsafeRepository("retention cleanup directory identity changed")
+            }
         }
-        _ = try PolicyAuthorityFile.privateStateACL(descriptor)
     }
     private func validateCleanupNode(_ node: CleanupNode, descriptor: Int32, parent: Int32) throws {
-        var named = stat(), held = stat()
-        let before = node.before, kind = before.st_mode & S_IFMT
-        guard fstat(descriptor, &held) == 0,
-              fstatat(parent, node.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
-              FileIdentity(before).matchesStableNode(FileIdentity(held)),
-              FileIdentity(before).matchesStableNode(FileIdentity(named)),
-              held.st_flags == before.st_flags, named.st_flags == before.st_flags,
-              Self.cleanupFlagsAllowed(before.st_flags),
-              kind == S_IFDIR || (held.st_nlink == 1 && named.st_nlink == 1
-                && Self.sameSnapshot(before, held) && Self.sameSnapshot(before, named)) else {
-            throw GitSafetyError.unsafeRepository("retention cleanup named and held nodes differ")
+        _ = try PolicyAuthorityFile.privateStateACLObservation(descriptor) { observed in
+            var named = stat()
+            let before = node.before, kind = before.st_mode & S_IFMT
+            guard let held = observed,
+                  fstatat(parent, node.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  FileIdentity(before).matchesStableNode(FileIdentity(held)),
+                  FileIdentity(before).matchesStableNode(FileIdentity(named)),
+                  held.st_flags == before.st_flags, named.st_flags == before.st_flags,
+                  Self.cleanupFlagsAllowed(before.st_flags),
+                  kind == S_IFDIR || (held.st_nlink == 1 && named.st_nlink == 1
+                    && Self.sameSnapshot(before, held) && Self.sameSnapshot(before, named)) else {
+                throw GitSafetyError.unsafeRepository("retention cleanup named and held nodes differ")
+            }
         }
-        _ = try PolicyAuthorityFile.privateStateACL(descriptor)
     }
     private static func sameCleanupFile(_ lhs: stat, _ rhs: stat) -> Bool {
         sameSnapshot(lhs, rhs) && lhs.st_uid == rhs.st_uid && lhs.st_gid == rhs.st_gid
@@ -2818,12 +2826,16 @@ public final class RetentionArtifactStore:
         guard spill.anonymous, let original = spill.original, let reader = spill.reader else {
             throw SelectedRepositoryScopeError.cleanupPending
         }
-        let fd = try reader.descriptor(), now = try cleanupSnapshot(fd)
-        guard FileIdentity(original).matchesStableNode(FileIdentity(now)), now.st_nlink == 0,
-              now.st_flags == original.st_flags, now.st_size == spill.bytes,
-              (fcntl(fd, F_GETFL) & O_ACCMODE) == O_RDONLY,
-              fcntl(fd, F_GETFD) == FD_CLOEXEC else { throw SelectedRepositoryScopeError.cleanupPending }
-        _ = try PolicyAuthorityFile.privateStateACL(fd)
+        let fd = try reader.descriptor()
+        let now = try PolicyAuthorityFile.privateStateACLObservation(fd) { observed in
+            guard let now = observed else {
+                throw SecureStateError.systemCall("inspect owned retention descriptor", errno)
+            }
+            guard FileIdentity(original).matchesStableNode(FileIdentity(now)), now.st_nlink == 0,
+                  now.st_flags == original.st_flags, now.st_size == spill.bytes,
+                  (fcntl(fd, F_GETFL) & O_ACCMODE) == O_RDONLY,
+                  fcntl(fd, F_GETFD) == FD_CLOEXEC else { throw SelectedRepositoryScopeError.cleanupPending }
+        }
         if requireSealed {
             guard spill.writer?.closed == true, let sealed = spill.sealed,
                   Self.sameSnapshot(sealed, now), sealed.st_flags == now.st_flags else {

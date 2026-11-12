@@ -203,6 +203,19 @@ struct PolicyAuthorityFile: Equatable, Sendable {
         try checkedACL(descriptor, allowingReadGrants: false)
     }
 
+    /// Validate each caller's original metadata checks before ACL decoding.
+    /// A failed combined query uses the original fstat only on that error path,
+    /// preserving metadata refusal precedence before the ACL failure escapes.
+    static func privateStateACLObservation(_ descriptor: Int32,
+        validateMetadata: (stat?) throws -> Void) throws -> stat {
+        var info = stat()
+        _ = try withoutActuallyEscaping(validateMetadata) { validator in
+            try checkedACL(descriptor, allowingReadGrants: false, observedStat: &info,
+                           metadataValidator: validator)
+        }
+        return info
+    }
+
     /// Retain the stat already filled by the ACL security query. This is a
     /// fresh observation, not a cache; callers still check names and the full
     /// batch postflight after every payload has been read.
@@ -216,29 +229,41 @@ struct PolicyAuthorityFile: Equatable, Sendable {
     /// Existing descriptor APIs retain the no-op default and identical policy.
     static func socketObservationDirectoryACL(_ descriptor: Int32, privateState: Bool,
                                                deadline: MonotonicDeadline) throws -> String {
-        try checkedACL(descriptor, allowingReadGrants: !privateState) {
+        try checkedACL(descriptor, allowingReadGrants: !privateState, checkBudget: {
             if deadline.hasExpired { throw CustodyRecordError.busy }
-        }
+        })
     }
 
     private static func checkedACL(_ descriptor: Int32, allowingReadGrants: Bool,
                                    observedStat: UnsafeMutablePointer<stat>? = nil,
+                                   metadataValidator: ((stat?) throws -> Void)? = nil,
                                    checkBudget: () throws -> Void = {}) throws -> String {
         try checkBudget()
         // acl_get_fd_np returns nil/ENOENT for an absent ACL as well as other
         // failures. Prove absence from a successful descriptor security read
         // instead of interpreting an errno as permission to continue.
         guard let security = filesec_init() else {
+            try validateMetadataAfterSecurityFailure(descriptor, validator: metadataValidator)
             throw PolicyAuthorityFileError.unavailable
         }
         defer { filesec_free(security) }
         var info = stat()
         guard fstatx_np(descriptor, &info, security) == 0 else {
+            try validateMetadataAfterSecurityFailure(descriptor, validator: metadataValidator)
             throw PolicyAuthorityFileError.unavailable
         }
+        try metadataValidator?(info)
         let acl = try checkedSecurityACL(security, allowingReadGrants: allowingReadGrants, checkBudget: checkBudget)
         observedStat?.pointee = info
         return acl
+    }
+
+    private static func validateMetadataAfterSecurityFailure(_ descriptor: Int32,
+        validator: ((stat?) throws -> Void)?) throws {
+        guard let validator else { return }
+        var info = stat()
+        let status = fstat(descriptor, &info)
+        try validator(status == 0 ? info : nil)
     }
 
     /// Named strict-getter callers validate native bytes and own this ACL.

@@ -47,6 +47,19 @@ public struct ValidatedSelectedRepository:
     public let repositoryPath: String
     public let rootIdentity: FileIdentity
     public let repositoryIdentity: FileIdentity
+
+    // A directory's child count is an observation, not its generation. Keep
+    // full FileIdentity values as observations and repository identity exact;
+    // only a live directory root compares its stable inode/protection.
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        let a = lhs.rootIdentity, b = rhs.rootIdentity
+        let rootMatches = a.isDirectory && b.isDirectory && a.linkCount > 0 && b.linkCount > 0
+            ? a.matchesStableNode(b) : a == b
+        return lhs.repositoryID == rhs.repositoryID && lhs.locator == rhs.locator
+            && lhs.governedRootPath == rhs.governedRootPath && lhs.policyRootPath == rhs.policyRootPath
+            && lhs.repositoryPath == rhs.repositoryPath && rootMatches
+            && lhs.repositoryIdentity == rhs.repositoryIdentity
+    }
 }
 
 public struct ValidatedSelectedRepositoryScope:
@@ -412,7 +425,11 @@ final class RepositoryDiscoveryPolicy {
         try RepositoryRootPathIdentity.withVerifiedDirectory(path: account.homeDirectory,
             expected: RepositoryDirectoryIdentity(selected.rootIdentity)) { opened in
             var info = stat()
-            guard fstat(opened.descriptor, &info) == 0, FileIdentity(info) == selected.rootIdentity else {
+            guard fstat(opened.descriptor, &info) == 0 else { throw SelectedRepositoryScopeError.changed }
+            let observed = FileIdentity(info)
+            guard observed.isDirectory, observed.linkCount > 0,
+                  selected.rootIdentity.isDirectory, selected.rootIdentity.linkCount > 0,
+                  observed.matchesStableNode(selected.rootIdentity) else {
                 throw SelectedRepositoryScopeError.changed
             }
         }
@@ -1254,6 +1271,7 @@ public final class SelectedRepositoryScopeBinder:
             var info = stat()
             guard fstat(descriptor, &info) == 0,
                   FileIdentity(info).isDirectory,
+                  info.st_nlink > 0,
                   info.st_uid == expectedUID,
                   (info.st_mode & 0o022) == 0 else {
                 throw SelectedRepositoryScopeError.changed

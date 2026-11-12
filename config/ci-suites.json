@@ -2205,6 +2205,7 @@
       },
       "runtime-m6": {
         "cases": [
+          "m6-selected-root-generation",
           "m6-legacy-state-observation-authority-values",
           "m6-legacy-state-observation-selection-values",
           "m6-legacy-state-observation-original-bytes",
@@ -3728,6 +3729,7 @@
           "test_policy_runtime_build.RuntimeBuildTests.test_requirement_restricts_developer_id_application_class",
           "test_policy_runtime_build.RuntimeBuildTests.test_selection_excludes_gui_development_and_installers",
           "test_policy_runtime_build.RuntimeBuildTests.test_selection_preserves_runtime_and_notices",
+          "test_policy_runtime_build.RuntimeBuildTests.test_signature_layout_modes_survive_private_parent_mask",
           "test_policy_runtime_build.RuntimeBuildTests.test_sqlite_notice_contains_actual_copyright_disclaimer",
           "test_policy_runtime_build.RuntimeBuildTests.test_upstream_identity_requires_trusted_psf_leaf_and_timestamp",
           "test_policy_runtime_build.RuntimeBuildTests.test_wrong_publisher_refuses_before_package_access_or_output"

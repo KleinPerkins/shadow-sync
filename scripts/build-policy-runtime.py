@@ -52,8 +52,12 @@ def sha(path):
 
 
 def run(argv, timeout=120):
+    # codesign creates signature resources whose reviewed sealed modes are
+    # 0755/0644. Set only that child's creation mask; retain the caller's private
+    # mask and every other tool's inherited mask. Output parents stay private.
     result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"})
+                            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"},
+                            umask=0o022 if argv[0] == "/usr/bin/codesign" else -1)
     require(result.returncode == 0, f"{argv[0]} failed ({result.returncode}): {result.stderr}")
     return result.stdout + result.stderr
 
@@ -137,6 +141,7 @@ def load_notice_bundle(pin, root=NOTICES_PATH):
 def install_notice_snapshot(snapshot, resources):
     target = resources / "ThirdPartyNotices"
     target.mkdir(mode=0o755)
+    target.chmod(0o755)
     for name, data in sorted(snapshot.items()):
         path = target / name
         with path.open("xb") as stream:
@@ -214,10 +219,12 @@ def copy_selected(source, destination):
     # Every selected link must resolve inside the selected output after copy.
     wanted = inventory(source, include=selected)
     destination.mkdir(mode=0o755)
+    destination.chmod(0o755)
     for name, row in sorted(wanted.items(), key=lambda item: (len(PurePosixPath(item[0]).parts), item[0])):
         target = destination / name
         if row["kind"] == "directory":
             target.mkdir(mode=0o755)
+            target.chmod(0o755)
         elif row["kind"] == "symlink":
             target.symlink_to(row["target"])
             os.lchmod(target, 0o755)

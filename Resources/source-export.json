@@ -704,7 +704,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
-      "sha256": "00facd3238a7538336344cf778b7b736a19fa05ffdc202176d727d424efe4ef3"
+      "sha256": "8bba2a4848a85e430342852dfde499ed53fc36e69c841ba020f41e73fb0758fa"
     },
     {
       "mode": "100644",
@@ -784,7 +784,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationStagedJournalFixtures.swift",
-      "sha256": "69392327a402db4fb1eb454cedf554af6ae4836bc0c416e387ec16617202a521"
+      "sha256": "bef6a77a86610b23ce2632547199bde67860590c3d1d7b7e768323ccd0d34c32"
     },
     {
       "mode": "100644",
@@ -874,7 +874,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "5f0b0b66cf0f086185d5f262bbea28444d69ecac39a517227ef0c6164a228ff1"
+      "sha256": "ec412c727738ada9887440180372556be9fcc74655084151d50a6f1ecdf4b721"
     },
     {
       "mode": "100644",
@@ -894,7 +894,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/PolicyAuthorityFile.swift",
-      "sha256": "5499b797146423c792bbc0a35b56927895b218f15bb7086282a92906623d6957"
+      "sha256": "ff9c693f6528a2d4ec4749a2a2f7fd8b3b392b20f58244a05db869d1357d90d9"
     },
     {
       "mode": "100644",
@@ -1069,7 +1069,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RetentionArtifact.swift",
-      "sha256": "fc9101e573899e6a5f019b60b12ef84c4648735002d4032dfd3f33e1522335d5"
+      "sha256": "5482c0e81a78991fb7e1d8d63131be5ae9a25acf27f08d5df9699e164cc7448f"
     },
     {
       "mode": "100644",
@@ -1124,7 +1124,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SelectedRepositoryScope.swift",
-      "sha256": "695a84ad8200da4e310f3038e3106e552de66acdcd6dbed885d3754b350ba9b5"
+      "sha256": "b3f6706b22ec5ca8d8968ec32fff506e84863585cac7249b1036f92116f8954e"
     },
     {
       "mode": "100644",
@@ -1169,7 +1169,7 @@
     {
       "mode": "100644",
       "path": "Tests/Fixtures/production-test-markers.json",
-      "sha256": "2b8b83a6887111def4791ad43f5f489cdc0ab04d5fffb774a5edbd673017a8a1"
+      "sha256": "e41a9ef7d109c42890bc61a2508bf84cab857130be0345376c9634d93ea2ae2c"
     },
     {
       "mode": "100644",
@@ -1179,7 +1179,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "727c23b66e9c9964952714b1dae9b10372485a9d8767c71e662dba976e31c6c1"
+      "sha256": "c26b4ddb6a31b24e51b8d021f8bb08a73c9b5a47434f83931c730ce34ccd1f2c"
     },
     {
       "mode": "100644",
@@ -1214,7 +1214,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_application_ci.py",
-      "sha256": "41cadae3447630e4c12004fff1a2603e1a1f9fe9e2d93ace411f802c7db22616"
+      "sha256": "e920b9853b25e40253cb9b4c51ca412eb7d827ec7e6ce09a1121490844f183fd"
     },
     {
       "mode": "100644",
@@ -1304,7 +1304,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_policy_runtime_build.py",
-      "sha256": "723d044570a6c6c2d03dc42cc4e8736157106482bda01d224d6213d4c475be9c"
+      "sha256": "650804fdf46b640919027766bf7caf1171eff24614ac107ad13d7451a7fb41d9"
     },
     {
       "path": "Tests/Tooling/test_private_delivery.py",
@@ -1339,7 +1339,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "71fe154eb19e62d81136d1469d4bedc11c9cc2ff2cba97733dac0474f60bfcf8"
+      "sha256": "d364efd8b00f8bdf11316c0ac8fe1b2ef3ecf032707bbfa72346059778d2946a"
     },
     {
       "mode": "100644",
@@ -1354,12 +1354,12 @@
     {
       "mode": "100644",
       "path": "config/ci-suites.json",
-      "sha256": "3113414c53c12e104bc4bef9971081142eccb3b8327dc3f3a5406527c058b48b"
+      "sha256": "70d19a94616b674180f093b0bfe1576428a36663b37521823d167638dee4b0dd"
     },
     {
       "mode": "100644",
       "path": "config/identity-exceptions.json",
-      "sha256": "15c1a9df76b12b988542fe2ce8a38855f2aa195f37e71cb48464b40078dfb0d4"
+      "sha256": "dd01768aa1b6dd5cbbc305196c95e2161363679614794e92f9489339f1925057"
     },
     {
       "path": "delivery/PROVENANCE.json",
@@ -1449,7 +1449,7 @@
     {
       "mode": "100644",
       "path": "scripts/build-policy-runtime.py",
-      "sha256": "7e5adc80d0fb08d6f56eec99fb532c5d6013e76d97aef708c80be197f3a02be6"
+      "sha256": "e0605a66318546d07356161eb35923ea223f255f3eda60aa00e7acf22376f05a"
     },
     {
       "mode": "100644",

@@ -75,6 +75,9 @@ enum InstallationStagedJournalFixtures {
                 && completed.transaction?.slots.images[.installationSocket]?.node?.type == .socket
                 && before.transaction?.slots.images[.installationSocket]?.node == nil
                 && completed.readinessCommit == nil && completed.phase == .active, "staged continuation socket binding")
+            try H.check(completed.transaction?.slots.images[.stateDestination]
+                == before.transaction?.slots.images[.stateDestination],
+                "owned socket creation changed stable namespace/preimage binding")
             try H.check(try record(location) == completed, "staged completion not durable")
             try H.refuses { try intent.revalidate(for: owner, deadline: .init(seconds: 3)) }
             try H.refuses { _ = try owner.retainExclusiveLeases() }

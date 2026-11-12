@@ -3639,8 +3639,9 @@ extension InstallationLifecycle {
         guard parents.count == 4 else { throw CustodyRecordError.fenced }
         let app = parents[0], plist = parents[1], namespaceParent = parents[2], state = parents[3]
         // The stable namespace excludes only its child-dependent directory
-        // link count, matching InstallationStateBinding.validateLive. Capture
-        // still records and checks the current count within each pass.
+        // link count, matching InstallationStateBinding.validateLive. Durable
+        // images/preimages retain that original binding; each fresh raw node
+        // still carries and rechecks its current count within this pass.
         func isBoundState(_ node: InstallationNodeIdentity) -> Bool {
             let held = stateBinding.directory
             return node.device == held.device && node.inode == held.inode && node.type == held.type
@@ -3702,15 +3703,20 @@ extension InstallationLifecycle {
             guard let (fd, node) = try parent.open(name, directory: slot.isBundle || slot.isNamespace,
                                                  privateMode: !slot.isBundle) else { images[slot] = absent; continue }
             var size: UInt64?, digest: String?, refs: [InstallationDocument: String?]?
+            var imageNode = node
             if slot.isNamespace {
                 guard isBoundState(node), parent === namespaceParent else { throw CustodyRecordError.fenced }
+                // Socket creation changes child count, not the bound namespace
+                // generation or retained preimage. Keep the fresh raw `node`
+                // unchanged for the full held/named recheck below.
+                imageNode = stateBinding.directory
                 var values: [InstallationDocument: String?] = [:]
                 for document in InstallationDocument.allCases {
                     if let (source, identity) = try state.open(document.rawValue, directory: false, privateMode: true) {
                         let bytes = try InstallationCaptureParent.bytes(source.value, maximum: InstallationDocumentPreimage.maximumContentBytes(for: document))
                         try state.recheck(document.rawValue, owned: source, node: identity, privateMode: true)
                         let receipt = InstallationDocumentPreimage(transactionID: transactionID, slot: slot, document: document,
-                            namespace: node, node: identity, bytes: bytes)
+                            namespace: imageNode, node: identity, bytes: bytes)
                         values.updateValue(try receipt.digest(uid: node.uid), forKey: document); documents.append(receipt)
                     } else { values.updateValue(nil, forKey: document) }
                 }
@@ -3726,7 +3732,7 @@ extension InstallationLifecycle {
             }
             try parent.recheck(name, owned: fd, node: node, privateMode: !slot.isBundle)
             images[slot] = InstallationSlotImage(parentDevice: parent.identity.device, parentInode: parent.identity.inode,
-                node: node, size: size, contentDigest: digest, documentReceipts: refs)
+                node: imageNode, size: size, contentDigest: digest, documentReceipts: refs)
         }
         for parent in parents { try parent.validate() }
         let result = InstallationSlotSnapshot(images: images); try result.validate(uid: paths.state.uid)

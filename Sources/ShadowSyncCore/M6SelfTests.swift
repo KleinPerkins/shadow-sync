@@ -30,6 +30,7 @@ public enum M6SelfTestRunner {
             record(name)
         }
 
+        try run("m6-selected-root-generation") { try SelectedRootGenerationFixtures.run() }
         try run("m6-legacy-state-observation-authority-values") { try LegacyStateDocumentFixtures.authorityValues() }
         try run("m6-legacy-state-observation-selection-values") { try LegacyStateDocumentFixtures.selectionValues() }
         try run("m6-legacy-state-observation-original-bytes") { try LegacyStateDocumentFixtures.originalBytes() }
@@ -5817,6 +5818,60 @@ private enum PolicyCommandSelfTests {
         }
         do { _ = try QualifiedCommandGraph.testing(good,kind:.policyClassify,build:"26Fixture"); throw Failure(message:"decoded graph substituted for publisher authority") }
         catch is PublisherPolicyError {}
+    }
+}
+
+
+private enum SelectedRootGenerationFixtures {
+    private static func check(_ value: Bool, _ message: String) throws {
+        if !value { throw NSError(domain: "ShadowSyncSelectedRootFixture", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: message]) }
+    }
+    static func run() throws {
+        try CustodyRegistrySelfTests.fixture { location, _ in
+            let home = location.anchorPath + "/identity-home", repository = home + "/repository"
+            guard mkdir(home, 0o700) == 0, mkdir(repository, 0o700) == 0 else {
+                throw CustodyRecordError.persistence(errno)
+            }
+            var rootBefore = stat(), repositoryBefore = stat()
+            try check(lstat(home, &rootBefore) == 0 && lstat(repository, &repositoryBefore) == 0,
+                "root fixture metadata")
+            let locator = try RepositorySelectionLocator(governedRoot: "~", components: ["repository"])
+            func selected(_ root: stat, _ repo: stat) -> ValidatedSelectedRepository {
+                ValidatedSelectedRepository(repositoryID: "fixture-owner/ready", locator: locator,
+                    governedRootPath: home, policyRootPath: home, repositoryPath: repository,
+                    rootIdentity: FileIdentity(root), repositoryIdentity: FileIdentity(repo))
+            }
+            let original = selected(rootBefore, repositoryBefore)
+            try check(mkdir(home + "/child", 0o700) == 0, "root fixture owned child")
+            var rootAfter = stat()
+            try check(lstat(home, &rootAfter) == 0 && rootBefore.st_nlink != rootAfter.st_nlink,
+                "root fixture did not exercise real child-count change")
+            try check(FileIdentity(rootBefore) != FileIdentity(rootAfter), "raw identity lost child observation")
+            try check(original == selected(rootAfter, repositoryBefore), "root child count changed generation")
+            for field in 0..<5 {
+                var changed = rootAfter
+                switch field {
+                case 0: changed.st_dev += 1
+                case 1: changed.st_ino += 1
+                case 2: changed.st_uid += 1
+                case 3: changed.st_mode ^= 0o020
+                default: changed.st_nlink = 0
+                }
+                try check(original != selected(changed, repositoryBefore), "root generation/protection drift accepted")
+            }
+            try check(mkdir(repository + "/child", 0o700) == 0, "repository fixture owned child")
+            var repositoryAfter = stat()
+            try check(lstat(repository, &repositoryAfter) == 0 && repositoryBefore.st_nlink != repositoryAfter.st_nlink,
+                "repository fixture did not exercise child-count change")
+            try check(original != selected(rootAfter, repositoryAfter), "repository snapshot comparison was broadened")
+            var regular = rootBefore
+            regular.st_mode = S_IFREG | 0o600; regular.st_nlink = 1
+            var linked = regular; linked.st_nlink = 2
+            try check(selected(regular, repositoryBefore) != selected(linked, repositoryBefore),
+                "regular-file link identity was broadened")
+            try check(original == original, "scope equality is not reflexive")
+        }
     }
 }
 
