@@ -2599,24 +2599,52 @@ extension CustodyCatalogStore {
             }
         }
         func completeAdmission(deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            #if SHADOW_SYNC_TESTING
+            var diagnosticStage: UInt8 = 1
+            var diagnosticComplete = false
+            defer {
+                if !diagnosticComplete { InstallationReadinessEndpoint.testingRecordFailure(part: .journal, stage: diagnosticStage) }
+            }
+            #endif
             do {
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 2
+            #endif
             let completed: (InstallationControlRecord, InstallationPrecommitSession) = try serialized(deadline: deadline,
                 requiresOpenReadiness: true) { store in
                 guard stop == nil, current.phase == .active, current.step?.action == .openStagedAdmission,
                       current.step?.ordinal == 12, current.step?.status == .intent,
                       let transaction = current.transaction, let candidate = transaction.candidate else { throw CustodyRecordError.fenced }
+                #if SHADOW_SYNC_TESTING
+                diagnosticStage = 3
+                #endif
                 let endpoint = try slots.createReadinessEndpoint(for: owner, deadline: deadline)
+                #if SHADOW_SYNC_TESTING
+                diagnosticStage = 4
+                #endif
                 try lockReadiness(deadline)
                 readinessEndpoint = endpoint
                 let closed = readinessClosed
                 readinessMutex.unlock()
                 guard !closed else { endpoint.closeService(); throw CustodyRecordError.fenced }
+                #if SHADOW_SYNC_TESTING
+                diagnosticStage = 5
+                #endif
                 let record = try publish(proposal(.openStagedAdmission, status: .complete,
                     postimage: slots.readinessSnapshot), store: store, deadline: deadline)
+                #if SHADOW_SYNC_TESTING
+                diagnosticStage = 6
+                #endif
                 let app = try InstallationPrecommitTransport.identity(candidate: candidate, coordinator: false,
                     team: transaction.coordinator.team)
+                #if SHADOW_SYNC_TESTING
+                diagnosticStage = 7
+                #endif
                 let session = InstallationPrecommitSession(ReadinessContext(journal: self, endpoint: endpoint,
                     app: app, uid: current.state.directory.uid, deadline: deadline))
+                #if SHADOW_SYNC_TESTING
+                diagnosticStage = 8
+                #endif
                 try lockReadiness(deadline)
                 let canPublish = !readinessClosed && readinessSession == nil
                 if canPublish { readinessSession = session }
@@ -2625,6 +2653,9 @@ extension CustodyCatalogStore {
                     try session.cancelAndJoin(deadline: deadline)
                     throw CustodyRecordError.fenced
                 }
+                #if SHADOW_SYNC_TESTING
+                diagnosticStage = 9
+                #endif
                 return (record, session)
             }
             // Reservation already exists before publication. Queue launch is a
@@ -2635,7 +2666,13 @@ extension CustodyCatalogStore {
                 guard barrier.pause() else { try completed.1.cancelAndJoin(deadline: deadline); throw CustodyRecordError.busy }
             }
             #endif
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 10
+            #endif
             guard completed.1.start() else { throw CustodyRecordError.fenced }
+            #if SHADOW_SYNC_TESTING
+            diagnosticComplete = true
+            #endif
             return completed.0
             } catch {
                 let original = error

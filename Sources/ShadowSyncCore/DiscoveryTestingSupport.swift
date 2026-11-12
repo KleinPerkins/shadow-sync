@@ -280,6 +280,45 @@ enum DiscoveryFixtureDiagnostic {
         case fixture, resources, parallelCommands, parallelResults, drain, onceOnly
         case progress, cleanupDrain, fixtureCleanup
     }
+    // Closed mismatch mask: header/count bits0...4, path/selection comparisons
+    // bits5...9, root/repository identity scalars bits10...19; bit20 reports
+    // an uninspected tail. No original or current field value is emitted.
+    static func rebindMismatchBits(original: ValidatedSelectedRepositoryScope,
+        current: ValidatedSelectedRepositoryScope) -> UInt64 {
+        var bits: UInt64 = 0
+        if original.selectionGeneration != current.selectionGeneration { bits |= 1 << 0 }
+        if original.policyDigest != current.policyDigest { bits |= 1 << 1 }
+        if original.catalogGeneration != current.catalogGeneration { bits |= 1 << 2 }
+        if original.governedRootRole != current.governedRootRole { bits |= 1 << 3 }
+        if original.repositories.count != current.repositories.count { bits |= 1 << 4 }
+        if max(original.repositories.count, current.repositories.count) > 64 { bits |= 1 << 20 }
+        for (a, b) in zip(original.repositories.prefix(64), current.repositories.prefix(64)) {
+            if a.repositoryID != b.repositoryID { bits |= 1 << 5 }
+            if a.locator != b.locator { bits |= 1 << 6 }
+            if a.governedRootPath != b.governedRootPath { bits |= 1 << 7 }
+            if a.policyRootPath != b.policyRootPath { bits |= 1 << 8 }
+            if a.repositoryPath != b.repositoryPath { bits |= 1 << 9 }
+            if a.rootIdentity.device != b.rootIdentity.device { bits |= 1 << 10 }
+            if a.rootIdentity.inode != b.rootIdentity.inode { bits |= 1 << 11 }
+            if a.rootIdentity.owner != b.rootIdentity.owner { bits |= 1 << 12 }
+            if a.rootIdentity.mode != b.rootIdentity.mode { bits |= 1 << 13 }
+            if a.rootIdentity.linkCount != b.rootIdentity.linkCount { bits |= 1 << 14 }
+            if a.repositoryIdentity.device != b.repositoryIdentity.device { bits |= 1 << 15 }
+            if a.repositoryIdentity.inode != b.repositoryIdentity.inode { bits |= 1 << 16 }
+            if a.repositoryIdentity.owner != b.repositoryIdentity.owner { bits |= 1 << 17 }
+            if a.repositoryIdentity.mode != b.repositoryIdentity.mode { bits |= 1 << 18 }
+            if a.repositoryIdentity.linkCount != b.repositoryIdentity.linkCount { bits |= 1 << 19 }
+        }
+        return bits
+    }
+    private static let firstRebindMismatch = FirstAdmissionFailure()
+    static func recordRebindMismatch(original: ValidatedSelectedRepositoryScope,
+        current: ValidatedSelectedRepositoryScope) {
+        guard isEnabled, firstRebindMismatch.take() else { return }
+        let bits = rebindMismatchBits(original: original, current: current)
+        failureSink.emit("DISCOVERY REBIND FIRST MISMATCH fields=\(bits)\n")
+    }
+
     enum RepositoryReadErrorFamily: String {
         case repositoryCommand, selectedScope, gitConfiguration, resource, policyAuthority
         case gitSafety, fixture, other

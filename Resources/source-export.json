@@ -464,7 +464,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CustodyCatalog.swift",
-      "sha256": "d4e54b6387d295e2d20ae714c3fdd5159a754427568e1cea4ba5ca03bc4ed25e"
+      "sha256": "7115ed34c2ab19a9600de9c4ae635f7df040e7efb5d438f0894958232ca0c501"
     },
     {
       "mode": "100644",
@@ -499,7 +499,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body3SelfTests.swift",
-      "sha256": "d813651f04ab8a3737ece5573a75176f58166f2feee28aabf10bc2ab3b37dc4f"
+      "sha256": "dd5ca74cc0d070970150e1025074b238aab2b6abf0686c05eb58837e67373015"
     },
     {
       "mode": "100644",
@@ -569,7 +569,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DiscoveryTestingSupport.swift",
-      "sha256": "58022d6a0f1829554c18aa964bfafb42d25ccf8770d30d2d85d74b91d3da8d10"
+      "sha256": "014360257ccb60fd5eb7bfdb98ce5077634b6c644912565bcc29678a475b6844"
     },
     {
       "mode": "100644",
@@ -704,7 +704,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
-      "sha256": "0cbf04e7f2f52282daf00e6af33536358916b0c60993df65e263d82de760a4a2"
+      "sha256": "00facd3238a7538336344cf778b7b736a19fa05ffdc202176d727d424efe4ef3"
     },
     {
       "mode": "100644",
@@ -1124,7 +1124,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SelectedRepositoryScope.swift",
-      "sha256": "58714d9e44b86730b1ca3650c4a2411c8cc91c7da692dcc4998e644eee5d65d2"
+      "sha256": "695a84ad8200da4e310f3038e3106e552de66acdcd6dbed885d3754b350ba9b5"
     },
     {
       "mode": "100644",
@@ -1169,7 +1169,7 @@
     {
       "mode": "100644",
       "path": "Tests/Fixtures/production-test-markers.json",
-      "sha256": "caa62071331b9d4262dc9878801692dc8f46708e8a241005737377f022cf049a"
+      "sha256": "2b8b83a6887111def4791ad43f5f489cdc0ab04d5fffb774a5edbd673017a8a1"
     },
     {
       "mode": "100644",
@@ -1359,7 +1359,7 @@
     {
       "mode": "100644",
       "path": "config/identity-exceptions.json",
-      "sha256": "7dfec87c1ddb5cecd980d94ae899c44d9e53fa4f22c011009c7eb675df72adaa"
+      "sha256": "15c1a9df76b12b988542fe2ce8a38855f2aa195f37e71cb48464b40078dfb0d4"
     },
     {
       "path": "delivery/PROVENANCE.json",

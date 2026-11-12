@@ -3662,6 +3662,13 @@ final class Body3Fixture {
                 ? home : home + "/dev/personal",
             withIntermediateDirectories: true
         )
+        // The same fixture intentionally reinstalls its advisory script for
+        // refusal, unavailable and success cases. Create its private directory
+        // once with the fresh fixture, before any script can be installed.
+        try FileManager.default.createDirectory(
+            atPath: home + "/fixture-tools", withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
         try Self.installPolicy(home: home)
         try Self.gitProcess([
             "init", "--quiet",
@@ -4172,10 +4179,6 @@ final class Body3Fixture {
     ) throws -> String {
         let path =
             home + "/fixture-tools/cleanup.sh"
-        try FileManager.default.createDirectory(
-            atPath: home + "/fixture-tools", withIntermediateDirectories: false,
-            attributes: [.posixPermissions: 0o700]
-        )
         let log = temporary.path + "/awa.log"
         let script = """
         #!/bin/bash

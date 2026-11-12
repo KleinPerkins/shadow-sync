@@ -781,7 +781,9 @@
     "m6-installation-native-creator-partial-retention",
     "m6-installation-native-creator-address-bytes",
     "m6-installation-native-creator-metadata-drift",
-    "m6-installation-native-observer-named-refusal"
+    "m6-installation-native-observer-named-refusal",
+    "DISCOVERY REBIND FIRST MISMATCH",
+    "M6 READINESS FIRST FAILURE"
   ],
   "schema": "shadow-sync-production-test-markers/v1"
 }

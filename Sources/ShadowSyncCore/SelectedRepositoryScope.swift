@@ -1033,7 +1033,12 @@ public final class SelectedRepositoryScopeBinder:
         try testingAfterRebindCatalog?()
         #endif
         let rebound = try bindBound(intent: intent, deadlineLimit: stageDeadline, completedCatalog: catalog)
-        guard rebound == scope else { throw SelectedRepositoryScopeError.changed }
+        guard rebound == scope else {
+            #if SHADOW_SYNC_TESTING
+            DiscoveryFixtureDiagnostic.recordRebindMismatch(original: scope, current: rebound)
+            #endif
+            throw SelectedRepositoryScopeError.changed
+        }
         #if SHADOW_SYNC_TESTING
         diagnosticPassed = true
         #endif

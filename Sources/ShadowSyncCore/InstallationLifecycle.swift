@@ -3941,10 +3941,26 @@ final class InstallationPreparedSlotObservation {
     // Caller must already have persisted open-staged-admission intent. This
     // factory additionally requires the actual consumed owner in staged phase.
     func createReadinessEndpoint(for owner: InstallationTransactionOwner, deadline: MonotonicDeadline) throws -> InstallationReadinessEndpoint {
+        #if SHADOW_SYNC_TESTING
+        var diagnosticStage: UInt8 = 1
+        var diagnosticComplete = false
+        defer {
+            if !diagnosticComplete { InstallationReadinessEndpoint.testingRecordFailure(part: .slots, stage: diagnosticStage) }
+        }
+        #endif
         guard self.owner === owner, endpoint == nil else { throw CustodyRecordError.fenced }
+        #if SHADOW_SYNC_TESTING
+        diagnosticStage = 2
+        #endif
         try owner.validateReadinessOwner()
+        #if SHADOW_SYNC_TESTING
+        diagnosticStage = 3
+        #endif
         try revalidate(for: owner, deadline: deadline)
         guard expected.images[.installationSocket]?.node == nil else { throw CustodyRecordError.fenced }
+        #if SHADOW_SYNC_TESTING
+        diagnosticStage = 4
+        #endif
         let created = InstallationReadinessEndpoint(parent: parents[3], owner: owner, deadline: deadline)
         // The actual partial creator is enrolled before socket/open/bind. The
         // journal's existing serialized turn excludes cancellation until unwind.
@@ -3955,10 +3971,22 @@ final class InstallationPreparedSlotObservation {
               try InstallationPaths.isolated(root: root) == observer.paths else { throw CustodyRecordError.fenced }
         try RuntimeFixtureSession.installationRoot(root).retainNamedSocket(created)
         #endif
+        #if SHADOW_SYNC_TESTING
+        diagnosticStage = 5
+        #endif
         try created.publish()
+        #if SHADOW_SYNC_TESTING
+        diagnosticStage = 6
+        #endif
         var images = expected.images; images[.installationSocket] = try created.image
         expected = InstallationSlotSnapshot(images: images)
+        #if SHADOW_SYNC_TESTING
+        diagnosticStage = 7
+        #endif
         try revalidate(for: owner, deadline: deadline)
+        #if SHADOW_SYNC_TESTING
+        diagnosticComplete = true
+        #endif
         return created
     }
     func readinessHost(peer: PublisherCodeVerifier.AuditPeerObservation, generation: String,
@@ -4087,21 +4115,43 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
         try validateParents()
     }
     fileprivate func publish() throws {
+        #if SHADOW_SYNC_TESTING
+        var diagnosticStage: UInt8 = 1
+        var diagnosticComplete = false
+        defer {
+            if !diagnosticComplete { InstallationReadinessEndpoint.testingRecordFailure(part: .publisher, stage: diagnosticStage) }
+        }
+        #endif
         guard serviceLock.try() else { throw CustodyRecordError.busy }; defer { serviceLock.unlock() }
         guard phase == .reserved, !serviceClosed else { throw CustodyRecordError.fenced }
         phase = .preparing
         retainedSelf = self
         do {
             try owner.validateReadinessOwner()
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 2
+            #endif
             let address = try InstallationNamedSocketObservation.Address(canonicalParent: parent.pinned.path, endpoint: .installation)
             self.address = address
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 3
+            #endif
             try parent.retainSocketAncestors(address, into: &ancestors, deadline: deadline)
             #if SHADOW_SYNC_TESTING
             try testingFail(.afterAncestors)
             #endif
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 4
+            #endif
             parentObservation = try InstallationNamedSocketObservation.parents(address: address,
                 retainedAncestors: ancestors, uid: geteuid(), deadline: deadline)
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 5
+            #endif
             try validateParents(); try parent.absent(Self.name)
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 6
+            #endif
             let raw = socket(AF_UNIX, SOCK_STREAM, 0)
             guard raw >= 0 else { throw CustodyRecordError.persistence(errno) }
             listenerOwner = OwnedFileDescriptor(raw)
@@ -4110,40 +4160,73 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
             try testingFail(.beforeBind)
             #endif
             try validateParents(); try parent.absent(Self.name)
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 7
+            #endif
             var native = address.socketAddress()
             bindAttempted = true
             let bound = withUnsafePointer(to: &native) { p in
                 p.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(raw, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
             }
             guard bound == 0 else { throw CustodyRecordError.persistence(errno) }
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 8
+            #endif
             phase = .boundUnpublished
             try validateParents()
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 9
+            #endif
             let initial = try InstallationNamedSocketObservation.readUnpublishedCreator(self, address: address,
                 retainedAncestors: ancestors, uid: geteuid(), deadline: deadline)
             // Mode is the sole permitted prepublication change. Full no-grant
             // ACL and private-parent safety were decoded before touching it.
             try validateParents()
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 10
+            #endif
             let beforeMode = try InstallationNamedSocketObservation.readUnpublishedCreator(self, address: address,
                 retainedAncestors: ancestors, uid: geteuid(), deadline: deadline)
             guard beforeMode == initial else { throw CustodyRecordError.conflict }
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 11
+            #endif
             guard fchmodat(parent.fd, Self.name, 0o600, AT_SYMLINK_NOFOLLOW) == 0 else { throw CustodyRecordError.persistence(errno) }
             try validateParents()
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 12
+            #endif
             let final = try InstallationNamedSocketObservation.read(address: address, retainedAncestors: ancestors,
                 uid: geteuid(), deadline: deadline)
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 13
+            #endif
             guard initial.sameUnpublishedGeneration(afterMode: final) else { throw CustodyRecordError.conflict }
             observed = final
             #if SHADOW_SYNC_TESTING
             try testingFail(.afterMode)
             #endif
             try validateParents()
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 14
+            #endif
             guard try InstallationNamedSocketObservation.read(address: address, retainedAncestors: ancestors,
                 uid: geteuid(), deadline: deadline, expected: final) == final else { throw CustodyRecordError.conflict }
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 15
+            #endif
             guard listen(raw, 1) == 0, fsync(parent.fd) == 0 else { throw CustodyRecordError.persistence(errno) }
             #if SHADOW_SYNC_TESTING
             try testingFail(.afterListen)
             #endif
             phase = .listening
+            #if SHADOW_SYNC_TESTING
+            diagnosticStage = 16
+            #endif
             try revalidate(deadline: deadline)
+            #if SHADOW_SYNC_TESTING
+            diagnosticComplete = true
+            #endif
         } catch {
             phase = .pending
             // No name cleanup, ownership reconstruction or uncertain close retry.
@@ -4208,6 +4291,23 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
         }
     }
     #if SHADOW_SYNC_TESTING
+    enum TestingFailurePart: UInt8 { case slots = 1, publisher, journal }
+    private final class TestingFailureSink: @unchecked Sendable {
+        private let lock = NSLock()
+        private let enabled = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_M6_DIAGNOSTICS"] == "1"
+        private var count = 0
+        func record(part: TestingFailurePart, stage: UInt8) {
+            lock.lock(); defer { lock.unlock() }
+            guard enabled, count < 16 else { return }
+            count += 1
+            fputs("M6 READINESS FIRST FAILURE part=\(part.rawValue) stage=\(stage)\n", stderr)
+            fflush(stderr)
+        }
+    }
+    private static let testingFailureSink = TestingFailureSink()
+    static func testingRecordFailure(part: TestingFailurePart, stage: UInt8) {
+        testingFailureSink.record(part: part, stage: stage)
+    }
     enum TestingCut { case afterAncestors, beforeBind, afterMode, afterListen }
     private var testingMetadataDeadlines: [UInt64] = []
     var testingObservedMetadataDeadlines: [UInt64] {
