@@ -221,6 +221,7 @@ public struct CancellationEscalationStateMachine: Equatable, Sendable {
 }
 
 public final class LauncherAuthority: @unchecked Sendable {
+    private let retirementMutex = NSLock()
     public let stateDirectory: SecureStateDirectory
     private let namespace: OwnedFileDescriptor?
     private let lock: OwnedFileDescriptor
@@ -303,11 +304,38 @@ public final class LauncherAuthority: @unchecked Sendable {
         )
     }
 
+    /// Only readiness opening uses the actual admitted state. The original
+    /// opening owner enrolls this launcher before any lock/configuration cut.
+    static func acquireForReadiness(admission: LifecycleAdmissionAuthority,
+        enrolling: (LauncherAuthority) -> Void) throws -> LauncherAuthority {
+        guard admission.commandAdmissionIsOpen else { throw CustodyRecordError.fenced }
+        let state = admission.stateDirectory
+        try state.requireStableLockFiles()
+        let raw = try state.openRegularFile(named: "launcher.lock", flags: O_RDWR,
+            create: false, repairPermissions: false)
+        let owner = LauncherAuthority(state: state, namespaceDescriptor: nil, descriptor: raw)
+        enrolling(owner)
+        guard flock(raw, LOCK_EX | LOCK_NB) == 0 else {
+            let code = errno
+            if code == EWOULDBLOCK { throw SecureStateError.contention("launcher.lock") }
+            throw SecureStateError.systemCall("flock launcher.lock", code)
+        }
+        let flags = fcntl(raw, F_GETFD)
+        guard flags >= 0, fcntl(raw, F_SETFD, flags | FD_CLOEXEC) == 0 else {
+            throw SecureStateError.systemCall("fcntl launcher.lock", errno)
+        }
+        guard admission.commandAdmissionIsOpen else { throw CustodyRecordError.fenced }
+        return owner
+    }
+
     /// Read-only check of this actual retained launcher description. Matching
     /// serialized state never constructs, reopens or transfers its authority.
     func validateRetainedInstallation(_ expected: InstallationStateBinding) throws {
-        let held = try lock.duplicate(); defer { close(held) }
-        let state = try stateDirectory.descriptor.duplicate(); defer { close(state) }
+        retirementMutex.lock(); defer { retirementMutex.unlock() }
+        // Inspect the actual descriptions while excluding this owner's release.
+        // No temporary flock alias with an unchecked deferred close is created.
+        let held = lock.value, state = stateDirectory.descriptor.value
+        guard held >= 0, state >= 0 else { throw CustodyRecordError.fenced }
         let live = try InstallationStateBinding.capture(stateDescriptor: state, uid: stateDirectory.uid)
         let a = expected.directory, b = live.directory
         var named = stat(), descriptor = stat()
@@ -326,7 +354,17 @@ public final class LauncherAuthority: @unchecked Sendable {
               lock.value >= 0 else { throw CustodyRecordError.fenced }
     }
 
+    /// Used only by the original committed host after its server work and
+    /// created nodes have retired. A failed lock close preserves namespace.
+    func retireCommittedHostLauncher() -> OwnedFileDescriptor.Retirement {
+        retirementMutex.lock(); defer { retirementMutex.unlock() }
+        let result = lock.retireChecked()
+        guard result == .succeeded else { return result }
+        return namespace?.retireChecked() ?? .succeeded
+    }
+
     public func release() {
+        retirementMutex.lock(); defer { retirementMutex.unlock() }
         lock.closeNow()
         namespace?.closeNow()
     }

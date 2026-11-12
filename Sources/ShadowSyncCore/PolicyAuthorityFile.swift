@@ -212,8 +212,19 @@ struct PolicyAuthorityFile: Equatable, Sendable {
         return (info, acl)
     }
 
+    /// The named reader checks its original budget inside ancestor ACL traversal.
+    /// Existing descriptor APIs retain the no-op default and identical policy.
+    static func socketObservationDirectoryACL(_ descriptor: Int32, privateState: Bool,
+                                               deadline: MonotonicDeadline) throws -> String {
+        try checkedACL(descriptor, allowingReadGrants: !privateState) {
+            if deadline.hasExpired { throw CustodyRecordError.busy }
+        }
+    }
+
     private static func checkedACL(_ descriptor: Int32, allowingReadGrants: Bool,
-                                   observedStat: UnsafeMutablePointer<stat>? = nil) throws -> String {
+                                   observedStat: UnsafeMutablePointer<stat>? = nil,
+                                   checkBudget: () throws -> Void = {}) throws -> String {
+        try checkBudget()
         // acl_get_fd_np returns nil/ENOENT for an absent ACL as well as other
         // failures. Prove absence from a successful descriptor security read
         // instead of interpreting an errno as permission to continue.
@@ -221,12 +232,31 @@ struct PolicyAuthorityFile: Equatable, Sendable {
             throw PolicyAuthorityFileError.unavailable
         }
         defer { filesec_free(security) }
-        var info = stat(), present: Int32 = 0
-        guard fstatx_np(descriptor, &info, security) == 0,
-              filesec_query_property(security, FILESEC_ACL, &present) == 0 else {
+        var info = stat()
+        guard fstatx_np(descriptor, &info, security) == 0 else {
             throw PolicyAuthorityFileError.unavailable
         }
+        let acl = try checkedSecurityACL(security, allowingReadGrants: allowingReadGrants, checkBudget: checkBudget)
         observedStat?.pointee = info
+        return acl
+    }
+
+    /// Named strict-getter callers validate native bytes and own this ACL.
+    /// Descriptor callers retain their original filesec absence interpretation.
+    static func privateStateObservedACL(_ acl: acl_t, deadline: MonotonicDeadline) throws -> String {
+        try checkedDecodedACL(acl, allowingReadGrants: false) {
+            if deadline.hasExpired { throw CustodyRecordError.busy }
+        }
+    }
+
+    private static func checkedSecurityACL(_ security: filesec_t, allowingReadGrants: Bool,
+                                           checkBudget: () throws -> Void = {}) throws -> String {
+        try checkBudget()
+        var present: Int32 = 0
+        guard filesec_query_property(security, FILESEC_ACL, &present) == 0 else {
+            throw PolicyAuthorityFileError.unavailable
+        }
+        try checkBudget()
         if present == 0 {
             return absentACLSHA256
         }
@@ -234,12 +264,18 @@ struct PolicyAuthorityFile: Equatable, Sendable {
         guard present > 0, filesec_get_property(security, FILESEC_ACL, &value) == 0,
               let acl = value else { throw PolicyAuthorityFileError.unavailable }
         defer { acl_free(UnsafeMutableRawPointer(acl)) }
+        return try checkedDecodedACL(acl, allowingReadGrants: allowingReadGrants, checkBudget: checkBudget)
+    }
+
+    private static func checkedDecodedACL(_ acl: acl_t, allowingReadGrants: Bool,
+                                          checkBudget: () throws -> Void) throws -> String {
         guard acl_valid(acl) == 0 else { throw PolicyAuthorityFileError.unavailable }
         let readOnly = [ACL_READ_DATA, ACL_EXECUTE, ACL_READ_ATTRIBUTES,
                         ACL_READ_EXTATTRIBUTES, ACL_READ_SECURITY, ACL_SYNCHRONIZE]
             .reduce(UInt64(0)) { $0 | UInt64($1.rawValue) }
         var ended = false
         for index in 0..<1024 {
+            try checkBudget()
             var entry: acl_entry_t?
             errno = 0
             let result = acl_get_entry(acl, Int32(index), &entry)
@@ -254,6 +290,7 @@ struct PolicyAuthorityFile: Equatable, Sendable {
                 throw PolicyAuthorityFileError.unavailable
             }
         }
+        try checkBudget()
         let size = acl_size(acl)
         guard ended, (1...65_536).contains(size) else {
             throw PolicyAuthorityFileError.unavailable
@@ -263,6 +300,7 @@ struct PolicyAuthorityFile: Equatable, Sendable {
             acl_copy_ext($0.baseAddress, acl, size)
         }
         guard copied == size else { throw PolicyAuthorityFileError.unavailable }
+        try checkBudget()
         return hex(SHA256.hash(data: serialized))
     }
 

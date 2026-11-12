@@ -196,6 +196,11 @@ public struct FileIdentity: Codable, Equatable, Sendable {
 final class OwnedFileDescriptor: @unchecked Sendable {
     private let lock = NSLock()
     private var rawValue: Int32
+    enum Retirement: Equatable { case notAttempted, inProgress, succeeded, uncertain(Int32) }
+    private var retirement: Retirement = .notAttempted
+    #if SHADOW_SYNC_TESTING
+    var testingClose: ((Int32) -> Int32)?
+    #endif
 
     init(_ rawValue: Int32) {
         self.rawValue = rawValue
@@ -219,15 +224,40 @@ final class OwnedFileDescriptor: @unchecked Sendable {
         return copy
     }
 
-    func closeNow() {
+    /// Consume the original number once. Uncertainty never permits a numeric retry.
+    @discardableResult func retireChecked() -> Retirement {
         lock.lock()
-        let fd = rawValue
-        rawValue = -1
+        guard retirement == .notAttempted else { let result = retirement; lock.unlock(); return result }
+        let fd = rawValue; rawValue = -1; retirement = .inProgress
         lock.unlock()
-        if fd >= 0 {
-            close(fd)
-        }
+        #if SHADOW_SYNC_TESTING
+        let code: Int32
+        if fd >= 0, let testingClose { code = testingClose(fd) }
+        else { code = fd >= 0 && Darwin.close(fd) == 0 ? 0 : (fd < 0 ? EBADF : errno) }
+        #else
+        let code: Int32 = fd >= 0 && Darwin.close(fd) == 0 ? 0 : (fd < 0 ? EBADF : errno)
+        #endif
+        lock.lock(); retirement = code == 0 ? .succeeded : .uncertain(code)
+        let result = retirement; lock.unlock(); return result
     }
+    var retirementObservation: Retirement {
+        lock.lock(); defer { lock.unlock() }; return retirement
+    }
+    /// A synchronous observation of the original description. The caller cannot
+    /// close/reuse it while this method holds its existing ownership mutex.
+    /// Callers use fixed nonblocking socket queries, never arbitrary work.
+    func withOriginalSocket<T>(_ observe: (Int32) throws -> T) throws -> T {
+        lock.lock(); defer { lock.unlock() }
+        guard rawValue >= 0 else { throw SecureStateError.systemCall("closed socket observation", EBADF) }
+        return try observe(rawValue)
+    }
+    /// Interrupt only this original description while excluding close/reuse.
+    /// The result grants no retirement proof; checked close and join remain required.
+    func interruptSocket() {
+        lock.lock(); defer { lock.unlock() }
+        if rawValue >= 0 { _ = shutdown(rawValue, SHUT_RDWR) }
+    }
+    func closeNow() { _ = retireChecked() }
 
     deinit {
         closeNow()
@@ -1556,6 +1586,10 @@ final class ClosedInstallationBorrowing: @unchecked Sendable {
 
 public final class LifecycleAdmissionAuthority: @unchecked Sendable {
     private let custodyMutex = NSLock()
+    private var observationBorrowingClosed = false
+    private var observationAliases = 0
+    private var observationRetirementFailure: OwnedFileDescriptor.Retirement?
+    private var observationFamilies: [WeakInstallationAliasFamily] = []
     public let stateDirectory: SecureStateDirectory
     private let namespace: OwnedFileDescriptor
     private let lifecycle: OwnedFileDescriptor
@@ -1614,15 +1648,64 @@ public final class LifecycleAdmissionAuthority: @unchecked Sendable {
 
     var commandAdmissionIsOpen: Bool {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
-        return namespace.value >= 0 && lifecycle.value >= 0
+        return !observationBorrowingClosed && namespace.value >= 0 && lifecycle.value >= 0
+    }
+
+    #if SHADOW_SYNC_TESTING
+    var testingReadinessRetirements: [OwnedFileDescriptor.Retirement] {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        return [lifecycle.retirementObservation, namespace.retirementObservation]
+    }
+    #endif
+
+    /// Closes borrowing permanently before observing alias drainage. Original
+    /// lifecycle then namespace are consumed only after every enrolled alias
+    /// has reported successful one-shot closure. Pending never means released.
+    func closeCommittedHostObservationBorrowing() -> OwnedFileDescriptor.Retirement {
+        custodyMutex.lock()
+        observationBorrowingClosed = true
+        let families = observationFamilies.compactMap(\.family)
+        observationFamilies.removeAll()
+        custodyMutex.unlock()
+        // Never acquire the family mutex while holding the authority mutex.
+        // In-flight copies remain enrolled; their publication closes itself.
+        for family in families { family.closeAdmission() }
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard observationAliases == 0 else { return .inProgress }
+        return observationRetirementFailure ?? .succeeded
+    }
+    func retireCommittedHostAdmission() -> OwnedFileDescriptor.Retirement {
+        let aliases = closeCommittedHostObservationBorrowing()
+        guard aliases == .succeeded else { return aliases }
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        let first = lifecycle.retireChecked()
+        guard first == .succeeded else { return first }
+        return namespace.retireChecked()
     }
 
     func retainObservationLeases() throws -> CustodyAuthorityLeaseSet {
-        custodyMutex.lock(); defer { custodyMutex.unlock() }
-        return try CustodyAuthorityLeaseSet.copy(state: stateDirectory, members: [
+        custodyMutex.lock()
+        guard !observationBorrowingClosed else { custodyMutex.unlock(); throw CustodyRecordError.fenced }
+        observationAliases += 1
+        // The explicit outcome callback runs only after all actual duplicate
+        // descriptions have attempted checked close, including construction cuts.
+        custodyMutex.unlock()
+        let leases = try CustodyAuthorityLeaseSet.copy(state: stateDirectory, members: [
             (.state, stateDirectory.descriptor), (.namespace, namespace), (.lifecycle, lifecycle),
-        ], mode: .observation)
+        ], mode: .observation, onCheckedRetirement: { [self] result in
+            custodyMutex.lock(); defer { custodyMutex.unlock() }
+            observationAliases -= 1
+            if result != .succeeded, observationRetirementFailure == nil { observationRetirementFailure = result }
+        })
+        custodyMutex.lock()
+        observationFamilies.removeAll { $0.family == nil }
+        observationFamilies.append(WeakInstallationAliasFamily(leases.initializationAliases))
+        let closed = observationBorrowingClosed
+        custodyMutex.unlock()
+        if closed { leases.initializationAliases.closeAdmission() }
+        return leases
     }
+
 }
 
 /// A retained lease bundle, not permission to admit a command. The future typed
@@ -1652,6 +1735,16 @@ fileprivate final class InstallationPublicationAliases: @unchecked Sendable {
 }
 
 final class CustodyAuthorityLeaseSet: @unchecked Sendable {
+    private final class CheckedRetirementResults {
+        private let mutex = NSLock()
+        private var result: OwnedFileDescriptor.Retirement = .succeeded
+        func record(_ observed: OwnedFileDescriptor.Retirement) {
+            mutex.lock(); defer { mutex.unlock() }
+            if result == .succeeded, observed != .succeeded { result = observed }
+        }
+        var observation: OwnedFileDescriptor.Retirement { mutex.lock(); defer { mutex.unlock() }; return result }
+    }
+    private let checkedRetirementResults: CheckedRetirementResults
     private struct Member {
         let role: CustodyDescriptorClaim.Role
         let descriptor: OwnedFileDescriptor
@@ -1665,30 +1758,51 @@ final class CustodyAuthorityLeaseSet: @unchecked Sendable {
     private let members: [Member]
     private let retainedParent: CustodyAuthorityLeaseSet?
     private let onRelease: (@Sendable () -> Void)?
+    private let onCheckedRetirement: (@Sendable (OwnedFileDescriptor.Retirement) -> Void)?
 
     private init(state: SecureStateDirectory, members: [Member], mode: CustodyAuthorityMode,
-                 parent: CustodyAuthorityLeaseSet?, onRelease: (@Sendable () -> Void)?) {
+                 parent: CustodyAuthorityLeaseSet?, onRelease: (@Sendable () -> Void)?,
+                 onCheckedRetirement: (@Sendable (OwnedFileDescriptor.Retirement) -> Void)? = nil) {
         self.state = state; self.members = members; self.mode = mode
         retainedParent = parent; self.onRelease = onRelease
+        checkedRetirementResults = parent?.checkedRetirementResults ?? CheckedRetirementResults()
+        self.onCheckedRetirement = onCheckedRetirement
         initializationAliases = parent?.initializationAliases ?? InstallationPublicationAliases()
     }
 
     deinit {
         // Closing a duplicate is safe; LOCK_UN would release every holder's lock.
-        for member in members.reversed() { member.descriptor.closeNow() }
-        if retainedParent == nil { initializationAliases.didCloseDescriptions() }
+        for member in members.reversed() {
+            checkedRetirementResults.record(member.descriptor.retireChecked())
+        }
+        onCheckedRetirement?(checkedRetirementResults.observation)
+        if retainedParent == nil, checkedRetirementResults.observation == .succeeded { initializationAliases.didCloseDescriptions() }
         onRelease?()
     }
 
     fileprivate static func copy(state: SecureStateDirectory,
         members inputs: [(CustodyDescriptorClaim.Role, OwnedFileDescriptor)], mode: CustodyAuthorityMode,
-        parent: CustodyAuthorityLeaseSet? = nil, onRelease: (@Sendable () -> Void)? = nil
+        parent: CustodyAuthorityLeaseSet? = nil, onRelease: (@Sendable () -> Void)? = nil,
+        onCheckedRetirement: (@Sendable (OwnedFileDescriptor.Retirement) -> Void)? = nil
     ) throws -> CustodyAuthorityLeaseSet {
         var members: [Member] = []
-        // A failed partial construction closes all prior duplicates through ARC;
-        // the release hook is installed only after validation has succeeded.
+        var acquired: [OwnedFileDescriptor] = [], transferred = false
+        defer {
+            if !transferred {
+                var result: OwnedFileDescriptor.Retirement = .succeeded
+                for descriptor in acquired.reversed() {
+                    let observed = descriptor.retireChecked()
+                    if result == .succeeded, observed != .succeeded { result = observed }
+                }
+                parent?.checkedRetirementResults.record(result)
+                onCheckedRetirement?(result)
+            }
+        }
+        // Enroll each acquired duplicate before fallible validation. The defer
+        // reports every original close outcome even when construction throws.
         for (role, source) in inputs {
             let descriptor = OwnedFileDescriptor(try source.duplicate(minimum: 201))
+            acquired.append(descriptor)
             let snapshot = try snapshot(descriptor.value, role: role, uid: state.uid)
             members.append(Member(role: role, descriptor: descriptor, identity: snapshot.0,
                                   access: snapshot.1, acl: snapshot.2))
@@ -1699,7 +1813,10 @@ final class CustodyAuthorityLeaseSet: @unchecked Sendable {
         if mode == .mutation { expected.insert(.run) }
         guard roles == expected, roles.count == members.count else { throw SecureStateError.unsafePath("custody roles") }
         try validate(state: state, members: members)
-        return CustodyAuthorityLeaseSet(state: state, members: members, mode: mode, parent: parent, onRelease: onRelease)
+        let result = CustodyAuthorityLeaseSet(state: state, members: members, mode: mode,
+            parent: parent, onRelease: onRelease, onCheckedRetirement: onCheckedRetirement)
+        transferred = true
+        return result
     }
 
     /// Read authority is acquired in namespace -> lifecycle -> operation order.
@@ -1752,6 +1869,19 @@ final class CustodyAuthorityLeaseSet: @unchecked Sendable {
         guard claims == inherited.request.descriptors.filter({ roles.contains($0.role) }) else { throw CustodyRecordError.fenced }
         return leases
     }
+
+    #if SHADOW_SYNC_TESTING
+    func testingUncertainObservationClose(_ closed: @escaping () -> Void) throws {
+        guard mode == .observation, let descriptor = members.first(where: { $0.role == .lifecycle })?.descriptor else {
+            throw CustodyRecordError.fenced
+        }
+        descriptor.testingClose = { raw in
+            let result = Darwin.close(raw)
+            guard result == 0 else { return errno }
+            closed(); return EIO
+        }
+    }
+    #endif
 
     func duplicate() throws -> CustodyAuthorityLeaseSet {
         try initializationAliases.withOpenAdmission {

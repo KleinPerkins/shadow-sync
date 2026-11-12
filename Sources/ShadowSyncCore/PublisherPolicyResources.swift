@@ -133,12 +133,10 @@ enum PublisherCodeVerifier {
     static func livePeer(socket: OwnedFileDescriptor, expected: Identity,
                          expectedUID: uid_t) throws -> AuditPeerObservation {
         do {
-            // Retain the same open-file description under its ownership lock;
-            // concurrent close/reuse of the caller's descriptor cannot redirect
-            // any of the checks below. The duplicate is always close-on-exec.
-            let descriptor = try socket.duplicate()
-            defer { close(descriptor) }
-            let before = try peerObservation(descriptor, expectedUID: expectedUID)
+            // No temporary descriptor can outlive the real session's close.
+            // The short native queries exclude close/reuse on the original;
+            // Security verification runs outside that descriptor mutex.
+            let before = try socket.withOriginalSocket { try peerObservation($0, expectedUID: expectedUID) }
             let required = try requirement(identifier: expected.identifier,
                 team: expected.team, codeDirectory: expected.codeDirectory)
             let attributes = [kSecGuestAttributeAudit as String: before.auditToken as CFData] as CFDictionary
@@ -147,7 +145,7 @@ enum PublisherCodeVerifier {
                   let peer, SecCodeCheckValidity(peer, noNetwork, required) == errSecSuccess else {
                 throw PublisherPolicyError.unavailable
             }
-            guard try peerObservation(descriptor, expectedUID: expectedUID) == before else {
+            guard try socket.withOriginalSocket({ try peerObservation($0, expectedUID: expectedUID) }) == before else {
                 throw PublisherPolicyError.unavailable
             }
             return before

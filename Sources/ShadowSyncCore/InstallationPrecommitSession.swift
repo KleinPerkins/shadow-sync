@@ -77,10 +77,12 @@ enum InstallationPrecommitWait {
 
 enum InstallationPrecommitTransport {
     static func requireQuiet(_ socket: OwnedFileDescriptor) throws {
-        let fd = try socket.duplicate(); defer { close(fd) }
-        var byte: UInt8 = 0
-        let n = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
-        guard n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) else { throw CustodyProtocolError.invalidSequence }
+        let (n, code) = try socket.withOriginalSocket { fd in
+            var byte: UInt8 = 0
+            let count = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
+            return (count, count < 0 ? errno : 0)
+        }
+        guard n < 0 && (code == EAGAIN || code == EWOULDBLOCK) else { throw CustodyProtocolError.invalidSequence }
     }
 
     /// Preserve the reader across the session, but never advance the host from
@@ -165,6 +167,9 @@ final class InstallationPrecommitSession: @unchecked Sendable {
     }
     #endif
     private var connection: OwnedFileDescriptor?
+    private var retainedSelf: InstallationPrecommitSession?
+    private var extraPeerCheckRunning = false
+    private var rejectedPeer: OwnedFileDescriptor?
     private var outcome: Result<String, Error>?
     private var readyObservation: ReadyObservation?
     private var readyClaimed = false
@@ -269,6 +274,7 @@ final class InstallationPrecommitSession: @unchecked Sendable {
         uid = context.uid; preanchorDeadline = context.deadline
         // Reserve before the journal can publish this owner to cancellation.
         group.enter()
+        retainedSelf = self
     }
     @discardableResult func start() -> Bool {
         state.lock()
@@ -286,9 +292,9 @@ final class InstallationPrecommitSession: @unchecked Sendable {
             catch {
                 state.lock(); deliveryState.fail(); outcome = .failure(error); state.broadcast(); state.unlock()
             }
-            state.lock(); let socket = connection
-            connection = nil; readyObservation = nil; commitDelivery = nil; state.unlock()
-            socket?.closeNow()
+            state.lock(); readyObservation = nil; commitDelivery = nil; state.unlock()
+            do { try retireConnection() }
+            catch { state.lock(); outcome = .failure(error); state.broadcast(); state.unlock() }
         }
         return true
     }
@@ -305,24 +311,49 @@ final class InstallationPrecommitSession: @unchecked Sendable {
         return deadline
     }
     private func rejectExtraPeer() throws {
-        try endpoint.revalidate()
-        try InstallationPrecommitTransport.refuseAdditionalPeer(listener: endpoint.listener.value)
+        try endpoint.revalidate(deadline: try currentDeadline())
+        state.lock()
+        guard !extraPeerCheckRunning, rejectedPeer == nil else { state.unlock(); throw CustodyRecordError.busy }
+        extraPeerCheckRunning = true; state.unlock()
+        defer { state.lock(); extraPeerCheckRunning = false; state.broadcast(); state.unlock() }
+        let listener = try endpoint.listener
+        let (extra, code) = try listener.withOriginalSocket { fd in
+            let accepted = accept(fd, nil, nil)
+            return (accepted, accepted < 0 ? errno : 0)
+        }
+        if extra >= 0 {
+            let owned = OwnedFileDescriptor(extra)
+            // The actual extra stream is retained before its one close attempt.
+            // Refusal fences this session and preserves any uncertain close.
+            state.lock(); rejectedPeer = owned; cancelled = true
+            deliveryState.fail(); outcome = .failure(CustodyRecordError.conflict)
+            state.broadcast(); state.unlock()
+            _ = owned.retireChecked()
+            throw CustodyRecordError.conflict
+        }
+        guard code == EAGAIN || code == EWOULDBLOCK else { throw CustodyRecordError.persistence(code) }
     }
     private func serve() throws -> String {
         var socket: OwnedFileDescriptor?
         while socket == nil {
             let deadline = try currentDeadline()
-            try endpoint.revalidate()
-            let fd = accept(endpoint.listener.value, nil, nil)
+            try endpoint.revalidate(deadline: try currentDeadline())
+            let listener = try endpoint.listener
+            let (fd, acceptError) = try listener.withOriginalSocket { original in
+                let accepted = accept(original, nil, nil)
+                return (accepted, accepted < 0 ? errno : 0)
+            }
             if fd >= 0 {
-                let owned = OwnedFileDescriptor(fd); try InstallationPrecommitTransport.configure(fd)
+                let owned = OwnedFileDescriptor(fd)
+                // Retain the actual accepted stream before configuration may throw.
                 socket = owned
                 state.lock(); connection = owned; state.unlock()
+                try InstallationPrecommitTransport.configure(fd)
             } else {
-                guard errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR else { throw CustodyRecordError.persistence(errno) }
+                guard acceptError == EAGAIN || acceptError == EWOULDBLOCK || acceptError == EINTR else { throw CustodyRecordError.persistence(acceptError) }
                 // Poll in bounded slices so post-kickstart anchoring/cancellation
                 // can shorten the original preanchor command deadline.
-                var item = pollfd(fd: endpoint.listener.value, events: Int16(POLLIN), revents: 0)
+                var item = pollfd(fd: try endpoint.listener.value, events: Int16(POLLIN), revents: 0)
                 let n = poll(&item, 1, min(20, deadline.remainingMilliseconds))
                 guard n >= 0 || errno == EINTR else { throw CustodyRecordError.persistence(errno) }
             }
@@ -424,6 +455,19 @@ final class InstallationPrecommitSession: @unchecked Sendable {
             guard n >= 0 || errno == EINTR else { throw CustodyRecordError.persistence(errno) }
         }
     }
+    private func retireConnection() throws {
+        state.lock(); let socket = connection, extra = rejectedPeer
+        let checking = extraPeerCheckRunning; state.unlock()
+        guard !checking else { throw CustodyRecordError.busy }
+        if let extra {
+            guard extra.retireChecked() == .succeeded else { throw CustodyRecordError.fenced }
+            state.lock(); if rejectedPeer === extra { rejectedPeer = nil }; state.unlock()
+        }
+        if let socket {
+            guard socket.retireChecked() == .succeeded else { throw CustodyRecordError.fenced }
+            state.lock(); if connection === socket { connection = nil }; state.unlock()
+        }
+    }
     func cancelAndJoin(deadline: MonotonicDeadline) throws {
         state.lock()
         cancelled = true; deliveryState.cancel()
@@ -434,15 +478,18 @@ final class InstallationPrecommitSession: @unchecked Sendable {
         // Exactly one canceller owns the unlaunched reservation. A queued owner
         // alone leaves its group, even if dispatch has not executed yet.
         if unlaunched { group.leave() }
-        if let socket, let duplicate = try? socket.duplicate() {
-            _ = shutdown(duplicate, SHUT_RDWR); close(duplicate)
-        }
-        if let fd = try? endpoint.listener.duplicate() { _ = shutdown(fd, SHUT_RDWR); close(fd) }
+        socket?.interruptSocket()
+        // Interrupt is best effort, never evidence of close or retirement.
+        // The final required checks below still fence a busy/uncertain owner.
+        if let listener = try? endpoint.listener { listener.interruptSocket() }
         guard group.wait(timeout: DispatchTime(uptimeNanoseconds: deadline.absoluteUptimeNanoseconds)) == .success else {
             throw CustodyRecordError.busy
         }
+        try retireConnection()
         endpoint.closeService()
+        try endpoint.requireServiceClosed()
         try journal.didJoinReadiness(self, deadline: deadline)
+        state.lock(); retainedSelf = nil; state.unlock()
     }
     #if SHADOW_SYNC_TESTING
     // Observation only: a fixture cannot set/reset the actual retirement budget.
@@ -479,6 +526,7 @@ final class InstallationPrecommitHost {
     private var phase: Phase = .fresh
     private var working = false
     private var resourcesReleased = false
+    private var retainedSelf: InstallationPrecommitHost?
     private var offered: ObjectIdentifier?
     private struct CommittedContext {
         let durable: CustodyCatalogStore.HostCommittedObservation
@@ -503,8 +551,8 @@ final class InstallationPrecommitHost {
     /// No startup, activation or normal-started message is performed here.
     final class RetainedOwnership {
         private let owner: InstallationPrecommitHost
-        let lifecycle: LifecycleAdmissionAuthority
-        let launcher: LauncherAuthority
+        private let lifecycle: LifecycleAdmissionAuthority
+        private let launcher: LauncherAuthority
         let generation: String
         let deadline: MonotonicDeadline
         fileprivate init(owner: InstallationPrecommitHost) {
@@ -521,8 +569,9 @@ final class InstallationPrecommitHost {
         coordinator: PublisherCodeVerifier.Identity, deadline: MonotonicDeadline) {
         self.lifecycle = lifecycle; self.launcher = launcher; self.endpoint = endpoint
         self.control = control; self.paths = paths; self.app = app; self.coordinator = coordinator; self.deadline = deadline
+        retainedSelf = self
     }
-    deinit { close() }
+    // Retirement clears the pre-enrolled lifetime fence; deinit never resurrects it.
     /// Cancellation fences transitions before shutdown. IO and owner release
     /// occur outside the short state mutex; there is no background host worker.
     func close() {
@@ -530,16 +579,32 @@ final class InstallationPrecommitHost {
         phase = .closed; offered = nil
         let release = !working && !resourcesReleased
         if release { resourcesReleased = true }
-        let retained = release ? committed : nil
+        var retained = release ? committed : nil
         if release { committed = nil }
         state.unlock()
-        // Shutdown interrupts the original read without closing/reusing its fd
-        // beneath the synchronous running turn. That turn owns final release.
-        if let fd = try? endpoint.connection.duplicate() { _ = shutdown(fd, SHUT_RDWR); Darwin.close(fd) }
+        endpoint.connection.interruptSocket()
         if release {
-            endpoint.connection.closeNow()
+            let stream = endpoint.retireFailedHostResources()
+            guard stream == .succeeded else {
+                state.lock(); resourcesReleased = false
+                if committed == nil { committed = retained }; state.unlock()
+                return
+            }
             withExtendedLifetime(retained) {}
-            launcher.release(); lifecycle.release()
+            retained = nil
+            // Alias uncertainty preserves BOTH actual admission owners. Do not
+            // drop launcher EX before proving every observation alias retired.
+            let aliases = lifecycle.closeCommittedHostObservationBorrowing()
+            guard aliases == .succeeded else {
+                state.lock(); resourcesReleased = false; state.unlock(); return
+            }
+            let launcherResult = launcher.retireCommittedHostLauncher()
+            let result = launcherResult == .succeeded
+                ? lifecycle.retireCommittedHostAdmission() : launcherResult
+            guard result == .succeeded else {
+                state.lock(); resourcesReleased = false; state.unlock(); return
+            }
+            state.lock(); retainedSelf = nil; state.unlock()
         }
     }
     private func finishWork(success: Bool) {
@@ -612,6 +677,25 @@ final class InstallationPrecommitHost {
         }
         throw CustodyRecordError.busy
     }
+    /// Retain the actual admission before launcher acquisition or readback can
+    /// throw. This is construction custody only, never readiness or permission.
+    private final class OpeningCustody {
+        let lifecycle: LifecycleAdmissionAuthority
+        var launcher: LauncherAuthority?
+        private var retainedSelf: OpeningCustody?
+        private var transferred = false
+        init(_ lifecycle: LifecycleAdmissionAuthority) {
+            self.lifecycle = lifecycle; retainedSelf = self
+        }
+        func transfer() { transferred = true; retainedSelf = nil }
+        func closeBeforeTransfer() {
+            guard !transferred else { return }
+            guard lifecycle.closeCommittedHostObservationBorrowing() == .succeeded else { return }
+            if let launcher, launcher.retireCommittedHostLauncher() != .succeeded { return }
+            guard lifecycle.retireCommittedHostAdmission() == .succeeded else { return }
+            retainedSelf = nil
+        }
+    }
     static func open(deadline: MonotonicDeadline) throws -> InstallationPrecommitHost {
         // The caller supplies its ORIGINAL invocation budget, including any
         // pending kickstart. Never begin a five-second retry clock on arrival.
@@ -623,14 +707,22 @@ final class InstallationPrecommitHost {
             throw PublisherPolicyError.unavailable
         }
         let lifecycle = try LifecycleAdmissionAuthority.acquire(at: paths.state)
-        let launcher = try LauncherAuthority.acquireWithinLifecycle(at: paths.state)
-        let control = try observe(lifecycle, deadline: deadline)
-        let identities = try identities(paths: paths, control: control)
-        let endpoint = try InstallationPrecommitHostEndpoint(admission: lifecycle, control: control, deadline: deadline)
-        let result = Self(lifecycle: lifecycle, launcher: launcher, endpoint: endpoint, control: control,
-            paths: paths, app: identities.0, coordinator: identities.1, deadline: deadline)
-        try result.revalidate()
-        return result
+        let opening = OpeningCustody(lifecycle)
+        do {
+            let launcher = try LauncherAuthority.acquireForReadiness(admission: lifecycle) { opening.launcher = $0 }
+            let control = try observe(lifecycle, deadline: deadline)
+            let identities = try identities(paths: paths, control: control)
+            let endpoint = try InstallationPrecommitHostEndpoint(admission: lifecycle, launcher: launcher,
+                control: control, deadline: deadline)
+            let result = Self(lifecycle: lifecycle, launcher: launcher, endpoint: endpoint, control: control,
+                paths: paths, app: identities.0, coordinator: identities.1, deadline: deadline)
+            opening.transfer()
+            return try finishOpening(result)
+        } catch { opening.closeBeforeTransfer(); throw error }
+    }
+    private static func finishOpening(_ result: InstallationPrecommitHost) throws -> InstallationPrecommitHost {
+        do { try result.endpoint.connect(); try result.revalidate(); return result }
+        catch { result.close(); throw error }
     }
     private static func identities(paths: InstallationPaths, control: InstallationControlRecord)
         throws -> (PublisherCodeVerifier.Identity, PublisherCodeVerifier.Identity) {

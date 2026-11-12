@@ -201,6 +201,24 @@ public enum M6SelfTestRunner {
         try run("m6-installation-host-commit-eof-distinction") { try InstallationPrecommitFixtures.commitEOFDistinction() }
         try run("m6-installation-host-commit-binding") { try InstallationPrecommitFixtures.commitBinding() }
         try run("m6-installation-host-commit-stored-readback") { try InstallationPrecommitFixtures.commitStoredReadback() }
+        try run("m6-installation-native-named-no-acl") { try InstallationNamedSocketObservationFixtures.noACL() }
+        try run("m6-installation-native-named-empty-acl") { try InstallationNamedSocketObservationFixtures.emptyACL() }
+        try run("m6-installation-native-named-deny-acl") { try InstallationNamedSocketObservationFixtures.denyACL() }
+        try run("m6-installation-native-named-grant-acl-refusal") { try InstallationNamedSocketObservationFixtures.grantACL() }
+        try run("m6-installation-native-named-wrong-types") { try InstallationNamedSocketObservationFixtures.wrongTypes() }
+        try run("m6-installation-native-named-identity-drift") { try InstallationNamedSocketObservationFixtures.identityDrift() }
+        try run("m6-installation-native-named-parent-drift") { try InstallationNamedSocketObservationFixtures.parentDrift() }
+        try run("m6-installation-native-named-address-deadline") { try InstallationNamedSocketObservationFixtures.addressAndDeadline() }
+        try run("m6-installation-native-named-custody-failures") { try InstallationNamedSocketObservationFixtures.custodyFailures() }
+        try run("m6-installation-native-named-strict-reply") { try InstallationNamedSocketObservationFixtures.strictReplyFailures() }
+        try run("m6-installation-native-named-failure-cleanup") { try InstallationNamedSocketObservationFixtures.failureCleanup() }
+        try run("m6-installation-native-alias-drainage") { try InstallationReadinessAliasFixtures.drainage() }
+        try run("m6-installation-native-alias-uncertainty") { try InstallationReadinessAliasFixtures.uncertainty() }
+        try run("m6-installation-native-partial-launcher") { try InstallationReadinessAliasFixtures.partialLauncher() }
+        try run("m6-installation-native-creator-partial-retention") { try InstallationPrecommitFixtures.partialCreator() }
+        try run("m6-installation-native-creator-address-bytes") { try InstallationPrecommitFixtures.creatorAddressBytes() }
+        try run("m6-installation-native-creator-metadata-drift") { try InstallationPrecommitFixtures.creatorMetadataDrift() }
+        try run("m6-installation-native-observer-named-refusal") { try InstallationPrecommitFixtures.observerNamedRefusal() }
         try run("m6-installation-precommit-order") { try InstallationPrecommitFixtures.order() }
         try run("m6-installation-precommit-bindings") { try InstallationPrecommitFixtures.bindings() }
         try run("m6-installation-precommit-deadline-eof-backpressure") { try InstallationPrecommitFixtures.deadlineAndEOF() }

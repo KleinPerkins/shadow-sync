@@ -290,12 +290,13 @@ public enum InstallationIntent: Sendable {
 
 private final class PinnedParent {
     let path: String
-    let descriptor: Int32
+    let ownedDescriptor: OwnedFileDescriptor
+    var descriptor: Int32 { ownedDescriptor.value }
     let identity: FileIdentity
 
     init(path: String) throws {
         self.path = path
-        descriptor = Darwin.open(
+        let descriptor = Darwin.open(
             path,
             O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
         )
@@ -310,6 +311,18 @@ private final class PinnedParent {
             close(descriptor)
             throw InstallationLifecycleError.unsafeInstallPath(path)
         }
+        ownedDescriptor = OwnedFileDescriptor(descriptor)
+        identity = FileIdentity(info)
+    }
+
+    // Readiness observers borrow the original admitted state description. This
+    // narrow initializer acquires nothing that a throwing validation could lose.
+    init(retaining state: SecureStateDirectory) throws {
+        path = state.path; ownedDescriptor = state.descriptor
+        var info = stat()
+        guard fstat(state.descriptor.value, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == geteuid(),
+              (info.st_mode & 0o022) == 0 else { throw InstallationLifecycleError.unsafeInstallPath(state.path) }
         identity = FileIdentity(info)
     }
 
@@ -321,7 +334,6 @@ private final class PinnedParent {
         }
     }
 
-    deinit { close(descriptor) }
 }
 
 public final class InstallationLifecycle: @unchecked Sendable {
@@ -3457,7 +3469,35 @@ fileprivate final class InstallationCaptureParent {
         identity = try Self.node(pinned.descriptor, directory: true, privateMode: false)
         try validate()
     }
+    init(readinessAdmission: LifecycleAdmissionAuthority) throws {
+        guard readinessAdmission.commandAdmissionIsOpen else { throw CustodyRecordError.fenced }
+        pinned = try PinnedParent(retaining: readinessAdmission.stateDirectory)
+        identity = try Self.node(pinned.descriptor, directory: true, privateMode: false)
+        try validate()
+        guard readinessAdmission.commandAdmissionIsOpen else { throw CustodyRecordError.fenced }
+    }
     var fd: Int32 { pinned.descriptor }
+    // Extend the actual retained parent with / -> P, enrolling every acquired
+    // description in the caller before the next fallible operation. No realpath
+    // alias or reopened final parent is substituted for the original P.
+    func retainSocketAncestors(_ address: InstallationNamedSocketObservation.Address,
+                               into retained: inout [OwnedFileDescriptor], deadline: MonotonicDeadline) throws {
+        guard retained.isEmpty, address.path == pinned.path + "/" + address.endpoint.rawValue,
+              !deadline.hasExpired else { throw CustodyRecordError.fenced }
+        let root = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard root >= 0 else { throw CustodyRecordError.persistence(errno) }
+        retained.append(OwnedFileDescriptor(root))
+        for component in address.parentComponents.dropLast() {
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            let raw = openat(retained.last!.value, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard raw >= 0 else { throw CustodyRecordError.persistence(errno) }
+            retained.append(OwnedFileDescriptor(raw))
+        }
+        retained.append(pinned.ownedDescriptor)
+        _ = try InstallationNamedSocketObservation.parents(address: address, retainedAncestors: retained,
+            uid: geteuid(), deadline: deadline)
+        try validate()
+    }
     func validate() throws {
         try pinned.validate()
         let current = try Self.node(fd, directory: true, privateMode: false)
@@ -3581,16 +3621,21 @@ extension InstallationLifecycle {
         return capture
     }
     fileprivate func observeInstallationSlots(binding: InstallationLiveBinding, transactionID: String,
-                                              parents: [InstallationCaptureParent], endpoint: InstallationReadinessEndpoint? = nil) throws
+                                              parents: [InstallationCaptureParent], endpoint: InstallationReadinessEndpoint? = nil,
+                                              readinessDeadline: MonotonicDeadline? = nil) throws
         -> (InstallationSlotSnapshot, [InstallationDocumentPreimage]) {
         try observeInstallationSlots(stateBinding: binding.state, candidate: binding.candidate,
-            transactionID: transactionID, parents: parents, endpoint: endpoint)
+            transactionID: transactionID, parents: parents, endpoint: endpoint, readinessDeadline: readinessDeadline)
     }
     fileprivate func observeInstallationSlots(stateBinding: InstallationStateBinding, candidate: InstallationCandidate,
                                               transactionID: String, parents: [InstallationCaptureParent],
                                               endpoint: InstallationReadinessEndpoint? = nil,
-                                              hostEndpoint: InstallationPrecommitHostEndpoint? = nil) throws
+                                              hostEndpoint: InstallationPrecommitHostEndpoint? = nil,
+                                              readinessDeadline: MonotonicDeadline? = nil) throws
         -> (InstallationSlotSnapshot, [InstallationDocumentPreimage]) {
+        if endpoint != nil {
+            guard let readinessDeadline, !readinessDeadline.hasExpired else { throw CustodyRecordError.busy }
+        }
         guard parents.count == 4 else { throw CustodyRecordError.fenced }
         let app = parents[0], plist = parents[1], namespaceParent = parents[2], state = parents[3]
         // The stable namespace excludes only its child-dependent directory
@@ -3634,6 +3679,7 @@ extension InstallationLifecycle {
         ]
         var images: [InstallationSlot: InstallationSlotImage] = [:], documents: [InstallationDocumentPreimage] = []
         for slot in InstallationSlot.allCases {
+            if let readinessDeadline, readinessDeadline.hasExpired { throw CustodyRecordError.busy }
             #if SHADOW_SYNC_TESTING
             testingSlotCaptureStage = "observe:" + slot.rawValue
             #endif
@@ -3642,9 +3688,10 @@ extension InstallationLifecycle {
                 node: nil, size: nil, contentDigest: nil, documentReceipts: nil)
             if slot.isSocket {
                 if slot == .installationSocket, let endpoint {
-                    try endpoint.revalidate()
+                    guard let readinessDeadline else { throw CustodyRecordError.fenced }
+                    try endpoint.revalidate(deadline: readinessDeadline)
                     guard endpoint.parentMatches(parent.identity) else { throw CustodyRecordError.conflict }
-                    images[slot] = endpoint.image
+                    images[slot] = try endpoint.image
                 } else if slot == .installationSocket, let hostEndpoint {
                     try hostEndpoint.revalidate()
                     guard hostEndpoint.parentMatches(parent.identity) else { throw CustodyRecordError.conflict }
@@ -3893,35 +3940,47 @@ final class InstallationPreparedSlotObservation {
     }
     // Caller must already have persisted open-staged-admission intent. This
     // factory additionally requires the actual consumed owner in staged phase.
-    func createReadinessEndpoint(for owner: InstallationTransactionOwner) throws -> InstallationReadinessEndpoint {
+    func createReadinessEndpoint(for owner: InstallationTransactionOwner, deadline: MonotonicDeadline) throws -> InstallationReadinessEndpoint {
         guard self.owner === owner, endpoint == nil else { throw CustodyRecordError.fenced }
         try owner.validateReadinessOwner()
-        try revalidate(for: owner)
+        try revalidate(for: owner, deadline: deadline)
         guard expected.images[.installationSocket]?.node == nil else { throw CustodyRecordError.fenced }
-        let created = try InstallationReadinessEndpoint(parent: parents[3])
-        // Retain immediately. Failure after bind preserves the endpoint and fence;
-        // no unknown/stale-socket cleanup is available on this path.
+        let created = InstallationReadinessEndpoint(parent: parents[3], owner: owner, deadline: deadline)
+        // The actual partial creator is enrolled before socket/open/bind. The
+        // journal's existing serialized turn excludes cancellation until unwind.
         endpoint = created
-        var images = expected.images; images[.installationSocket] = created.image
+        #if SHADOW_SYNC_TESTING
+        created.testingCut = testingEndpointCut
+        guard let root = observer.testingExclusiveRoot,
+              try InstallationPaths.isolated(root: root) == observer.paths else { throw CustodyRecordError.fenced }
+        try RuntimeFixtureSession.installationRoot(root).retainNamedSocket(created)
+        #endif
+        try created.publish()
+        var images = expected.images; images[.installationSocket] = try created.image
         expected = InstallationSlotSnapshot(images: images)
-        try revalidate(for: owner)
+        try revalidate(for: owner, deadline: deadline)
         return created
     }
     func readinessHost(peer: PublisherCodeVerifier.AuditPeerObservation, generation: String,
-                       for owner: InstallationTransactionOwner) throws -> ProcessIdentity {
-        try revalidate(for: owner)
+                       for owner: InstallationTransactionOwner, deadline: MonotonicDeadline) throws -> ProcessIdentity {
+        try revalidate(for: owner, deadline: deadline)
         guard peer.uid == binding.state.directory.uid else { throw CustodyRecordError.fenced }
         let process = try ProcessIdentity.capture(processID: peer.pid, generation: generation,
             expectedExecutablePath: observer.paths.executable)
         guard process.userID == peer.uid else { throw CustodyRecordError.fenced }
-        try revalidate(for: owner)
+        try revalidate(for: owner, deadline: deadline)
         return process
     }
     var readinessSnapshot: InstallationSlotSnapshot { expected }
-    func revalidate(for owner: InstallationTransactionOwner) throws {
+    var retainedReadinessEndpoint: InstallationReadinessEndpoint? { endpoint }
+    #if SHADOW_SYNC_TESTING
+    var testingEndpointCut: InstallationReadinessEndpoint.TestingCut?
+    #endif
+    func revalidate(for owner: InstallationTransactionOwner, deadline: MonotonicDeadline) throws {
+        guard !deadline.hasExpired else { throw CustodyRecordError.busy }
         guard self.owner === owner else { throw CustodyRecordError.fenced }
         try binding.revalidate(for: owner)
-        let actual = try observer.observeInstallationSlots(binding: binding, transactionID: transactionID, parents: parents, endpoint: endpoint)
+        let actual = try observer.observeInstallationSlots(binding: binding, transactionID: transactionID, parents: parents, endpoint: endpoint, readinessDeadline: deadline)
         guard actual.0 == expected, actual.1 == documents else { throw CustodyRecordError.conflict }
         for (slot, descriptor) in exclusiveNodes {
             guard try InstallationCaptureParent.node(descriptor.value, directory: slot.isBundle, privateMode: !slot.isBundle) == expected.images[slot]?.node else { throw CustodyRecordError.conflict }
@@ -3972,40 +4031,124 @@ final class InstallationStagedCandidateSlots {
 /// a future typed retirement capability. Closing service preserves durable fence.
 final class InstallationReadinessEndpoint: @unchecked Sendable {
     private let parent: InstallationCaptureParent
-    let listener: OwnedFileDescriptor
-    private let node: OwnedFileDescriptor
-    let image: InstallationSlotImage
+    private let owner: InstallationTransactionOwner
+    private let deadline: MonotonicDeadline
+    private var address: InstallationNamedSocketObservation.Address?
+    private var ancestors: [OwnedFileDescriptor] = []
+    private var parentObservation: [InstallationNamedSocketObservation.Parent]?
+    private var listenerOwner: OwnedFileDescriptor?
+    private var observed: InstallationNamedSocketObservation?
+    private enum Phase { case reserved, preparing, boundUnpublished, listening, pending }
+    private var phase: Phase = .reserved
+    private var serviceClosed = false
+    // Enroll before the first acquisition, not just bind: a failed bounded
+    // cleanup and dropped journal must preserve every original description.
+    // After bind, service close alone never clears the named-generation fence.
+    // Production causal retirement is deliberately unavailable in this slice.
+    private var retainedSelf: InstallationReadinessEndpoint?
+    private var bindAttempted = false
     private static let name = "installation.sock"
-    private let serviceLock = NSLock()
-    fileprivate init(parent: InstallationCaptureParent) throws {
-        self.parent = parent
-        try parent.validate(); try parent.absent(Self.name)
-        guard parent.identity.mode == 0o40700 else { throw CustodyRecordError.unsafeMetadata }
-        let raw = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard raw >= 0 else { throw CustodyRecordError.persistence(errno) }
-        let listener = OwnedFileDescriptor(raw); self.listener = listener
-        try InstallationPrecommitTransport.configure(raw)
-        var address = try HostControlIO.address(path: parent.pinned.path + "/" + Self.name)
-        let bound = withUnsafePointer(to: &address) { p in
-            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(raw, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+    private let serviceLock = NSRecursiveLock()
+    fileprivate init(parent: InstallationCaptureParent, owner: InstallationTransactionOwner, deadline: MonotonicDeadline) {
+        self.parent = parent; self.owner = owner; self.deadline = deadline
+    }
+    var listener: OwnedFileDescriptor {
+        get throws {
+            guard serviceLock.try() else { throw CustodyRecordError.busy }; defer { serviceLock.unlock() }
+            guard phase == .listening, !serviceClosed, let listenerOwner else { throw CustodyRecordError.fenced }
+            return listenerOwner
         }
-        guard bound == 0 else { throw CustodyRecordError.persistence(errno) }
-        // No cleanup catch: even a partial publication retains unknown evidence.
-        let held = openat(parent.fd, Self.name, O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard held >= 0 else { throw CustodyRecordError.persistence(errno) }
-        node = OwnedFileDescriptor(held)
-        var before = stat(), named = stat()
-        guard fstat(held, &before) == 0, before.st_mode & S_IFMT == S_IFSOCK,
-              before.st_uid == geteuid(), before.st_nlink == 1,
-              fstatat(parent.fd, Self.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
-              FileIdentity(before).matchesStableNode(FileIdentity(named)),
-              fchmod(held, 0o600) == 0 else { throw CustodyRecordError.unsafeMetadata }
-        let identity = try Self.identity(held)
-        image = InstallationSlotImage(parentDevice: parent.identity.device, parentInode: parent.identity.inode,
-            node: identity, size: nil, contentDigest: nil, documentReceipts: nil)
-        try revalidate()
-        guard listen(raw, 1) == 0, fsync(parent.fd) == 0 else { throw CustodyRecordError.persistence(errno) }
-        try revalidate()
+    }
+    var image: InstallationSlotImage {
+        get throws {
+            guard serviceLock.try() else { throw CustodyRecordError.busy }; defer { serviceLock.unlock() }
+            guard let observed, phase == .listening else { throw CustodyRecordError.fenced }
+            return InstallationSlotImage(parentDevice: parent.identity.device, parentInode: parent.identity.inode,
+                node: observed.nodeIdentity, size: nil, contentDigest: nil, documentReceipts: nil)
+        }
+    }
+    private func validateParents(observationDeadline: MonotonicDeadline? = nil) throws {
+        let budget = observationDeadline ?? deadline
+        guard !budget.hasExpired else { throw CustodyRecordError.busy }
+        try owner.validateReadinessOwner()
+        guard let address, let parentObservation,
+              try InstallationNamedSocketObservation.parents(address: address, retainedAncestors: ancestors,
+                uid: geteuid(), deadline: budget) == parentObservation else { throw CustodyRecordError.conflict }
+        try parent.validate()
+    }
+    // This checks the actual creator's retained descriptions under the same
+    // local serialization as bind/mode/listen/close. It cannot be minted by data.
+    func validateUnpublishedObservation(address: InstallationNamedSocketObservation.Address,
+                                        ancestors: [OwnedFileDescriptor]) throws {
+        guard serviceLock.try() else { throw CustodyRecordError.busy }; defer { serviceLock.unlock() }
+        guard phase == .boundUnpublished, !serviceClosed, (listenerOwner?.value ?? -1) >= 0,
+              self.address?.bytes == address.bytes, ancestors.count == self.ancestors.count,
+              zip(ancestors, self.ancestors).allSatisfy({ pair in pair.0 === pair.1 }) else { throw CustodyRecordError.fenced }
+        try validateParents()
+    }
+    fileprivate func publish() throws {
+        guard serviceLock.try() else { throw CustodyRecordError.busy }; defer { serviceLock.unlock() }
+        guard phase == .reserved, !serviceClosed else { throw CustodyRecordError.fenced }
+        phase = .preparing
+        retainedSelf = self
+        do {
+            try owner.validateReadinessOwner()
+            let address = try InstallationNamedSocketObservation.Address(canonicalParent: parent.pinned.path, endpoint: .installation)
+            self.address = address
+            try parent.retainSocketAncestors(address, into: &ancestors, deadline: deadline)
+            #if SHADOW_SYNC_TESTING
+            try testingFail(.afterAncestors)
+            #endif
+            parentObservation = try InstallationNamedSocketObservation.parents(address: address,
+                retainedAncestors: ancestors, uid: geteuid(), deadline: deadline)
+            try validateParents(); try parent.absent(Self.name)
+            let raw = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard raw >= 0 else { throw CustodyRecordError.persistence(errno) }
+            listenerOwner = OwnedFileDescriptor(raw)
+            try InstallationPrecommitTransport.configure(raw)
+            #if SHADOW_SYNC_TESTING
+            try testingFail(.beforeBind)
+            #endif
+            try validateParents(); try parent.absent(Self.name)
+            var native = address.socketAddress()
+            bindAttempted = true
+            let bound = withUnsafePointer(to: &native) { p in
+                p.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(raw, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            }
+            guard bound == 0 else { throw CustodyRecordError.persistence(errno) }
+            phase = .boundUnpublished
+            try validateParents()
+            let initial = try InstallationNamedSocketObservation.readUnpublishedCreator(self, address: address,
+                retainedAncestors: ancestors, uid: geteuid(), deadline: deadline)
+            // Mode is the sole permitted prepublication change. Full no-grant
+            // ACL and private-parent safety were decoded before touching it.
+            try validateParents()
+            let beforeMode = try InstallationNamedSocketObservation.readUnpublishedCreator(self, address: address,
+                retainedAncestors: ancestors, uid: geteuid(), deadline: deadline)
+            guard beforeMode == initial else { throw CustodyRecordError.conflict }
+            guard fchmodat(parent.fd, Self.name, 0o600, AT_SYMLINK_NOFOLLOW) == 0 else { throw CustodyRecordError.persistence(errno) }
+            try validateParents()
+            let final = try InstallationNamedSocketObservation.read(address: address, retainedAncestors: ancestors,
+                uid: geteuid(), deadline: deadline)
+            guard initial.sameUnpublishedGeneration(afterMode: final) else { throw CustodyRecordError.conflict }
+            observed = final
+            #if SHADOW_SYNC_TESTING
+            try testingFail(.afterMode)
+            #endif
+            try validateParents()
+            guard try InstallationNamedSocketObservation.read(address: address, retainedAncestors: ancestors,
+                uid: geteuid(), deadline: deadline, expected: final) == final else { throw CustodyRecordError.conflict }
+            guard listen(raw, 1) == 0, fsync(parent.fd) == 0 else { throw CustodyRecordError.persistence(errno) }
+            #if SHADOW_SYNC_TESTING
+            try testingFail(.afterListen)
+            #endif
+            phase = .listening
+            try revalidate(deadline: deadline)
+        } catch {
+            phase = .pending
+            // No name cleanup, ownership reconstruction or uncertain close retry.
+            throw error
+        }
     }
     fileprivate static func identity(_ fd: Int32) throws -> InstallationNodeIdentity {
         var s = stat()
@@ -4015,29 +4158,115 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
             uid: s.st_uid, mode: UInt32(s.st_mode), links: UInt64(s.st_nlink),
             aclDigest: CustodyRecordBinding.digest(Data(try PolicyAuthorityFile.privateStateACL(fd).utf8)))
     }
-    fileprivate func parentMatches(_ other: InstallationNodeIdentity) -> Bool { parent.identity == other }
-    func revalidate() throws {
-        try parent.validate()
-        guard let expected = image.node, try Self.identity(node.value) == expected else { throw CustodyRecordError.conflict }
-        let fd = openat(parent.fd, Self.name, O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw CustodyRecordError.conflict }
-        defer { close(fd) }
-        guard try Self.identity(fd) == expected else { throw CustodyRecordError.conflict }
-        try parent.validate()
+    // The existing host-side descriptor helper remains until its separate integration.
+    fileprivate func parentMatches(_ other: InstallationNodeIdentity) -> Bool {
+        parent.identity.device == other.device && parent.identity.inode == other.inode
+            && parent.identity.uid == other.uid && parent.identity.mode == other.mode
+            && parent.identity.aclDigest == other.aclDigest && other.links > 0
     }
+    func revalidate(deadline budget: MonotonicDeadline) throws {
+        guard serviceLock.try() else { throw CustodyRecordError.busy }; defer { serviceLock.unlock() }
+        guard !budget.hasExpired else { throw CustodyRecordError.busy }
+        guard let address, let observed, phase == .listening else { throw CustodyRecordError.fenced }
+        #if SHADOW_SYNC_TESTING
+        guard testingMetadataDeadlines.count < 512 else { throw CustodyRecordError.busy }
+        testingMetadataDeadlines.append(budget.absoluteUptimeNanoseconds)
+        #endif
+        try validateParents(observationDeadline: budget)
+        let current = try InstallationNamedSocketObservation.read(address: address, retainedAncestors: ancestors,
+            uid: geteuid(), deadline: budget)
+        guard observed.matchesNamedGeneration(current) else { throw CustodyRecordError.conflict }
+        try validateParents(observationDeadline: budget)
+    }
+    // Service closure is not node retirement. The original owner, chain, pending
+    // state and real close result stay retained by the pre-enrolled endpoint.
     func closeService() {
-        serviceLock.lock(); defer { serviceLock.unlock() }
-        if let fd = try? listener.duplicate() { _ = shutdown(fd, SHUT_RDWR); close(fd) }
-        listener.closeNow()
+        // A concurrent observation cannot make close wait beyond its caller's
+        // existing budget. The journal already fenced admission; its joined
+        // close check reports pending until this original owner can close.
+        guard serviceLock.try() else { return }; defer { serviceLock.unlock() }
+        serviceClosed = true
+        if let listenerOwner, listenerOwner.retireChecked() != .succeeded { return }
+        // Without any bind attempt, no name was created. Retire only descriptions
+        // acquired here; P belongs to the original slots and is never borrowed
+        // as close authority. Checked-close is one-shot, including uncertainty.
+        if !bindAttempted, retireAcquiredAncestors() { retainedSelf = nil }
+    }
+    private func retireAcquiredAncestors() -> Bool {
+        var retired = true
+        for descriptor in ancestors where descriptor !== parent.pinned.ownedDescriptor {
+            if descriptor.retireChecked() != .succeeded { retired = false }
+        }
+        return retired
+    }
+    func requireServiceClosed() throws {
+        guard serviceLock.try() else { throw CustodyRecordError.busy }; defer { serviceLock.unlock() }
+        guard serviceClosed else { throw CustodyRecordError.fenced }
+        if !bindAttempted, retainedSelf != nil { throw CustodyRecordError.fenced }
+        if let listenerOwner {
+            guard listenerOwner.retirementObservation == .succeeded else { throw CustodyRecordError.fenced }
+        }
     }
     #if SHADOW_SYNC_TESTING
-    func testingRemoveOwnedEndpoint() throws {
-        closeService(); try revalidate()
+    enum TestingCut { case afterAncestors, beforeBind, afterMode, afterListen }
+    private var testingMetadataDeadlines: [UInt64] = []
+    var testingObservedMetadataDeadlines: [UInt64] {
+        serviceLock.lock(); defer { serviceLock.unlock() }; return testingMetadataDeadlines
+    }
+    // Legacy fixture calls retain their assertions; production must name its phase.
+    func revalidate() throws { try revalidate(deadline: deadline) }
+    var testingAcquisitionRetained: Bool {
+        guard serviceLock.try() else { return false }; defer { serviceLock.unlock() }
+        return retainedSelf === self
+    }
+    private var testingUnlinked = false
+    private var testingRetired = false
+    var testingCut: TestingCut?
+    private func testingFail(_ cut: TestingCut) throws {
+        if testingCut == cut { testingCut = nil; throw CustodyRecordError.fenced }
+    }
+    var testingPartialRetained: Bool {
+        guard serviceLock.try() else { return false }; defer { serviceLock.unlock() }
+        return phase == .pending && listenerOwner != nil && !ancestors.isEmpty && observed != nil
+    }
+    func testingRemoveOwnedEndpoint(deadline cleanup: MonotonicDeadline? = nil) throws {
+        guard serviceLock.try() else { throw CustodyRecordError.busy }; defer { serviceLock.unlock() }
+        if testingRetired { return }
+        let budget = cleanup ?? deadline
+        closeService(); try requireServiceClosed()
+        // No bind attempt means no created name and no node-close receipt.
+        guard bindAttempted else { testingRetired = true; return }
+        if testingUnlinked {
+            // Postflight already completed before any acquired descriptions
+            // retired. Never observe through closed originals or claim a new
+            // post-unlink identity; uncertainty remains latched and fenced.
+            guard retireAcquiredAncestors() else { throw CustodyRecordError.fenced }
+            testingRetired = true; retainedSelf = nil; return
+        }
+        try validateParents(observationDeadline: budget)
+        guard let address, let observed else { throw CustodyRecordError.fenced }
+        let current = try InstallationNamedSocketObservation.read(address: address, retainedAncestors: ancestors,
+            uid: geteuid(), deadline: budget)
+        guard observed.matchesNamedGeneration(current) else { throw CustodyRecordError.conflict }
         guard unlinkat(parent.fd, Self.name, 0) == 0, fsync(parent.fd) == 0 else { throw CustodyRecordError.persistence(errno) }
         try parent.absent(Self.name)
+        try validateParents(observationDeadline: budget)
+        testingUnlinked = true
+        guard retireAcquiredAncestors() else { throw CustodyRecordError.fenced }
+        testingRetired = true; retainedSelf = nil
     }
     #endif
 }
+
+#if SHADOW_SYNC_TESTING
+// The original registered root invokes this only after it has joined every
+// journal and fixture work item. No product cleanup entrypoint is introduced.
+extension InstallationReadinessEndpoint: InstallationNamedSocketFixtureCustodyOwner {
+    func retireNamedSocketFixture(deadline: MonotonicDeadline) throws {
+        try testingRemoveOwnedEndpoint(deadline: deadline)
+    }
+}
+#endif
 
 /// Pins the fixed staged layout for the current host. This performs only the
 /// existing installation-slot reads, never ordinary admission or activation.
@@ -4069,34 +4298,65 @@ final class InstallationCommittedHostSlots {
 /// Host-side pin of the same fixed endpoint. The control image is evidence only;
 /// live exact-code peer authentication remains mandatory on the retained stream.
 final class InstallationPrecommitHostEndpoint {
+    private let admission: LifecycleAdmissionAuthority
+    private let launcher: LauncherAuthority
+    private let control: InstallationControlRecord
     private let parent: InstallationCaptureParent
-    private let node: OwnedFileDescriptor
     private let expected: InstallationSlotImage
+    private let address: InstallationNamedSocketObservation.Address
+    private let deadline: MonotonicDeadline
+    private var ancestors: [OwnedFileDescriptor] = []
+    private var parentObservation: [InstallationNamedSocketObservation.Parent]?
+    private var observed: InstallationNamedSocketObservation?
+    private var attempted = false
     let connection: OwnedFileDescriptor
-    init(admission: LifecycleAdmissionAuthority, control: InstallationControlRecord,
+    init(admission: LifecycleAdmissionAuthority, launcher: LauncherAuthority, control: InstallationControlRecord,
          deadline: MonotonicDeadline) throws {
-        guard let expected = control.transaction?.slots.images[.installationSocket], expected.node != nil else {
-            throw CustodyRecordError.fenced
-        }
-        self.expected = expected
-        parent = try InstallationCaptureParent(admission.stateDirectory.path)
+        guard let expected = control.transaction?.slots.images[.installationSocket], expected.node != nil,
+              !deadline.hasExpired else { throw CustodyRecordError.fenced }
+        self.admission = admission; self.launcher = launcher; self.control = control
+        self.deadline = deadline; self.expected = expected
+        parent = try InstallationCaptureParent(readinessAdmission: admission)
+        address = try InstallationNamedSocketObservation.Address(canonicalParent: admission.stateDirectory.path, endpoint: .installation)
+        let raw = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard raw >= 0 else { throw CustodyRecordError.persistence(errno) }
+        connection = OwnedFileDescriptor(raw)
+        // No later throwing initializer work: the host enrolls this actual
+        // partial observer before configuration, chain capture or connect.
+    }
+    private func validateOwnerAndParent() throws {
+        guard !deadline.hasExpired, admission.commandAdmissionIsOpen else { throw CustodyRecordError.fenced }
+        try launcher.validateRetainedInstallation(control.state)
+        try parent.validate()
         guard parent.identity.device == control.state.directory.device,
               parent.identity.inode == control.state.directory.inode,
               parent.identity.mode == control.state.directory.mode,
               parent.identity.aclDigest == control.state.directory.aclDigest,
-              expected.parentDevice == parent.identity.device, expected.parentInode == parent.identity.inode else {
+              expected.parentDevice == parent.identity.device, expected.parentInode == parent.identity.inode,
+              let parentObservation,
+              try InstallationNamedSocketObservation.parents(address: address, retainedAncestors: ancestors,
+                uid: control.state.directory.uid, deadline: deadline) == parentObservation else {
             throw CustodyRecordError.conflict
         }
-        let fd = openat(parent.fd, "installation.sock", O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw CustodyRecordError.persistence(errno) }
-        node = OwnedFileDescriptor(fd)
-        let raw = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard raw >= 0 else { throw CustodyRecordError.persistence(errno) }
-        connection = OwnedFileDescriptor(raw)
+    }
+    func connect() throws {
+        guard !attempted else { throw CustodyRecordError.fenced }
+        attempted = true
+        guard !deadline.hasExpired, admission.commandAdmissionIsOpen else { throw CustodyRecordError.fenced }
+        try launcher.validateRetainedInstallation(control.state)
+        try parent.retainSocketAncestors(address, into: &ancestors, deadline: deadline)
+        parentObservation = try InstallationNamedSocketObservation.parents(address: address,
+            retainedAncestors: ancestors, uid: control.state.directory.uid, deadline: deadline)
+        try validateOwnerAndParent()
+        let initial = try InstallationNamedSocketObservation.read(address: address, retainedAncestors: ancestors,
+            uid: control.state.directory.uid, deadline: deadline)
+        guard initial.nodeIdentity == expected.node else { throw CustodyRecordError.conflict }
+        observed = initial
+        let raw = connection.value
         try InstallationPrecommitTransport.configure(raw)
         try revalidate()
-        var address = try HostControlIO.address(path: parent.pinned.path + "/installation.sock")
-        let result = withUnsafePointer(to: &address) { p in
+        var native = address.socketAddress()
+        let result = withUnsafePointer(to: &native) { p in
             p.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(raw, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
         if result != 0 {
@@ -4106,20 +4366,42 @@ final class InstallationPrecommitHostEndpoint {
             guard getsockopt(raw, SOL_SOCKET, SO_ERROR, &code, &size) == 0,
                   size == socklen_t(MemoryLayout<Int32>.size), code == 0 else { throw CustodyRecordError.conflict }
         }
-        guard !deadline.hasExpired else { throw CustodyRecordError.busy }
         try revalidate()
+        // Existing host.run authenticates the original stream's exact native
+        // peer before it reads/sends the readiness transcript. No new authority.
+    }
+    // Failure cleanup consumes only actual acquired resources, never a name.
+    // Each descriptor latches its original close outcome; repeated calls cannot
+    // retry a numeric descriptor or erase uncertainty.
+    func retireFailedHostResources() -> OwnedFileDescriptor.Retirement {
+        let stream = connection.retireChecked()
+        guard stream == .succeeded else { return stream }
+        return retireObservationResources()
+    }
+    func retireObservationResources() -> OwnedFileDescriptor.Retirement {
+        var result = OwnedFileDescriptor.Retirement.succeeded
+        var visited = Set<ObjectIdentifier>()
+        for descriptor in ancestors where descriptor !== parent.pinned.ownedDescriptor {
+            guard visited.insert(ObjectIdentifier(descriptor)).inserted else { continue }
+            let retired = descriptor.retireChecked()
+            if result == .succeeded, retired != .succeeded { result = retired }
+        }
+        return result
     }
     fileprivate var image: InstallationSlotImage { expected }
-    fileprivate func parentMatches(_ other: InstallationNodeIdentity) -> Bool { parent.identity == other }
+    fileprivate func parentMatches(_ other: InstallationNodeIdentity) -> Bool {
+        parent.identity.device == other.device && parent.identity.inode == other.inode
+            && parent.identity.uid == other.uid && parent.identity.mode == other.mode
+            && parent.identity.aclDigest == other.aclDigest && other.links > 0
+    }
     func revalidate() throws {
-        try parent.validate()
-        guard let image = expected.node, try InstallationReadinessEndpoint.identity(node.value) == image else {
+        try validateOwnerAndParent()
+        guard let observed, observed.nodeIdentity == expected.node else { throw CustodyRecordError.fenced }
+        let current = try InstallationNamedSocketObservation.read(address: address, retainedAncestors: ancestors,
+            uid: control.state.directory.uid, deadline: deadline)
+        guard observed.matchesNamedGeneration(current), current.nodeIdentity == expected.node else {
             throw CustodyRecordError.conflict
         }
-        let fd = openat(parent.fd, "installation.sock", O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw CustodyRecordError.conflict }
-        defer { close(fd) }
-        guard try InstallationReadinessEndpoint.identity(fd) == image else { throw CustodyRecordError.conflict }
-        try parent.validate()
+        try validateOwnerAndParent()
     }
 }

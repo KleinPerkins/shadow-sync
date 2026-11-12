@@ -77,6 +77,109 @@ enum InstallationPrecommitFixtures {
             try journal.testingRemoveReadinessEndpoint()
         }
     }
+    // New native-mechanism fixture sources are registered but unexecuted until
+    // supported-host admission. They never replace exact native authentication.
+    static func partialCreator() throws {
+        for cut in [InstallationReadinessEndpoint.TestingCut.afterMode, .afterListen] {
+            try InstallationStagedJournalFixtures.fixture { _, location, owner, _, _, journal, _ in
+                let deadline = MonotonicDeadline(seconds: 3)
+                journal.testingReadinessCut(cut)
+                try rejects { _ = try journal.completeAdmission(deadline: deadline) }
+                guard let partial = journal.testingEndpoint else { throw H.Failure(message: "partial creator not enrolled") }
+                try H.check(partial.testingPartialRetained, "partial creator lost actual descriptions")
+                try owner.validateReadinessOwner()
+                try rejects { _ = try partial.image }
+                try rejects { _ = try journal.completeAdmission(deadline: deadline) }
+                let control = try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")))
+                try H.check(control.step?.action == .openStagedAdmission && control.step?.status == .intent
+                    && control.transaction?.slots.images[.installationSocket]?.node == nil,
+                    "partial creator manufactured durable completion")
+                var node = stat()
+                try H.check(lstat(location.path + "/installation.sock", &node) == 0
+                    && node.st_mode == S_IFSOCK | 0o600 && node.st_nlink == 1,
+                    "partial creator effect was not preserved")
+                try journal.closeReadiness(deadline: deadline)
+                try partial.requireServiceClosed()
+                try journal.testingRemoveReadinessEndpoint()
+            }
+        }
+    }
+    static func creatorAddressBytes() throws {
+        typealias Address = InstallationNamedSocketObservation.Address
+        for path in ["relative", "/private//tmp", "/private/../tmp", "/private/./tmp", "/private/tmp\0suffix",
+                     "/private/" + String(repeating: "é", count: 60), "/private/e\u{301}"] {
+            try rejects { _ = try Address(canonicalParent: path, endpoint: .installation) }
+        }
+        let address = try Address(canonicalParent: "/private/tmp/fixture-owner", endpoint: .installation)
+        var native = address.socketAddress()
+        let actual = withUnsafeBytes(of: &native.sun_path) { Data($0.prefix(address.bytes.count)) }
+        try H.check(actual == address.bytes && native.sun_len == UInt8(MemoryLayout<sockaddr_un>.size)
+            && native.sun_family == sa_family_t(AF_UNIX), "creator address bytes or ABI length differ")
+        let terminated = withUnsafeBytes(of: &native.sun_path) { $0[address.bytes.count] == 0 }
+        try H.check(terminated, "creator address missing terminator")
+    }
+    static func creatorMetadataDrift() throws {
+        try InstallationStagedJournalFixtures.fixture { _, location, _, _, _, journal, _ in
+            _ = try journal.completeAdmission(deadline: .init(seconds: 3))
+            try journal.closeReadiness(deadline: .init(seconds: 3))
+            guard let endpoint = journal.testingEndpoint else { throw H.Failure(message: "missing creator for drift") }
+            let name = location.path + "/installation.sock"
+            var before = stat(); try H.check(lstat(name, &before) == 0, "creator drift original node")
+            try H.check(chmod(name, 0o640) == 0, "creator drift mode change")
+            try rejects { try endpoint.revalidate() }
+            try rejects { try endpoint.testingRemoveOwnedEndpoint() }
+            var after = stat()
+            try H.check(lstat(name, &after) == 0 && after.st_dev == before.st_dev && after.st_ino == before.st_ino
+                && after.st_mode == S_IFSOCK | 0o640, "creator drift refusal changed named node")
+            // Restore only fixture permissions. This is not restored creator
+            // authority; original registered root custody owns final removal.
+            try H.check(chmod(name, 0o600) == 0, "creator drift fixture mode restore")
+        }
+    }
+    private final class ObserverFixture: InstallationNamedSocketFixtureCustodyOwner {
+        private var lifecycle: LifecycleAdmissionAuthority?
+        private var launcher: LauncherAuthority?
+        private var endpoint: InstallationPrecommitHostEndpoint?
+        func prepare(location: StateLocation, control: InstallationControlRecord, deadline: MonotonicDeadline) throws {
+            guard lifecycle == nil, launcher == nil, endpoint == nil else { throw CustodyRecordError.fenced }
+            let lifecycle = try LifecycleAdmissionAuthority.acquire(at: location); self.lifecycle = lifecycle
+            let launcher = try LauncherAuthority.acquireForReadiness(admission: lifecycle) { self.launcher = $0 }
+            endpoint = try InstallationPrecommitHostEndpoint(admission: lifecycle, launcher: launcher,
+                control: control, deadline: deadline)
+        }
+        func connect() throws {
+            guard let endpoint else { throw CustodyRecordError.fenced }
+            try endpoint.connect()
+        }
+        func retireNamedSocketFixture(deadline: MonotonicDeadline) throws {
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            if let endpoint { guard endpoint.retireFailedHostResources() == .succeeded else { throw CustodyRecordError.fenced } }
+            if let lifecycle { guard lifecycle.closeCommittedHostObservationBorrowing() == .succeeded else { throw CustodyRecordError.fenced } }
+            if let launcher { guard launcher.retireCommittedHostLauncher() == .succeeded else { throw CustodyRecordError.fenced } }
+            if let lifecycle { guard lifecycle.retireCommittedHostAdmission() == .succeeded else { throw CustodyRecordError.fenced } }
+            endpoint = nil; launcher = nil; lifecycle = nil
+        }
+    }
+    static func observerNamedRefusal() throws {
+        try InstallationStagedJournalFixtures.fixture { root, location, _, _, _, journal, _ in
+            let deadline = MonotonicDeadline(seconds: 3)
+            let control = try journal.completeAdmission(deadline: deadline)
+            try journal.closeReadiness(deadline: deadline)
+            let observer = ObserverFixture()
+            try RuntimeFixtureSession.installationRoot(root).retainNamedSocket(observer)
+            try observer.prepare(location: location, control: control, deadline: deadline)
+            let name = location.path + "/installation.sock"
+            var before = stat(); try H.check(lstat(name, &before) == 0, "observer original named node")
+            try H.check(chmod(name, 0o640) == 0, "observer mode refusal setup")
+            try rejects { try observer.connect() }
+            try rejects { try observer.connect() }
+            var after = stat()
+            try H.check(lstat(name, &after) == 0 && after.st_dev == before.st_dev && after.st_ino == before.st_ino
+                && after.st_mode == S_IFSOCK | 0o640, "observer repaired or removed endpoint")
+            try observer.retireNamedSocketFixture(deadline: deadline)
+            try H.check(chmod(name, 0o600) == 0, "observer fixture mode restore")
+        }
+    }
     static func unknownEndpoint() throws {
         for symlinked in [false, true] {
             try InstallationStagedJournalFixtures.fixture { root, location, _, _, _, journal, _ in

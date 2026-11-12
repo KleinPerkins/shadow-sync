@@ -31,6 +31,11 @@ final class InstallationFixtureWork: @unchecked Sendable {
     }
 }
 
+/// Actual primitive owners registered before fallible socket effects.
+protocol InstallationNamedSocketFixtureCustodyOwner: AnyObject {
+    func retireNamedSocketFixture(deadline: MonotonicDeadline) throws
+}
+
 /// Testing-only outer custody. Failed joins retain these actual owners and the
 /// exact root until the case/guardian observes successful independent drainage.
 final class InstallationReadinessFixtureCustody: @unchecked Sendable {
@@ -41,6 +46,7 @@ final class InstallationReadinessFixtureCustody: @unchecked Sendable {
     private var work: [InstallationFixtureWork] = []
     private var registries: [RetainedCleanupRegistry] = []
     private var bootstraps: [InstallationBootstrap] = []
+    private var namedSockets: [InstallationNamedSocketFixtureCustodyOwner] = []
     init(root: String, identity: FileIdentity) { self.root = root; self.identity = identity }
     func retain(_ journal: CustodyCatalogStore.InstallationStagedJournal) {
         lock.lock(); journals.append(journal); lock.unlock()
@@ -51,18 +57,22 @@ final class InstallationReadinessFixtureCustody: @unchecked Sendable {
     func retain(_ registry: RetainedCleanupRegistry) {
         lock.lock(); registries.append(registry); lock.unlock()
     }
+    func retainNamedSocket(_ owner: InstallationNamedSocketFixtureCustodyOwner) {
+        lock.lock(); namedSockets.append(owner); lock.unlock()
+    }
     func startWork(_ body: @escaping @Sendable () throws -> Void) -> InstallationFixtureWork {
         let value = InstallationFixtureWork()
         lock.lock(); work.append(value); lock.unlock()
         value.start(body); return value
     }
     func finish(deadline: MonotonicDeadline) throws {
-        lock.lock(); let journals = self.journals, work = self.work, registries = self.registries; lock.unlock()
+        lock.lock(); let journals = self.journals, work = self.work, registries = self.registries, namedSockets = self.namedSockets; lock.unlock()
         for journal in journals { try journal.closeReadiness(deadline: deadline) }
         for item in work { try item.join(deadline: deadline) }
         for registry in registries {
             guard !registry.hasRetainedWork, registry.testingOriginalHelpersReaped else { throw CustodyRecordError.busy }
         }
+        for owner in namedSockets { try owner.retireNamedSocketFixture(deadline: deadline) }
         // Rejoin after other owned calls return: a crossing publication cannot
         // create new work after the earlier cancellation observation.
         for journal in journals { try journal.closeReadiness(deadline: deadline) }
@@ -71,7 +81,7 @@ final class InstallationReadinessFixtureCustody: @unchecked Sendable {
             throw CustodyRecordError.conflict
         }
         try FileManager.default.removeItem(atPath: root)
-        lock.lock(); self.journals.removeAll(); self.work.removeAll(); self.registries.removeAll(); self.bootstraps.removeAll(); lock.unlock()
+        lock.lock(); self.journals.removeAll(); self.work.removeAll(); self.registries.removeAll(); self.bootstraps.removeAll(); self.namedSockets.removeAll(); lock.unlock()
     }
 }
 

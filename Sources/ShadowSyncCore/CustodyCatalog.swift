@@ -2087,7 +2087,7 @@ extension CustodyCatalogStore {
             guard self.owner === owner, !deadline.hasExpired else { throw CustodyRecordError.fenced }
             guard mutex.try() else { throw CustodyRecordError.busy }
             let claimed = continuationClaimed; mutex.unlock()
-            try owner.revalidate(); try slots.revalidate(for: owner)
+            try owner.revalidate(); try slots.revalidate(for: owner, deadline: deadline)
             guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
             do {
             defer { mutex.unlock() }
@@ -2110,7 +2110,7 @@ extension CustodyCatalogStore {
                 try validate(directory, parent: root.value, name: "custody", isDirectory: true)
             }
             }
-            try slots.revalidate(for: owner); try owner.revalidate()
+            try slots.revalidate(for: owner, deadline: deadline); try owner.revalidate()
             guard !deadline.hasExpired else { throw CustodyRecordError.busy }
         }
     }
@@ -2246,10 +2246,10 @@ extension CustodyCatalogStore {
                 Thread.sleep(forTimeInterval: 0.001)
             }
             try lockReadiness(deadline)
-            let session = readinessSession, endpoint = readinessEndpoint
+            let session = readinessSession, endpoint = readinessEndpoint ?? slots.retainedReadinessEndpoint
             readinessMutex.unlock()
             if let session { try session.cancelAndJoin(deadline: deadline) }
-            else { endpoint?.closeService() }
+            else { endpoint?.closeService(); try endpoint?.requireServiceClosed() }
         }
         func didJoinReadiness(_ session: InstallationPrecommitSession, deadline: MonotonicDeadline) throws {
             try lockReadiness(deadline); defer { readinessMutex.unlock() }
@@ -2258,7 +2258,7 @@ extension CustodyCatalogStore {
         func readinessHost(peer: PublisherCodeVerifier.AuditPeerObservation, generation: String,
                            deadline: MonotonicDeadline) throws -> ProcessIdentity {
             guard !deadline.hasExpired else { throw CustodyRecordError.busy }
-            return try slots.readinessHost(peer: peer, generation: generation, for: owner)
+            return try slots.readinessHost(peer: peer, generation: generation, for: owner, deadline: deadline)
         }
         func validateReadiness(_ control: InstallationControlRecord, deadline: MonotonicDeadline) throws {
             // Snapshot under a short metadata lock; source/publisher work is
@@ -2276,7 +2276,7 @@ extension CustodyCatalogStore {
             guard let endpoint, !closed else { throw CustodyRecordError.fenced }
             try owner.validateStagedCommandAliasesRetired()
             try admission.validateOwner(owner, intent: intent)
-            try slots.revalidate(for: owner); try owner.revalidate(); try endpoint.revalidate()
+            try slots.revalidate(for: owner, deadline: deadline); try owner.revalidate(); try endpoint.revalidate(deadline: deadline)
             let store = try CustodyCatalogStore(leases: admission.retainStartLeases())
             guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
             do {
@@ -2288,7 +2288,7 @@ extension CustodyCatalogStore {
                 mutex.unlock()
             } catch { mutex.unlock(); throw error }
             try admission.validateOwner(owner, intent: intent)
-            try slots.revalidate(for: owner); try owner.revalidate(); try endpoint.revalidate()
+            try slots.revalidate(for: owner, deadline: deadline); try owner.revalidate(); try endpoint.revalidate(deadline: deadline)
             guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
             let unchanged = !serializing && metadataGeneration == revision && !failed && current == control
             mutex.unlock()
@@ -2298,10 +2298,22 @@ extension CustodyCatalogStore {
         #if SHADOW_SYNC_TESTING
         func testingRemoveReadinessEndpoint() throws {
             try closeReadiness(deadline: .init(seconds: 3))
-            try readinessEndpoint?.testingRemoveOwnedEndpoint()
+            try (readinessEndpoint ?? slots.retainedReadinessEndpoint)?.testingRemoveOwnedEndpoint(deadline: .init(seconds: 3))
+        }
+        func testingReadinessCut(_ cut: InstallationReadinessEndpoint.TestingCut) {
+            slots.testingEndpointCut = cut
         }
         var testingEndpoint: InstallationReadinessEndpoint? {
-            readinessMutex.lock(); defer { readinessMutex.unlock() }; return readinessEndpoint
+            readinessMutex.lock()
+            let published = readinessEndpoint
+            readinessMutex.unlock()
+            if let published { return published }
+            // Partial creation is owned by slots before publication. Observe
+            // that same owner only after the serialized turn has unwound.
+            guard mutex.try() else { return nil }
+            defer { mutex.unlock() }
+            guard !serializing else { return nil }
+            return slots.retainedReadinessEndpoint
         }
         var testingSession: InstallationPrecommitSession? {
             readinessMutex.lock(); defer { readinessMutex.unlock() }; return readinessSession
@@ -2399,7 +2411,7 @@ extension CustodyCatalogStore {
             guard !deadline.hasExpired else { throw CustodyRecordError.busy }
             if let stop { try stop.validateOwner(owner) }
             else { try admission.validateOwner(owner, intent: intent) }
-            try slots.revalidate(for: owner); try owner.revalidate()
+            try slots.revalidate(for: owner, deadline: deadline); try owner.revalidate()
             guard !deadline.hasExpired else { throw CustodyRecordError.busy }
         }
         private func withStore<T>(deadline: MonotonicDeadline, completionLeases: CustodyAuthorityLeaseSet? = nil, _ body: (CustodyCatalogStore) throws -> T) throws -> T {
@@ -2593,7 +2605,7 @@ extension CustodyCatalogStore {
                 guard stop == nil, current.phase == .active, current.step?.action == .openStagedAdmission,
                       current.step?.ordinal == 12, current.step?.status == .intent,
                       let transaction = current.transaction, let candidate = transaction.candidate else { throw CustodyRecordError.fenced }
-                let endpoint = try slots.createReadinessEndpoint(for: owner)
+                let endpoint = try slots.createReadinessEndpoint(for: owner, deadline: deadline)
                 try lockReadiness(deadline)
                 readinessEndpoint = endpoint
                 let closed = readinessClosed
