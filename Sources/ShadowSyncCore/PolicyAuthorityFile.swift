@@ -203,7 +203,17 @@ struct PolicyAuthorityFile: Equatable, Sendable {
         try checkedACL(descriptor, allowingReadGrants: false)
     }
 
-    private static func checkedACL(_ descriptor: Int32, allowingReadGrants: Bool) throws -> String {
+    /// Retain the stat already filled by the ACL security query. This is a
+    /// fresh observation, not a cache; callers still check names and the full
+    /// batch postflight after every payload has been read.
+    private static func safeACLObservation(_ descriptor: Int32) throws -> (info: stat, acl: String) {
+        var info = stat()
+        let acl = try checkedACL(descriptor, allowingReadGrants: true, observedStat: &info)
+        return (info, acl)
+    }
+
+    private static func checkedACL(_ descriptor: Int32, allowingReadGrants: Bool,
+                                   observedStat: UnsafeMutablePointer<stat>? = nil) throws -> String {
         // acl_get_fd_np returns nil/ENOENT for an absent ACL as well as other
         // failures. Prove absence from a successful descriptor security read
         // instead of interpreting an errno as permission to continue.
@@ -216,6 +226,7 @@ struct PolicyAuthorityFile: Equatable, Sendable {
               filesec_query_property(security, FILESEC_ACL, &present) == 0 else {
             throw PolicyAuthorityFileError.unavailable
         }
+        observedStat?.pointee = info
         if present == 0 {
             return absentACLSHA256
         }
@@ -306,9 +317,8 @@ struct PolicyAuthorityFile: Equatable, Sendable {
                     ?? Darwin.open("/", flags | O_DIRECTORY)
                 guard descriptor >= 0 else { throw PolicyAuthorityFileError.unavailable }
                 descriptors.append(descriptor)
-                var info = stat()
-                guard fstat(descriptor, &info) == 0,
-                      DirectoryNode(info, aclSHA256: try PolicyAuthorityFile.safeACL(descriptor)) == expected else {
+                let observed = try PolicyAuthorityFile.safeACLObservation(descriptor)
+                guard DirectoryNode(observed.info, aclSHA256: observed.acl) == expected else {
                     throw PolicyAuthorityFileError.unavailable
                 }
                 directoryIndex[key] = directories.count
@@ -332,9 +342,8 @@ struct PolicyAuthorityFile: Equatable, Sendable {
                 let descriptor = openat(parent, leaf, flags)
                 guard descriptor >= 0 else { throw PolicyAuthorityFileError.unavailable }
                 descriptors.append(descriptor)
-                var before = stat()
-                guard fstat(descriptor, &before) == 0,
-                      Node(before, aclSHA256: try PolicyAuthorityFile.safeACL(descriptor)) == file.identity else {
+                let before = try PolicyAuthorityFile.safeACLObservation(descriptor)
+                guard Node(before.info, aclSHA256: before.acl) == file.identity else {
                     throw PolicyAuthorityFileError.unavailable
                 }
                 var bytes = Data(), buffer = [UInt8](repeating: 0, count: 16_384)
@@ -356,23 +365,21 @@ struct PolicyAuthorityFile: Equatable, Sendable {
             }
             // Span the entire batch, including files read before a later sibling.
             for payload in payloads {
-                var opened = stat(), named = stat()
-                let acl = try PolicyAuthorityFile.safeACL(payload.descriptor)
-                guard fstat(payload.descriptor, &opened) == 0,
-                      fstatat(payload.parent, payload.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
-                      Node(opened, aclSHA256: acl) == payload.identity,
-                      Node(named, aclSHA256: acl) == payload.identity else { throw PolicyAuthorityFileError.unavailable }
+                var named = stat()
+                let opened = try PolicyAuthorityFile.safeACLObservation(payload.descriptor)
+                guard fstatat(payload.parent, payload.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                      Node(opened.info, aclSHA256: opened.acl) == payload.identity,
+                      Node(named, aclSHA256: opened.acl) == payload.identity else { throw PolicyAuthorityFileError.unavailable }
             }
             for directory in directories {
-                var opened = stat(), named = stat()
-                let acl = try PolicyAuthorityFile.safeACL(directory.descriptor)
-                guard fstat(directory.descriptor, &opened) == 0,
-                      DirectoryNode(opened, aclSHA256: acl) == directory.identity else {
+                var named = stat()
+                let opened = try PolicyAuthorityFile.safeACLObservation(directory.descriptor)
+                guard DirectoryNode(opened.info, aclSHA256: opened.acl) == directory.identity else {
                     throw PolicyAuthorityFileError.unavailable
                 }
                 if let parent = directory.parent {
                     guard fstatat(parent, directory.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
-                          DirectoryNode(named, aclSHA256: acl) == directory.identity else {
+                          DirectoryNode(named, aclSHA256: opened.acl) == directory.identity else {
                         throw PolicyAuthorityFileError.unavailable
                     }
                 }
