@@ -153,5 +153,79 @@ class CIRuntimeTests(unittest.TestCase):
             self.assertTrue(all(re.fullmatch(pattern, path) is None for pattern in patterns), path)
 
 
+class RetentionCleanupCostOptionTests(unittest.TestCase):
+    def environment(self, suite, **options):
+        return runtime.fixture_environment(suite, Path('/fixture/work'), 'a' * 32,
+            Path('/fixture/python'), Path('/fixture/build'),
+            Path('/fixture/framework'), Path('/fixture/policy.json'), **options)
+
+    def test_default_and_explicit_false_do_not_inherit_host_cleanup_cost_flag(self):
+        key = 'SHADOW_SYNC_TEST_RETENTION_CLEANUP_COSTS'
+        with patch.dict(runtime.os.environ, {key: '1'}):
+            for suite in ('body3', 'retention-custody', 'discovery-caller', 'm6',
+                          'beta-v07', 'fixture-unknown'):
+                with self.subTest(suite=suite):
+                    implicit = self.environment(suite)
+                    explicit = self.environment(suite, retention_cleanup_costs=False)
+                    self.assertEqual(implicit, explicit)
+                    self.assertNotIn(key, implicit)
+                    self.assertEqual(implicit.get('SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'),
+                        '1' if suite in ('body3', 'retention-custody', 'discovery-caller') else None)
+
+    def test_explicit_body3_cost_opt_in_adds_only_the_closed_marker(self):
+        key = 'SHADOW_SYNC_TEST_RETENTION_CLEANUP_COSTS'
+        for inherited in ('0', '1', 'foreign'):
+            with self.subTest(inherited=inherited), patch.dict(runtime.os.environ, {key: inherited}):
+                normal = self.environment('body3')
+                diagnostic = self.environment('body3', retention_cleanup_costs=True)
+                self.assertEqual(diagnostic, {**normal, key: '1'})
+                self.assertEqual(diagnostic['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'], '1')
+
+    def test_environment_cost_option_rejects_non_boolean_values(self):
+        for value in (None, 0, 1, '1', 'true', [], {}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.environment('body3', retention_cleanup_costs=value)
+
+    def test_environment_cost_opt_in_rejects_every_other_suite(self):
+        for suite in ('retention-custody', 'discovery-caller', 'm6', 'beta-v07',
+                      'fixture-unknown', 'Body3'):
+            with self.subTest(suite=suite), self.assertRaises(ValueError):
+                self.environment(suite, retention_cleanup_costs=True)
+
+    def test_run_suite_rejects_invalid_options_before_inventory_or_root_creation(self):
+        invalid = [('body3', value) for value in (None, 0, 1, '1', [], {})]
+        invalid += [(suite, True) for suite in ('retention-custody', 'discovery-caller',
+                                               'm6', 'beta-v07', 'fixture-unknown')]
+        with patch.object(runtime, 'load') as load, patch.object(Path, 'mkdir') as mkdir:
+            for suite, value in invalid:
+                with self.subTest(suite=suite, value=value), self.assertRaises(ValueError):
+                    runtime.run_suite(suite, Path('/fixture/work'), Path('/fixture/build'),
+                        {}, {}, retention_cleanup_costs=value)
+            load.assert_not_called()
+            mkdir.assert_not_called()
+
+    def test_existing_positional_runner_call_and_explicit_valid_modes_reach_inventory(self):
+        # Stop at the first external dependency: this control creates no roots,
+        # inspects no tools and runs no native commands.
+        for suite, options in (('body3', {}), ('body3', {'retention_cleanup_costs': False}),
+                               ('body3', {'retention_cleanup_costs': True}), ('m6', {})):
+            with self.subTest(suite=suite, options=options), \
+                 patch.object(runtime, 'load', side_effect=RuntimeError('fixture inventory boundary')) as load, \
+                 patch.object(Path, 'mkdir') as mkdir:
+                with self.assertRaisesRegex(RuntimeError, '^fixture inventory boundary$'):
+                    runtime.run_suite(suite, Path('/fixture/work'), Path('/fixture/build'), {}, {}, **options)
+                load.assert_called_once_with('runtime-suite-inventory')
+                mkdir.assert_not_called()
+
+    def test_new_diagnostic_option_is_keyword_only(self):
+        with self.assertRaises(TypeError):
+            runtime.fixture_environment('body3', Path('/fixture/work'), 'a' * 32,
+                Path('/fixture/python'), Path('/fixture/build'), Path('/fixture/framework'),
+                Path('/fixture/policy.json'), True)
+        with patch.object(runtime, 'load') as load, self.assertRaises(TypeError):
+            runtime.run_suite('body3', Path('/fixture/work'), Path('/fixture/build'), {}, {}, True)
+        load.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

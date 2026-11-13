@@ -705,7 +705,7 @@ final class ShadowSyncAppDelegate:
         testingRoot = URL(fileURLWithPath: entry.paths.home).deletingLastPathComponent().path
         testingMapping = nil
         testingConfirmation = nil
-        testingQuitHandler = { NSApp.terminate(nil) }
+        testingQuitHandler = nil
         testingHostChrome = false
         stateLocationResolver = { entry.paths.state }
         logLocation = { entry.paths.state }

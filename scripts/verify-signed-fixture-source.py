@@ -67,6 +67,7 @@ def verify_signed_host_side_effects(raw):
     delegate = selected(raw, True, True)
     initializer = body(delegate, 'init(executablePath: String, signedFixture entry:')
     for statement in ('signedFixtureLifecycle = true', 'testingHostChrome = false',
+                      'testingQuitHandler = nil',
                       'logOpener = { _ in false }', 'stateLocationResolver = { entry.paths.state }'):
         require(compact(statement) in compact(initializer), 'fixture-host-initializer')
     require(re.findall(r'signedFixtureLifecycle\s*=\s*(true|false)', delegate) == ['false', 'true'],
@@ -122,7 +123,7 @@ def verify(root):
         'InstalledHostStartup.swift', 'InstallationPrecommitSession.swift', 'InstallationBootstrap.swift',
         'InstallationLifecycle.swift', 'InstallationStorageFixtures.swift', 'QualifiedCommandGraph.swift')}
     app = Path(root) / 'Sources/ShadowSyncApp'
-    files.update({name: (app / name).read_text() for name in ('main.swift', 'AppDelegate.swift', 'SignedInstallationFixtureApp.swift')})
+    files.update({name: (app / name).read_text() for name in ('main.swift', 'AppDelegate.swift', 'InstallationFixtureApp.swift')})
     markers = json.loads((Path(root) / 'Tests/Fixtures/signed-installation-source-markers.json').read_text())
     require(markers['schema'] == 'shadow-sync-signed-installation-source-markers/v1'
             and markers['qualification'] == 'connected-startup-stop-source-only'
@@ -251,7 +252,7 @@ def verify(root):
     require('spawn(' not in adapter and 'ProcessInfo.processInfo.environment' not in adapter, 'unclosed-adapter-graph')
     require('inherited.signedAdapter?.appendTargetMapping(&actions)' in signed_sources['CommandCustodian.swift']
         and 'signedAdapterChannel?.joinAndRetire' in resources, 'adapter-custody-not-connected')
-    app_driver = signed_sources['SignedInstallationFixtureApp.swift']
+    app_driver = signed_sources['InstallationFixtureApp.swift']
     require(app_driver.index('InstalledHostStartup.enterSignedFixture(') < app_driver.index('NSApplication.shared')
         < app_driver.index('ShadowSyncAppDelegate(') < app_driver.index('application.run()'), 'appkit-before-commit')
     for call in ('entry.startup.didInitialize(', 'entry.startup.applicationDrained(', 'delegate.requestLifecycleExit()'):

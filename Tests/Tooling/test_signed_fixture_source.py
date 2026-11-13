@@ -43,6 +43,7 @@ class SignedFixtureSourceTests(unittest.TestCase):
         for original, replacement in (
             ('testingHostChrome = false', 'testingHostChrome = true'),
             ('signedFixtureLifecycle = true', 'signedFixtureLifecycle = false'),
+            ('testingQuitHandler = nil', 'testingQuitHandler = { NSApp.terminate(nil) }'),
             ('logOpener = { _ in false }', 'logOpener = { NSWorkspace.shared.open($0) }'),
         ):
             with self.subTest(statement=original):
@@ -115,7 +116,7 @@ class SignedFixtureSourceTests(unittest.TestCase):
             for path in (ROOT / 'Sources/ShadowSyncCore').glob('*.swift'):
                 shutil.copyfile(path, core / path.name)
             app = root / 'Sources/ShadowSyncApp'; app.mkdir(parents=True)
-            for name in ('main.swift', 'AppDelegate.swift', 'SignedInstallationFixtureApp.swift'):
+            for name in ('main.swift', 'AppDelegate.swift', 'InstallationFixtureApp.swift'):
                 shutil.copyfile(ROOT / 'Sources/ShadowSyncApp' / name, app / name)
             fixture = root / 'Tests/Fixtures'; fixture.mkdir(parents=True)
             shutil.copyfile(ROOT / 'Tests/Fixtures/signed-installation-source-markers.json',

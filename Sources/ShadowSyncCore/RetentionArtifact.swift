@@ -326,7 +326,7 @@ public final class RetentionArtifactStore:
             cleanupCostOverflow = cleanupCostOverflow || overflow
         }
         func beginCleanupCostObservation() {
-            cleanupCostEnabled = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS"] == "1"
+            cleanupCostEnabled = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_RETENTION_CLEANUP_COSTS"] == "1"
             cleanupCostActive = cleanupCostEnabled; cleanupCostOverflow = false
             cleanupDiagnosticStage = 0
             if cleanupCostEnabled {

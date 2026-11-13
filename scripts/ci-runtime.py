@@ -123,7 +123,15 @@ def stage_runtime_executable(root, source):
     return target
 
 
-def fixture_environment(suite, root, nonce, python, build_root, framework, policy_source):
+def validate_retention_cleanup_costs(suite, retention_cleanup_costs):
+    require(type(retention_cleanup_costs) is bool, "Retention cleanup costs must be a boolean")
+    require(not retention_cleanup_costs or suite == "body3",
+            "Retention cleanup costs are supported only for Body3")
+
+
+def fixture_environment(suite, root, nonce, python, build_root, framework, policy_source,
+                        *, retention_cleanup_costs=False):
+    validate_retention_cleanup_costs(suite, retention_cleanup_costs)
     env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'),
         SHADOW_SYNC_RUNTIME_FIXTURE_NAMESPACE=nonce, LANG='C', LC_ALL='C',
         GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_SYSTEM='/dev/null',
@@ -138,10 +146,14 @@ def fixture_environment(suite, root, nonce, python, build_root, framework, polic
         # Caller suites and Body 3 consume the bounded testing-only trace.
         # Keep the opt-in explicit; unrelated suites do not inherit host flags.
         env['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'] = '1'
+    if retention_cleanup_costs:
+        # Deliberate Body3 diagnostic only; never inherit a host opt-in.
+        env['SHADOW_SYNC_TEST_RETENTION_CLEANUP_COSTS'] = '1'
     return env
 
 
-def run_suite(suite, root, build_root, record, context):
+def run_suite(suite, root, build_root, record, context, *, retention_cleanup_costs=False):
+    validate_retention_cleanup_costs(suite, retention_cleanup_costs)
     inventory = load('runtime-suite-inventory')
     catalog = inventory.inspect(ROOT)
     rows = [row for row in catalog['suites'] if row['id'] == suite]
@@ -167,7 +179,8 @@ def run_suite(suite, root, build_root, record, context):
     policy_source = stage_policy_source(root)
     isolation = root / 'fixture.sb'
     isolation.write_text(profile(root, nonce, executable, app, python))
-    env = fixture_environment(suite, root, nonce, python, build_root, framework, policy_source)
+    env = fixture_environment(suite, root, nonce, python, build_root, framework, policy_source,
+                              retention_cleanup_costs=retention_cleanup_costs)
     native = load('run-native-appkit')
     def plain(name, binary, args):
         value = native.child(['/usr/bin/sandbox-exec', '-f', str(isolation), str(binary), *args],
@@ -243,5 +256,6 @@ def run_suite(suite, root, build_root, record, context):
         require(all(build.sha(Path(path)) == digest for path, digest in git_identity.items()), 'Git fixture changed')
     finally:
         (root / 'result.json').write_text(json.dumps(dict(passed=passed, cleanup_complete=cleanup,
-            namespace=nonce, profile_sha256=build.sha(isolation), attempts=len(attempts)), sort_keys=True) + '\n')
+            namespace=nonce, profile_sha256=build.sha(isolation), attempts=len(attempts),
+            retention_cleanup_costs=retention_cleanup_costs), sort_keys=True) + '\n')
     return passed, cleanup
