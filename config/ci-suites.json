@@ -3620,7 +3620,14 @@
           "test_ci_runtime.CIRuntimeTests.test_private_staging_preserves_build_bytes_and_required_publisher_mode",
           "test_ci_runtime.CIRuntimeTests.test_runner_environment_enables_only_registered_diagnostic_consumers",
           "test_ci_runtime.CIRuntimeTests.test_unsafe_mode_fixture_grant_cannot_reach_other_files",
-          "test_ci_runtime.CIRuntimeTests.test_var_alias_fixture_is_explicit_nonce_bound_and_cleanup_registered"
+          "test_ci_runtime.CIRuntimeTests.test_var_alias_fixture_is_explicit_nonce_bound_and_cleanup_registered",
+          "test_ci_runtime.RetentionCleanupCostOptionTests.test_default_and_explicit_false_do_not_inherit_host_cleanup_cost_flag",
+          "test_ci_runtime.RetentionCleanupCostOptionTests.test_environment_cost_opt_in_rejects_every_other_suite",
+          "test_ci_runtime.RetentionCleanupCostOptionTests.test_environment_cost_option_rejects_non_boolean_values",
+          "test_ci_runtime.RetentionCleanupCostOptionTests.test_existing_positional_runner_call_and_explicit_valid_modes_reach_inventory",
+          "test_ci_runtime.RetentionCleanupCostOptionTests.test_explicit_body3_cost_opt_in_adds_only_the_closed_marker",
+          "test_ci_runtime.RetentionCleanupCostOptionTests.test_new_diagnostic_option_is_keyword_only",
+          "test_ci_runtime.RetentionCleanupCostOptionTests.test_run_suite_rejects_invalid_options_before_inventory_or_root_creation"
         ],
         "kind": "static"
       },
