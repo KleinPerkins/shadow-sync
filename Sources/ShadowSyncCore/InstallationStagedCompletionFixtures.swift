@@ -80,6 +80,9 @@ enum InstallationStagedCompletionFixtures {
                 detail = " inner=\(failure.stage.rawValue) original=\(failure.error.rawValue)"
                 if let session = failure.session {
                     detail += " sessionCancelled=\(session.cancelled) sessionAnchored=\(session.anchorPresent) sessionOutcome=\(session.outcomePresent) serveOriginal=\(session.firstServeFailure?.rawValue ?? "none") serveSite=\(session.firstServeFailureSite?.rawValue ?? "none")"
+                    if let invocation = session.serveInvocation {
+                        detail += " serveInvocationStage=\(invocation.stage) serveInvocationPhase=\(invocation.phase.rawValue) serveInvocationNode=\(invocation.node.rawValue) serveInvocationAncestor=\(invocation.ancestor) serveInvocationPredicate=\(invocation.predicate.rawValue) serveInvocationSystem=\(invocation.system.rawValue) serveInvocationError=\(invocation.error.rawValue)"
+                    }
                     if let anchor = session.anchorAttempt {
                         detail += " anchorCancelled=\(anchor.cancelled) anchorPresent=\(anchor.anchorPresent) anchorOutcome=\(anchor.outcomePresent) retirementExpired=\(anchor.retirementExpired) preanchorExpired=\(anchor.preanchorExpired)"
                     }

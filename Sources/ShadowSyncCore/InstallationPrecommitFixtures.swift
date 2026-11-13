@@ -191,6 +191,49 @@ enum InstallationPrecommitFixtures {
             try rejects { _ = try endpoint.image }
         }
     }
+    static func diagnosticScopes() throws {
+        let outer = InstallationInvocationTesting.Context()
+        let inner = InstallationInvocationTesting.Context()
+        var outerFailure: InstallationInvocationTesting.Failure?
+        var innerFailure: InstallationInvocationTesting.Failure?
+        try InstallationInvocationTesting.withInvocation(outer) {
+            InstallationInvocationTesting.stage(5)
+            InstallationInvocationTesting.locate(.owner, node: InstallationInvocationTesting.Node.none)
+            try rejects {
+                try InstallationInvocationTesting.withInvocation(inner) {
+                    InstallationInvocationTesting.stage(6)
+                    InstallationInvocationTesting.locate(.retainedParent, node: InstallationInvocationTesting.Node.none)
+                    do { try InstallationReadinessEndpoint.testingObserveParentNode(-1) }
+                    catch {
+                        let saved = errno
+                        innerFailure = inner.failure(error)
+                        try H.check(saved == EBADF && errno == saved,
+                            "diagnostic changed actual failed fstat errno")
+                        throw error
+                    }
+                }
+            }
+            try rejects {
+                do { _ = try InstallationStateBinding.capture(stateDescriptor: -1, uid: geteuid()) }
+                catch { outerFailure = outer.failure(error); throw error }
+            }
+        }
+        try H.check(innerFailure?.stage == 6 && innerFailure?.phase == .retainedParent
+            && innerFailure?.predicate == .statCall && innerFailure?.system == .badDescriptor
+            && innerFailure?.error == .unsafeMetadata,
+            "inner diagnostic did not preserve actual failed call")
+        try H.check(outerFailure?.stage == 5 && outerFailure?.phase == .captureIdentity
+            && outerFailure?.node == .state && outerFailure?.predicate == .statCall
+            && outerFailure?.system == .badDescriptor && outerFailure?.error == .unsafeMetadata,
+            "nested diagnostic did not restore caller binding")
+        let successful = InstallationInvocationTesting.Context()
+        let value = InstallationInvocationTesting.withInvocation(successful) { 7 }
+        // A later unscoped actual failure must not contaminate a completed scope.
+        try rejects { try InstallationReadinessEndpoint.testingObserveParentNode(-1) }
+        let untouched = successful.failure(CustodyRecordError.fenced)
+        try H.check(value == 7 && untouched.predicate == .thrown && untouched.system == .none,
+            "scope success or unscoped failure created causal evidence")
+    }
     static func endpointReaderClosure() throws {
         for point in [InstallationReadinessEndpoint.TestingObservationPoint.beforeValidation, .afterValidation] {
             try InstallationStagedJournalFixtures.fixture { _, location, _, _, admission, journal, registry in
@@ -208,7 +251,16 @@ enum InstallationPrecommitFixtures {
                     "close overlap actual service reader missing")
                 endpoint.closeService()
                 try rejects { try endpoint.requireServiceClosed() }
-                try rejects { try endpoint.revalidate(deadline: deadline) }
+                let competingInvocation = InstallationInvocationTesting.Context()
+                var competingFailure: InstallationInvocationTesting.Failure?
+                try rejects {
+                    try InstallationInvocationTesting.withInvocation(competingInvocation) {
+                        do { try endpoint.revalidate(deadline: deadline) }
+                        catch { competingFailure = competingInvocation.failure(error); throw error }
+                    }
+                }
+                try H.check(competingFailure?.stage == 2 && competingFailure?.error == .fenced,
+                    "competing caller did not record its actual closed-observation refusal")
                 try rejects { try endpoint.testingRemoveOwnedEndpoint(deadline: deadline) }
                 try H.check(listener.retirementObservation == .notAttempted && listener.value >= 0
                     && endpoint.testingActiveObservations == 1 && endpoint.testingAcquisitionRetained
@@ -226,6 +278,11 @@ enum InstallationPrecommitFixtures {
                 try H.check(endpoint.testingActiveObservations == 0 && journal.testingSession == nil
                     && listener.retirementObservation == .succeeded && !session.start(),
                     "closed reader and original listener did not join")
+                let serve = session.testingKickstartState.serveInvocation
+                try H.check(serve?.stage == 9 && serve?.error == .fenced
+                    && session.testingKickstartState.firstServeFailureSite == .initialEndpointRevalidation
+                    && endpoint.testingFirstRevalidationFailure?.stage.rawValue == 2,
+                    "serve diagnostic borrowed another invocation's earlier endpoint failure")
                 try endpoint.requireServiceClosed()
                 try endpoint.revalidate(deadline: deadline)
                 let retired = try registry.installationStagedStartRetirement(after: admission.closeStarts())

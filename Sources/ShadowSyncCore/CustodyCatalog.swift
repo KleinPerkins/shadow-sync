@@ -27,10 +27,57 @@ enum InstallationStateCaptureTesting {
 }
 #endif
 
+#if SHADOW_SYNC_TESTING
+/// Independent of the state-root observer: these cuts observe the actual named
+/// custody description and cannot supply replacement identities or results.
+enum InstallationCustodyCaptureTesting {
+    enum Point { case opened, current, named }
+    private final class Observation {
+        let body: (Point, InstallationNodeIdentity, UInt64?) throws -> Void
+        init(_ body: @escaping (Point, InstallationNodeIdentity, UInt64?) throws -> Void) { self.body = body }
+    }
+    private static let key = "shadow-sync-installation-custody-capture"
+    static func withObservation<T>(_ observer: @escaping (Point, InstallationNodeIdentity, UInt64?) throws -> Void,
+                                   _ body: () throws -> T) throws -> T {
+        let prior = Thread.current.threadDictionary[key]
+        Thread.current.threadDictionary[key] = Observation(observer)
+        defer {
+            if let prior { Thread.current.threadDictionary[key] = prior }
+            else { Thread.current.threadDictionary.removeObject(forKey: key) }
+        }
+        return try body()
+    }
+    static func hit(_ point: Point, _ identity: InstallationNodeIdentity, namedLinks: UInt64? = nil) throws {
+        try (Thread.current.threadDictionary[key] as? Observation)?.body(point, identity, namedLinks)
+    }
+}
+/// Pauses only a fixture's actual catalog writer, after its temporary has been
+/// written and synced. No production callback or lock behavior is introduced.
+enum CustodyCatalogWriteTesting {
+    private final class Observation {
+        let body: (Int32) throws -> Void
+        init(_ body: @escaping (Int32) throws -> Void) { self.body = body }
+    }
+    private static let key = "shadow-sync-custody-write-capture"
+    static func withObservation<T>(_ observer: @escaping (Int32) throws -> Void, _ body: () throws -> T) throws -> T {
+        let prior = Thread.current.threadDictionary[key]
+        Thread.current.threadDictionary[key] = Observation(observer)
+        defer {
+            if let prior { Thread.current.threadDictionary[key] = prior }
+            else { Thread.current.threadDictionary.removeObject(forKey: key) }
+        }
+        return try body()
+    }
+    static func hit(_ parent: Int32) throws { try (Thread.current.threadDictionary[key] as? Observation)?.body(parent) }
+}
+#endif
+
 // Descriptor observations only. No path, PID, decoded record or opened file
 // grants a lease. Callers must retain their original typed authority separately.
 extension InstallationStateBinding {
+    private enum ObservedKind { case liveCustodyDirectory, regular }
     private struct ObservedNode {
+        let kind: ObservedKind
         let descriptor: OwnedFileDescriptor
         let identity: InstallationNodeIdentity
         let parent: Int32?
@@ -38,57 +85,141 @@ extension InstallationStateBinding {
     }
     private static func identity(_ fd: Int32, uid: uid_t, directory: Bool) throws -> InstallationNodeIdentity {
         var value = stat()
+#if SHADOW_SYNC_TESTING
+        guard InstallationInvocationTesting.check(fstat(fd, &value) == 0, .statCall, syscall: true),
+              InstallationInvocationTesting.check(value.st_uid == uid, .owner),
+              InstallationInvocationTesting.check(value.st_mode == (directory ? S_IFDIR | 0o700 : S_IFREG | 0o600), .mode),
+              InstallationInvocationTesting.check(directory ? value.st_nlink > 0 : value.st_nlink == 1, .links) else {
+            throw CustodyRecordError.unsafeMetadata
+        }
+#else
         guard fstat(fd, &value) == 0, value.st_uid == uid,
               value.st_mode == (directory ? S_IFDIR | 0o700 : S_IFREG | 0o600),
               directory ? value.st_nlink > 0 : value.st_nlink == 1 else {
             throw CustodyRecordError.unsafeMetadata
         }
+#endif
         let result = InstallationNodeIdentity(device: UInt64(value.st_dev), inode: UInt64(value.st_ino),
             type: directory ? .directory : .regular, uid: value.st_uid, mode: UInt32(value.st_mode),
             links: UInt64(value.st_nlink),
             aclDigest: CustodyRecordBinding.digest(Data(try PolicyAuthorityFile.privateStateACL(fd).utf8)))
         try result.validate(); return result
     }
-    private static func open(_ parent: Int32, _ name: String, uid: uid_t, directory: Bool) throws -> ObservedNode {
+    private static func open(_ parent: Int32, _ name: String, uid: uid_t, kind: ObservedKind = .regular) throws -> ObservedNode {
+        let directory = kind == .liveCustodyDirectory
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.captureOpen)
+        #endif
         let raw = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | (directory ? O_DIRECTORY : 0))
+#if SHADOW_SYNC_TESTING
+        guard InstallationInvocationTesting.check(raw >= 0, .openCall, syscall: true) else { throw CustodyRecordError.unsafeMetadata }
+#else
         guard raw >= 0 else { throw CustodyRecordError.unsafeMetadata }
+#endif
         let owner = OwnedFileDescriptor(raw)
-        return try ObservedNode(descriptor: owner, identity: identity(raw, uid: uid, directory: directory), parent: parent, name: name)
+        return try ObservedNode(kind: kind, descriptor: owner, identity: identity(raw, uid: uid, directory: directory), parent: parent, name: name)
     }
     static func capture(stateDescriptor: Int32, uid: uid_t) throws -> Self {
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.captureIdentity, node: .state)
+        #endif
         let state = try identity(stateDescriptor, uid: uid, directory: true)
         #if SHADOW_SYNC_TESTING
         try InstallationStateCaptureTesting.hit(.initial, state)
         #endif
-        let custody = try open(stateDescriptor, "custody", uid: uid, directory: true)
-        let namespace = try open(stateDescriptor, "latest.log", uid: uid, directory: false)
-        let lifecycle = try open(stateDescriptor, "lifecycle.lock", uid: uid, directory: false)
-        let operation = try open(stateDescriptor, "operation.lock", uid: uid, directory: false)
-        let run = try open(stateDescriptor, "run.lock", uid: uid, directory: false)
-        let launcher = try open(stateDescriptor, "launcher.lock", uid: uid, directory: false)
-        let catalog = try open(custody.descriptor.value, "catalog.lock", uid: uid, directory: false)
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.captureOpen, node: .custody)
+        #endif
+        let custody = try open(stateDescriptor, "custody", uid: uid, kind: .liveCustodyDirectory)
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.captureOpen, node: .namespace)
+        #endif
+        let namespace = try open(stateDescriptor, "latest.log", uid: uid)
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.captureOpen, node: .lifecycle)
+        #endif
+        let lifecycle = try open(stateDescriptor, "lifecycle.lock", uid: uid)
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.captureOpen, node: .operation)
+        #endif
+        let operation = try open(stateDescriptor, "operation.lock", uid: uid)
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.captureOpen, node: .run)
+        #endif
+        let run = try open(stateDescriptor, "run.lock", uid: uid)
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.captureOpen, node: .launcher)
+        #endif
+        let launcher = try open(stateDescriptor, "launcher.lock", uid: uid)
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.captureOpen, node: .catalog)
+        #endif
+        let catalog = try open(custody.descriptor.value, "catalog.lock", uid: uid)
+        #if SHADOW_SYNC_TESTING
+        try InstallationCustodyCaptureTesting.hit(.opened, custody.identity)
+        #endif
         // Keep every opened description alive until the entire named set has
         // been rechecked; an earlier close could hide inode substitution.
+        #if SHADOW_SYNC_TESTING
+        var diagnosticNodeIndex = 0
+        let diagnosticNodes: [InstallationInvocationTesting.Node] = [.custody, .namespace, .lifecycle, .operation, .run, .launcher, .catalog]
+        #endif
         for node in [custody, namespace, lifecycle, operation, run, launcher, catalog] {
+            #if SHADOW_SYNC_TESTING
+            InstallationInvocationTesting.locate(.captureNamed, node: diagnosticNodes[diagnosticNodeIndex])
+            diagnosticNodeIndex += 1
+            #endif
             let current = try identity(node.descriptor.value, uid: uid, directory: node.identity.type == .directory)
+            #if SHADOW_SYNC_TESTING
+            InstallationInvocationTesting.locate(.captureNamed)
+            #endif
+            // Only this typed mutable directory permits positive link-count
+            // variation. All regular observations retain exact identity.
+            let liveCustody = node.kind == .liveCustodyDirectory
+            let sameCurrent = liveCustody ? sameLiveStateNode(current, node.identity) : current == node.identity
+            #if SHADOW_SYNC_TESTING
+            if liveCustody { try InstallationCustodyCaptureTesting.hit(.current, current) }
+            #endif
             var named = stat()
-            guard current == node.identity, let parent = node.parent, let name = node.name,
+#if SHADOW_SYNC_TESTING
+            guard InstallationInvocationTesting.check(sameCurrent, .currentIdentity),
+                  InstallationInvocationTesting.check(node.parent != nil, .parentPresent), let parent = node.parent,
+                  InstallationInvocationTesting.check(node.name != nil, .namePresent), let name = node.name,
+                  InstallationInvocationTesting.check(fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0, .namedStatCall, syscall: true),
+                  InstallationInvocationTesting.check(UInt64(named.st_dev) == current.device, .namedDevice),
+                  InstallationInvocationTesting.check(UInt64(named.st_ino) == current.inode, .namedInode),
+                  InstallationInvocationTesting.check(named.st_uid == current.uid, .namedOwner),
+                  InstallationInvocationTesting.check(UInt32(named.st_mode) == current.mode, .namedMode),
+                  InstallationInvocationTesting.check(liveCustody ? named.st_nlink > 0 : UInt64(named.st_nlink) == current.links, .namedLinks) else { throw CustodyRecordError.unsafeMetadata }
+#else
+            guard sameCurrent, let parent = node.parent, let name = node.name,
                   fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
                   UInt64(named.st_dev) == current.device, UInt64(named.st_ino) == current.inode,
                   named.st_uid == current.uid, UInt32(named.st_mode) == current.mode,
-                  UInt64(named.st_nlink) == current.links else { throw CustodyRecordError.unsafeMetadata }
+                  (liveCustody ? named.st_nlink > 0 : UInt64(named.st_nlink) == current.links) else { throw CustodyRecordError.unsafeMetadata }
+#endif
+            #if SHADOW_SYNC_TESTING
+            if liveCustody { try InstallationCustodyCaptureTesting.hit(.named, current, namedLinks: UInt64(named.st_nlink)) }
+            #endif
         }
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.captureFinal, node: .state)
+        #endif
         let finalState = try identity(stateDescriptor, uid: uid, directory: true)
         #if SHADOW_SYNC_TESTING
         try InstallationStateCaptureTesting.hit(.final, finalState)
         #endif
+#if SHADOW_SYNC_TESTING
+        guard InstallationInvocationTesting.check(sameLiveStateNode(finalState, state), .stateStable) else { throw CustodyRecordError.unsafeMetadata }
+#else
         guard sameLiveStateNode(finalState, state) else { throw CustodyRecordError.unsafeMetadata }
+#endif
         let result = Self(directory: state, namespace: namespace.identity, lifecycle: lifecycle.identity,
             operation: operation.identity, run: run.identity, launcher: launcher.identity, catalogGuard: catalog.identity)
         try result.validate(); return result
     }
-    // Only fresh observations of the mutable state root use this comparison.
-    // Durable records and all named lock/custody observations remain exact.
+    // Only fresh observations of the mutable state root and typed custody
+    // directory use this comparison. Durable records and regular locks stay exact.
     private static func sameLiveStateNode(_ a: InstallationNodeIdentity, _ b: InstallationNodeIdentity) -> Bool {
         a.type == .directory && b.type == .directory && a.device == b.device && a.inode == b.inode
             && a.uid == b.uid && a.mode == b.mode && a.aclDigest == b.aclDigest
@@ -1410,6 +1541,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
         }
         guard fsync(fd) == 0 else { throw CustodyRecordError.persistence(errno) }
         #if SHADOW_SYNC_TESTING
+        try CustodyCatalogWriteTesting.hit(parent)
         try fault(.beforeSwap)
         #endif
         if let expected {

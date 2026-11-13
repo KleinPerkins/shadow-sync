@@ -20,6 +20,24 @@ public enum M6SelfTestRunner {
         guard arguments.count == 4 && arguments[1] == "--shadow-sync-custodian-parent-fixture" else { return nil }
         return CustodyHelperSelfTests.parentWorker(arguments[2], mode: arguments[3])
     }
+    // Independent required coverage; full M6 still runs every original case.
+    public static func runLiveCustodyCapture(
+        record: (String) -> Void
+    ) throws -> [String] {
+        var passed: [String] = []
+        func run(_ name: String, _ body: () throws -> Void) throws {
+            try RuntimeFixtureSession.withCase(name) { try body() }
+            passed.append(name)
+            record(name)
+        }
+
+        try run("m6-live-custody-capture-publication") { try CustodyCatalogSelfTests.liveCustodyCapture("publication") }
+        try run("m6-live-custody-capture-removal") { try CustodyCatalogSelfTests.liveCustodyCapture("removal") }
+        try run("m6-live-custody-capture-retirement") { try CustodyCatalogSelfTests.liveCustodyCapture("retirement") }
+        try run("m6-live-custody-capture-refusals") { try CustodyCatalogSelfTests.liveCustodyCaptureRefusals() }
+        return passed
+    }
+
     public static func runAll(
         record: (String) -> Void
     ) throws -> [String] {
@@ -259,6 +277,7 @@ public enum M6SelfTestRunner {
         try run("m6-installation-precommit-endpoint-postimage") { try InstallationPrecommitFixtures.endpoint() }
         try run("m6-installation-precommit-concurrent-endpoint-readers") { try InstallationPrecommitFixtures.concurrentEndpointReaders() }
         try run("m6-installation-precommit-endpoint-getter-overlap") { try InstallationPrecommitFixtures.endpointGetterOverlap() }
+        try run("m6-installation-invocation-diagnostic-scopes") { try InstallationPrecommitFixtures.diagnosticScopes() }
         try run("m6-installation-precommit-endpoint-reader-closure") { try InstallationPrecommitFixtures.endpointReaderClosure() }
         try run("m6-installation-precommit-endpoint-unknown") { try InstallationPrecommitFixtures.unknownEndpoint() }
         try run("m6-installation-precommit-endpoint-substitution") { try InstallationPrecommitFixtures.substitution() }
@@ -738,6 +757,10 @@ public enum M6SelfTestRunner {
         try run("m6-helper-state-capture-named") { try CustodyHelperSelfTests.native("state-capture-named", expected: .completed, reason: .none) }
         try run("m6-helper-state-capture-unlinked") { try CustodyHelperSelfTests.native("state-capture-unlinked", expected: .completed, reason: .none) }
         try run("m6-helper-state-capture-refusals") { try CustodyCatalogSelfTests.stateCaptureRefusals() }
+        try run("m6-live-custody-capture-publication") { try CustodyCatalogSelfTests.liveCustodyCapture("publication") }
+        try run("m6-live-custody-capture-removal") { try CustodyCatalogSelfTests.liveCustodyCapture("removal") }
+        try run("m6-live-custody-capture-retirement") { try CustodyCatalogSelfTests.liveCustodyCapture("retirement") }
+        try run("m6-live-custody-capture-refusals") { try CustodyCatalogSelfTests.liveCustodyCaptureRefusals() }
         try run("m6-helper-native-trace-overflow") { try CustodyHelperSelfTests.native("trace-overflow",expected:.commandFailed,reason:.outputLimit) }
         try run("m6-helper-native-trace-eof-drain") { try CustodyHelperSelfTests.native("trace-resist",eof:true,expected:.cancelledDrained,reason:.cancelled) }
         try run("m6-helper-trace-command-boundary") { try CustodyHelperSelfTests.traceCommandBoundary() }
@@ -1448,14 +1471,15 @@ private enum CustodyCatalogSelfTests {
         catch is InstallationRecordError { return }
         throw Failure(message: "custody metadata unexpectedly accepted")
     }
-    static func fixture(initialized: Bool = true, _ body: (StateLocation, String) throws -> Void) throws {
+    static func fixture(initialized: Bool = true, cleanupAllowed: () -> Bool = { true },
+                        _ body: (StateLocation, String) throws -> Void) throws {
         var pattern = Array((try RuntimeFixtureSession.fixturePrefix("shadow-sync-custody-catalog.") + "XXXXXX").utf8CString)
         guard let raw = mkdtemp(&pattern) else { throw Failure(message: "fixture creation") }
         let root = String(cString: raw)
         var before = stat(); try check(lstat(root, &before) == 0, "fixture identity")
         defer {
             var after = stat()
-            if lstat(root, &after) == 0 && before.st_dev == after.st_dev && before.st_ino == after.st_ino {
+            if cleanupAllowed() && lstat(root, &after) == 0 && before.st_dev == after.st_dev && before.st_ino == after.st_ino {
                 try? FileManager.default.removeItem(atPath: root)
             }
         }
@@ -1991,6 +2015,201 @@ private enum CustodyCatalogSelfTests {
                 "prepared claim fixture retained its transaction")
         }
     }
+    /// Owns a real journal/receipt writer and joins it on success and refusal.
+    /// The capture never borrows the store mutex or manufactures an identity.
+    private final class CaptureWriter: @unchecked Sendable {
+        let barrier = CustodyLeaseTestingBarrier()
+        private let group = DispatchGroup(), mutex = NSLock()
+        private let directory: FileIdentity
+        private let body: () throws -> Void
+        private var failure: Error?
+        private var paused = false, started = false
+        private(set) var joined = true
+        init(directory: FileIdentity, body: @escaping () throws -> Void) {
+            self.directory = directory; self.body = body
+        }
+        func start() throws {
+            try CustodyCatalogSelfTests.check(!started, "custody capture writer restarted")
+            started = true; joined = false; group.enter()
+            DispatchQueue.global().async {
+                defer { self.group.leave() }
+                do {
+                    try CustodyCatalogWriteTesting.withObservation({ parent in
+                        var info = stat()
+                        try CustodyCatalogSelfTests.check(fstat(parent, &info) == 0, "custody writer parent observation")
+                        // Retirement first publishes in receipts; pause only the
+                        // actual custody-directory temporary, never its child.
+                        guard FileIdentity(info).matchesStableNode(self.directory), !self.paused else { return }
+                        self.paused = true
+                        try CustodyCatalogSelfTests.check(self.barrier.pause(), "custody capture writer pause expired")
+                    }, self.body)
+                } catch { self.mutex.lock(); self.failure = error; self.mutex.unlock() }
+            }
+        }
+        func waitPublished() throws {
+            try CustodyCatalogSelfTests.check(barrier.waitUntilEntered(), "custody writer did not publish temporary")
+        }
+        func finish() throws {
+            barrier.release()
+            try CustodyCatalogSelfTests.check(group.wait(timeout: .now() + .seconds(3)) == .success, "custody capture writer did not join; fixture retained")
+            joined = true
+            mutex.lock(); defer { mutex.unlock() }
+            if let failure { throw failure }
+            try CustodyCatalogSelfTests.check(!started || paused, "custody capture missed actual writer cut")
+        }
+    }
+    static func liveCustodyCapture(_ scenario: String) throws {
+        var retainedWriter: CaptureWriter?
+        try fixture(cleanupAllowed: { retainedWriter?.joined ?? true }) { location, _ in
+            let s = try scope(location), ticket = try s.prepare(request(s))
+            let state = try s.leases.duplicateStateDirectory().0
+            let terminal = try ticket.testingJournal.advancing(to: .terminal, outcome: .admissionRefused, reason: .startFailure)
+            let retiring = scenario == "retirement", removing = scenario != "publication"
+            if retiring { try s.testingAdvance(ticket, to: terminal); s.close() }
+            var custody = stat()
+            try check(fstatat(state.value, "custody", &custody, AT_SYMLINK_NOFOLLOW) == 0, "capture custody identity")
+            let writer = CaptureWriter(directory: FileIdentity(custody)) {
+                if retiring { _ = try s.testingRetire(ticket) }
+                else { try s.testingAdvance(ticket, to: terminal) }
+            }
+            retainedWriter = writer
+            let before = try InstallationStateBinding.capture(stateDescriptor: state.value, uid: geteuid())
+            var points: [InstallationCustodyCaptureTesting.Point] = []
+            var first: InstallationNodeIdentity?, current: InstallationNodeIdentity?
+            var failure: Error?
+            do {
+                if removing { try writer.start(); try writer.waitPublished() }
+                let captured = try InstallationCustodyCaptureTesting.withObservation({ point, observed, namedLinks in
+                    points.append(point)
+                    switch point {
+                    case .opened:
+                        try check(first == nil, "custody capture repeated initial observation")
+                        first = observed
+                        if removing { try writer.finish() }
+                        else { try writer.start(); try writer.waitPublished() }
+                    case .current:
+                        guard let first else { throw Failure(message: "custody capture initial observation missing") }
+                        // These are actual identities from the production reader.
+                        // Strict old equality must reject this real interleaving.
+                        try check(first != observed && first.device == observed.device && first.inode == observed.inode
+                            && first.type == .directory && observed.type == .directory && first.uid == observed.uid
+                            && first.mode == observed.mode && first.aclDigest == observed.aclDigest
+                            && first.links > 0 && observed.links > 0
+                            && (removing ? first.links > observed.links : first.links < observed.links),
+                            "custody capture did not reproduce link-only old predicate failure")
+                        current = observed
+                        if !removing { try writer.finish() }
+                    case .named:
+                        guard let current, let namedLinks else { throw Failure(message: "custody named observation missing") }
+                        try check(observed == current && namedLinks > 0
+                            && (removing ? namedLinks == current.links : namedLinks < current.links),
+                            "custody named observation missed publication removal interleaving")
+                    }
+                }, { try InstallationStateBinding.capture(stateDescriptor: state.value, uid: geteuid()) })
+                try check(captured == before && points == [.opened, .current, .named],
+                    "mutable custody changed stable or durable capture identities")
+            } catch { failure = error }
+            // Release and join before inspecting failure or cleaning any fixture.
+            try writer.finish()
+            if let failure { throw failure }
+            if !retiring {
+                try check(try bytes(location, ticket.requestID + ".json") == terminal.encode(),
+                    "capture writer lost exact terminal journal")
+                s.close(); _ = try s.testingRetire(ticket)
+            }
+            try check(s.observation == .terminal && (try s.testingRead()).entries.isEmpty,
+                "capture writer retained transaction")
+            let receipt = try Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/receipts/" + ticket.requestID + ".json"))
+            try check(!receipt.isEmpty, "capture writer lost retirement receipt")
+        }
+    }
+    static func liveCustodyCaptureRefusals() throws {
+        for scenario in ["mode", "acl", "name", "symlink", "unlinked", "catalog-substitution", "catalog-alias"] {
+            try fixture(initialized: false) { location, _ in
+                let state = try SecureStateDirectory.openExisting(location)
+                try check(mkdirat(state.descriptor.value, "custody", 0o700) == 0, "private capture fixture directory")
+                let raw = openat(state.descriptor.value, "custody", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try check(raw >= 0, "private capture fixture descriptor")
+                let custody = OwnedFileDescriptor(raw)
+                let lock = openat(raw, "catalog.lock", O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                try check(lock >= 0, "private capture fixture lock")
+                let lockOwner = OwnedFileDescriptor(lock)
+                var original = stat(), originalLock = stat()
+                try check(fstat(raw, &original) == 0 && fstat(lockOwner.value, &originalLock) == 0, "capture refusal fixture identities")
+                _ = try InstallationStateBinding.capture(stateDescriptor: state.descriptor.value, uid: geteuid())
+                var changed = false, refusal: InstallationInvocationTesting.Failure?
+                let invocation = InstallationInvocationTesting.Context()
+                defer {
+                    if scenario == "mode" { _ = fchmod(raw, 0o700) }
+                    if scenario == "acl", let empty = acl_init(0) {
+                        _ = acl_set_fd_np(raw, empty, ACL_TYPE_EXTENDED); acl_free(UnsafeMutableRawPointer(empty))
+                    }
+                }
+                try InstallationCustodyCaptureTesting.withObservation({ point, _, _ in
+                    guard point == .opened else { return }
+                    try check(!changed, "capture refusal repeated cut"); changed = true
+                    switch scenario {
+                    case "mode": try check(fchmod(raw, 0o755) == 0, "capture custody mode drift")
+                    case "acl":
+                        var acl = acl_init(1), entry: acl_entry_t?
+                        defer { if let acl { acl_free(UnsafeMutableRawPointer(acl)) } }
+                        var uuid = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!.uuid
+                        var permissions: acl_permset_t?
+                        try check(acl_create_entry(&acl, &entry) == 0 && entry != nil
+                            && acl_set_tag_type(entry!, ACL_EXTENDED_DENY) == 0 && acl_set_qualifier(entry!, &uuid) == 0
+                            && acl_get_permset(entry!, &permissions) == 0 && permissions != nil
+                            && acl_add_perm(permissions!, ACL_READ_DATA) == 0
+                            && acl_set_fd_np(raw, acl, ACL_TYPE_EXTENDED) == 0, "capture custody deny ACL drift")
+                    case "name", "symlink":
+                        try check(renameat(state.descriptor.value, "custody", state.descriptor.value, "fixture-retained-custody") == 0,
+                            "capture custody retained rename")
+                        if scenario == "name" { try check(mkdirat(state.descriptor.value, "custody", 0o700) == 0, "capture custody replacement") }
+                        else { try check(symlinkat("fixture-retained-custody", state.descriptor.value, "custody") == 0, "capture custody symlink") }
+                    case "unlinked":
+                        var held = stat(), named = stat()
+                        try check(fstatat(raw, "catalog.lock", &held, AT_SYMLINK_NOFOLLOW) == 0
+                            && FileIdentity(held) == FileIdentity(originalLock)
+                            && renameat(raw, "catalog.lock", state.descriptor.value, "fixture-retained-catalog") == 0
+                            && fstatat(state.descriptor.value, "custody", &named, AT_SYMLINK_NOFOLLOW) == 0
+                            && FileIdentity(named).matchesStableNode(FileIdentity(original))
+                            && unlinkat(state.descriptor.value, "custody", AT_REMOVEDIR) == 0,
+                            "capture custody exact fixture unlink")
+                    case "catalog-alias":
+                        try check(linkat(raw, "catalog.lock", raw, "fixture-catalog-alias", 0) == 0, "capture catalog alias")
+                    default:
+                        try check(renameat(raw, "catalog.lock", raw, "fixture-retained-catalog") == 0, "capture catalog retained rename")
+                        let replacement = openat(raw, "catalog.lock", O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                        try check(replacement >= 0, "capture catalog replacement")
+                        close(replacement)
+                    }
+                }, {
+                    try refuses {
+                        try InstallationInvocationTesting.withInvocation(invocation) {
+                            do { _ = try InstallationStateBinding.capture(stateDescriptor: state.descriptor.value, uid: geteuid()) }
+                            catch { refusal = invocation.failure(error); throw error }
+                        }
+                    }
+                })
+                let catalog = scenario.hasPrefix("catalog-")
+                let predicate: InstallationInvocationTesting.Predicate
+                switch scenario {
+                case "mode": predicate = .mode
+                case "acl": predicate = .currentIdentity
+                case "unlinked":
+                    var unlinked = stat()
+                    try check(fstat(raw, &unlinked) == 0, "capture unlinked descriptor observation")
+                    // Some filesystems retain a positive count on an open,
+                    // removed directory. Its missing no-follow name still refuses.
+                    predicate = unlinked.st_nlink == 0 ? .links : .namedStatCall
+                case "catalog-alias": predicate = .links
+                default: predicate = .namedInode
+                }
+                try check(changed && refusal?.node == (catalog ? .catalog : .custody)
+                    && refusal?.predicate == predicate && refusal?.error == .unsafeMetadata,
+                    "capture custody or stable lock refusal lost exact predicate")
+            }
+        }
+    }
     static func stateCaptureRefusals() throws {
         for scenario in ["state-mode", "regular-link", "regular-substitution"] {
             try fixture { location, _ in
@@ -2007,6 +2226,8 @@ private enum CustodyCatalogSelfTests {
                 let originalIdentity = FileIdentity(originalLock)
                 var changed = false, replacement: FileIdentity?
                 var failure: Error?
+                let invocation = InstallationInvocationTesting.Context()
+                var captureFailure: InstallationInvocationTesting.Failure?
                 do {
                     try InstallationStateCaptureTesting.withObservation({ point, _ in
                         guard point == .initial else { return }
@@ -2029,7 +2250,12 @@ private enum CustodyCatalogSelfTests {
                             replacement = FileIdentity(info)
                         }
                     }, {
-                        try refuses { _ = try store.testingClaimPrepared(r) }
+                        try refuses {
+                            try InstallationInvocationTesting.withInvocation(invocation) {
+                                do { _ = try store.testingClaimPrepared(r) }
+                                catch { captureFailure = invocation.failure(error); throw error }
+                            }
+                        }
                     })
                 } catch { failure = error }
                 if changed {
@@ -2056,6 +2282,18 @@ private enum CustodyCatalogSelfTests {
                     }
                 }
                 if let failure { throw failure }
+                if scenario == "state-mode" {
+                    try check(captureFailure?.node == .state && captureFailure?.predicate == .mode
+                        && captureFailure?.error == .unsafeMetadata,
+                        "state capture diagnostic lost actual mode refusal")
+                } else if scenario == "regular-link" {
+                    try check(captureFailure?.node == .operation && captureFailure?.predicate == .links
+                        && captureFailure?.error == .unsafeMetadata,
+                        "state capture diagnostic lost actual regular-node link refusal")
+                } else {
+                    try check(captureFailure?.error == .fenced && captureFailure?.predicate == .thrown,
+                        "successful capture was reported as the later substitution refusal")
+                }
                 try check(changed && (try bytes(location, ticket.requestID + ".json")) == journalBefore
                     && (try bytes(location, "catalog.json")) == catalogBefore
                     && (try bytes(location, InstallationControlRecord.filename)) == installationBefore,

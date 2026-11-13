@@ -94,6 +94,35 @@ def inspect(root):
     # M6 uses one closed literal run(...) body per mandatory case. Check both
     # sides so a newly added body cannot disappear behind a stale CI roster.
     m6 = (root / 'Sources/ShadowSyncCore/M6SelfTests.swift').read_text()
+    # This additional closed route must invoke the actual four M6 bodies, with
+    # the same per-case session boundary. It never replaces full-M6 discovery.
+    capture_cases = ['m6-live-custody-capture-' + name for name in
+                     ('publication', 'removal', 'retirement', 'refusals')]
+    capture_calls = [
+        'CustodyCatalogSelfTests.liveCustodyCapture("publication")',
+        'CustodyCatalogSelfTests.liveCustodyCapture("removal")',
+        'CustodyCatalogSelfTests.liveCustodyCapture("retirement")',
+        'CustodyCatalogSelfTests.liveCustodyCaptureRefusals()',
+    ]
+    focused = re.findall(r'    public static func runLiveCustodyCapture\(\n.*?^    }\n', m6, re.M | re.S)
+    require(len(focused) == 1)
+    fixed = ('    public static func runLiveCustodyCapture(\n'
+             '        record: (String) -> Void\n'
+             '    ) throws -> [String] {\n'
+             '        var passed: [String] = []\n'
+             '        func run(_ name: String, _ body: () throws -> Void) throws {\n'
+             '            try RuntimeFixtureSession.withCase(name) { try body() }\n'
+             '            passed.append(name)\n'
+             '            record(name)\n'
+             '        }\n\n')
+    fixed += ''.join('        try run("' + case + '") { try ' + call + ' }\n'
+                     for case, call in zip(capture_cases, capture_calls))
+    fixed += '        return passed\n    }\n'
+    require(focused[0] == fixed and cases.get('m6-custody-capture') == capture_cases)
+    require(('m6-custody-capture', 'M6SelfTestRunner', 'runLiveCustodyCapture') in rows)
+    m6 = m6.replace(focused[0], '', 1)
+    for case, call in zip(capture_cases, capture_calls):
+        require(m6.count('try run("' + case + '") { try ' + call + ' }') == 1)
     m6_bodies = re.findall(r'\btry\s+run\s*\(\s*"([^"\n]+)"', m6)
     require(len(m6_bodies) == len(re.findall(r'\btry\s+run\s*\(', m6)))
     require(len(m6_bodies) == len(set(m6_bodies)) and set(m6_bodies) == set(cases['m6']))

@@ -716,6 +716,18 @@
       ],
       "timeout_seconds": 3600
     },
+    "runtime-m6-custody-capture": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "runtime",
+        "--suite",
+        "m6-custody-capture"
+      ],
+      "timeout_seconds": 3600
+    },
     "runtime-policy-authority": {
       "argv": [
         "python3",
@@ -1071,6 +1083,18 @@
         "tooling",
         "--suite",
         "test_coordinator_entry"
+      ],
+      "timeout_seconds": 300
+    },
+    "tooling-test-custody-capture-suite": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_custody_capture_suite"
       ],
       "timeout_seconds": 300
     },
@@ -1480,6 +1504,7 @@
         "tooling-test-ci-runtime",
         "tooling-test-ci-shards",
         "tooling-test-coordinator-entry",
+        "tooling-test-custody-capture-suite",
         "tooling-test-dependency-maintenance",
         "tooling-test-guardian-executor",
         "tooling-test-guardian-protocol",
@@ -1522,6 +1547,7 @@
         "runtime-m2",
         "runtime-m3",
         "runtime-m4",
+        "runtime-m6-custody-capture",
         "runtime-m6",
         "runtime-body1",
         "runtime-body2",
@@ -2446,6 +2472,7 @@
           "m6-installation-precommit-endpoint-postimage",
           "m6-installation-precommit-concurrent-endpoint-readers",
           "m6-installation-precommit-endpoint-getter-overlap",
+          "m6-installation-invocation-diagnostic-scopes",
           "m6-installation-precommit-endpoint-reader-closure",
           "m6-installation-precommit-endpoint-unknown",
           "m6-installation-precommit-endpoint-substitution",
@@ -2965,6 +2992,10 @@
           "m6-helper-state-capture-named",
           "m6-helper-state-capture-unlinked",
           "m6-helper-state-capture-refusals",
+          "m6-live-custody-capture-publication",
+          "m6-live-custody-capture-removal",
+          "m6-live-custody-capture-retirement",
+          "m6-live-custody-capture-refusals",
           "m6-installation-startup-order",
           "m6-installation-startup-bindings",
           "m6-installation-startup-original-deadline",
@@ -2995,6 +3026,15 @@
           "m6-installation-stopped-custody-actual-registry-archives",
           "m6-installation-stopped-custody-uncertain-resource",
           "m6-installation-stopped-custody-pending-cancellation"
+        ],
+        "kind": "runtime"
+      },
+      "runtime-m6-custody-capture": {
+        "cases": [
+          "m6-live-custody-capture-publication",
+          "m6-live-custody-capture-removal",
+          "m6-live-custody-capture-retirement",
+          "m6-live-custody-capture-refusals"
         ],
         "kind": "runtime"
       },
@@ -3659,6 +3699,13 @@
         ],
         "kind": "static"
       },
+      "tooling-test-custody-capture-suite": {
+        "cases": [
+          "test_custody_capture_suite.CustodyCaptureSuiteTests.test_aggregate_requires_full_m6_and_all_focused_cases",
+          "test_custody_capture_suite.CustodyCaptureSuiteTests.test_capture_and_full_m6_are_required_in_distinct_default_shards"
+        ],
+        "kind": "static"
+      },
       "tooling-test-dependency-maintenance": {
         "cases": [
           "test_dependency_maintenance.DependencyPolicyTests.test_cli_pins_merge_to_sha_and_api_separates_read_token",
@@ -4088,6 +4135,8 @@
       },
       "tooling-test-runtime-suite-inventory": {
         "cases": [
+          "test_runtime_suite_inventory.RuntimeInventoryTests.test_capture_route_cannot_skip_substitute_reorder_or_select_cases",
+          "test_runtime_suite_inventory.RuntimeInventoryTests.test_capture_suite_is_exact_independent_real_coverage",
           "test_runtime_suite_inventory.RuntimeInventoryTests.test_current_source_has_complete_entrypoint_and_case_registration",
           "test_runtime_suite_inventory.RuntimeInventoryTests.test_exact_compiled_discovery_matches",
           "test_runtime_suite_inventory.RuntimeInventoryTests.test_extensions_and_other_runner_types_cannot_escape_discovery",

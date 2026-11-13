@@ -3514,18 +3514,39 @@ fileprivate final class InstallationCaptureParent {
         // Reject intermediate symlink resolution as well as final-component
         // links. The retained descriptor and named identity are checked again
         // after every capture pass.
+#if SHADOW_SYNC_TESTING
+        let observedReal = realpath(pinned.path, nil)
+        guard InstallationInvocationTesting.check(observedReal != nil, .realpathCall, syscall: true),
+              let real = observedReal else { throw CustodyRecordError.unsafeMetadata }
+#else
         guard let real = realpath(pinned.path, nil) else { throw CustodyRecordError.unsafeMetadata }
+#endif
         defer { free(real) }
+#if SHADOW_SYNC_TESTING
+        guard InstallationInvocationTesting.check(String(cString: real) == pinned.path, .canonicalPath) else { throw CustodyRecordError.unsafeMetadata }
+#else
         guard String(cString: real) == pinned.path else { throw CustodyRecordError.unsafeMetadata }
+#endif
     }
     static func node(_ fd: Int32, directory: Bool, privateMode: Bool) throws -> InstallationNodeIdentity {
         var s = stat()
+#if SHADOW_SYNC_TESTING
+        guard InstallationInvocationTesting.check(fstat(fd, &s) == 0, .statCall, syscall: true),
+              InstallationInvocationTesting.check(s.st_uid == geteuid(), .owner),
+              InstallationInvocationTesting.check(s.st_flags == 0, .flags),
+              InstallationInvocationTesting.check(s.st_mode & S_IFMT == (directory ? S_IFDIR : S_IFREG), .type),
+              InstallationInvocationTesting.check(directory || s.st_nlink == 1, .links),
+              InstallationInvocationTesting.check(!privateMode || s.st_mode == (directory ? S_IFDIR | 0o700 : S_IFREG | 0o600), .mode) else {
+            throw CustodyRecordError.unsafeMetadata
+        }
+#else
         guard fstat(fd, &s) == 0, s.st_uid == geteuid(), s.st_flags == 0,
               s.st_mode & S_IFMT == (directory ? S_IFDIR : S_IFREG),
               directory || s.st_nlink == 1,
               !privateMode || s.st_mode == (directory ? S_IFDIR | 0o700 : S_IFREG | 0o600) else {
             throw CustodyRecordError.unsafeMetadata
         }
+#endif
         let acl = try privateMode ? PolicyAuthorityFile.privateStateACL(fd) : PolicyAuthorityFile.safeACL(fd)
         let node = InstallationNodeIdentity(device: UInt64(s.st_dev), inode: UInt64(s.st_ino),
             type: directory ? .directory : .regular, uid: s.st_uid, mode: UInt32(s.st_mode), links: UInt64(s.st_nlink),
@@ -4773,6 +4794,7 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
         stopped: (CustodyCatalogStore.InstallationStagedJournal.StopDelivery, InstallationPrecommitSession.Stopped)? = nil) throws {
         #if SHADOW_SYNC_TESTING
         var diagnosticStage: UInt8 = 1
+        InstallationInvocationTesting.stage(1)
         var diagnosticPassed = false
         defer {
             if !diagnosticPassed {
@@ -4794,6 +4816,7 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
         guard !budget.hasExpired else { throw CustodyRecordError.busy }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = 2
+        InstallationInvocationTesting.stage(2)
         #endif
         observationLock.lock()
         guard let snapshot = observation, !observationClosing, !observationRetiring,
@@ -4802,6 +4825,7 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
         }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = 4
+        InstallationInvocationTesting.stage(4)
         guard testingMetadataDeadlines.count < 512 else {
             observationLock.unlock(); throw CustodyRecordError.busy
         }
@@ -4816,19 +4840,24 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
         #if SHADOW_SYNC_TESTING
         if let barrier, barrier.0 == .beforeValidation, !barrier.1.pause() { throw CustodyRecordError.busy }
         diagnosticStage = 5
+        InstallationInvocationTesting.stage(5)
         #endif
         try validateParents(snapshot, deadline: budget, stopped: stopped)
         #if SHADOW_SYNC_TESTING
         diagnosticStage = 6
+        InstallationInvocationTesting.stage(6)
+        InstallationInvocationTesting.locate(.socketRead, node: InstallationInvocationTesting.Node.none)
         #endif
         let current = try InstallationNamedSocketObservation.read(address: snapshot.address,
             retainedAncestors: snapshot.ancestors, uid: geteuid(), deadline: budget)
         #if SHADOW_SYNC_TESTING
         diagnosticStage = 7
+        InstallationInvocationTesting.stage(7)
         #endif
         guard snapshot.named.matchesNamedGeneration(current) else { throw CustodyRecordError.conflict }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = 8
+        InstallationInvocationTesting.stage(8)
         #endif
         try validateParents(snapshot, deadline: budget, stopped: stopped)
         #if SHADOW_SYNC_TESTING
@@ -4836,6 +4865,7 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
         #endif
         #if SHADOW_SYNC_TESTING
         diagnosticStage = 9
+        InstallationInvocationTesting.stage(9)
         #endif
         // Closure cannot retire a description until this reader releases its
         // reservation. A close/publication-failure overlap invalidates success;
@@ -4846,6 +4876,7 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
         guard unchanged else { throw CustodyRecordError.fenced }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = 10
+        InstallationInvocationTesting.stage(10)
         #endif
         guard !budget.hasExpired else { throw CustodyRecordError.busy }
         #if SHADOW_SYNC_TESTING
@@ -4855,6 +4886,9 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
     private func validateParents(_ snapshot: Observation, deadline budget: MonotonicDeadline,
         stopped: (CustodyCatalogStore.InstallationStagedJournal.StopDelivery, InstallationPrecommitSession.Stopped)? = nil) throws {
         guard !budget.hasExpired else { throw CustodyRecordError.busy }
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.owner, node: InstallationInvocationTesting.Node.none)
+        #endif
         if let stopped {
             guard budget.absoluteUptimeNanoseconds == stopped.1.deadline.absoluteUptimeNanoseconds else {
                 throw CustodyRecordError.fenced
@@ -4862,10 +4896,16 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
             try stopped.0.validateStoppedOwner(owner, acknowledgment: stopped.1)
             try owner.revalidate()
         } else { try owner.validateReadinessOwner() }
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.namedAncestors, node: InstallationInvocationTesting.Node.none)
+        #endif
         guard try InstallationNamedSocketObservation.parents(address: snapshot.address,
             retainedAncestors: snapshot.ancestors, uid: geteuid(), deadline: budget) == snapshot.parents else {
             throw CustodyRecordError.conflict
         }
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.retainedParent, node: InstallationInvocationTesting.Node.none)
+        #endif
         try parent.validate()
     }
     // Service closure is not node retirement. The original owner, chain, pending
@@ -5295,6 +5335,10 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
         observationLock.lock(); defer { observationLock.unlock() }; return testingRevalidationFailure
     }
     private var testingMetadataDeadlines: [UInt64] = []
+    // Actual metadata primitive only; no retained parent or authority is returned.
+    static func testingObserveParentNode(_ descriptor: Int32) throws {
+        _ = try InstallationCaptureParent.node(descriptor, directory: true, privateMode: false)
+    }
     enum TestingObservationPoint { case beforeValidation, afterValidation }
     private var testingObservationBarrier: (TestingObservationPoint, CustodyLeaseTestingBarrier)?
     private var testingListenerBarrier: CustodyLeaseTestingBarrier?

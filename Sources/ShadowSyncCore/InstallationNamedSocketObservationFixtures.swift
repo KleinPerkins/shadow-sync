@@ -317,7 +317,17 @@ enum InstallationNamedSocketObservationFixtures {
         try fixture { f in
             try f.bind(); let original = try f.read()
             try f.setMode("installation.sock", 0o640)
-            try H.refuses { _ = try f.read() }
+            let invocation = InstallationInvocationTesting.Context()
+            var failure: InstallationInvocationTesting.Failure?
+            try H.refuses {
+                try InstallationInvocationTesting.withInvocation(invocation) {
+                    do { _ = try f.read() }
+                    catch { failure = invocation.failure(error); throw error }
+                }
+            }
+            try H.check(failure?.phase == .socketMetadata && failure?.predicate == .socketMode
+                && failure?.error == .unsafeMetadata && failure?.system == InstallationInvocationTesting.SystemResult.none,
+                "named socket diagnostic missed the actual socket-mode refusal")
             try f.setMode("installation.sock", 0o600)
             let before = try f.read()
             try H.refuses {

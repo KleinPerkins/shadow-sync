@@ -1,6 +1,94 @@
 import Darwin
 import Foundation
 
+#if SHADOW_SYNC_TESTING
+/// One synchronous caller owns one context. It is installed only for that
+/// caller's revalidation, restored on every exit, and never read across threads.
+/// No callbacks, output, locks, retries, authority or arbitrary strings.
+enum InstallationInvocationTesting {
+    enum Phase: String {
+        case endpoint, owner, captureIdentity, captureOpen, captureNamed, captureFinal
+        case namedAncestors, retainedParent, socketRead, socketMetadata, socketAttributes, socketPostflight
+    }
+    enum Node: String { case none, state, custody, namespace, lifecycle, operation, run, launcher, catalog }
+    enum Predicate: String {
+        case thrown, statCall, owner, mode, links, flags, type, device, inode, writeMode
+        case openCall, currentIdentity, parentPresent, namePresent, namedStatCall
+        case namedDevice, namedInode, namedOwner, namedMode, namedLinks, stateStable
+        case uid, count, descriptors, uniqueDescriptors, realpathCall, canonicalPath
+        case socketStatCall, socketMode, socketPostflightCall, socketStable
+    }
+    enum SystemResult: String { case none, badDescriptor, resourceLimit, interrupted, permission, missing, other }
+    struct Failure {
+        let stage: UInt8
+        let phase: Phase
+        let node: Node
+        let ancestor: UInt8
+        let predicate: Predicate
+        let system: SystemResult
+        let error: InstallationTestingFailure
+    }
+    final class Context {
+        fileprivate var stage: UInt8 = 1
+        fileprivate var phase: Phase = .endpoint
+        fileprivate var node: Node = .none
+        fileprivate var ancestor: UInt8 = 0
+        fileprivate var failed: (UInt8, Phase, Node, UInt8, Predicate, SystemResult)?
+        func failure(_ error: Error) -> Failure {
+            let saved = errno; defer { errno = saved }
+            let cut = failed ?? (stage, phase, node, ancestor, .thrown, .none)
+            return Failure(stage: cut.0, phase: cut.1, node: cut.2, ancestor: cut.3,
+                predicate: cut.4, system: cut.5, error: InstallationTestingFailure(error))
+        }
+    }
+    private static let key = "shadow-sync-invocation-diagnostic"
+    private static var current: Context? { Thread.current.threadDictionary[key] as? Context }
+    static func withInvocation<T>(_ context: Context, _ body: () throws -> T) rethrows -> T {
+        let saved = errno
+        let prior = Thread.current.threadDictionary[key]
+        Thread.current.threadDictionary[key] = context
+        errno = saved
+        defer {
+            let exiting = errno
+            if let prior { Thread.current.threadDictionary[key] = prior }
+            else { Thread.current.threadDictionary.removeObject(forKey: key) }
+            errno = exiting
+        }
+        return try body()
+    }
+    static func stage(_ value: UInt8) {
+        let saved = errno; defer { errno = saved }
+        current?.stage = value
+        locate(.endpoint, node: Node.none)
+    }
+    static func locate(_ phase: Phase, node: Node? = nil, ancestor: Int = 0) {
+        let saved = errno; defer { errno = saved }
+        guard let current else { return }
+        current.phase = phase
+        if let node { current.node = node }
+        current.ancestor = UInt8(clamping: ancestor)
+    }
+    static func check(_ value: Bool, _ predicate: Predicate, syscall: Bool = false) -> Bool {
+        let saved = errno; defer { errno = saved }
+        guard !value, let current, current.failed == nil else { return value }
+        let result: SystemResult
+        if !syscall { result = .none }
+        else {
+            switch saved {
+            case EBADF: result = .badDescriptor
+            case EMFILE, ENFILE, ENOMEM: result = .resourceLimit
+            case EINTR: result = .interrupted
+            case EACCES, EPERM: result = .permission
+            case ENOENT: result = .missing
+            default: result = .other
+            }
+        }
+        current.failed = (current.stage, current.phase, current.node, current.ancestor, predicate, result)
+        return value
+    }
+}
+#endif
+
 /// Three observations only. This state machine cannot publish candidate-ready,
 /// commit, start an application, release a lease, or execute stop/recovery.
 struct InstallationPrecommitTranscript {
@@ -217,16 +305,19 @@ final class InstallationPrecommitSession: @unchecked Sendable {
         let outcomePresent: Bool
         let firstServeFailure: InstallationTestingFailure?
         let firstServeFailureSite: TestingServeFailureSite?
+        let serveInvocation: InstallationInvocationTesting.Failure?
         let anchorAttempt: TestingAnchorState?
     }
     private var testingFirstServeFailure: InstallationTestingFailure?
     private var testingFirstServeFailureSite: TestingServeFailureSite?
+    private var testingServeInvocation: InstallationInvocationTesting.Failure?
     private var testingFirstAnchorAttempt: TestingAnchorState?
     var testingKickstartState: TestingKickstartState {
         state.lock(); defer { state.unlock() }
         return TestingKickstartState(cancelled: cancelled, anchorPresent: anchor != nil,
             outcomePresent: outcome != nil, firstServeFailure: testingFirstServeFailure,
             firstServeFailureSite: testingFirstServeFailureSite,
+            serveInvocation: testingServeInvocation,
             anchorAttempt: testingFirstAnchorAttempt)
     }
     private var verificationBarrier: CustodyLeaseTestingBarrier?
@@ -610,13 +701,19 @@ final class InstallationPrecommitSession: @unchecked Sendable {
             // Classify this actual call before connection retirement or another
             // endpoint caller can replace session outcome. No per-poll record.
             let endpointDeadline = try currentDeadline()
-            do { try endpoint.revalidate(deadline: endpointDeadline) }
+            let invocation = InstallationInvocationTesting.Context()
+            do {
+                try InstallationInvocationTesting.withInvocation(invocation) {
+                    try endpoint.revalidate(deadline: endpointDeadline)
+                }
+            }
             catch {
                 let savedDiagnosticErrno = errno
                 state.lock()
                 if testingFirstServeFailure == nil {
                     testingFirstServeFailure = InstallationTestingFailure(error)
                     testingFirstServeFailureSite = .initialEndpointRevalidation
+                    testingServeInvocation = invocation.failure(error)
                 }
                 state.unlock()
                 errno = savedDiagnosticErrno

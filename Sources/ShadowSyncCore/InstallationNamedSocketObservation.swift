@@ -66,9 +66,19 @@ struct InstallationNamedSocketObservation: Equatable {
             createdSeconds = s.st_birthtimespec.tv_sec; createdNanoseconds = s.st_birthtimespec.tv_nsec
         }
         fileprivate func requireSocket(uid: uid_t, unpublished: Bool = false) throws {
+#if SHADOW_SYNC_TESTING
+            guard InstallationInvocationTesting.check(device > 0, .device),
+              InstallationInvocationTesting.check(inode > 0, .inode),
+              InstallationInvocationTesting.check(self.uid == uid, .owner),
+              InstallationInvocationTesting.check(mode & S_IFMT == S_IFSOCK, .type),
+              InstallationInvocationTesting.check(unpublished ? mode & 0o7000 == 0 : mode == S_IFSOCK | 0o600, .socketMode),
+              InstallationInvocationTesting.check(links == 1, .links),
+              InstallationInvocationTesting.check(flags == 0, .flags) else { throw CustodyRecordError.unsafeMetadata }
+#else
             guard device > 0, inode > 0, self.uid == uid, mode & S_IFMT == S_IFSOCK,
                   unpublished ? mode & 0o7000 == 0 : mode == S_IFSOCK | 0o600,
                   links == 1, flags == 0 else { throw CustodyRecordError.unsafeMetadata }
+#endif
         }
     }
     struct Parent: Equatable {
@@ -157,34 +167,73 @@ struct InstallationNamedSocketObservation: Equatable {
                                  afterFirstRead: (() throws -> Void)?) throws -> Self {
         func budget() throws { if deadline.hasExpired { throw CustodyRecordError.busy } }
         try budget()
+#if SHADOW_SYNC_TESTING
+        guard InstallationInvocationTesting.check(uid != 0, .uid),
+              InstallationInvocationTesting.check(retainedAncestors.count == address.parentComponents.count + 1, .count) else {
+            throw CustodyRecordError.unsafeMetadata
+        }
+#else
         guard uid != 0, retainedAncestors.count == address.parentComponents.count + 1 else {
             throw CustodyRecordError.unsafeMetadata
         }
+#endif
         // Retain the original objects for this entire synchronous observation.
         // Concurrent retirement is forbidden by the owning caller contract.
         let originals = retainedAncestors
         let fds = originals.map(\.value)
+#if SHADOW_SYNC_TESTING
+        guard InstallationInvocationTesting.check(fds.allSatisfy({ $0 >= 0 }), .descriptors),
+              InstallationInvocationTesting.check(Set(fds).count == fds.count, .uniqueDescriptors) else {
+            throw CustodyRecordError.unsafeMetadata
+        }
+#else
         guard fds.allSatisfy({ $0 >= 0 }), Set(fds).count == fds.count else {
             throw CustodyRecordError.unsafeMetadata
         }
+#endif
         func parents() throws -> [Parent] {
             try Self.parents(address: address, retainedAncestors: originals, uid: uid, deadline: deadline)
         }
         let initialParents = try parents()
         func named() throws -> Self {
             try budget()
+            #if SHADOW_SYNC_TESTING
+            InstallationInvocationTesting.locate(.socketRead, node: InstallationInvocationTesting.Node.none)
+            #endif
             var before = stat(), after = stat()
+#if SHADOW_SYNC_TESTING
+            guard InstallationInvocationTesting.check(fstatat(fds.last!, address.endpoint.rawValue, &before, AT_SYMLINK_NOFOLLOW) == 0, .socketStatCall, syscall: true) else {
+                throw CustodyRecordError.unsafeMetadata
+            }
+#else
             guard fstatat(fds.last!, address.endpoint.rawValue, &before, AT_SYMLINK_NOFOLLOW) == 0 else {
                 throw CustodyRecordError.unsafeMetadata
             }
+#endif
+            #if SHADOW_SYNC_TESTING
+            InstallationInvocationTesting.locate(.socketMetadata)
+            #endif
             let metadata = Metadata(before); try metadata.requireSocket(uid: uid, unpublished: unpublishedCreator != nil)
+            #if SHADOW_SYNC_TESTING
+            InstallationInvocationTesting.locate(.socketAttributes)
+            #endif
             let reply = try strictReply(parent: fds.last!, endpoint: address.endpoint, deadline: deadline)
             let acl = try decodeStrictReply(reply.bytes, result: reply.result, metadata: metadata, deadline: deadline)
+            #if SHADOW_SYNC_TESTING
+            InstallationInvocationTesting.locate(.socketPostflight)
+            #endif
             try budget()
+#if SHADOW_SYNC_TESTING
+            guard InstallationInvocationTesting.check(fstatat(fds.last!, address.endpoint.rawValue, &after, AT_SYMLINK_NOFOLLOW) == 0, .socketPostflightCall, syscall: true),
+              InstallationInvocationTesting.check(metadata == Metadata(after), .socketStable) else {
+                throw CustodyRecordError.conflict
+            }
+#else
             guard fstatat(fds.last!, address.endpoint.rawValue, &after, AT_SYMLINK_NOFOLLOW) == 0,
                   metadata == Metadata(after) else {
                 throw CustodyRecordError.conflict
             }
+#endif
             return Self(addressBytes: address.bytes, metadata: metadata, aclSHA256: acl)
         }
         let first = try named()
@@ -200,26 +249,59 @@ struct InstallationNamedSocketObservation: Equatable {
     static func parents(address: Address, retainedAncestors: [OwnedFileDescriptor], uid: uid_t,
                         deadline: MonotonicDeadline) throws -> [Parent] {
         func budget() throws { if deadline.hasExpired { throw CustodyRecordError.busy } }
+        #if SHADOW_SYNC_TESTING
+        InstallationInvocationTesting.locate(.namedAncestors, node: InstallationInvocationTesting.Node.none)
+        #endif
         let originals = retainedAncestors, fds = retainedAncestors.map(\.value)
+#if SHADOW_SYNC_TESTING
+        guard InstallationInvocationTesting.check(uid != 0, .uid),
+              InstallationInvocationTesting.check(originals.count == address.parentComponents.count + 1, .count),
+              InstallationInvocationTesting.check(fds.allSatisfy({ $0 >= 0 }), .descriptors),
+              InstallationInvocationTesting.check(Set(fds).count == fds.count, .uniqueDescriptors) else { throw CustodyRecordError.unsafeMetadata }
+#else
         guard uid != 0, originals.count == address.parentComponents.count + 1,
               fds.allSatisfy({ $0 >= 0 }), Set(fds).count == fds.count else { throw CustodyRecordError.unsafeMetadata }
+#endif
 
         var result: [Parent] = []
         for index in fds.indices {
+            #if SHADOW_SYNC_TESTING
+            InstallationInvocationTesting.locate(.namedAncestors, node: InstallationInvocationTesting.Node.none, ancestor: index)
+            #endif
             try budget()
             guard originals[index].value == fds[index] else { throw CustodyRecordError.fenced }
             var held = stat(), named = stat(), after = stat()
+#if SHADOW_SYNC_TESTING
+            guard InstallationInvocationTesting.check(fstat(fds[index], &held) == 0, .statCall, syscall: true),
+              InstallationInvocationTesting.check(held.st_mode & S_IFMT == S_IFDIR, .type),
+              InstallationInvocationTesting.check(held.st_nlink > 0, .links),
+              InstallationInvocationTesting.check(held.st_dev > 0, .device),
+              InstallationInvocationTesting.check(held.st_ino > 0, .inode),
+              InstallationInvocationTesting.check(held.st_uid == 0 || held.st_uid == uid, .owner),
+              InstallationInvocationTesting.check(held.st_mode & 0o022 == 0 || (held.st_uid == 0 && held.st_mode & S_ISVTX != 0), .writeMode) else {
+                throw CustodyRecordError.unsafeMetadata
+            }
+#else
             guard fstat(fds[index], &held) == 0, held.st_mode & S_IFMT == S_IFDIR,
                   held.st_nlink > 0, held.st_dev > 0, held.st_ino > 0,
                   held.st_uid == 0 || held.st_uid == uid,
                   held.st_mode & 0o022 == 0 || (held.st_uid == 0 && held.st_mode & S_ISVTX != 0) else {
                 throw CustodyRecordError.unsafeMetadata
             }
+#endif
             let last = index == fds.count - 1
             if last {
+#if SHADOW_SYNC_TESTING
+                guard InstallationInvocationTesting.check(held.st_uid == uid, .owner),
+              InstallationInvocationTesting.check(held.st_mode == S_IFDIR | 0o700, .mode),
+              InstallationInvocationTesting.check(held.st_flags == 0, .flags) else {
+                    throw CustodyRecordError.unsafeMetadata
+                }
+#else
                 guard held.st_uid == uid, held.st_mode == S_IFDIR | 0o700, held.st_flags == 0 else {
                     throw CustodyRecordError.unsafeMetadata
                 }
+#endif
             }
             let acl = try PolicyAuthorityFile.socketObservationDirectoryACL(fds[index], privateState: last, deadline: deadline)
             try budget()
