@@ -1346,6 +1346,19 @@ final class CustodyCatalogStore: @unchecked Sendable {
             try replaceJournalLocked(expected, with: next)
         }
     }
+    /// The child is still suspended under its original owner while execution
+    /// metadata waits for an unrelated writer. Retry only unacquired guards;
+    /// the durable comparison/write remains a single action.
+    fileprivate func executeJournal(_ expected: CustodyJournal, with next: CustodyJournal,
+                                   deadline: UInt64, revalidate: @escaping () throws -> Void) throws {
+        guard [.admitted, .executing].contains(expected.phase), next.phase == .executing else {
+            throw CustodyRecordError.invalidTransition
+        }
+        guard deadline <= expected.budget.work else { throw CustodyProtocolError.invalidBudget }
+        try locked(admission: AdmissionWait(deadline: deadline, revalidate: revalidate)) {
+            try replaceJournalLocked(expected, with: next)
+        }
+    }
     private func replaceJournalLocked(_ expected: CustodyJournal, with next: CustodyJournal) throws {
         let s = try snapshot()
         guard s.1.entries.contains(CustodyCatalogEntry(expected)), s.2[expected.binding.requestID] == expected,
@@ -1394,6 +1407,12 @@ final class CustodyCatalogStore: @unchecked Sendable {
     func testingAdmitJournal(_ expected: CustodyJournal, with next: CustodyJournal,
                              deadline: UInt64, revalidate: @escaping () throws -> Void) throws {
         try admitJournal(expected, with: next, deadline: deadline, revalidate: revalidate)
+    }
+    /// Synthetic observations exercise execution persistence only. No child,
+    /// helper authority, resume operation or replacement owner is constructed.
+    func testingExecuteJournal(_ expected: CustodyJournal, with next: CustodyJournal,
+                               deadline: UInt64, revalidate: @escaping () throws -> Void) throws {
+        try executeJournal(expected, with: next, deadline: deadline, revalidate: revalidate)
     }
     /// Metadata-only fixture entry through the same guarded comparison. It
     /// neither constructs a helper nor transfers writer/process authority.
@@ -1880,7 +1899,7 @@ final class CustodyHelperJournal {
         try repository.validateProbe(index, waitStatus: raw, stdout: stdout, stderr: stderr)
         guard try recordSerialRetirement(owner, streamsDrained: streamsDrained) == raw else { throw CustodyRecordError.fenced }
     }
-    func executing(_ owner: OwnedDirectChild) throws {
+    private func validateExecutionOwner(_ owner: OwnedDirectChild) throws {
         guard owner.observation == .running, owner.identity.userID == inherited.account.uid else {
             throw CustodyRecordError.invalidTransition
         }
@@ -1892,9 +1911,21 @@ final class CustodyHelperJournal {
         } else {
             guard current.phase == .admitted, recordedOwner == nil else { throw CustodyRecordError.invalidTransition }
         }
-        try replace(current.advancing(to: .executing, custodian: helperObservation,
-            target: CustodyProcessObservation(owner.identity)))
-        recordedOwner = owner; serialRetirement = nil
+    }
+    func executing(_ owner: OwnedDirectChild, deadline: UInt64,
+                   revalidateExecution: @escaping () throws -> Void) throws {
+        try validateExecutionOwner(owner)
+        let next = try current.advancing(to: .executing, custodian: helperObservation,
+            target: CustodyProcessObservation(owner.identity))
+        try store.executeJournal(current, with: next, deadline: deadline) { [self] in
+            // No catalog guard spans retained authority, parent, control or
+            // suspended-owner validation. Never call full resource validation
+            // here: installation validation can itself acquire catalog.lock.
+            try inherited.revalidatePersistenceResources(); try leases.validate()
+            try inherited.revalidateParent(); try validateExecutionOwner(owner)
+            try revalidateExecution()
+        }
+        current = next; recordedOwner = owner; serialRetirement = nil
     }
     /// Retain before the first fallible write or filesystem operation. A failed
     /// create leaves the original object here for explicit drained cleanup.

@@ -192,7 +192,7 @@ class ReconciliationProbeTests(unittest.TestCase):
             expected = re.findall(r'try run\("([^"]+)"', focused)
             self.assertEqual(rows['m6-staged-reconciliation']['cases'], expected)
             self.assertEqual(rows['m6-staged-reconciliation']['entrypoint'], 'M6SelfTestRunner.runStagedReconciliation')
-            self.assertEqual(len(rows['m6']['cases']), 730 + 12)  # Original full suite plus fresh-driver cases.
+            self.assertEqual(len(rows['m6']['cases']), 730 + 12 + 1)  # Original suite, fresh-driver cases, and metadata collector regression.
             self.assertEqual(len(rows['m6-custody-capture']['cases']), 4)
             variants = [focused.replace(line, '') for line in lines]
             variants += [focused.replace(lines[0]+lines[1], lines[1]+lines[0]),
@@ -241,7 +241,9 @@ class ReconciliationProbeTests(unittest.TestCase):
                 ('cancellationReady', 'String(decoding: handle.snapshot().stderr'),
                 ('commandFinished', 'handle.snapshot().phase == .finished'),
                 ('commandRetirement', '(try? token.validate()) != nil')):
-            self.assertIn('try until(failure: .init(mode: failureMode, wait: .' + wait + ')) { ' + predicate, resumed)
+            seconds = (',\n                        seconds: requiresDrainWindow ? terminalSeconds : 8'
+                       if wait == 'commandFinished' else '')
+            self.assertIn('try until(failure: .init(mode: failureMode, wait: .' + wait + ')' + seconds + ') { ' + predicate, resumed)
         observe = source[source.index('    private static func observe('):
                          source.index('    static func unclaimedAndAbsentStop()')]
         for wait, predicate in (
@@ -255,6 +257,22 @@ class ReconciliationProbeTests(unittest.TestCase):
         # The unchanged digest pins every prior operation, predicate, cleanup,
         # assertion and fixed budget after those additions are projected out.
         source = (CORE / 'InstallationStagedReconciliationFixtures.swift').read_text()
+        # Project only the four exact bounded timing substitutions back to the
+        # original fixture before checking its unchanged historical digest.
+        # Exact occurrence counts refuse missing, widened or duplicated changes.
+        timing_substitutions = (
+            ('    private static func until(failure: ResumedDeadline? = nil, seconds: TimeInterval = 8,\n                              _ predicate: () throws -> Bool) throws {\n        let deadline = MonotonicDeadline(seconds: seconds)\n',
+             '    private static func until(failure: ResumedDeadline? = nil, _ predicate: () throws -> Bool) throws {\n        let deadline = MonotonicDeadline(seconds: 8)\n'),
+            ('                let requiresDrainWindow = failureMode == .mutationCancel || failureMode == .postflightTimeout\n                // Original work + TERM + KILL + receipt, plus one configured second for setup.\n                let terminalSeconds = ChildProcessBudget.seconds(failureMode == .postflightTimeout ? 8 : 16)\n                let operationDeadline = MonotonicDeadline(seconds: requiresDrainWindow ? terminalSeconds : 3)\n                let intent = try journal.bootstrapCandidateIntent(deadline: operationDeadline)\n',
+             '                let intent = try journal.bootstrapCandidateIntent(deadline: .init(seconds: 3))\n'),
+            ('                if requiresDrainWindow {\n                    // Setup cannot borrow original cleanup time or revive an expired operation.\n                    try H.check(budget.receipt < operationDeadline.absoluteUptimeNanoseconds,\n                                "recovery fixture setup exhausted original terminal headroom")\n                }\n',
+             ''),
+            ('                    try until(failure: .init(mode: failureMode, wait: .commandFinished),\n                        seconds: requiresDrainWindow ? terminalSeconds : 8) { handle.snapshot().phase == .finished }\n',
+             '                    try until(failure: .init(mode: failureMode, wait: .commandFinished)) { handle.snapshot().phase == .finished }\n'),
+        )
+        for after, before in timing_substitutions:
+            self.assertEqual(source.count(after), 1)
+            source = source.replace(after, before, 1)
         recovery_owner_capture = '''                    guard let originalSession = journal.testingSession, let endpoint = journal.testingEndpoint else {
                         throw H.Failure(message: "missing recovery readiness owners")
                     }

@@ -87,6 +87,7 @@ enum InstallationPrecommitFixtures {
             guard let endpoint = journal.testingEndpoint, let session = journal.testingSession else {
                 throw H.Failure(message: "concurrent endpoint owners missing")
             }
+            try endpoint.testingEnableMetadataCollection()
             let listener = try endpoint.listener
             let image = try endpoint.image
             let barrier = CustodyLeaseTestingBarrier()
@@ -144,6 +145,7 @@ enum InstallationPrecommitFixtures {
             guard let endpoint = journal.testingEndpoint, let session = journal.testingSession else {
                 throw H.Failure(message: "getter overlap endpoint owners missing")
             }
+            try endpoint.testingEnableMetadataCollection()
             let preparing = CustodyLeaseTestingBarrier()
             let getter = CustodyLeaseTestingBarrier()
             let resumed = CustodyLeaseTestingBarrier()
@@ -189,6 +191,70 @@ enum InstallationPrecommitFixtures {
             try H.check((try endpoint.image) == image, "service close withdrew durable endpoint metadata")
             try journal.testingRemoveReadinessEndpoint()
             try rejects { _ = try endpoint.image }
+        }
+    }
+    // Exercise the real retained endpoint after joining its original service.
+    // No peer, deadline renewal, descriptor replacement or synthetic success.
+    static func metadataCollectionCapacity() throws {
+        try InstallationStagedJournalFixtures.fixture { _, _, _, _, _, journal, _ in
+            let deadline = MonotonicDeadline(seconds: 30)
+            _ = try journal.completeAdmission(deadline: deadline)
+            guard let endpoint = journal.testingEndpoint, let session = journal.testingSession else {
+                throw H.Failure(message: "metadata capacity original owners missing")
+            }
+            try journal.closeReadiness(deadline: deadline)
+            let image = try endpoint.image
+            // Cancellation may already have recorded an actual reader failure.
+            // Keep that first outcome; these completed calls cannot replace it.
+            let priorFailure = endpoint.testingFirstRevalidationFailure
+            for _ in 0..<513 { try endpoint.revalidate(deadline: deadline) }
+            try H.check(endpoint.testingObservedMetadataDeadlines.isEmpty
+                && endpoint.testingObservedMetadataCapacityRefusals == 0
+                && endpoint.testingFirstRevalidationFailure?.stage == priorFailure?.stage
+                && endpoint.testingFirstRevalidationFailure?.metadataCount == priorFailure?.metadataCount
+                && !session.start(),
+                "unenrolled metadata sink altered endpoint validation or service ownership")
+            try endpoint.testingEnableMetadataCollection()
+            for _ in 0..<512 { try endpoint.revalidate(deadline: deadline) }
+            let captured = endpoint.testingObservedMetadataDeadlines
+            try H.check(captured == Array(repeating: deadline.absoluteUptimeNanoseconds, count: 512)
+                && endpoint.testingObservedMetadataCapacityRefusals == 0,
+                "enrolled metadata sink lost exact original call deadlines")
+            do {
+                try endpoint.revalidate(deadline: deadline)
+                throw H.Failure(message: "enrolled metadata sink accepted a 513th call")
+            } catch CustodyRecordError.busy {}
+            // A busy entry deadline or sticky prior failure cannot prove overflow.
+            // This observation changes only inside the actual collector guard.
+            try H.check(endpoint.testingObservedMetadataCapacityRefusals == 1,
+                "metadata overflow did not reach the actual capacity guard")
+            let failure = endpoint.testingFirstRevalidationFailure
+            try H.check(failure?.stage == (priorFailure?.stage ?? .capacity)
+                && failure?.metadataCount == (priorFailure?.metadataCount ?? 512)
+                && endpoint.testingObservedMetadataDeadlines == captured,
+                "enrolled metadata sink changed the original capacity refusal")
+            // With the collector still full, an expired entry must refuse before
+            // the capacity guard and must not create another capacity observation.
+            do {
+                try endpoint.revalidate(deadline: MonotonicDeadline(uptimeNanoseconds: 0))
+                throw H.Failure(message: "metadata capacity accepted an expired entry")
+            } catch CustodyRecordError.busy {}
+            try H.check(endpoint.testingObservedMetadataCapacityRefusals == 1
+                && endpoint.testingObservedMetadataDeadlines == captured
+                && endpoint.testingFirstRevalidationFailure?.stage == failure?.stage
+                && endpoint.testingFirstRevalidationFailure?.metadataCount == failure?.metadataCount,
+                "expired metadata entry changed capacity observation or first failure")
+            try rejects { try endpoint.testingEnableMetadataCollection() }
+            try H.check(endpoint.testingObservedMetadataDeadlines == captured
+                && endpoint.testingFirstRevalidationFailure?.stage == failure?.stage
+                && endpoint.testingFirstRevalidationFailure?.metadataCount == failure?.metadataCount,
+                "metadata enrollment replay reset capture or first failure")
+            try H.check(endpoint.testingObservedMetadataCapacityRefusals == 1,
+                "metadata enrollment replay reset capacity observation")
+            try endpoint.requireServiceClosed()
+            try H.check(try endpoint.image == image && journal.testingSession == nil && !session.start(),
+                "metadata capacity changed the original named endpoint or joined service")
+            try journal.testingRemoveReadinessEndpoint()
         }
     }
     static func diagnosticScopes() throws {

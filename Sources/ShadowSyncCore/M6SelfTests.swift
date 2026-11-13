@@ -311,6 +311,7 @@ public enum M6SelfTestRunner {
         try run("m6-installation-precommit-endpoint-postimage") { try InstallationPrecommitFixtures.endpoint() }
         try run("m6-installation-precommit-concurrent-endpoint-readers") { try InstallationPrecommitFixtures.concurrentEndpointReaders() }
         try run("m6-installation-precommit-endpoint-getter-overlap") { try InstallationPrecommitFixtures.endpointGetterOverlap() }
+        try run("m6-installation-endpoint-metadata-capacity") { try InstallationPrecommitFixtures.metadataCollectionCapacity() }
         try run("m6-installation-invocation-diagnostic-scopes") { try InstallationPrecommitFixtures.diagnosticScopes() }
         try run("m6-installation-precommit-endpoint-reader-closure") { try InstallationPrecommitFixtures.endpointReaderClosure() }
         try run("m6-installation-precommit-endpoint-unknown") { try InstallationPrecommitFixtures.unknownEndpoint() }
@@ -2007,8 +2008,95 @@ private enum CustodyCatalogSelfTests {
             }
         }
     }
+    /// Both first and serial execution use the real catalog flock and durable
+    /// preimage comparison. Synthetic observations cannot authorize a process.
+    /// Unlike a timing-only parallel probe, the third validation is reachable
+    /// only if acquisition yielded without running the metadata action.
+    static func executionAcquisition() throws {
+        for serial in [false, true] {
+            for scenario in ["released", "expired", "cancelled", "revoked", "after-swap"] {
+                try fixture { location, _ in
+                    let s = try scope(location), r = try request(s, kind: .repositoryGit), ticket = try s.prepare(r)
+                    let process = ProcessIdentity(processID: 10, processGroupID: 10, userID: geteuid(), startSeconds: 1,
+                        startMicroseconds: 1, executablePath: "/fixture/never-execute", generation: UUID().uuidString.lowercased())
+                    let helper = try CustodyProcessObservation(process), store = try CustodyCatalogStore(leases: s.leases)
+                    let admitted = try ticket.testingJournal.advancing(to: .admitted, custodian: helper)
+                    try store.testingAdmitJournal(ticket.testingJournal, with: admitted, deadline: r.budget.work) {}
+                    var before = admitted
+                    if serial {
+                        let retired = ProcessIdentity(processID: 20, processGroupID: 20, userID: geteuid(), startSeconds: 2,
+                            startMicroseconds: 1, executablePath: "/fixture/never-execute", generation: process.generation)
+                        before = try admitted.advancing(to: .executing, custodian: helper,
+                            target: CustodyProcessObservation(retired))
+                        try store.testingExecuteJournal(admitted, with: before, deadline: r.budget.work) {}
+                    }
+                    let target = ProcessIdentity(processID: 30, processGroupID: 30, userID: geteuid(), startSeconds: 3,
+                        startMicroseconds: 1, executablePath: "/fixture/never-execute", generation: process.generation)
+                    let next = try before.advancing(to: .executing, custodian: helper,
+                        target: CustodyProcessObservation(target))
+                    let image = try bytes(location, ticket.requestID + ".json"), catalog = try bytes(location, "catalog.json")
+                    let guardFD = open(location.path + "/custody/catalog.lock", O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                    try check(guardFD >= 0, "execution guard open"); defer { close(guardFD) }
+                    try check(flock(guardFD, LOCK_EX | LOCK_NB) == 0, "execution guard contention setup")
+                    defer { _ = flock(guardFD, LOCK_UN) }
+                    if scenario == "after-swap" { store.testingFault(.afterSwap) }
+                    let deadline = min(r.budget.work, MonotonicDeadline(seconds: 0.050).absoluteUptimeNanoseconds)
+                    let cancellation = CancellationToken()
+                    var validations = 0, returned = false
+                    do {
+                        try store.testingExecuteJournal(before, with: next, deadline: deadline) {
+                            validations += 1
+                            try check(try bytes(location, ticket.requestID + ".json") == image,
+                                "execution mutated before guard acquisition")
+                            if validations == 3 {
+                                if scenario == "cancelled" { cancellation.cancel() }
+                                if scenario == "revoked" { s.close() }
+                            }
+                            try s.leases.validate()
+                            guard !cancellation.isCancelled, s.observation == .open else { throw CustodyRecordError.fenced }
+                            if scenario != "expired", validations == 3 {
+                                try check(flock(guardFD, LOCK_UN) == 0, "execution guard release")
+                            }
+                        }
+                        returned = true
+                    } catch let error as CustodyRecordError {
+                        switch (scenario, error) {
+                        case ("expired", .busy), ("cancelled", .fenced), ("revoked", .fenced),
+                             ("after-swap", .injectedFailure): break
+                        default: throw error
+                        }
+                    }
+                    let persisted = try CustodyJournal.decode(bytes(location, ticket.requestID + ".json"))
+                    try check(try bytes(location, "catalog.json") == catalog, "execution changed catalog reservation")
+                    if scenario == "released" || scenario == "after-swap" {
+                        try check(validations == 3 && persisted == next && next.ordinal == before.ordinal + 1,
+                            "execution was replayed or skipped after contention/write failure")
+                        try check(returned == (scenario == "released"), "uncertain execution write was accepted")
+                        if scenario == "after-swap" {
+                            var retried = false
+                            do {
+                                try store.testingExecuteJournal(before, with: next, deadline: r.budget.work) {}
+                                retried = true
+                            } catch let error as CustodyRecordError {
+                                guard case .fenced = error else { throw error }
+                            }
+                            try check(!retried && (try bytes(location, ticket.requestID + ".json")) == (try next.encode()),
+                                "uncertain execution write lost sticky poison or changed its postimage")
+                        }
+                    } else {
+                        try check(!returned && persisted == before && (try persisted.encode()) == image,
+                            "refused execution changed its journal preimage")
+                        if scenario == "expired" {
+                            try check(DispatchTime.now().uptimeNanoseconds >= deadline, "execution renewed its deadline")
+                        } else { try check(validations == 3, "revoked or cancelled execution was retried") }
+                    }
+                }
+            }
+        }
+    }
     static func durablePreparation() throws {
         try admissionAcquisition()
+        try executionAcquisition()
         try fixture { location, _ in
             let s = try scope(location), r = try request(s), ticket = try s.prepare(r)
             let catalog = try CustodyCatalog.decode(bytes(location, "catalog.json"))

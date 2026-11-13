@@ -3965,10 +3965,14 @@ extension InstallationBootstrapFixtures {
         for cut: FreshInstallationAttempt.Phase in [.exclusive, .transfer, .journal, .readiness, .bootstrap, .kickstart, .ready] {
             try exclusiveFixture { root, location, bootstrap, _ in
                 let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap, deadline: .init(seconds: 30))
-                attempt.testingBeforePhase = { phase in if phase == cut { throw InstallationFailure.policy } }
+                var reachedCut = false
+                attempt.testingBeforePhase = { phase in
+                    if phase == cut { reachedCut = true; throw InstallationFailure.policy }
+                }
                 guard case let .retained(cause, phase) = attempt.runOnce() else {
                     throw H.Failure(message: "driver phase cut invented settlement")
                 }
+                try H.check(reachedCut, "driver phase cut prerequisite failed before selected cut")
                 try H.check(cause == .policy && phase == cut && attempt.firstFailure == .policy,
                     "driver phase cut lost primary classification")
                 try InstallationOwnershipFixtures.excluded(location)

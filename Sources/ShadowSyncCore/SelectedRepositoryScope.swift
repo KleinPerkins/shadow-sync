@@ -215,6 +215,8 @@ final class RepositoryDiscoveryPolicy {
     private var failure: SelectedRepositoryScopeError?
     #if SHADOW_SYNC_TESTING
     var testingBeforeAccess: ((String) -> Void)?
+    var testingBeforeSelectedAccess: (() -> Void)?
+    var testingSelectedIdentityIOEntry: (() -> Void)?
     var testingProtectedPath: ((String, UInt64) -> Void)?
     #endif
 
@@ -389,6 +391,11 @@ final class RepositoryDiscoveryPolicy {
         defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
         #endif
         try validate()
+        return try lexicalPolicyRelativePath(path)
+    }
+
+    /// Pure lexical conversion; enclosing admission owns fresh authority checks.
+    private func lexicalPolicyRelativePath(_ path: String) throws -> String {
         let relative = try homeRelative(path), prefix = snapshot.projection.rootComponents
         guard relative.count >= prefix.count,
               zip(relative.prefix(prefix.count), prefix).allSatisfy({ $0.utf8.elementsEqual($1.utf8) }) else {
@@ -408,20 +415,38 @@ final class RepositoryDiscoveryPolicy {
         let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.requireSelected)
         defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
         #endif
-        try validate()
-        let relative = try homeRelative(selected.repositoryPath)
-        let root = account.homeDirectory + "/" + snapshot.projection.rootComponents.joined(separator: "/")
-        guard scope.repositories.contains(selected),
-              selected.governedRootPath.utf8.elementsEqual(account.homeDirectory.utf8),
-              selected.policyRootPath.utf8.elementsEqual(root.utf8),
-              selected.locator.governedRoot == "~",
-              relative.count == selected.locator.components.count,
-              zip(relative, selected.locator.components).allSatisfy({ $0.utf8.elementsEqual($1.utf8) }) else {
-            throw SelectedRepositoryScopeError.changed
+        try validateLocalAuthority()
+        do {
+            let relative = try homeRelative(selected.repositoryPath)
+            let root = account.homeDirectory + "/" + snapshot.projection.rootComponents.joined(separator: "/")
+            guard scope.repositories.contains(selected),
+                  selected.governedRootPath.utf8.elementsEqual(account.homeDirectory.utf8),
+                  selected.policyRootPath.utf8.elementsEqual(root.utf8),
+                  selected.locator.governedRoot == "~",
+                  relative.count == selected.locator.components.count,
+                  zip(relative, selected.locator.components).allSatisfy({ $0.utf8.elementsEqual($1.utf8) }) else {
+                throw SelectedRepositoryScopeError.changed
+            }
+            _ = try lexicalPolicyRelativePath(selected.repositoryPath)
+        } catch {
+            // Lexical failure cannot conceal cleanup or current authority drift.
+            // Preserve the original changed/path error only while authority lives.
+            try validate()
+            throw error
         }
-        _ = try policyRelativePath(selected.repositoryPath)
-        // Classification precedes traversal, including each intermediate node.
-        try prepareAccess([selected.repositoryPath])
+        do {
+            // No candidate I/O intervenes in the lexical preparation above.
+            // Classification retains full resource validation on both sides,
+            // including cached evaluations, then a complete fresh preflight.
+            try classifyAccessPrefixes([selected.repositoryPath])
+            #if SHADOW_SYNC_TESTING
+            testingBeforeSelectedAccess?()
+            #endif
+            try validate()
+        } catch { throw preparationFailure(error) }
+        #if SHADOW_SYNC_TESTING
+        testingSelectedIdentityIOEntry?()
+        #endif
         try RepositoryRootPathIdentity.withVerifiedDirectory(path: account.homeDirectory,
             expected: RepositoryDirectoryIdentity(selected.rootIdentity)) { opened in
             var info = stat()

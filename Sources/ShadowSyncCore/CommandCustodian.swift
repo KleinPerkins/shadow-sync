@@ -826,7 +826,12 @@ private final class CustodianLoop {
         #if SHADOW_SYNC_TESTING
         DiscoveryFixtureDiagnostic.RepositoryBusyObservation.transition(.executing)
         #endif
-        try journal.executing(owner!)
+        try journal.executing(owner!, deadline: min(state.budget.work, stageBudget.work)) { [self] in
+            consumeControl()
+            guard reason == .none, try state.permitsResume(now: now), controlQuiescent(),
+                  now < stageBudget.work else { throw CustodyRecordError.fenced }
+            try target.validate(anchor)
+        }
         #if SHADOW_SYNC_TESTING
         DiscoveryFixtureDiagnostic.RepositoryBusyObservation.transition(.none)
         #endif

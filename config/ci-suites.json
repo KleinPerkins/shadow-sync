@@ -2562,6 +2562,7 @@
           "m6-installation-precommit-endpoint-postimage",
           "m6-installation-precommit-concurrent-endpoint-readers",
           "m6-installation-precommit-endpoint-getter-overlap",
+          "m6-installation-endpoint-metadata-capacity",
           "m6-installation-invocation-diagnostic-scopes",
           "m6-installation-precommit-endpoint-reader-closure",
           "m6-installation-precommit-endpoint-unknown",
@@ -3270,7 +3271,12 @@
           "POLICY-SESSION-T73-fixed-read-first-batch-and-fresh-stage",
           "POLICY-SESSION-T74-fixed-read-protected-stale-and-identity-refuse",
           "POLICY-SESSION-T75-fixed-read-one-deadline-and-expiry",
-          "POLICY-SESSION-T76-fixed-read-batch-bound-refusal"
+          "POLICY-SESSION-T76-fixed-read-batch-bound-refusal",
+          "POLICY-SESSION-T77-selected-lexical-preparation-full-boundaries",
+          "POLICY-SESSION-T78-selected-resource-revocation-cuts",
+          "POLICY-SESSION-T79-selected-malformed-authority-precedence",
+          "POLICY-SESSION-T80-selected-protected-prefix-and-identity-drift",
+          "POLICY-SESSION-T81-selected-preflight-deadline-expiry"
         ],
         "kind": "runtime"
       },

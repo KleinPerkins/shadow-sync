@@ -31,8 +31,9 @@ enum InstallationStagedReconciliationFixtures {
             "staged recovery retirement deadline mode=\(mode.rawValue) wait=\(wait.rawValue) error=deadline"
         }
     }
-    private static func until(failure: ResumedDeadline? = nil, _ predicate: () throws -> Bool) throws {
-        let deadline = MonotonicDeadline(seconds: 8)
+    private static func until(failure: ResumedDeadline? = nil, seconds: TimeInterval = 8,
+                              _ predicate: () throws -> Bool) throws {
+        let deadline = MonotonicDeadline(seconds: seconds)
         while try !predicate() {
             guard !deadline.hasExpired else {
                 throw H.Failure(message: failure?.message ?? "staged recovery retirement deadline")
@@ -269,10 +270,19 @@ enum InstallationStagedReconciliationFixtures {
                     try H.check(wrote == bytes.count && synced == 0, "recovery outcome marker write")
                 }
                 _ = try journal.completeAdmission(deadline: .init(seconds: 3))
-                let intent = try journal.bootstrapCandidateIntent(deadline: .init(seconds: 3))
+                let requiresDrainWindow = failureMode == .mutationCancel || failureMode == .postflightTimeout
+                // Original work + TERM + KILL + receipt, plus one configured second for setup.
+                let terminalSeconds = ChildProcessBudget.seconds(failureMode == .postflightTimeout ? 8 : 16)
+                let operationDeadline = MonotonicDeadline(seconds: requiresDrainWindow ? terminalSeconds : 3)
+                let intent = try journal.bootstrapCandidateIntent(deadline: operationDeadline)
                 var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
                 let budget = try CustodyBudget.make(kind: .launchctlMutation,
                     workSeconds: mode == "lifecycle-postflight-timeout" ? 2 : 10)
+                if requiresDrainWindow {
+                    // Setup cannot borrow original cleanup time or revive an expired operation.
+                    try H.check(budget.receipt < operationDeadline.absoluteUptimeNanoseconds,
+                                "recovery fixture setup exhausted original terminal headroom")
+                }
                 var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.bootstrap, budget: budget)
                 if failureMode == .mutationCancel { try registry.testingArmCancellationObservation(command!) }
                 let handle = try registry.start(command!)
@@ -282,7 +292,8 @@ enum InstallationStagedReconciliationFixtures {
                     handle.cancel()
                 }
                 do {
-                    try until(failure: .init(mode: failureMode, wait: .commandFinished)) { handle.snapshot().phase == .finished }
+                    try until(failure: .init(mode: failureMode, wait: .commandFinished),
+                        seconds: requiresDrainWindow ? terminalSeconds : 8) { handle.snapshot().phase == .finished }
                 } catch {
                     handle.testingTakeCancellationObservation()?.emit()
                     throw error

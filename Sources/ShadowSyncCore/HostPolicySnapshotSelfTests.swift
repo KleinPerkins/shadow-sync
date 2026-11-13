@@ -3123,6 +3123,226 @@ public enum HostPolicySnapshotSelfTestRunner {
             try fixture.remove()
         }
         onPass("POLICY-SESSION-T76-fixed-read-batch-bound-refusal")
+        final class SelectedAdmissionProbe: @unchecked Sendable {
+            private let lock = NSLock()
+            private var checks = 0
+            private var requests: [[RepositorySelectionAdmissionPath]] = []
+            private var deadlines: [UInt64] = []
+            private var start = 0
+            func markStart() { lock.lock(); defer { lock.unlock() }; start = checks }
+            func checksSinceStart() -> Int { lock.lock(); defer { lock.unlock() }; return checks - start }
+            @discardableResult func validate() -> Int {
+                lock.lock(); defer { lock.unlock() }; checks += 1; return checks
+            }
+            func evaluate(_ paths: [RepositorySelectionAdmissionPath], _ deadline: UInt64) {
+                lock.lock(); defer { lock.unlock() }; requests.append(paths); deadlines.append(deadline)
+            }
+            func state() -> (Int, [[RepositorySelectionAdmissionPath]], [UInt64]) {
+                lock.lock(); defer { lock.unlock() }; return (checks, requests, deadlines)
+            }
+        }
+        try RuntimeFixtureSession.withCase("POLICY-SESSION-T77-selected-lexical-preparation-full-boundaries") {
+            let fixture = try metadataFixture(); defer { try? fixture.remove() }
+            let scope = try selectedScope(fixture), snapshot = try fixture.snapshot(), probe = SelectedAdmissionProbe()
+            let admission = RepositorySelectionPathAdmission(evaluate: { paths, deadline in
+                probe.evaluate(paths, deadline)
+                return paths.map { RepositorySelectionAdmissionDecision(path: $0, disposition: .allowed) }
+            }, revalidate: { probe.validate(); try snapshot.revalidate() })
+            let binder = try SelectedRepositoryScopeBinder(snapshot: snapshot, admission: admission)
+            var admitted = 0, hooks = 0, identityIOEntries = 0
+            try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
+                service.testingBeforeSelectedAccess = { hooks += 1 }
+                service.testingSelectedIdentityIOEntry = { identityIOEntries += 1 }
+                let selected = scope.repositories[0]
+                var deadlines: [UInt64] = []
+                for _ in 0..<2 {
+                    let before = probe.state()
+                    try service.requireSelected(selected); admitted += 1
+                    let after = probe.state(), requests = Array(after.1.dropFirst(before.1.count))
+                    try require(after.0 - before.0 == 4 && requests.count == 1,
+                        "selected preparation lost classification sides or pre/post access validation")
+                    let relative = selected.locator.components
+                    try require(requests[0].map(\.components) == (0...relative.count).map { Array(relative.prefix($0)) }
+                        && requests[0].allSatisfy { $0.root == "~" },
+                        "selected preparation omitted an exact leaf or ancestor")
+                    deadlines += Array(after.2.dropFirst(before.2.count))
+                }
+                let before = probe.state()
+                try require(try service.policyRelativePath(selected.repositoryPath) == "products/ready"
+                    && probe.state().0 - before.0 == 1,
+                    "public policy-relative wrapper lost its complete independent validation")
+                try require(deadlines.count == 2 && Set(deadlines).count == 1,
+                    "selected preparation renewed the original metadata deadline")
+            }
+            try require(admitted == 2 && hooks == 2 && identityIOEntries == 2,
+                "selected positive control did not enter both identity I/O pairs")
+            try fixture.remove()
+        }
+        onPass("POLICY-SESSION-T77-selected-lexical-preparation-full-boundaries")
+        try RuntimeFixtureSession.withCase("POLICY-SESSION-T78-selected-resource-revocation-cuts") {
+            enum Cut { case beforeClassification, duringClassification, beforeIO, postflight }
+            for cut in [Cut.beforeClassification, .duringClassification, .beforeIO, .postflight] {
+                let fixture = try metadataFixture(); defer { try? fixture.remove() }
+                let scope = try selectedScope(fixture), snapshot = try fixture.snapshot(), probe = SelectedAdmissionProbe()
+                let armed = CancellationToken(), revoked = CancellationToken(), observed = CancellationToken()
+                let admission = RepositorySelectionPathAdmission(evaluate: { paths, deadline in
+                    probe.evaluate(paths, deadline)
+                    if armed.isCancelled && cut == .duringClassification { revoked.cancel() }
+                    return paths.map { RepositorySelectionAdmissionDecision(path: $0, disposition: .allowed) }
+                }, revalidate: {
+                    probe.validate()
+                    try snapshot.revalidate()
+                    if armed.isCancelled && (revoked.isCancelled
+                        || (cut == .postflight && probe.checksSinceStart() == 4)) {
+                        observed.cancel(); throw PolicyHelperError.unavailable
+                    }
+                })
+                let binder = try SelectedRepositoryScopeBinder(snapshot: snapshot, admission: admission)
+                var entered = false, returned = false, refused = false, sticky = false, retryStable = false, hooks = 0, start = 0, calls = 0, identityIOEntries = 0
+                try denied {
+                    try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
+                        entered = true; start = probe.state().0; calls = probe.state().1.count
+                        probe.markStart()
+                        armed.cancel()
+                        if cut == .beforeClassification { revoked.cancel() }
+                        service.testingBeforeSelectedAccess = {
+                            hooks += 1
+                            if cut == .beforeIO { revoked.cancel() }
+                        }
+                        service.testingSelectedIdentityIOEntry = { identityIOEntries += 1 }
+                        do { try service.requireSelected(scope.repositories[0]); returned = true }
+                        catch SelectedRepositoryScopeError.policyUnavailable { refused = true }
+                        let beforeRetry = probe.state()
+                        do { try service.requireSelected(scope.repositories[0]); returned = true }
+                        catch SelectedRepositoryScopeError.policyUnavailable { sticky = true }
+                        retryStable = probe.state().0 == beforeRetry.0 && probe.state().1.count == beforeRetry.1.count
+                    }
+                }
+                // Failed classify still takes preparationFailure's full fresh
+                // check before recording the original refusal; pre/post validate
+                // failures have already recorded their sticky authority error.
+                let expectedChecks = cut == .beforeClassification ? 2 : cut == .duringClassification ? 3 : cut == .beforeIO ? 3 : 4
+                try require(entered && refused && sticky && retryStable && !returned && observed.isCancelled
+                    && probe.state().0 - start == expectedChecks
+                    && probe.state().1.count - calls == (cut == .beforeClassification ? 0 : 1)
+                    && hooks == (cut == .beforeIO || cut == .postflight ? 1 : 0)
+                    && identityIOEntries == (cut == .postflight ? 1 : 0),
+                    "selected resource cut refused at an unrelated boundary or crossed preflight")
+                try fixture.remove()
+            }
+        }
+        onPass("POLICY-SESSION-T78-selected-resource-revocation-cuts")
+        try RuntimeFixtureSession.withCase("POLICY-SESSION-T79-selected-malformed-authority-precedence") {
+            for fault in ["none", "resources", "pending"] {
+                for malformed in [false, true] {
+                    let fixture = try metadataFixture(); defer { try? fixture.remove() }
+                    let scope = try selectedScope(fixture), selected = scope.repositories[0]
+                    let snapshot = try fixture.snapshot(), probe = SelectedAdmissionProbe(), armed = CancellationToken()
+                    let observed = CancellationToken()
+                    let admission = RepositorySelectionPathAdmission(evaluate: { paths, deadline in
+                        probe.evaluate(paths, deadline)
+                        return paths.map { RepositorySelectionAdmissionDecision(path: $0, disposition: .allowed) }
+                    }, revalidate: {
+                        probe.validate(); try snapshot.revalidate()
+                        if armed.isCancelled && fault != "none" {
+                            observed.cancel()
+                            if fault == "pending" { throw PolicyHelperError.cleanupPending }
+                            throw PolicyHelperError.unavailable
+                        }
+                    })
+                    let binder = try SelectedRepositoryScopeBinder(snapshot: snapshot, admission: admission)
+                    let foreign = ValidatedSelectedRepository(repositoryID: selected.repositoryID,
+                        locator: try RepositorySelectionLocator(governedRoot: "other", components: selected.locator.components),
+                        governedRootPath: selected.governedRootPath, policyRootPath: selected.policyRootPath,
+                        repositoryPath: malformed ? "" : selected.repositoryPath,
+                        rootIdentity: selected.rootIdentity, repositoryIdentity: selected.repositoryIdentity)
+                    var entered = false, returned = false, refusal = "", calls = -1, hooks = 0
+                    do {
+                        try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
+                            entered = true; calls = probe.state().1.count; armed.cancel()
+                            service.testingBeforeSelectedAccess = { hooks += 1 }
+                            do { try service.requireSelected(foreign); returned = true }
+                            catch SelectedRepositoryScopeError.changed { refusal = "changed"; throw SelectedRepositoryScopeError.changed }
+                            catch SelectedRepositoryScopeError.policyUnavailable { refusal = "resources"; throw SelectedRepositoryScopeError.policyUnavailable }
+                            catch SelectedRepositoryScopeError.cleanupPending { refusal = "pending"; throw SelectedRepositoryScopeError.cleanupPending }
+                        }
+                    } catch SelectedRepositoryScopeError.changed {}
+                    catch SelectedRepositoryScopeError.policyUnavailable {}
+                    catch SelectedRepositoryScopeError.cleanupPending {}
+                    let expected = fault == "none" ? (malformed ? "resources" : "changed") : fault
+                    try require(entered && !returned && refusal == expected && hooks == 0
+                        && probe.state().1.count == calls && observed.isCancelled == (fault != "none"),
+                        "selected lexical refusal hid current authority or converted a live changed error")
+                    try fixture.remove()
+                }
+            }
+        }
+        onPass("POLICY-SESSION-T79-selected-malformed-authority-precedence")
+        try RuntimeFixtureSession.withCase("POLICY-SESSION-T80-selected-protected-prefix-and-identity-drift") {
+            for protect in [true, false] {
+                let fixture = try metadataFixture(); defer { try? fixture.remove() }
+                let scope = try selectedScope(fixture), selected = scope.repositories[0]
+                let snapshot = try fixture.snapshot(), armed = CancellationToken(), observed = CancellationToken()
+                let admission = RepositorySelectionPathAdmission(evaluate: { paths, _ in
+                    paths.map { path in
+                        let deny = armed.isCancelled && protect && path.components == ["workspace", "products"]
+                        if deny { observed.cancel() }
+                        return RepositorySelectionAdmissionDecision(path: path, disposition: deny ? .protected : .allowed)
+                    }
+                }, revalidate: { try snapshot.revalidate() })
+                let binder = try SelectedRepositoryScopeBinder(snapshot: snapshot, admission: admission)
+                var hooks = 0, changed = false, returned = false, refused = false
+                do {
+                    try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
+                        armed.cancel()
+                        service.testingBeforeSelectedAccess = {
+                            hooks += 1
+                            if !protect { changed = chmod(selected.repositoryPath, 0o750) == 0 }
+                        }
+                        do { try service.requireSelected(selected); returned = true }
+                        catch SelectedRepositoryScopeError.policyUnavailable { refused = protect }
+                        catch SelectedRepositoryScopeError.changed { refused = !protect }
+                        // Restore only the fixture directory owned by this case.
+                        if changed { try require(chmod(selected.repositoryPath, mode_t(selected.repositoryIdentity.mode & 0o7777)) == 0, "restore selected fixture mode") }
+                    }
+                } catch SelectedRepositoryScopeError.policyUnavailable { try require(protect, "identity drift became policy refusal") }
+                try require(refused && !returned && (protect ? observed.isCancelled && hooks == 0 : changed && hooks == 1),
+                    "selected protected ancestor or exact repository identity was bypassed")
+                try fixture.remove()
+            }
+        }
+        onPass("POLICY-SESSION-T80-selected-protected-prefix-and-identity-drift")
+        try RuntimeFixtureSession.withCase("POLICY-SESSION-T81-selected-preflight-deadline-expiry") {
+            let fixture = try metadataFixture(); defer { try? fixture.remove() }
+            let scope = try selectedScope(fixture), snapshot = try fixture.snapshot(), probe = SelectedAdmissionProbe()
+            let admission = RepositorySelectionPathAdmission(evaluate: { paths, deadline in
+                probe.evaluate(paths, deadline)
+                return paths.map { RepositorySelectionAdmissionDecision(path: $0, disposition: .allowed) }
+            }, revalidate: { probe.validate(); try snapshot.revalidate() })
+            let binder = try SelectedRepositoryScopeBinder(snapshot: snapshot, admission: admission)
+            var entered = false, returned = false, hooks = 0, expired: UInt64 = 0, calls = -1, identityIOEntries = 0
+            try denied {
+                try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
+                    entered = true; calls = probe.state().1.count
+                    service.testingBeforeSelectedAccess = {
+                        hooks += 1
+                        if let deadline = probe.state().2.last {
+                            expired = deadline
+                            let now = DispatchTime.now().uptimeNanoseconds
+                            if now < deadline { usleep(UInt32((deadline - now) / 1_000 + 2_000)) }
+                        }
+                    }
+                    service.testingSelectedIdentityIOEntry = { identityIOEntries += 1 }
+                    try service.requireSelected(scope.repositories[0]); returned = true
+                }
+            }
+            try require(entered && hooks == 1 && identityIOEntries == 0 && !returned && expired > 0
+                && DispatchTime.now().uptimeNanoseconds >= expired
+                && probe.state().1.count - calls == 1 && probe.state().2.last == expired,
+                "selected access renewed its expired original metadata deadline")
+            try fixture.remove()
+        }
+        onPass("POLICY-SESSION-T81-selected-preflight-deadline-expiry")
     }
 
     private final class SessionFixture {

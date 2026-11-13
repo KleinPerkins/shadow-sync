@@ -4831,10 +4831,17 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
         #if SHADOW_SYNC_TESTING
         diagnosticStage = 4
         InstallationInvocationTesting.stage(4)
-        guard testingMetadataDeadlines.count < 512 else {
-            observationLock.unlock(); throw CustodyRecordError.busy
+        // Only fixtures asserting deadline capture enroll this bounded sink.
+        // Ordinary polling has no diagnostic allocation or extra refusal path.
+        if testingMetadataCollectionEnabled {
+            guard testingMetadataDeadlines.count < 512 else {
+                // Witness this exact guard, independently of the first failure.
+                // Saturate without adding allocation, overflow or a refusal path.
+                if testingMetadataCapacityRefusals < UInt8.max { testingMetadataCapacityRefusals += 1 }
+                observationLock.unlock(); throw CustodyRecordError.busy
+            }
+            testingMetadataDeadlines.append(budget.absoluteUptimeNanoseconds)
         }
-        testingMetadataDeadlines.append(budget.absoluteUptimeNanoseconds)
         let barrier = testingObservationBarrier; testingObservationBarrier = nil
         #endif
         observationReaders += 1
@@ -5339,7 +5346,21 @@ final class InstallationReadinessEndpoint: @unchecked Sendable {
     var testingFirstRevalidationFailure: TestingRevalidationFailure? {
         observationLock.lock(); defer { observationLock.unlock() }; return testingRevalidationFailure
     }
+    private var testingMetadataCollectionEnabled = false
     private var testingMetadataDeadlines: [UInt64] = []
+    private var testingMetadataCapacityRefusals: UInt8 = 0
+    var testingObservedMetadataCapacityRefusals: UInt8 {
+        observationLock.lock(); defer { observationLock.unlock() }; return testingMetadataCapacityRefusals
+    }
+    // One-way fixture enrollment. Never clear a captured observation or reset
+    // the existing 512-call capacity on a retained endpoint.
+    func testingEnableMetadataCollection() throws {
+        observationLock.lock(); defer { observationLock.unlock() }
+        guard !testingMetadataCollectionEnabled, testingMetadataDeadlines.isEmpty else {
+            throw CustodyRecordError.fenced
+        }
+        testingMetadataCollectionEnabled = true
+    }
     // Actual metadata primitive only; no retained parent or authority is returned.
     static func testingObserveParentNode(_ descriptor: Int32) throws {
         _ = try InstallationCaptureParent.node(descriptor, directory: true, privateMode: false)
