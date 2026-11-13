@@ -28,26 +28,104 @@ enum InstallationStagedCompletionFixtures {
     private static func record(_ location: StateLocation) throws -> InstallationControlRecord {
         try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")))
     }
+    // Sequence-local testing evidence only. Closed labels and a 96-record cap
+    // reserve two terminal records so an exhausted progress trace cannot hide
+    // the first body failure or the outer fixture result. No error text or paths.
+    private enum CompletionPart: String { case fixture, sequence, bootstrap, kickstart, bootout }
+    private enum CompletionPhase: String {
+        case fixtureSetup, fixtureCleanup, fixtureCleanupOrBodyRethrow, fixtureReturned
+        case quiet, completeAdmission, bootstrapIntent, bootstrapContext, bootstrapRun
+        case wrongOperationRefusal, completeBootstrap, bootstrapRecord
+        case kickstartIntent, kickstartContext, kickstartRun, readinessAnchor
+        case completeKickstart, readinessUnchanged, kickstartRecord
+        case stopOwner, stopIntent, stopContext, stopRun, completeStop, stopRecord
+        case stopReplayRefusal, bootstrapReplayRefusal, replayRecord, bodyReturned
+        case diagnosticCommand, diagnosticAssertion, prepare, start, wait
+        case mutationAssertion, completionToken, contextAliasRefusal, contextClose
+        case commandAliasRefusal, commandRelease, helperRetirement, tokenRetirement, commandReturned
+    }
+    private enum CompletionEdge: String { case entered, firstBodyFailure, outerFailure, returned }
+    private final class CompletionDiagnostic {
+        private let enabled = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_M6_DIAGNOSTICS"] == "1"
+        private var records = 0
+        private var part: CompletionPart = .fixture
+        private var phase: CompletionPhase = .fixtureSetup
+        private var failed = false
+        var kickstart: InstallationKickstartFailureObservation?
+        func mark(_ part: CompletionPart, _ phase: CompletionPhase) {
+            self.part = part; self.phase = phase
+            emit(part, phase, .entered, terminal: false)
+        }
+        func firstBodyFailure() {
+            guard !failed else { return }
+            failed = true
+            emit(part, phase, .firstBodyFailure, terminal: true)
+        }
+        func outerFailure(bodyEntered: Bool, bodyReturned: Bool) {
+            // The original journal wrapper may replace a body error during its
+            // cleanup. This boundary reports that ambiguity without changing it.
+            let phase: CompletionPhase = !bodyEntered ? .fixtureSetup
+                : (bodyReturned ? .fixtureCleanup : .fixtureCleanupOrBodyRethrow)
+            emit(.fixture, phase, .outerFailure, terminal: true)
+        }
+        func returned() { emit(.fixture, .fixtureReturned, .returned, terminal: true) }
+        private func emit(_ part: CompletionPart, _ phase: CompletionPhase,
+            _ edge: CompletionEdge, terminal: Bool) {
+            guard enabled, records < (terminal ? 96 : 94) else { return }
+            let savedDiagnosticErrno = errno
+            defer { errno = savedDiagnosticErrno }
+            records += 1
+            var detail = ""
+            if edge == .firstBodyFailure, let failure = kickstart?.first {
+                detail = " inner=\(failure.stage.rawValue) original=\(failure.error.rawValue)"
+                if let session = failure.session {
+                    detail += " sessionCancelled=\(session.cancelled) sessionAnchored=\(session.anchorPresent) sessionOutcome=\(session.outcomePresent) serveOriginal=\(session.firstServeFailure?.rawValue ?? "none") serveSite=\(session.firstServeFailureSite?.rawValue ?? "none")"
+                    if let anchor = session.anchorAttempt {
+                        detail += " anchorCancelled=\(anchor.cancelled) anchorPresent=\(anchor.anchorPresent) anchorOutcome=\(anchor.outcomePresent) retirementExpired=\(anchor.retirementExpired) preanchorExpired=\(anchor.preanchorExpired)"
+                    }
+                }
+                if let endpoint = failure.endpoint {
+                    detail += " endpointFirstStage=\(endpoint.stage.rawValue) endpointMetadataCount=\(endpoint.metadataCount)"
+                }
+            }
+            fputs("M6 STAGED COMPLETION DIAGNOSTIC part=\(part.rawValue) phase=\(phase.rawValue) edge=\(edge.rawValue)\(detail)\n", stderr)
+            fflush(stderr)
+        }
+    }
     private static func run(_ operation: LifecycleLaunchCommand.Operation,
         context: inout CommandCustodyContext?, registry: RetainedCleanupRegistry,
-        diagnostic: Bool = false) throws -> Token {
+        diagnostic: Bool = false, trace: ((CompletionPhase) -> Void)? = nil) throws -> Token {
         if diagnostic {
+            trace?(.diagnosticCommand)
             let observed = try registry.start(context!.testingInstallationDiagnostic()).wait()
+            trace?(.diagnosticAssertion)
             try H.check(observed.phase == .finished && observed.reason == nil, "completion diagnostic failed")
         }
+        trace?(.prepare)
         var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(operation)
+        trace?(.start)
         let handle = try registry.start(command!)
+        trace?(.wait)
         let result = handle.wait()
+        trace?(.mutationAssertion)
         try H.check(result.phase == .finished && result.reason == nil, "completion mutation failed")
+        trace?(.completionToken)
         let token = try handle.stagedCompletion()
         // Neither a caller context nor its prepared-resource aliases may survive
         // actual registry removal and masquerade as a completed command scope.
+        trace?(.contextAliasRefusal)
         try H.refuses { _ = try token.validate(operation: operation) }
+        trace?(.contextClose)
         context!.close(); context = nil
+        trace?(.commandAliasRefusal)
         try H.refuses { _ = try token.validate(operation: operation) }
+        trace?(.commandRelease)
         command = nil
+        trace?(.helperRetirement)
         try until { registry.testingCount == 0 && registry.testingOriginalHelpersReaped }
+        trace?(.tokenRetirement)
         try until { (try? token.validate(operation: operation)) != nil }
+        trace?(.commandReturned)
         return token
     }
     // Reuse actual successful bootstrap custody for the separate incomplete
@@ -61,38 +139,83 @@ enum InstallationStagedCompletionFixtures {
         _ = try journal.completeBootstrap(after: retired, deadline: .init(seconds: 3))
     }
     static func sequence() throws {
-        try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
-            try quiet(root)
-            _ = try journal.completeAdmission(deadline: .init(seconds: 30))
-            let bootstrap = try journal.bootstrapCandidateIntent(deadline: .init(seconds: 3))
-            var context: CommandCustodyContext? = try .testingStaged(admission, intent: bootstrap, root: root)
-            let first = try run(.bootstrap, context: &context, registry: registry, diagnostic: true)
-            try H.refuses { _ = try first.validate(operation: .kickstart) }
-            var after = try journal.completeBootstrap(after: first, deadline: .init(seconds: 3))
-            try H.check(after.step?.action == .bootstrapCandidate && after.step?.status == .complete
-                && after.readinessCommit == nil && after.phase == .active && (try record(location)) == after,
-                "bootstrap completion did not persist exact non-ready state")
-            let kickstart = try journal.kickstartCandidateIntent(deadline: .init(seconds: 3))
-            context = try .testingStaged(admission, intent: kickstart, root: root)
-            let second = try run(.kickstart, context: &context, registry: registry)
-            let anchored = try second.readinessDeadline().absoluteUptimeNanoseconds
-            after = try journal.completeKickstart(after: second, deadline: .init(seconds: 3))
-            try H.check(try second.readinessDeadline().absoluteUptimeNanoseconds == anchored,
-                "kickstart completion reset original retirement readiness budget")
-            try H.check(after.step?.action == .kickstartCandidate && after.step?.status == .complete
-                && after.readinessCommit == nil && (try record(location)) == after,
-                "missing-PID kickstart became authenticated readiness")
-            let stop = try admission.stopOnly(after: registry.installationStagedStartRetirement(after: admission.closeStarts()))
-            let intent = try journal.candidateStopIntent(admission: stop, deadline: .init(seconds: 3))
-            context = try .testingStaged(stop, intent: intent, root: root)
-            let third = try run(.bootout, context: &context, registry: registry)
-            after = try journal.completeCandidateStop(after: third, deadline: .init(seconds: 3))
-            try H.check(after.phase == .recovery && after.step?.action == .candidateStop
-                && after.step?.status == .complete && after.readinessCommit == nil && (try record(location)) == after,
-                "semantic absence did not persist stopped recovery")
-            try H.refuses { _ = try journal.completeCandidateStop(after: third, deadline: .init(seconds: 3)) }
-            try H.refuses { _ = try journal.completeBootstrap(after: first, deadline: .init(seconds: 3)) }
-            try H.check((try record(location)) == after, "replay changed durable completion")
+        let diagnostic = CompletionDiagnostic()
+        var bodyEntered = false
+        var bodyReturned = false
+        diagnostic.mark(.fixture, .fixtureSetup)
+        do {
+            try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
+                bodyEntered = true
+                do {
+                    diagnostic.mark(.sequence, .quiet)
+                    try quiet(root)
+                    diagnostic.mark(.sequence, .completeAdmission)
+                    _ = try journal.completeAdmission(deadline: .init(seconds: 30))
+                    diagnostic.kickstart = InstallationKickstartFailureObservation(
+                        session: journal.testingSession, endpoint: journal.testingEndpoint)
+                    diagnostic.mark(.sequence, .bootstrapIntent)
+                    let bootstrap = try journal.bootstrapCandidateIntent(deadline: .init(seconds: 3))
+                    diagnostic.mark(.sequence, .bootstrapContext)
+                    var context: CommandCustodyContext? = try .testingStaged(admission, intent: bootstrap, root: root)
+                    diagnostic.mark(.sequence, .bootstrapRun)
+                    let first = try run(.bootstrap, context: &context, registry: registry, diagnostic: true) { diagnostic.mark(.bootstrap, $0) }
+                    diagnostic.mark(.sequence, .wrongOperationRefusal)
+                    try H.refuses { _ = try first.validate(operation: .kickstart) }
+                    diagnostic.mark(.sequence, .completeBootstrap)
+                    var after = try journal.completeBootstrap(after: first, deadline: .init(seconds: 3))
+                    diagnostic.mark(.sequence, .bootstrapRecord)
+                    try H.check(after.step?.action == .bootstrapCandidate && after.step?.status == .complete
+                        && after.readinessCommit == nil && after.phase == .active && (try record(location)) == after,
+                        "bootstrap completion did not persist exact non-ready state")
+                    diagnostic.mark(.sequence, .kickstartIntent)
+                    let kickstart = try journal.kickstartCandidateIntent(deadline: .init(seconds: 3))
+                    diagnostic.mark(.sequence, .kickstartContext)
+                    context = try .testingStaged(admission, intent: kickstart, root: root)
+                    diagnostic.mark(.sequence, .kickstartRun)
+                    let second = try run(.kickstart, context: &context, registry: registry) { diagnostic.mark(.kickstart, $0) }
+                    diagnostic.mark(.sequence, .readinessAnchor)
+                    let anchored = try second.readinessDeadline().absoluteUptimeNanoseconds
+                    diagnostic.mark(.sequence, .completeKickstart)
+                    after = try journal.completeKickstart(after: second, deadline: .init(seconds: 3),
+                        observation: diagnostic.kickstart)
+                    diagnostic.mark(.sequence, .readinessUnchanged)
+                    try H.check(try second.readinessDeadline().absoluteUptimeNanoseconds == anchored,
+                        "kickstart completion reset original retirement readiness budget")
+                    diagnostic.mark(.sequence, .kickstartRecord)
+                    try H.check(after.step?.action == .kickstartCandidate && after.step?.status == .complete
+                        && after.readinessCommit == nil && (try record(location)) == after,
+                        "missing-PID kickstart became authenticated readiness")
+                    diagnostic.mark(.sequence, .stopOwner)
+                    let stop = try admission.stopOnly(after: registry.installationStagedStartRetirement(after: admission.closeStarts()))
+                    diagnostic.mark(.sequence, .stopIntent)
+                    let intent = try journal.candidateStopIntent(admission: stop, deadline: .init(seconds: 3))
+                    diagnostic.mark(.sequence, .stopContext)
+                    context = try .testingStaged(stop, intent: intent, root: root)
+                    diagnostic.mark(.sequence, .stopRun)
+                    let third = try run(.bootout, context: &context, registry: registry) { diagnostic.mark(.bootout, $0) }
+                    diagnostic.mark(.sequence, .completeStop)
+                    after = try journal.completeCandidateStop(after: third, deadline: .init(seconds: 3))
+                    diagnostic.mark(.sequence, .stopRecord)
+                    try H.check(after.phase == .recovery && after.step?.action == .candidateStop
+                        && after.step?.status == .complete && after.readinessCommit == nil && (try record(location)) == after,
+                        "semantic absence did not persist stopped recovery")
+                    diagnostic.mark(.sequence, .stopReplayRefusal)
+                    try H.refuses { _ = try journal.completeCandidateStop(after: third, deadline: .init(seconds: 3)) }
+                    diagnostic.mark(.sequence, .bootstrapReplayRefusal)
+                    try H.refuses { _ = try journal.completeBootstrap(after: first, deadline: .init(seconds: 3)) }
+                    diagnostic.mark(.sequence, .replayRecord)
+                    try H.check((try record(location)) == after, "replay changed durable completion")
+                    diagnostic.mark(.sequence, .bodyReturned)
+                    bodyReturned = true
+                } catch {
+                    diagnostic.firstBodyFailure()
+                    throw error
+                }
+            }
+            diagnostic.returned()
+        } catch {
+            diagnostic.outerFailure(bodyEntered: bodyEntered, bodyReturned: bodyReturned)
+            throw error
         }
     }
     static func readinessRetirementScheduling() throws {

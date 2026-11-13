@@ -45,6 +45,8 @@ final class FreshStateInitialization {
     private let guardIdentity: Node
     private let release: String
     private let mutex = NSLock()
+    private var serializing = false
+    private var metadataGeneration: UInt64 = 0
     private var leases: CustodyAuthorityLeaseSet?
     private var completed: Result?
     private var installationAuthorityTaken = false
@@ -108,6 +110,14 @@ final class FreshStateInitialization {
         return try Self(location: location, release: publisher.releaseSHA256, publisher: publisher)
         #endif
     }
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    static func signedFixture(_ context: SignedInstallationFixtureContext) throws -> FreshStateInitialization {
+        try context.revalidate()
+        try context.profile.validateLocation(context.paths.state)
+        return try Self(location: context.paths.state, release: context.publisher.releaseSHA256,
+                        publisher: context.publisher)
+    }
+    #endif
     private static func node(_ fd: Int32, uid: uid_t, directory: Bool) throws -> Node {
         var s = stat()
         guard fstat(fd, &s) == 0, s.st_uid == uid, s.st_mode == (directory ? S_IFDIR | 0o700 : S_IFREG | 0o600),
@@ -116,7 +126,9 @@ final class FreshStateInitialization {
         return Node(s)
     }
     private func validate() throws {
-        if let publisher { try publisher.revalidate() }
+        if let publisher {
+            try publisher.revalidate(); try publisher.validationProfile.validateLocation(location)
+        }
         else {
             #if !SHADOW_SYNC_TESTING
             throw CustodyRecordError.fenced
@@ -289,136 +301,151 @@ final class FreshStateInitialization {
             "transaction": .string(tx), "release": .string(release), "parent": parentIdentity.wire, "guard": guardIdentity.wire]), maximum: 4096)
     }
 
+    /// Reserve one publication/transfer turn. Only bookkeeping holds the mutex;
+    /// source verification, filesystem work and handoff waits execute outside it.
+    private func serialized<T>(_ action: () throws -> T) throws -> T {
+        guard mutex.try() else { throw CustodyRecordError.busy }
+        guard !serializing, metadataGeneration < UInt64.max else { mutex.unlock(); throw CustodyRecordError.busy }
+        serializing = true; metadataGeneration += 1
+        let generation = metadataGeneration; mutex.unlock()
+        defer { mutex.lock(); serializing = false; mutex.unlock() }
+        let result = try action()
+        mutex.lock(); let unchanged = serializing && metadataGeneration == generation; mutex.unlock()
+        guard unchanged else { throw CustodyRecordError.fenced }
+        return result
+    }
+
     /// Publishes only initialized state. It does not publish the app, register a
     /// service, change startup preference, activate policy, or access repositories.
     func publish() throws -> Result {
-        guard mutex.try() else { throw CustodyRecordError.busy }
-        defer { mutex.unlock() }
-        guard !installationAuthorityTaken else { throw CustodyRecordError.fenced }
-        try validate()
-        if let completed {
-            var current = stat()
-            guard fstatat(parent.descriptor.value, Self.finalName, &current, AT_SYMLINK_NOFOLLOW) == 0,
-                  UInt64(current.st_dev) == completed.stateDevice, UInt64(current.st_ino) == completed.stateInode,
-                  let leases else { throw CustodyRecordError.fenced }
-            try validatePublication(completed, leases: leases)
-            return completed
-        }
-        let p = parent.descriptor.value
-        let manifest: Data
-        if try exists(Self.manifestName, at: p) { manifest = try read(Self.manifestName, at: p) }
-        else {
-            guard try !exists(Self.finalName, at: p) else { throw CustodyRecordError.conflict }
-            manifest = try initialManifest()
-            try writeOnce(Self.manifestName, bytes: manifest, at: p)
-        }
-        let wire = try CustodyWire.decode(manifest, maximum: 4096).object(keys: ["schema", "transaction", "release", "parent", "guard"])
-        let tx = try CustodyWire.text(wire["transaction"])
-        guard wire["schema"] == .string("shadow-sync-state-initialization/v1"), wire["release"] == .string(release),
-              wire["parent"] == parentIdentity.wire, wire["guard"] == guardIdentity.wire, RunIdentity.isValid(tx) else { throw CustodyRecordError.fenced }
-        let stageName = ".shadow-sync-initialization." + tx
-        func record(_ phase: String) -> String { stageName + "." + phase + ".json" }
-        #if SHADOW_SYNC_TESTING
-        try fail(.afterManifest)
-        #endif
-        let hasCreated = try exists(record("created"), at: p), hasReady = try exists(record("ready"), at: p)
-        let hasPublished = try exists(record("published"), at: p)
-        guard (!hasReady || hasCreated) && (!hasPublished || hasReady) else { throw CustodyRecordError.fenced }
-        let hasStage = try exists(stageName, at: p), hasFinal = try exists(Self.finalName, at: p)
-        guard !(hasStage && hasFinal) else { throw CustodyRecordError.conflict }
-        guard !hasFinal || hasReady else { throw CustodyRecordError.conflict }
-        guard !hasPublished || hasFinal else { throw CustodyRecordError.fenced }
-        if !hasStage && !hasFinal {
-            guard !hasCreated, mkdirat(p, stageName, 0o700) == 0, fsync(p) == 0 else { throw CustodyRecordError.fenced }
-        }
-        let stateName = hasFinal ? Self.finalName : stageName
-        let state = try directory(stateName, at: p), identity = try Self.node(state.value, uid: location.uid, directory: true)
-        let created = try phase("created", manifest: manifest, state: identity)
-        if hasCreated { guard try read(record("created"), at: p) == created else { throw CustodyRecordError.fenced } }
-        else {
-            // Only a strictly empty owner-private reserved staging directory can
-            // bridge the mkdir/created-receipt crash window. Never adopt contents.
-            guard !hasFinal, try names(state.value).isEmpty else { throw CustodyRecordError.conflict }
+        return try serialized {
+            guard !installationAuthorityTaken else { throw CustodyRecordError.fenced }
+            try validate()
+            if let completed {
+                var current = stat()
+                guard fstatat(parent.descriptor.value, Self.finalName, &current, AT_SYMLINK_NOFOLLOW) == 0,
+                      UInt64(current.st_dev) == completed.stateDevice, UInt64(current.st_ino) == completed.stateInode,
+                      let leases else { throw CustodyRecordError.fenced }
+                try validatePublication(completed, leases: leases)
+                return completed
+            }
+            let p = parent.descriptor.value
+            let manifest: Data
+            if try exists(Self.manifestName, at: p) { manifest = try read(Self.manifestName, at: p) }
+            else {
+                guard try !exists(Self.finalName, at: p) else { throw CustodyRecordError.conflict }
+                manifest = try initialManifest()
+                try writeOnce(Self.manifestName, bytes: manifest, at: p)
+            }
+            let wire = try CustodyWire.decode(manifest, maximum: 4096).object(keys: ["schema", "transaction", "release", "parent", "guard"])
+            let tx = try CustodyWire.text(wire["transaction"])
+            guard wire["schema"] == .string("shadow-sync-state-initialization/v1"), wire["release"] == .string(release),
+                  wire["parent"] == parentIdentity.wire, wire["guard"] == guardIdentity.wire, RunIdentity.isValid(tx) else { throw CustodyRecordError.fenced }
+            let stageName = ".shadow-sync-initialization." + tx
+            func record(_ phase: String) -> String { stageName + "." + phase + ".json" }
             #if SHADOW_SYNC_TESTING
-            try fail(.afterStage)
+            try fail(.afterManifest)
             #endif
-            try writeOnce(record("created"), bytes: created, at: p)
-        }
-        if hasReady {
+            let hasCreated = try exists(record("created"), at: p), hasReady = try exists(record("ready"), at: p)
+            let hasPublished = try exists(record("published"), at: p)
+            guard (!hasReady || hasCreated) && (!hasPublished || hasReady) else { throw CustodyRecordError.fenced }
+            let hasStage = try exists(stageName, at: p), hasFinal = try exists(Self.finalName, at: p)
+            guard !(hasStage && hasFinal) else { throw CustodyRecordError.conflict }
+            guard !hasFinal || hasReady else { throw CustodyRecordError.conflict }
+            guard !hasPublished || hasFinal else { throw CustodyRecordError.fenced }
+            if !hasStage && !hasFinal {
+                guard !hasCreated, mkdirat(p, stageName, 0o700) == 0, fsync(p) == 0 else { throw CustodyRecordError.fenced }
+            }
+            let stateName = hasFinal ? Self.finalName : stageName
+            let state = try directory(stateName, at: p), identity = try Self.node(state.value, uid: location.uid, directory: true)
+            let created = try phase("created", manifest: manifest, state: identity)
+            if hasCreated { guard try read(record("created"), at: p) == created else { throw CustodyRecordError.fenced } }
+            else {
+                // Only a strictly empty owner-private reserved staging directory can
+                // bridge the mkdir/created-receipt crash window. Never adopt contents.
+                guard !hasFinal, try names(state.value).isEmpty else { throw CustodyRecordError.conflict }
+                #if SHADOW_SYNC_TESTING
+                try fail(.afterStage)
+                #endif
+                try writeOnce(record("created"), bytes: created, at: p)
+            }
+            if hasReady {
+                let controls = try controlIdentities(state)
+                guard try read(record("ready"), at: p) == phase("ready", manifest: manifest, state: identity, controls: controls) else { throw CustodyRecordError.fenced }
+                if hasPublished { guard try read(record("published"), at: p) == phase("published", manifest: manifest, state: identity, controls: controls) else { throw CustodyRecordError.fenced } }
+            }
+            #if SHADOW_SYNC_TESTING
+            try fail(.afterCreated)
+            #endif
+            if !hasFinal && !hasReady {
+                try fill(state)
+                #if SHADOW_SYNC_TESTING
+                try fail(.afterFiles)
+                #endif
+            }
+            let stateLocation = StateLocation(anchorPath: parent.path, components: [stateName], uid: location.uid)
+            if let leases {
+                let claim = try leases.descriptorClaims().first { $0.role == .state }
+                guard claim?.device == identity.device, claim?.inode == identity.inode else { throw CustodyRecordError.fenced }
+            } else { leases = try CustodyAuthorityLeaseSet.retainRecoveryLeases(at: stateLocation) }
+            let store = try CustodyCatalogStore(leases: leases!)
+            try store.checkFreshInitializationFence(ControlInspection(leases: leases!))
             let controls = try controlIdentities(state)
-            guard try read(record("ready"), at: p) == phase("ready", manifest: manifest, state: identity, controls: controls) else { throw CustodyRecordError.fenced }
-            if hasPublished { guard try read(record("published"), at: p) == phase("published", manifest: manifest, state: identity, controls: controls) else { throw CustodyRecordError.fenced } }
-        }
-        #if SHADOW_SYNC_TESTING
-        try fail(.afterCreated)
-        #endif
-        if !hasFinal && !hasReady {
-            try fill(state)
+            let ready = try phase("ready", manifest: manifest, state: identity, controls: controls)
+            if hasFinal { guard try read(record("ready"), at: p) == ready else { throw CustodyRecordError.fenced } }
+            else { try writeOnce(record("ready"), bytes: ready, at: p) }
             #if SHADOW_SYNC_TESTING
-            try fail(.afterFiles)
+            try fail(.afterReady)
             #endif
+            try validate()
+            var named = stat()
+            guard fstatat(p, stateName, &named, AT_SYMLINK_NOFOLLOW) == 0, Node(named) == identity else { throw CustodyRecordError.fenced }
+            if !hasFinal {
+                guard renameatx_np(p, stageName, p, Self.finalName, UInt32(RENAME_EXCL)) == 0,
+                      fsync(p) == 0 else { throw CustodyRecordError.persistence(errno) }
+            }
+            #if SHADOW_SYNC_TESTING
+            try fail(.afterPublication)
+            #endif
+            guard fstatat(p, Self.finalName, &named, AT_SYMLINK_NOFOLLOW) == 0, Node(named) == identity else { throw CustodyRecordError.fenced }
+            let published = try phase("published", manifest: manifest, state: identity, controls: controls)
+            try writeOnce(record("published"), bytes: published, at: p)
+            let result = Result(transaction: tx, stateDevice: identity.device, stateInode: identity.inode,
+                                publicationReceiptSHA256: CustodyRecordBinding.digest(published))
+            completed = result; return result
         }
-        let stateLocation = StateLocation(anchorPath: parent.path, components: [stateName], uid: location.uid)
-        if let leases {
-            let claim = try leases.descriptorClaims().first { $0.role == .state }
-            guard claim?.device == identity.device, claim?.inode == identity.inode else { throw CustodyRecordError.fenced }
-        } else { leases = try CustodyAuthorityLeaseSet.retainRecoveryLeases(at: stateLocation) }
-        let store = try CustodyCatalogStore(leases: leases!)
-        try store.checkFreshInitializationFence(ControlInspection(leases: leases!))
-        let controls = try controlIdentities(state)
-        let ready = try phase("ready", manifest: manifest, state: identity, controls: controls)
-        if hasFinal { guard try read(record("ready"), at: p) == ready else { throw CustodyRecordError.fenced } }
-        else { try writeOnce(record("ready"), bytes: ready, at: p) }
-        #if SHADOW_SYNC_TESTING
-        try fail(.afterReady)
-        #endif
-        try validate()
-        var named = stat()
-        guard fstatat(p, stateName, &named, AT_SYMLINK_NOFOLLOW) == 0, Node(named) == identity else { throw CustodyRecordError.fenced }
-        if !hasFinal {
-            guard renameatx_np(p, stageName, p, Self.finalName, UInt32(RENAME_EXCL)) == 0,
-                  fsync(p) == 0 else { throw CustodyRecordError.persistence(errno) }
-        }
-        #if SHADOW_SYNC_TESTING
-        try fail(.afterPublication)
-        #endif
-        guard fstatat(p, Self.finalName, &named, AT_SYMLINK_NOFOLLOW) == 0, Node(named) == identity else { throw CustodyRecordError.fenced }
-        let published = try phase("published", manifest: manifest, state: identity, controls: controls)
-        try writeOnce(record("published"), bytes: published, at: p)
-        let result = Result(transaction: tx, stateDevice: identity.device, stateInode: identity.inode,
-                            publicationReceiptSHA256: CustodyRecordBinding.digest(published))
-        completed = result; return result
     }
 
     /// Transfers original open-file descriptions after publication; no lock is
     /// reopened or unlocked. Failure leaves the initializer's owners intact.
     /// This does not start an installation or permit post-staged commands.
     func takeInstallationAuthority() throws -> RunAuthority {
-        guard mutex.try() else { throw CustodyRecordError.busy }
-        defer { mutex.unlock() }
-        guard !installationAuthorityTaken, let completed, let leases,
-              leases.mode == .mutation else { throw CustodyRecordError.fenced }
-        try validatePublication(completed, leases: leases)
-        #if SHADOW_SYNC_TESTING
-        var publication = PublishedState(location: location, result: completed, leases: leases)
-        publication.testingFailureAfterCopies = installationCopyFailureAfter
-        installationCopyFailureAfter = nil
-        #else
-        let publication = PublishedState(location: location, result: completed, leases: leases)
-        #endif
-        let authority = try RunAuthority.adoptingPublishedState(publication)
-        #if SHADOW_SYNC_TESTING
-        if let barrier = installationHandoffBarrier {
-            installationHandoffBarrier = nil
-            guard barrier.pause() else { throw CustodyRecordError.busy }
+        return try serialized {
+            guard !installationAuthorityTaken, let completed, let leases,
+                  leases.mode == .mutation else { throw CustodyRecordError.fenced }
+            try validatePublication(completed, leases: leases)
+            #if SHADOW_SYNC_TESTING
+            var publication = PublishedState(location: location, result: completed, leases: leases)
+            mutex.lock(); publication.testingFailureAfterCopies = installationCopyFailureAfter
+            installationCopyFailureAfter = nil; mutex.unlock()
+            #else
+            let publication = PublishedState(location: location, result: completed, leases: leases)
+            #endif
+            let authority = try RunAuthority.adoptingPublishedState(publication)
+            #if SHADOW_SYNC_TESTING
+            mutex.lock(); let barrier = installationHandoffBarrier
+            installationHandoffBarrier = nil; mutex.unlock()
+            if let barrier {
+                guard barrier.pause() else { throw CustodyRecordError.busy }
+            }
+            #endif
+            try validatePublication(completed, leases: leases)
+            installationAuthorityTaken = true
+            self.leases = nil
+            // Local publication/store references expire before the caller can use
+            // staged admission. The returned owner retains no parent lease family.
+            return authority
         }
-        #endif
-        try validatePublication(completed, leases: leases)
-        installationAuthorityTaken = true
-        self.leases = nil
-        // Local publication/store references expire before the caller can use
-        // staged admission. The returned owner retains no parent lease family.
-        return authority
     }
 
     private func validatePublication(_ result: Result, leases: CustodyAuthorityLeaseSet) throws {
@@ -462,8 +489,12 @@ final class FreshStateInitialization {
         let location = try StateLocation.isolated(root: root)
         return try Self(location: location, release: release, publisher: nil)
     }
-    func testingFault(_ cut: Fault) { fault = cut }
-    func testingCrash(_ cut: Fault) { fault = cut; crashAtFault = true }
-    private func fail(_ cut: Fault) throws { if fault == cut { fault = nil; if crashAtFault { _exit(94) }; throw CustodyRecordError.injectedFailure } }
+    func testingFault(_ cut: Fault) { mutex.lock(); fault = cut; mutex.unlock() }
+    func testingCrash(_ cut: Fault) { mutex.lock(); fault = cut; crashAtFault = true; mutex.unlock() }
+    private func fail(_ cut: Fault) throws {
+        mutex.lock(); let fail = fault == cut, crash = crashAtFault
+        if fail { fault = nil }; mutex.unlock()
+        if fail { if crash { _exit(94) }; throw CustodyRecordError.injectedFailure }
+    }
     #endif
 }

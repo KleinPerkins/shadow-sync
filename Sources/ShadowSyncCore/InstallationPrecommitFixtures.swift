@@ -77,6 +77,171 @@ enum InstallationPrecommitFixtures {
             try journal.testingRemoveReadinessEndpoint()
         }
     }
+    // The paused reader is the actual session queue polling the original
+    // endpoint. The second reader traverses the real journal/slot validation.
+    // Neither path receives a synthetic authenticated peer or completion.
+    static func concurrentEndpointReaders() throws {
+        try InstallationStagedJournalFixtures.fixture { root, location, _, _, _, journal, _ in
+            let deadline = MonotonicDeadline(seconds: 3)
+            let completed = try journal.completeAdmission(deadline: deadline)
+            guard let endpoint = journal.testingEndpoint, let session = journal.testingSession else {
+                throw H.Failure(message: "concurrent endpoint owners missing")
+            }
+            let listener = try endpoint.listener
+            let image = try endpoint.image
+            let barrier = CustodyLeaseTestingBarrier()
+            defer { barrier.release() }
+            endpoint.testingPauseNextObservation(at: .beforeValidation, barrier: barrier)
+            try H.check(barrier.waitUntilEntered() && endpoint.testingActiveObservations == 1,
+                "actual service reader did not retain observation")
+            let observation = try journal.bootstrapCandidateIntent(deadline: deadline)
+            try H.check(endpoint.testingActiveObservations == 1 && journal.testingSession === session
+                && (try endpoint.listener) === listener && (try endpoint.image) == image,
+                "journal validation replaced or closed the concurrent service reader")
+            let durable = try InstallationControlRecord.decode(Data(contentsOf:
+                URL(fileURLWithPath: location.path + "/custody/installation.json")))
+            try H.check(durable == observation.binding.control && durable.revision > completed.revision
+                && durable.step?.action == .bootstrapCandidate && durable.step?.status == .intent
+                && durable.readinessCommit == nil, "concurrent journal intent did not bind exact durable state")
+            try H.check(endpoint.testingObservedMetadataDeadlines.contains(deadline.absoluteUptimeNanoseconds),
+                "concurrent validation replaced caller deadline")
+            barrier.release()
+            try journal.closeReadiness(deadline: deadline)
+            try H.check(endpoint.testingActiveObservations == 0 && journal.testingSession == nil
+                && !session.start(), "concurrent endpoint service did not join")
+            try endpoint.requireServiceClosed()
+            try endpoint.revalidate(deadline: deadline)
+            try observation.revalidate(deadline: deadline)
+            // After successful service close, a real journal metadata reader
+            // remains valid across idempotent close, but still excludes unlink.
+            let metadata = CustodyLeaseTestingBarrier()
+            defer { metadata.release() }
+            endpoint.testingPauseNextObservation(at: .beforeValidation, barrier: metadata)
+            let work = try RuntimeFixtureSession.installationRoot(root).startWork {
+                try observation.revalidate(deadline: deadline)
+            }
+            try H.check(metadata.waitUntilEntered() && endpoint.testingActiveObservations == 1,
+                "closed-service journal reader did not retain originals")
+            endpoint.closeService()
+            try endpoint.requireServiceClosed()
+            try rejects { try endpoint.testingRemoveOwnedEndpoint(deadline: deadline) }
+            try H.check(endpoint.testingActiveObservations == 1 && (try endpoint.image) == image,
+                "idempotent close or cleanup disturbed metadata reader")
+            metadata.release()
+            try work.value(deadline: deadline)
+            try H.check(endpoint.testingActiveObservations == 0, "closed-service metadata work did not join")
+            try rejects { try endpoint.revalidate(deadline: .init(seconds: 0)) }
+            try journal.testingRemoveReadinessEndpoint()
+        }
+    }
+    // Hold the actual service inside its listener getter, after revalidation.
+    // The journal must finish both revalidation and image reads while that
+    // exclusive service lock is held; pausing revalidation alone misses this.
+    static func endpointGetterOverlap() throws {
+        try InstallationStagedJournalFixtures.fixture { _, location, _, _, _, journal, _ in
+            let deadline = MonotonicDeadline(seconds: 3)
+            let completed = try journal.completeAdmission(deadline: deadline)
+            guard let endpoint = journal.testingEndpoint, let session = journal.testingSession else {
+                throw H.Failure(message: "getter overlap endpoint owners missing")
+            }
+            let preparing = CustodyLeaseTestingBarrier()
+            let getter = CustodyLeaseTestingBarrier()
+            let resumed = CustodyLeaseTestingBarrier()
+            defer { preparing.release(); getter.release(); resumed.release() }
+            // Set up while the service owns a read reservation, so this test's
+            // initial listener capture cannot race another listener getter.
+            endpoint.testingPauseNextObservation(at: .beforeValidation, barrier: preparing)
+            try H.check(preparing.waitUntilEntered() && endpoint.testingActiveObservations == 1,
+                "getter overlap setup did not retain actual service reader")
+            let listener = try endpoint.listener
+            let image = try endpoint.image
+            endpoint.testingPauseNextListener(barrier: getter)
+            preparing.release()
+            try H.check(getter.waitUntilEntered() && endpoint.testingActiveObservations == 0,
+                "actual listener getter did not pause after service revalidation")
+            let observation = try journal.bootstrapCandidateIntent(deadline: deadline)
+            let durable = try InstallationControlRecord.decode(Data(contentsOf:
+                URL(fileURLWithPath: location.path + "/custody/installation.json")))
+            try H.check(durable == observation.binding.control && durable.revision > completed.revision
+                && durable.step?.action == .bootstrapCandidate && durable.step?.status == .intent
+                && durable.readinessCommit == nil && (try endpoint.image) == image,
+                "listener getter blocked journal image or durable intent")
+            try H.check(journal.testingSession === session && session.testingOutcome == nil
+                && listener.retirementObservation == .notAttempted && listener.value >= 0
+                && endpoint.testingActiveObservations == 0
+                && endpoint.testingObservedMetadataDeadlines.contains(deadline.absoluteUptimeNanoseconds),
+                "getter overlap changed service ownership or caller deadline")
+            // Observe the actual next polling turn, proving that the retained
+            // listener getter also completed without a reader collision.
+            endpoint.testingPauseNextObservation(at: .beforeValidation, barrier: resumed)
+            getter.release()
+            try H.check(resumed.waitUntilEntered() && endpoint.testingActiveObservations == 1
+                && session.testingOutcome == nil && (try endpoint.listener) === listener,
+                "actual service did not resume after concurrent journal image reads")
+            try observation.revalidate(deadline: deadline)
+            resumed.release()
+            try journal.closeReadiness(deadline: deadline)
+            try H.check(endpoint.testingActiveObservations == 0 && journal.testingSession == nil
+                && listener.retirementObservation == .succeeded && !session.start(),
+                "getter overlap service and listener did not join")
+            try endpoint.requireServiceClosed()
+            try observation.revalidate(deadline: deadline)
+            try H.check((try endpoint.image) == image, "service close withdrew durable endpoint metadata")
+            try journal.testingRemoveReadinessEndpoint()
+            try rejects { _ = try endpoint.image }
+        }
+    }
+    static func endpointReaderClosure() throws {
+        for point in [InstallationReadinessEndpoint.TestingObservationPoint.beforeValidation, .afterValidation] {
+            try InstallationStagedJournalFixtures.fixture { _, location, _, _, admission, journal, registry in
+                let deadline = MonotonicDeadline(seconds: 3)
+                _ = try journal.completeAdmission(deadline: deadline)
+                guard let endpoint = journal.testingEndpoint, let session = journal.testingSession else {
+                    throw H.Failure(message: "close overlap endpoint owners missing")
+                }
+                let listener = try endpoint.listener
+                let image = try endpoint.image
+                let barrier = CustodyLeaseTestingBarrier()
+                defer { barrier.release() }
+                endpoint.testingPauseNextObservation(at: point, barrier: barrier)
+                try H.check(barrier.waitUntilEntered() && endpoint.testingActiveObservations == 1,
+                    "close overlap actual service reader missing")
+                endpoint.closeService()
+                try rejects { try endpoint.requireServiceClosed() }
+                try rejects { try endpoint.revalidate(deadline: deadline) }
+                try rejects { try endpoint.testingRemoveOwnedEndpoint(deadline: deadline) }
+                try H.check(listener.retirementObservation == .notAttempted && listener.value >= 0
+                    && endpoint.testingActiveObservations == 1 && endpoint.testingAcquisitionRetained
+                    && (try endpoint.image) == image, "closure retired active reader originals or named fence")
+                var node = stat()
+                try H.check(lstat(location.path + "/installation.sock", &node) == 0
+                    && UInt64(node.st_dev) == image.node?.device && UInt64(node.st_ino) == image.node?.inode,
+                    "overlapping cleanup removed or replaced original endpoint")
+                barrier.release()
+                try journal.closeReadiness(deadline: deadline)
+                guard case .failure(let failure)? = session.testingOutcome,
+                      let refusal = failure as? CustodyRecordError, case .fenced = refusal else {
+                    throw H.Failure(message: "closed observation returned stale success")
+                }
+                try H.check(endpoint.testingActiveObservations == 0 && journal.testingSession == nil
+                    && listener.retirementObservation == .succeeded && !session.start(),
+                    "closed reader and original listener did not join")
+                try endpoint.requireServiceClosed()
+                try endpoint.revalidate(deadline: deadline)
+                let retired = try registry.installationStagedStartRetirement(after: admission.closeStarts())
+                let stop = try admission.stopOnly(after: retired)
+                let stopped = try journal.candidateStopIntent(admission: stop, deadline: deadline)
+                let durable = try InstallationControlRecord.decode(Data(contentsOf:
+                    URL(fileURLWithPath: location.path + "/custody/installation.json")))
+                try H.check(durable == stopped.binding.control && durable.phase == .recovery
+                    && durable.step?.action == .candidateStop && durable.step?.status == .intent
+                    && durable.readinessCommit == nil && (try endpoint.image) == image,
+                    "joined service closure blocked exact post-close stop intent metadata")
+                try journal.testingRemoveReadinessEndpoint()
+                try rejects { try endpoint.revalidate(deadline: deadline) }
+            }
+        }
+    }
     // New native-mechanism fixture sources are registered but unexecuted until
     // supported-host admission. They never replace exact native authentication.
     static func partialCreator() throws {

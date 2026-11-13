@@ -530,18 +530,34 @@ public enum DiscoveryCallerSelfTestRunner {
         }
     }
 
-    private static func retentionSelection(root: String, context: CommandCustodyContext)
+    private static func retentionSelection(root: String, context: CommandCustodyContext,
+        observeCatalogCost: Bool = false)
         throws -> (RemovalSelection, RepositoryInventory, ValidatedSelectedRepositoryScope) {
-        let binder = try context.currentPolicyBinder(cancellation: CancellationToken())
-        let catalog = try binder.processFreeCatalog(preferences: nil, generation: 1)
-        guard catalog.isComplete,
-              let ready = catalog.catalog.candidates.first(where: { $0.id == "fixture-owner/ready" }) else {
-            throw Failure.assertion("retention current-policy catalog incomplete")
-        }
-        let scope = try binder.bind(intent: RepositorySelectionIntent(catalog: catalog.catalog,
-            entries: [try ready.preferenceEntry]))
-        let candidates = try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
-            try RepositoryDiscovery().discoverMetadata(scope: scope, policy: service)
+        let (scope, candidates) = try DiscoveryFixtureDiagnostic.withCatalogCost(observing: observeCatalogCost) {
+            let binder = try DiscoveryFixtureDiagnostic.measureCatalogCost(.setup) {
+                try context.currentPolicyBinder(cancellation: CancellationToken())
+            }
+            let catalog = try DiscoveryFixtureDiagnostic.measureCatalogCost(.catalog) {
+                try binder.processFreeCatalog(preferences: nil, generation: 1)
+            }
+            guard catalog.isComplete,
+                  let ready = catalog.catalog.candidates.first(where: { $0.id == "fixture-owner/ready" }) else {
+                throw Failure.assertion("retention current-policy catalog incomplete")
+            }
+            let scope = try DiscoveryFixtureDiagnostic.measureCatalogCost(.bind) {
+                try binder.bind(intent: RepositorySelectionIntent(catalog: catalog.catalog,
+                    entries: [try ready.preferenceEntry]))
+            }
+            // Keep the same binder and original setup deadline. The observed
+            // call includes its mandatory rebind before the metadata callback.
+            let candidates = try DiscoveryFixtureDiagnostic.measureCatalogCost(.discoveryPolicy) {
+                try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
+                    try DiscoveryFixtureDiagnostic.measureCatalogCost(.metadata) {
+                        try RepositoryDiscovery().discoverMetadata(scope: scope, policy: service)
+                    }
+                }
+            }
+            return (scope, candidates)
         }
         guard candidates.count == 1, let candidate = candidates.first, candidate.isEligible,
               scope.admits(candidate), candidate.policyAdmissionSHA256 == scope.policyDigest,
@@ -739,7 +755,8 @@ public enum DiscoveryCallerSelfTestRunner {
                 let observed = RetentionCallerObservations()
                 var failure: Error?
                 do {
-                    let selected = try retentionSelection(root: fixture.root, context: fixture.context)
+                    let selected = try retentionSelection(root: fixture.root, context: fixture.context,
+                        observeCatalogCost: test == "store-success" && variant == "normal")
                     var hooks = RetentionArtifactStore.TestingCustodyHooks()
                     let barrier = CustodyLeaseTestingBarrier()
                     defer { barrier.release() }
@@ -1671,6 +1688,8 @@ public enum DiscoveryCallerSelfTestRunner {
     static func repositoryWorker(root: String, phase: String) -> Int32 {
         do {
             _ = try TestIsolation.validateRoot(root)
+            // Open the parent's precreated directory before the helper pins its root.
+            let markers = try RepositoryWorkerMarkerDirectory(root: root, create: false)
             let location = try StateLocation.isolated(root: root)
             let context = try CommandCustodyContext.testing(leases: CustodyAuthorityLeaseSet.retainReadLeases(at: location),
                 location: location, root: root, discoveryFixture: true)
@@ -1708,16 +1727,8 @@ public enum DiscoveryCallerSelfTestRunner {
                 budget: [budget.issued, budget.work, budget.term, budget.kill, budget.receipt],
                 frozen: frozen.snapshot, helper: RepositoryWorkerObservation(helper), target: RepositoryWorkerObservation(target))
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-            try write(root + "/repository-worker-ready.new", encoder.encode(ready))
-            let markerDirectory = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            guard markerDirectory >= 0 else { return 96 }
-            defer { close(markerDirectory) }
-            let markerFile = openat(markerDirectory, "repository-worker-ready.new", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-            guard markerFile >= 0 else { return 96 }
-            defer { close(markerFile) }
-            guard fsync(markerFile) == 0,
-                  renameatx_np(markerDirectory, "repository-worker-ready.new", markerDirectory, "repository-worker-ready.json", UInt32(RENAME_EXCL)) == 0,
-                  fsync(markerDirectory) == 0 else { return 96 }
+            let readyBytes = try encoder.encode(ready)
+            do { try markers.publish(readyBytes) } catch { return 96 }
             let result = retained.wait()
             return result.phase == .finished ? 94 : 95
         } catch { return 91 }
@@ -1764,19 +1775,22 @@ public enum DiscoveryCallerSelfTestRunner {
     }
     private static func repositoryWorkerLoss(phase: String) throws {
         let fixture = try Fixture(systemConfiguration: false)
+        // Publish readiness below a directory created before any worker/helper
+        // witness pins the fixture root, including its directory link count.
+        let markers = try RepositoryWorkerMarkerDirectory(root: fixture.root, create: true)
         // On failure retain this fixture and its receipts, never erase unknown
         // helper custody. The runtime fixture owner still joins its own worker.
         let (anchor, owner) = try spawnRepositoryWorker(root: fixture.root, phase: phase)
         defer { RuntimeFixtureSession.drain(anchor) }
         try require(owner.send(SIGCONT), "repository worker resume")
-        let marker = fixture.root + "/repository-worker-ready.json"
+        let marker = markers.readyPath
         let deadline = MonotonicDeadline(seconds: 25)
         while !FileManager.default.fileExists(atPath: marker) {
             guard !deadline.hasExpired, owner.poll() == .running else { throw Failure.assertion("repository worker did not reach " + phase) }
             usleep(5_000)
         }
         let ready = try JSONDecoder().decode(RepositoryWorkerReady.self,
-            from: PolicyAuthorityFile.read(path: marker, owner: geteuid(), maximumBytes: 262_144).bytes)
+            from: markers.read())
         try require(RunIdentity.isValid(ready.request), "repository worker request id")
         try require(owner.send(SIGKILL), "repository original worker kill")
         let drain = MonotonicDeadline(seconds: 10)
@@ -1836,7 +1850,7 @@ public enum DiscoveryCallerSelfTestRunner {
         try RepositoryHandle.validateFrozenConfiguration(descriptor: file, directoryDescriptor: directory, snapshot: ready.frozen)
         try require(flock(file, LOCK_EX | LOCK_NB) == 0, "repository orphan frozen lease still retained")
         try RepositoryHandle.cleanupFrozenConfiguration(descriptor: file, directoryDescriptor: directory, snapshot: ready.frozen)
-        try fixture.removeAfterRepositoryWorker(request: ready.request)
+        try fixture.removeAfterRepositoryWorker(request: ready.request, markers: markers)
     }
 
     /// Separate diagnostic suite: never warms or extends a discovery deadline.
@@ -1903,10 +1917,11 @@ public enum DiscoveryCallerSelfTestRunner {
     }
 
     /// Shared resource bytes only; creates no command context or subprocess.
-    private static func installPolicyResources(home: String, framework: String, sourcePath: String)
+    static func installPolicyResources(home: String, framework: String, sourcePath: String,
+        layout: HostPolicySnapshotSelfTestRunner.DiscoveryFixtureLayout = .products)
         throws -> (account: EffectiveAccount, snapshot: HostPolicySnapshot) {
         let account = try EffectiveAccount.isolated(homeDirectory: home)
-        let contract = try HostPolicySnapshotSelfTestRunner.installDiscoveryFixture(home: home)
+        let contract = try HostPolicySnapshotSelfTestRunner.installDiscoveryFixture(home: home, layout: layout)
         let resources = home + "/.shadow-sync-fixture"
         try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: false,
             attributes: [.posixPermissions: 0o700])
@@ -2273,7 +2288,7 @@ public enum DiscoveryCallerSelfTestRunner {
                 scratchDescriptor: directory, cancellation: cancellation)
         }
 
-        func removeAfterRepositoryWorker(request: String) throws {
+        func removeAfterRepositoryWorker(request: String, markers: RepositoryWorkerMarkerDirectory) throws {
             guard !removed else { return }
             let location = try StateLocation.isolated(root: root)
             let catalog = try CustodyCatalog.decode(repositoryCustodyBytes(location, "catalog.json"))
@@ -2283,6 +2298,7 @@ public enum DiscoveryCallerSelfTestRunner {
             try require(journal.phase == .terminal && journal.kind == .repositoryGit, "orphan not terminal")
             var info = stat()
             try require(lstat(root, &info) == 0 && FileIdentity(info).matchesStableNode(identity), "orphan root identity")
+            try markers.remove()
             try require(close(directory) == 0, "orphan fixture directory close")
             try FileManager.default.removeItem(atPath: root)
             removed = true
@@ -2395,6 +2411,127 @@ public enum DiscoveryCallerSelfTestRunner {
             try FileManager.default.removeItem(atPath: root)
             removed = true
         }
+    }
+}
+
+/// Testing-only marker ownership. The root entry is created before witness
+/// construction; publication changes only this private directory's children.
+/// Neither these bytes nor this owner confer command or cleanup authority.
+final class RepositoryWorkerMarkerDirectory {
+    private static let name = "repository-worker-markers"
+    private static let temporary = "repository-worker-ready.new"
+    private static let ready = "repository-worker-ready.json"
+    private let root: String
+    private let rootFD: OwnedFileDescriptor, directoryFD: OwnedFileDescriptor
+    private let rootNode: stat, directoryNode: stat
+    private let rootACL: String, directoryACL: String
+    private var published: (stat, Data)?
+    var readyPath: String { root + "/" + Self.name + "/" + Self.ready }
+
+    private static func check(_ value: Bool) throws {
+        guard value else { throw CustodyRecordError.fenced }
+    }
+    private static func same(_ a: stat, _ b: stat, links: Bool = true) -> Bool {
+        a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_uid == b.st_uid && a.st_gid == b.st_gid
+            && a.st_mode == b.st_mode && a.st_flags == b.st_flags && (!links || a.st_nlink == b.st_nlink)
+    }
+    private static func privateDirectory(_ node: stat) -> Bool {
+        node.st_uid == geteuid() && node.st_mode == S_IFDIR | 0o700 && node.st_flags == 0
+    }
+    init(root: String, create: Bool) throws {
+        _ = try TestIsolation.validateRoot(root)
+        self.root = root
+        let fd = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        try Self.check(fd >= 0); let parent = OwnedFileDescriptor(fd)
+        var before = stat(), named = stat()
+        try Self.check(fstat(fd, &before) == 0 && Self.privateDirectory(before)
+            && lstat(root, &named) == 0 && Self.same(before, named))
+        let parentACL = try PolicyAuthorityFile.privateStateACL(fd)
+        if create {
+            try Self.check(mkdirat(fd, Self.name, 0o700) == 0 && fsync(fd) == 0)
+        }
+        let raw = openat(fd, Self.name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        try Self.check(raw >= 0); let directory = OwnedFileDescriptor(raw)
+        var node = stat(), after = stat()
+        try Self.check(fstat(raw, &node) == 0 && Self.privateDirectory(node)
+            && fstatat(fd, Self.name, &named, AT_SYMLINK_NOFOLLOW) == 0 && Self.same(node, named)
+            && fstat(fd, &after) == 0 && Self.same(before, after, links: !create)
+            && (!create || after.st_nlink == before.st_nlink || UInt64(after.st_nlink) == UInt64(before.st_nlink) + 1)
+            && lstat(root, &named) == 0 && Self.same(after, named))
+        try Self.check(PolicyAuthorityFile.privateStateACL(fd) == parentACL)
+        rootFD = parent; directoryFD = directory; rootNode = after; directoryNode = node
+        rootACL = parentACL; directoryACL = try PolicyAuthorityFile.privateStateACL(raw)
+        try validate(); try requireNames([])
+    }
+    private func validate() throws {
+        var held = stat(), named = stat()
+        try Self.check(fstat(rootFD.value, &held) == 0 && Self.same(rootNode, held)
+            && lstat(root, &named) == 0 && Self.same(rootNode, named)
+            && fstat(directoryFD.value, &held) == 0 && Self.same(directoryNode, held, links: false)
+            && fstatat(rootFD.value, Self.name, &named, AT_SYMLINK_NOFOLLOW) == 0
+            && Self.same(held, named))
+        try Self.check(PolicyAuthorityFile.privateStateACL(rootFD.value) == rootACL
+            && PolicyAuthorityFile.privateStateACL(directoryFD.value) == directoryACL)
+    }
+    private func requireNames(_ expected: Set<String>) throws {
+        let fd = openat(directoryFD.value, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        try Self.check(fd >= 0)
+        guard let stream = fdopendir(fd) else { close(fd); throw CustodyRecordError.fenced }
+        defer { closedir(stream) }
+        var names = Set<String>(), reads = 0
+        while true {
+            try Self.check(reads < 6); reads += 1; errno = 0
+            guard let entry = readdir(stream) else { try Self.check(errno == 0 && names == expected); return }
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { String(cString: $0) }
+            }
+            if name != "." && name != ".." { try Self.check(names.insert(name).inserted && expected.contains(name)) }
+        }
+    }
+    func publish(_ bytes: Data) throws {
+        try Self.check(published == nil && !bytes.isEmpty && bytes.count <= 262_144)
+        try validate(); try requireNames([])
+        let fd = openat(directoryFD.value, Self.temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        try Self.check(fd >= 0); defer { close(fd) }
+        var original = stat(), named = stat()
+        try Self.check(fstat(fd, &original) == 0 && original.st_mode == S_IFREG | 0o600
+            && original.st_uid == geteuid() && original.st_flags == 0 && original.st_nlink == 1)
+        let acl = try PolicyAuthorityFile.privateStateACL(fd)
+        let count = bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+        try Self.check(count == bytes.count && fsync(fd) == 0)
+        try validate(); try requireNames([Self.temporary])
+        try Self.check(fstatat(directoryFD.value, Self.temporary, &named, AT_SYMLINK_NOFOLLOW) == 0
+            && Self.same(original, named) && named.st_size == bytes.count
+            && PolicyAuthorityFile.privateStateACL(fd) == acl)
+        try Self.check(renameatx_np(directoryFD.value, Self.temporary, directoryFD.value, Self.ready, UInt32(RENAME_EXCL)) == 0
+            && fsync(directoryFD.value) == 0)
+        try validate(); try requireNames([Self.ready])
+        try Self.check(fstatat(directoryFD.value, Self.ready, &named, AT_SYMLINK_NOFOLLOW) == 0 && Self.same(original, named))
+        published = (named, bytes)
+        try Self.check(read() == bytes)
+    }
+    func read() throws -> Data {
+        try validate(); try requireNames([Self.ready])
+        var before = stat(), after = stat()
+        try Self.check(fstatat(directoryFD.value, Self.ready, &before, AT_SYMLINK_NOFOLLOW) == 0
+            && before.st_mode == S_IFREG | 0o600 && before.st_uid == geteuid() && before.st_flags == 0 && before.st_nlink == 1)
+        let bytes = try PolicyAuthorityFile.read(path: readyPath, owner: geteuid(), maximumBytes: 262_144).bytes
+        try validate(); try requireNames([Self.ready])
+        try Self.check(fstatat(directoryFD.value, Self.ready, &after, AT_SYMLINK_NOFOLLOW) == 0
+            && Self.same(before, after) && before.st_size == bytes.count && after.st_size == bytes.count)
+        if let published { try Self.check(Self.same(published.0, after) && published.1 == bytes) }
+        published = (after, bytes)
+        return bytes
+    }
+    /// Called only after the enclosing fixture proves its original owners retired.
+    /// Failed publication and unknown names deliberately retain the directory.
+    func remove() throws {
+        if let published {
+            try Self.check(read() == published.1)
+            try Self.check(unlinkat(directoryFD.value, Self.ready, 0) == 0 && fsync(directoryFD.value) == 0)
+        }
+        try validate(); try requireNames([])
+        try Self.check(unlinkat(rootFD.value, Self.name, AT_REMOVEDIR) == 0 && fsync(rootFD.value) == 0)
     }
 }
 #endif

@@ -1,0 +1,980 @@
+{
+  "schema": "shadow-sync-signed-installation-fixtures/v1",
+  "build_profile": "signed-installation/v1",
+  "qualification": "signed-adapter-only",
+  "cases": [
+    {
+      "id": "signed-installation/source-preflight",
+      "suite": "signed-installation-source",
+      "argument": "--verify-signed-installation-fixture-source",
+      "kind": "source-preflight"
+    },
+    {
+      "id": "signed-installation/startup-stop",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-positive"
+    },
+    {
+      "id": "signed-installation/stop-store-uncertain",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/stop-completion-uncertain",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/stop-held-completion",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-positive",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-positive"
+    },
+    {
+      "id": "signed-installation/terminal-positive",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-positive"
+    },
+    {
+      "id": "signed-installation/cleanup-endpoint/beforeUnlink",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-endpoint/unlinkFailure",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-endpoint/afterUnlink",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-endpoint/parentSyncFailure",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-endpoint/afterParentSync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-endpoint/beforeAncestorClose",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-publication/afterReceipt",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-publication/beforeControl",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-publication/receiptBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-publication/receiptAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-publication/receiptAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-publication/controlBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-publication/controlAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-publication/controlAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-publication/controlAfterPreimageUnlink",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup/reader-alias",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup/queue-join",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup/control-replacement",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup/named-missing",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup/named-substituted",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-named-cut/afterParking",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-named-cut/afterReplacementOpen",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-named-cut/afterReplacementIdentity",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/cleanup-named-cut/afterReplacementClose",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/intent/afterReceipt",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/intent/beforeControl",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/intent/receiptBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/intent/receiptAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/intent/receiptAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/intent/controlBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/intent/controlAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/intent/controlAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/intent/controlAfterPreimageUnlink",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/complete/afterReceipt",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/complete/beforeControl",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/complete/receiptBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/complete/receiptAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/complete/receiptAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/complete/controlBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/complete/controlAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/complete/controlAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupBackups/complete/controlAfterPreimageUnlink",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/intent/afterReceipt",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/intent/beforeControl",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/intent/receiptBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/intent/receiptAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/intent/receiptAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/intent/controlBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/intent/controlAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/intent/controlAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/intent/controlAfterPreimageUnlink",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/complete/afterReceipt",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/complete/beforeControl",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/complete/receiptBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/complete/receiptAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/complete/receiptAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/complete/controlBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/complete/controlAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/complete/controlAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/cleanupIncoming/complete/controlAfterPreimageUnlink",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/intent/afterReceipt",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/intent/beforeControl",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/intent/receiptBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/intent/receiptAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/intent/receiptAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/intent/controlBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/intent/controlAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/intent/controlAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/intent/controlAfterPreimageUnlink",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/complete/afterReceipt",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/complete/beforeControl",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/complete/receiptBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/complete/receiptAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/complete/receiptAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/complete/controlBeforeSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/complete/controlAfterSwap",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/complete/controlAfterDirectorySync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-publication/finish/complete/controlAfterPreimageUnlink",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-close/temporaryStore",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-close/stagedSlots",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-close/stagedParents",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-close/bootstrapParents",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-close/metadata",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-close/admission",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-close/state",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-close/operation",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-sync/beforeParentSync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-sync/parentSyncFailure",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-sync/afterParentSync",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-sync/beforeRetirement",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    },
+    {
+      "id": "signed-installation/terminal-successful-operation-close-deadline",
+      "suite": "signed-installation-adapter",
+      "argument": "--verify-signed-installation-fixture",
+      "kind": "installation-cut"
+    }
+  ],
+  "required_binary_markers": {
+    "Contents/Helpers/ShadowSyncLifecycleCoordinator": [
+      "--verify-signed-installation-fixture-source",
+      "--verify-signed-installation-fixture",
+      "--shadow-sync-signed-installation-custodian",
+      "--shadow-sync-signed-installation-adapter",
+      "shadow-sync-signed-installation-parent/v1",
+      "shadow-sync-signed-installation-adapter/v1",
+      "signed-installation/cleanup-endpoint/beforeUnlink",
+      "signed-installation/cleanup-endpoint/unlinkFailure",
+      "signed-installation/cleanup-endpoint/afterUnlink",
+      "signed-installation/cleanup-endpoint/parentSyncFailure",
+      "signed-installation/cleanup-endpoint/afterParentSync",
+      "signed-installation/cleanup-endpoint/beforeAncestorClose",
+      "signed-installation/cleanup-publication/afterReceipt",
+      "signed-installation/cleanup-publication/beforeControl",
+      "signed-installation/cleanup-publication/receiptBeforeSwap",
+      "signed-installation/cleanup-publication/receiptAfterSwap",
+      "signed-installation/cleanup-publication/receiptAfterDirectorySync",
+      "signed-installation/cleanup-publication/controlBeforeSwap",
+      "signed-installation/cleanup-publication/controlAfterSwap",
+      "signed-installation/cleanup-publication/controlAfterDirectorySync",
+      "signed-installation/cleanup-publication/controlAfterPreimageUnlink",
+      "signed-installation/cleanup/reader-alias",
+      "signed-installation/cleanup/queue-join",
+      "signed-installation/cleanup/control-replacement",
+      "signed-installation/cleanup/named-missing",
+      "signed-installation/cleanup/named-substituted",
+      "signed-installation/cleanup-named-cut/afterParking",
+      "signed-installation/cleanup-named-cut/afterReplacementOpen",
+      "signed-installation/cleanup-named-cut/afterReplacementIdentity",
+      "signed-installation/cleanup-named-cut/afterReplacementClose",
+      "signed-installation/terminal-publication/cleanupBackups/intent/afterReceipt",
+      "signed-installation/terminal-publication/cleanupBackups/intent/beforeControl",
+      "signed-installation/terminal-publication/cleanupBackups/intent/receiptBeforeSwap",
+      "signed-installation/terminal-publication/cleanupBackups/intent/receiptAfterSwap",
+      "signed-installation/terminal-publication/cleanupBackups/intent/receiptAfterDirectorySync",
+      "signed-installation/terminal-publication/cleanupBackups/intent/controlBeforeSwap",
+      "signed-installation/terminal-publication/cleanupBackups/intent/controlAfterSwap",
+      "signed-installation/terminal-publication/cleanupBackups/intent/controlAfterDirectorySync",
+      "signed-installation/terminal-publication/cleanupBackups/intent/controlAfterPreimageUnlink",
+      "signed-installation/terminal-publication/cleanupBackups/complete/afterReceipt",
+      "signed-installation/terminal-publication/cleanupBackups/complete/beforeControl",
+      "signed-installation/terminal-publication/cleanupBackups/complete/receiptBeforeSwap",
+      "signed-installation/terminal-publication/cleanupBackups/complete/receiptAfterSwap",
+      "signed-installation/terminal-publication/cleanupBackups/complete/receiptAfterDirectorySync",
+      "signed-installation/terminal-publication/cleanupBackups/complete/controlBeforeSwap",
+      "signed-installation/terminal-publication/cleanupBackups/complete/controlAfterSwap",
+      "signed-installation/terminal-publication/cleanupBackups/complete/controlAfterDirectorySync",
+      "signed-installation/terminal-publication/cleanupBackups/complete/controlAfterPreimageUnlink",
+      "signed-installation/terminal-publication/cleanupIncoming/intent/afterReceipt",
+      "signed-installation/terminal-publication/cleanupIncoming/intent/beforeControl",
+      "signed-installation/terminal-publication/cleanupIncoming/intent/receiptBeforeSwap",
+      "signed-installation/terminal-publication/cleanupIncoming/intent/receiptAfterSwap",
+      "signed-installation/terminal-publication/cleanupIncoming/intent/receiptAfterDirectorySync",
+      "signed-installation/terminal-publication/cleanupIncoming/intent/controlBeforeSwap",
+      "signed-installation/terminal-publication/cleanupIncoming/intent/controlAfterSwap",
+      "signed-installation/terminal-publication/cleanupIncoming/intent/controlAfterDirectorySync",
+      "signed-installation/terminal-publication/cleanupIncoming/intent/controlAfterPreimageUnlink",
+      "signed-installation/terminal-publication/cleanupIncoming/complete/afterReceipt",
+      "signed-installation/terminal-publication/cleanupIncoming/complete/beforeControl",
+      "signed-installation/terminal-publication/cleanupIncoming/complete/receiptBeforeSwap",
+      "signed-installation/terminal-publication/cleanupIncoming/complete/receiptAfterSwap",
+      "signed-installation/terminal-publication/cleanupIncoming/complete/receiptAfterDirectorySync",
+      "signed-installation/terminal-publication/cleanupIncoming/complete/controlBeforeSwap",
+      "signed-installation/terminal-publication/cleanupIncoming/complete/controlAfterSwap",
+      "signed-installation/terminal-publication/cleanupIncoming/complete/controlAfterDirectorySync",
+      "signed-installation/terminal-publication/cleanupIncoming/complete/controlAfterPreimageUnlink",
+      "signed-installation/terminal-publication/finish/intent/afterReceipt",
+      "signed-installation/terminal-publication/finish/intent/beforeControl",
+      "signed-installation/terminal-publication/finish/intent/receiptBeforeSwap",
+      "signed-installation/terminal-publication/finish/intent/receiptAfterSwap",
+      "signed-installation/terminal-publication/finish/intent/receiptAfterDirectorySync",
+      "signed-installation/terminal-publication/finish/intent/controlBeforeSwap",
+      "signed-installation/terminal-publication/finish/intent/controlAfterSwap",
+      "signed-installation/terminal-publication/finish/intent/controlAfterDirectorySync",
+      "signed-installation/terminal-publication/finish/intent/controlAfterPreimageUnlink",
+      "signed-installation/terminal-publication/finish/complete/afterReceipt",
+      "signed-installation/terminal-publication/finish/complete/beforeControl",
+      "signed-installation/terminal-publication/finish/complete/receiptBeforeSwap",
+      "signed-installation/terminal-publication/finish/complete/receiptAfterSwap",
+      "signed-installation/terminal-publication/finish/complete/receiptAfterDirectorySync",
+      "signed-installation/terminal-publication/finish/complete/controlBeforeSwap",
+      "signed-installation/terminal-publication/finish/complete/controlAfterSwap",
+      "signed-installation/terminal-publication/finish/complete/controlAfterDirectorySync",
+      "signed-installation/terminal-publication/finish/complete/controlAfterPreimageUnlink",
+      "signed-installation/terminal-close/temporaryStore",
+      "signed-installation/terminal-close/stagedSlots",
+      "signed-installation/terminal-close/stagedParents",
+      "signed-installation/terminal-close/bootstrapParents",
+      "signed-installation/terminal-close/metadata",
+      "signed-installation/terminal-close/admission",
+      "signed-installation/terminal-close/state",
+      "signed-installation/terminal-close/operation",
+      "signed-installation/terminal-sync/beforeParentSync",
+      "signed-installation/terminal-sync/parentSyncFailure",
+      "signed-installation/terminal-sync/afterParentSync",
+      "signed-installation/terminal-sync/beforeRetirement",
+      "signed-installation/terminal-successful-operation-close-deadline"
+    ],
+    "Contents/MacOS/ShadowSync": [
+      "shadow-sync-signed-installation-host/v1",
+      "shadow-sync-signed-installation-request/v1"
+    ]
+  },
+  "inherited_roles": {
+    "coordinator": [
+      0,
+      1,
+      2,
+      207,
+      208,
+      209
+    ],
+    "host": [
+      0,
+      1,
+      2,
+      213
+    ],
+    "adapter": [
+      0,
+      1,
+      2,
+      198,
+      212
+    ]
+  },
+  "root_disposition": "creator-after-coordinator-reap",
+  "native_qualification_required": [
+    "exact-toolchain-and-source-binding",
+    "developer-id-timestamp-hardened-empty-entitlements",
+    "kernel-audit-token-and-security-live-peer",
+    "closed-adapter-non-detachment",
+    "actual-appkit-init-drain",
+    "original-anchors-eof-reap-and-checked-close",
+    "fixture-profile-forbidden-access-controls"
+  ],
+  "unavailable_requirements": [
+    {
+      "id": "signed-installation/cleanup/wrong-owner",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/cleanup/listener-close",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/cleanup/accepted-close",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/cleanup/extra-peer-close",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/cleanup/ancestor-close",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/cleanup-named-cut/beforeRestore",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/wrong-live-peer",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/wrong-same-publisher-candidate",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/reflected-message",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/reordered-message",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/replayed-message",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/eof-before-commit",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/eof-after-consumed-commit",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/coordinator-loss",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/caller-loss",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/host-loss-before-normal-started",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/host-loss-after-normal-started",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/pending-command-retirement",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/delayed-appkit-initialization",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/negative/failed-application-drain",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/reserve",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/exclusive-preparation",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/staged-transfer",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/journal",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/readiness-opening",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/bootstrap",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/kickstart",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/candidate-ready",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/readiness-commit",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/normal-started",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/stop",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/cleanup",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/deadline/finish",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/own-root",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/foreign-root",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/real-home-denial",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/network-denial",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/arbitrary-exec-denial",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/wrong-role",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/adhoc-signature",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/wrong-team",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/wrong-identifier",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/wrong-cdhash",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/testing-profile-misuse",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/missing-seal",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/missing-layout",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/missing-policy",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/stale-policy",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    },
+    {
+      "id": "signed-installation/control/policy-digest-mismatch",
+      "status": "required-unavailable",
+      "reason": "source-route-or-reviewed-caller-pending"
+    }
+  ]
+}

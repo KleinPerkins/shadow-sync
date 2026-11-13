@@ -196,8 +196,15 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
         try inspect(bundlePath: bundlePath, requireProduction: requireProduction, layoutOverride: nil)
     }
 
+    static func inspect(bundlePath: String, installationProfile: InstallationValidationProfile) throws -> BundleArtifactIdentity {
+        try installationProfile.validateBundlePath(bundlePath)
+        return try inspect(bundlePath: bundlePath, requireProduction: false, layoutOverride: nil,
+                           installationProfile: installationProfile)
+    }
+
     private static func inspect(bundlePath: String, requireProduction: Bool,
-                                layoutOverride: PublisherBundleLayout?) throws -> BundleArtifactIdentity {
+                                layoutOverride: PublisherBundleLayout?,
+                                installationProfile: InstallationValidationProfile? = nil) throws -> BundleArtifactIdentity {
         var rootInfo = stat()
         guard lstat(bundlePath, &rootInfo) == 0,
               (rootInfo.st_mode & S_IFMT) == S_IFDIR,
@@ -207,8 +214,13 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
             throw ReleaseIdentityError.unsafeBundle(bundlePath)
         }
         let release = try ReleaseIdentity.load(bundlePath: bundlePath)
-        try release.validate(requireProduction: requireProduction)
-        let publisherLayout = try layoutOverride ?? PublisherBundleLayout.captureIfPresent(bundlePath)
+        if let installationProfile { try installationProfile.validate(release) }
+        else { try release.validate(requireProduction: requireProduction) }
+        let publisherLayout = try layoutOverride ?? PublisherBundleLayout.captureIfPresent(bundlePath,
+            validationProfile: installationProfile ?? .production)
+        // An explicit installation profile always requires the complete genuine
+        // publisher layout, including in testing. No fixture layout override.
+        if installationProfile != nil, publisherLayout == nil { throw ReleaseIdentityError.unsafeBundle(bundlePath) }
         #if !SHADOW_SYNC_TESTING
         guard !requireProduction || publisherLayout != nil else { throw ReleaseIdentityError.unsafeBundle(bundlePath) }
         #endif
@@ -261,6 +273,7 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
         }
         try publisherLayout?.requireComplete(observed)
         try publisherLayout?.revalidate()
+        try installationProfile?.revalidate()
         records.sort()
         let bytes = Data((records.joined(separator: "\u{0}") + "\u{0}").utf8)
         return BundleArtifactIdentity(

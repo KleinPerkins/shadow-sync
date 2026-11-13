@@ -19,17 +19,27 @@ final class LifecyclePublisher {
     private let helperSnapshot: PublisherExecutableSnapshot
     private let resources: [PolicyAuthorityFile]
     private let graphResource: PolicyAuthorityFile
+    let validationProfile: InstallationValidationProfile
 
     private init(app: String, executable: String, owner: uid_t, account: EffectiveAccount,
                  appIdentity: PublisherCodeVerifier.Identity, helperIdentity: PublisherCodeVerifier.Identity,
-                 resources: [PolicyAuthorityFile], graphs: PolicyAuthorityFile, release: ReleaseIdentity) throws {
+                 resources: [PolicyAuthorityFile], graphs: PolicyAuthorityFile, release: ReleaseIdentity,
+                 validationProfile: InstallationValidationProfile) throws {
+        self.validationProfile = validationProfile
         self.app = app; self.executable = executable; self.owner = owner; self.account = account
         self.appIdentity = appIdentity; self.helperIdentity = helperIdentity
         self.resources = resources; graphResource = graphs; self.release = release; releaseSHA256 = release.releaseContractSHA256
         appSnapshot = try PublisherExecutableSnapshot.capture(path: app + "/Contents/MacOS/ShadowSync", owner: owner)
         helperSnapshot = try PublisherExecutableSnapshot.capture(path: executable, owner: owner)
     }
-    static func current() throws -> LifecyclePublisher {
+    static func current() throws -> LifecyclePublisher { try captureCurrent(validationProfile: .production) }
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    static func current(validationProfile: InstallationValidationProfile) throws -> LifecyclePublisher {
+        guard case .signedFixture = validationProfile else { throw PublisherPolicyError.unavailable }
+        return try captureCurrent(validationProfile: validationProfile)
+    }
+    #endif
+    private static func captureCurrent(validationProfile: InstallationValidationProfile) throws -> LifecyclePublisher {
         let account = try EffectiveAccount.current()
         guard account.uid != 0, getuid() == account.uid else { throw PublisherPolicyError.unavailable }
         let own = try ProcessIdentity.capture(processID: getpid(), generation: RunIdentity.make())
@@ -37,6 +47,7 @@ final class LifecyclePublisher {
         guard executable.hasSuffix(relativeExecutable) else { throw PublisherPolicyError.unavailable }
         let app = String(executable.dropLast(relativeExecutable.count))
         guard app.hasSuffix("/ShadowSync.app") else { throw PublisherPolicyError.unavailable }
+        try validationProfile.validateBundlePath(app)
         var node = stat()
         guard lstat(app, &node) == 0, node.st_mode & S_IFMT == S_IFDIR,
               node.st_uid == 0 || node.st_uid == account.uid else { throw PublisherPolicyError.unavailable }
@@ -52,7 +63,7 @@ final class LifecyclePublisher {
         guard let dictionary = try PropertyListSerialization.propertyList(from: info.bytes, format: nil) as? [String: Any] else {
             throw PublisherPolicyError.unavailable
         }
-        let release = try ReleaseIdentity(infoDictionary: dictionary); try release.validate(requireProduction: true)
+        let release = try ReleaseIdentity(infoDictionary: dictionary); try validationProfile.validate(release)
         guard release.releaseContractSHA256 == contract.sha256 else { throw PublisherPolicyError.unavailable }
         var parser = try PolicyWireParser(contract.bytes, profile: .configuration)
         guard case let .object(fields) = try parser.parse(),
@@ -61,7 +72,7 @@ final class LifecyclePublisher {
         try PublisherCodeVerifier.sealed(contract, relativePath: "Resources/release-contract.json", code: code)
         try PublisherCodeVerifier.sealed(graphs, relativePath: "Resources/command-graphs.json", code: code)
         let result = try Self(app: app, executable: executable, owner: owner, account: account,
-            appIdentity: publisher, helperIdentity: helper, resources: [info, contract, seal, graphs], graphs: graphs, release: release)
+            appIdentity: publisher, helperIdentity: helper, resources: [info, contract, seal, graphs], graphs: graphs, release: release, validationProfile: validationProfile)
         try result.revalidate(); return result
     }
     /// Values come only from this verified running coordinator. Keeping the
@@ -91,7 +102,7 @@ final class LifecyclePublisher {
             try publisher.revalidate()
             // inspect deliberately retains its effective-user ownership rule.
             // A root-owned source accepted by current() is NOT broadened here.
-            let artifact = try BundleArtifactIdentity.inspect(bundlePath: publisher.app, requireProduction: true)
+            let artifact = try BundleArtifactIdentity.inspect(bundlePath: publisher.app, installationProfile: publisher.validationProfile)
             let (_, app) = try PublisherCodeVerifier.verifiedStatic(path: publisher.app,
                 identifier: ReleaseIdentity.bundleIdentifier, team: publisher.appIdentity.team)
             let (_, helper) = try PublisherCodeVerifier.verifiedStatic(path: publisher.executable,
@@ -101,7 +112,7 @@ final class LifecyclePublisher {
             let candidate = InstallationCandidate(release: artifact.release, bundleDigest: artifact.canonicalSHA256,
                 appCDHash: app.codeDirectory.map { String(format: "%02x", $0) }.joined(),
                 coordinatorCDHash: helper.codeDirectory.map { String(format: "%02x", $0) }.joined())
-            try candidate.validate()
+            try candidate.validate(profile: publisher.validationProfile)
             try publisher.revalidate()
             return Self(publisher: publisher, sourceRoot: publisher.app, candidate: candidate,
                 sourceReleaseDigest: publisher.releaseSHA256, coordinatorCode: helper)
@@ -140,6 +151,7 @@ final class LifecyclePublisher {
     func installationSourceBundle() throws -> String { try revalidate(); return app }
 
     func revalidate() throws {
+        try validationProfile.revalidate()
         guard account == (try EffectiveAccount.current()), getuid() == account.uid,
               appSnapshot == (try PublisherExecutableSnapshot.capture(path: app + "/Contents/MacOS/ShadowSync", owner: owner)),
               helperSnapshot == (try PublisherExecutableSnapshot.capture(path: executable, owner: owner)) else { throw PublisherPolicyError.unavailable }

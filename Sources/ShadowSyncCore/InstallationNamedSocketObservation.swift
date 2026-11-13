@@ -8,6 +8,7 @@ import Foundation
 struct InstallationNamedSocketObservation: Equatable {
     enum Endpoint: String, CaseIterable {
         case installation = "installation.sock"
+        case host = "host.sock"
     }
 
     /// Exact immutable UTF-8 address, with the actual sockaddr_un byte bound.

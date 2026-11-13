@@ -187,11 +187,31 @@ enum InstallationStagedCommandFixtures {
             registry.testingFault(.beforeSpawn)
             let handle = try registry.start(command)
             try until("failed-admission-retirement") { registry.testingCount == 0 }
-            let result = handle.snapshot()
-            try H.check(result.phase == .finished && result.journal?.outcome == .admissionRefused
-                && result.journal?.reason == .startFailure && result.journal?.authority == .installationStagedStart
-                && result.journal?.kind == .launchctlMutation && result.stdout.isEmpty && result.stderr.isEmpty,
-                        "staged pre-spawn failure did not retire refused mutation")
+            // Entry removal precedes the queued terminal publication. Join that
+            // actual result under the handle's original receipt deadline.
+            let result = handle.wait()
+            do {
+                try H.check(result.phase == .finished && result.journal?.outcome == .admissionRefused
+                    && result.journal?.reason == .startFailure && result.journal?.authority == .installationStagedStart
+                    && result.journal?.kind == .launchctlMutation && result.stdout.isEmpty && result.stderr.isEmpty,
+                            "staged pre-spawn failure did not retire refused mutation")
+            } catch {
+                // Preserve the failed snapshot and assertion. Only after failure,
+                // observe whether the injection was reached and join the already
+                // queued publication turn; neither observation can make this pass.
+                let faultPending = registry.testingFaultIsPending(.beforeSpawn)
+                let afterQueue = handle.snapshot()
+                func fields(_ value: CustodyRegistryResult) -> String {
+                    "phase=\(value.phase),reason=\(value.reason?.rawValue ?? "nil"),"
+                        + "journal=\(value.journal != nil),outcome=\(value.journal?.outcome?.rawValue ?? "nil"),"
+                        + "journalReason=\(value.journal?.reason?.rawValue ?? "nil"),"
+                        + "authority=\(value.journal?.authority.rawValue ?? "nil"),kind=\(value.journal?.kind.rawValue ?? "nil"),"
+                        + "stdoutBytes=\(value.stdout.count),stderrBytes=\(value.stderr.count)"
+                }
+                throw H.Failure(message: "staged pre-spawn failure did not retire refused mutation; "
+                    + "observation-v1 initial[\(fields(result))] afterQueue[\(fields(afterQueue))] "
+                    + "beforeSpawnFaultPending=\(faultPending)")
+            }
             let catalog = try context.testingScope.testingRead()
             try H.check(catalog.entries.isEmpty && registry.testingOriginalHelpersReaped && !registry.hasRetainedWork,
                         "failed staged admission retained resources")
@@ -381,5 +401,248 @@ enum InstallationStagedCommandFixtures {
             }
         }
     }
+    // Metadata-only acceptance of closed wire shapes is deliberately separate
+    // from actual owner minting and from the unqualified signed helper below.
+    private static func committedWireRefuses(_ wire: PolicyWireValue) throws {
+        do {
+            _ = try InstallationCommandBinding.decode(CustodyWire.encode(wire, maximum: 65_536))
+            throw H.Failure(message: "cross-variant committed wire accepted")
+        } catch is CustodyRecordError {} catch is PolicyProtocolError {}
+    }
+    private static func metadataBinding(_ h: InstallationControlFixtures.Harness,
+        committed: Bool) throws -> InstallationCommandBinding {
+        var nodes: [String: InstallationNodeIdentity] = [:]
+        for (index, receipt) in h.receipts.enumerated() {
+            nodes[try receipt.filename(uid: h.state.directory.uid)] = InstallationControlFixtures.node(UInt64(index + 200))
+        }
+        return InstallationCommandBinding(control: h.record, controlNode: InstallationControlFixtures.node(100),
+            receiptNodes: nodes, committedStopDeadline: committed ? MonotonicDeadline(seconds: 0.750).absoluteUptimeNanoseconds : nil)
+    }
+    static func committedBindingClosure() throws {
+        var original = try InstallationControlFixtures.Harness()
+        try original.throughReady(); try original.commitReady()
+        let committed = original.record.readinessCommit
+        for action in [InstallationAction.readinessCommit, .cleanupCoordination, .cleanupBackups, .cleanupIncoming] {
+            for status in [InstallationStepStatus.intent, .complete] {
+                if action == .readinessCommit && status == .intent { continue }
+                var h = original
+                if action != .readinessCommit {
+                    for prior in [InstallationAction.cleanupCoordination, .cleanupBackups, .cleanupIncoming] {
+                        try h.add(prior, status: .intent)
+                        if prior == action && status == .intent { break }
+                        try h.add(prior, status: .complete)
+                        if prior == action { break }
+                    }
+                }
+                try h.recover(.startupUncertain)
+                let binding = try metadataBinding(h, committed: true)
+                try H.check(try InstallationCommandBinding.decode(binding.encode()) == binding,
+                    "committed stop lost canonical variant")
+                try H.check(binding.control.readinessCommit == committed, "subordinate stop altered commit")
+                try binding.validateStagedOperation(mode: .installationStagedStop, operation: .bootout)
+                try H.refuses { try binding.validateStagedOperation(mode: .installationStagedStart, operation: .bootstrap) }
+                try H.refuses { try binding.validateStagedOperation(mode: .installationStagedStop, operation: .kickstart) }
+                try H.refuses { try metadataBinding(h, committed: false).validate() }
+                for name in binding.receiptNodes.keys {
+                    var nodes = binding.receiptNodes; nodes.removeValue(forKey: name)
+                    try H.refuses { try InstallationCommandBinding(control: binding.control, controlNode: binding.controlNode,
+                        receiptNodes: nodes, committedStopDeadline: binding.committedStopDeadline).validate() }
+                }
+                guard case var .object(wire) = binding.wire else { throw H.Failure(message: "committed wire shape") }
+                wire["purpose"] = .string("candidate-start")
+                try committedWireRefuses(.object(wire))
+                wire["purpose"] = .string("committed-candidate-stop"); wire["schema"] = .string("shadow-sync-installation-command/v1")
+                try committedWireRefuses(.object(wire))
+            }
+        }
+        for status in [InstallationStepStatus.intent, .complete] {
+            var h = original
+            for action in [InstallationAction.cleanupCoordination, .cleanupBackups, .cleanupIncoming] { try h.pair(action) }
+            try h.add(.finish, status: .intent)
+            if status == .complete { try h.add(.finish, status: .complete) }
+            // Even forged recovery wire around terminal metadata cannot decode.
+            let recovered = InstallationControlRecord(revision: h.record.revision + 1, phase: .recovery,
+                state: h.record.state, transaction: h.record.transaction, step: h.record.step,
+                latestReceiptDigest: h.record.latestReceiptDigest, readinessCommit: h.record.readinessCommit,
+                recoveryReason: .startupUncertain)
+            let b = try metadataBinding(h, committed: true)
+            try H.refuses { try InstallationCommandBinding(control: recovered, controlNode: b.controlNode,
+                receiptNodes: b.receiptNodes, committedStopDeadline: b.committedStopDeadline).validate() }
+        }
+    }
+    static func candidateReadyStopOrdinal() throws {
+        var original = try InstallationControlFixtures.Harness()
+        for action in [InstallationAction.reserve, .drainPrior, .stageApplication, .stagePlist, .retireApplication,
+            .retirePlist, .retireCoordination, .translateState, .moveStateForward, .promoteApplication,
+            .promotePlist, .openStagedAdmission, .bootstrapCandidate, .kickstartCandidate] { try original.pair(action) }
+        let stopExpected = try InstallationReadinessStopBinding.expectedControl(after: original.record)
+        var table = original
+        try table.pair(.candidateReady); try table.recover(.readinessFailed); try table.add(.candidateStop, status: .intent)
+        try H.check(stopExpected == table.record, "readiness stop framing differs from exact action table")
+        let ready = InstallationReadinessMessage(event: .ready,
+            transactionID: InstallationControlFixtures.uuid, boot: InstallationControlFixtures.boot,
+            controlRevision: original.record.revision,
+            candidateReleaseDigest: InstallationControlFixtures.otherSHA,
+            stateBindingDigest: try original.state.digest(), hostGeneration: InstallationControlFixtures.generation,
+            sessionNonce: String(repeating: "a", count: 32), previousMessageDigest: InstallationControlFixtures.sha)
+        let deadline = MonotonicDeadline(seconds: 0.750)
+        let message = try InstallationReadinessStopBinding.stop(after: ready, control: stopExpected, deadline: deadline)
+        let stopped = try InstallationReadinessStopBinding.stopped(after: message, deadline: deadline)
+        try H.check(try message.previousMessageDigest == ready.digest() && stopped.previousMessageDigest == message.digest()
+            && message.event == .stop && stopped.event == .stopped,
+            "readiness stop transcript did not retain the exact ready chain")
+        try H.refuses { _ = try InstallationReadinessStopBinding.expectedControl(after: table.record) }
+        try H.refuses { _ = try InstallationReadinessStopBinding.stopped(after: ready, deadline: deadline) }
+        try H.refuses { _ = try InstallationReadinessStopBinding.stop(after: ready, control: original.record, deadline: deadline) }
+        try H.refuses { _ = try InstallationReadinessStopBinding.stop(after: ready, control: stopExpected,
+            deadline: MonotonicDeadline(uptimeNanoseconds: 0)) }
+        var h = try InstallationControlFixtures.Harness()
+        try h.throughReady(); try h.recover(.readinessFailed); try h.add(.candidateStop, status: .intent)
+        let binding = try metadataBinding(h, committed: false)
+        try binding.control.validateReceiptChain(h.receipts)
+        try binding.validateStagedOperation(mode: .installationStagedStop, operation: .bootout)
+        try H.check(binding.control.step?.ordinal == 16 && binding.receiptNodes.count == 31,
+                    "candidate-ready stop ordinal not exactly derived")
+        try H.refuses { try metadataBinding(h, committed: true).validate() }
+        var early = try InstallationControlFixtures.Harness()
+        try early.pair(.reserve)
+        try H.refuses { try metadataBinding(early, committed: true).validate() }
+        try H.check(try InstallationCommandBinding.decode(binding.encode()) == binding, "precommit variant changed")
+    }
+    static func committedOwnerRefusal() throws {
+        try InstallationStagedJournalFixtures.fixture { root, location, owner, _, admission, journal, registry in
+            _ = try journal.completeAdmission(deadline: .init(seconds: 0.750))
+            let before = try Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json"))
+            // Supply the real command fixture contract, then exercise the signed
+            // helper's actual unauthenticated prerequisite. This is refusal
+            // coverage only; no normal-started or stopped token is fabricated.
+            _ = try TestIsolation.validateRoot(root)
+            do {
+                let path = root + "/home/.staged-completion-quiet"
+                let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                try H.check(fd >= 0, "committed stop prerequisite marker create")
+                defer { close(fd) }
+                let bytes = Data("staged-completion-quiet/v1\n".utf8)
+                try bytes.withUnsafeBytes {
+                    try H.check(Darwin.write(fd, $0.baseAddress, $0.count) == $0.count && fsync(fd) == 0,
+                                "committed stop prerequisite marker durability")
+                }
+            }
+            for cut in [CommittedDrainCut.none, .lifecycleContender, .partialAlias] {
+                do {
+                    try authenticatedCommittedStopCustody(journal, admission: admission, registry: registry,
+                                                          root: root, location: location, cut: cut)
+                    throw H.Failure(message: "signed committed stop accepted an unauthenticated journal")
+                } catch CustodyRecordError.fenced { }
+            }
+            let observation = journal.stoppedHostObservation()
+            try H.check(observation.0 == nil && observation.1 == .notAttempted
+                && journal.testingStopDeliveryProbe == nil && registry.testingCount == 0
+                && owner.testingTerminalOwnership().operation == .notAttempted
+                && (try Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json"))) == before,
+                "committed stop prerequisite refusal changed actual custody or durable control")
+            let retired = try registry.installationStagedStartRetirement(after: admission.closeStarts())
+            let stop = try admission.stopOnly(after: retired)
+            try H.refuses { _ = try journal.committedCandidateStop(admission: stop) }
+            try H.refuses { _ = try journal.committedCandidateStop(admission: stop) }
+            try H.check(try Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")) == before,
+                "noncommitted caller minted recovery or changed receipts")
+            try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    /// Signed-driver seam only. It requires a genuinely authenticated committed
+    /// journal, exact original admission and registry. It does not synthesize
+    /// ready/normal/stopped tokens. Native launchd behavior remains unqualified.
+    enum CommittedDrainCut { case none, lifecycleContender, partialAlias }
+    @_silgen_name("shadowSyncTesting_authenticatedCommittedStopCustody")
+    @inline(never)
+    static func authenticatedCommittedStopCustody(_ journal: CustodyCatalogStore.InstallationStagedJournal,
+        admission: InstallationStagedAdmission, registry: RetainedCleanupRegistry,
+        root: String, location: StateLocation, cut: CommittedDrainCut = .none) throws {
+        _ = try TestIsolation.validateRoot(root)
+        let quiet = try PolicyAuthorityFile.read(path: root + "/home/.staged-completion-quiet",
+            owner: geteuid(), maximumBytes: 32)
+        try H.check(quiet.bytes == Data("staged-completion-quiet/v1\n".utf8), "signed driver omitted actual command fixture contract")
+        let started = try journal.takeNormalStarted()
+        let stopped = try journal.stopStartedHost(started)
+        let retirement = try registry.installationStagedStartRetirement(after: admission.closeStarts())
+        let stop = try admission.stopOnly(after: retirement)
+        let capability = try journal.committedCandidateStop(admission: stop)
+        let before = try Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json"))
+        try H.check(capability.deadline.absoluteUptimeNanoseconds == stopped.deadline.absoluteUptimeNanoseconds,
+                    "committed stop reset original candidate budget")
+        try H.refuses { _ = try journal.committedCandidateStop(admission: stop) }
+        var context: CommandCustodyContext? = try .testingCommittedStop(capability, root: root)
+        try H.refuses { _ = try context!.testingStagedLifecycle(.bootstrap) }
+        try H.refuses { _ = try context!.testingStagedLifecycle(.kickstart) }
+        var command: PreparedCustodyCommand? = try context!.testingCommittedBootout()
+        let handle = try registry.start(command!)
+        let result = handle.wait()
+        try H.check(result.phase == .finished, "actual committed command did not retire")
+        let token = try handle.stagedCompletion()
+        try H.refuses { _ = try journal.completeCommittedCandidateStop(capability, after: token) }
+        context!.close(); context = nil
+        try H.refuses { _ = try journal.completeCommittedCandidateStop(capability, after: token) }
+        command = nil
+        while registry.testingCount != 0 || !registry.testingOriginalHelpersReaped {
+            guard !capability.deadline.hasExpired else { throw CustodyRecordError.busy }
+            Thread.sleep(forTimeInterval: min(0.001, Double(capability.deadline.remainingMilliseconds) / 1_000))
+        }
+        _ = try journal.completeCommittedCandidateStop(capability, after: token)
+        try H.refuses { _ = try journal.completeCommittedCandidateStop(capability, after: token) }
+        try H.refuses { _ = try capability.commandPermit() }
+        try H.check(try Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")) == before,
+                    "subordinate command appended an installation receipt")
+        try InstallationOwnershipFixtures.excluded(location)
+        let owner = journal.testingOwner
+        if cut == .partialAlias {
+            var alias: CustodyAuthorityLeaseSet? = try stop.retainStopLeases()
+            alias!.testingFailNextDuplicate(after: 2, uncertain: true)
+            try H.refuses { _ = try alias!.duplicate() }
+            alias = nil
+            try H.refuses { _ = try stop.closeStops(deadline: stopped.deadline) }
+            try H.refuses { _ = try stop.retainStopLeases() }
+            try InstallationOwnershipFixtures.excluded(location)
+            try H.check(owner.testingTerminalOwnership().operation == .notAttempted,
+                        "partial stopped alias retired original operation")
+            return
+        }
+        let closed = try stop.closeStops(deadline: stopped.deadline)
+        let stoppedRetirement = try registry.installationStagedStopRetirement(after: closed)
+        let drain = try journal.committedCandidateDrain(retirement: stoppedRetirement, registry: registry)
+        try H.refuses { _ = try journal.committedCandidateDrain(retirement: stoppedRetirement, registry: registry) }
+        let intent = try journal.stoppedRecoveryIntent(after: drain)
+        try H.refuses { _ = try journal.stoppedRecoveryIntent(after: drain) }
+        try H.check(intent.deadline.absoluteUptimeNanoseconds == stopped.deadline.absoluteUptimeNanoseconds,
+                    "stopped reentry reset candidate deadline")
+        try InstallationOwnershipFixtures.excluded(location)
+        try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock")
+        if cut == .lifecycleContender {
+            let fd = open(location.path + "/lifecycle.lock", O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw H.Failure(message: "stopped lifecycle contender open") }
+            let contender = OwnedFileDescriptor(fd)
+            defer { contender.closeNow() }
+            try H.check(flock(fd, LOCK_SH | LOCK_NB) == 0, "staged lifecycle contender not admitted")
+            try H.refuses { _ = try owner.reenterStoppedRecovery(intent) }
+            try H.refuses { _ = try owner.reenterStoppedRecovery(intent) }
+            try InstallationOwnershipFixtures.excluded(location)
+            try H.check(owner.testingTerminalOwnership().operation == .notAttempted,
+                        "failed stopped reentry retired original operation")
+            try H.check(contender.retireChecked() == .succeeded, "stopped contender close uncertain")
+            return
+        }
+        let exclusive = try owner.reenterStoppedRecovery(intent)
+        try exclusive.revalidate()
+        try H.refuses { _ = try owner.reenterStoppedRecovery(intent) }
+        try H.refuses { _ = try admission.retainStartLeases() }
+        try H.refuses { _ = try stop.retainStopLeases() }
+        try InstallationOwnershipFixtures.excluded(location)
+        try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock")
+        try H.check(owner.testingTerminalOwnership().operation == .notAttempted,
+                    "stopped exclusive attempted operation release")
+        try H.check(try Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")) == before,
+                    "bounded stopped continuation rewrote installation action")
+    }
+
 }
 #endif

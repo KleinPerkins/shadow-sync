@@ -773,6 +773,23 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                 let tree = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: layout)
                 try tree.revalidate(root: fixture.framework, owner: geteuid(), layout: layout)
                 try require(tree.nodes.count == entries.count + 1, "recursive inventory omitted entries")
+                // Reconstruct the immutable input independently. Lookup indexing
+                // must not depend on Dictionary storage identity or entry order.
+                var rebuilt: [String: PolicyRuntimeLayout.Entry] = [:]
+                for key in entries.keys.sorted().reversed() { rebuilt[key] = entries[key] }
+                try tree.revalidate(root: fixture.framework, owner: geteuid(),
+                    layout: PolicyRuntimeLayout(entries: rebuilt))
+                try require(try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: layout) == tree,
+                    "indexed revalidation differs from independent full capture")
+                // Retained node lookup may never be paired with changed layout
+                // authority, even when all actual files remain unchanged.
+                var changedLayout = rebuilt
+                changedLayout["sibling-11/nested/file"] = .init(kind: .file, mode: 0o755, target: nil)
+                try refused { try tree.revalidate(root: fixture.framework, owner: geteuid(),
+                    layout: PolicyRuntimeLayout(entries: changedLayout)) }
+                changedLayout = rebuilt; changedLayout.removeValue(forKey: "sibling-11/nested/file")
+                try refused { try tree.revalidate(root: fixture.framework, owner: geteuid(),
+                    layout: PolicyRuntimeLayout(entries: changedLayout)) }
                 try mutation(fixture, fixture.framework + "/sibling-11/nested/file")
                 try refused { try tree.revalidate(root: fixture.framework, owner: geteuid(), layout: layout) }
                 try fixture.remove()
@@ -786,6 +803,12 @@ public enum PublisherPolicyResourcesSelfTestRunner {
             try verify { fixture, target in try require(link(target, fixture.path + "/hardlink") == 0, "recursive link-count drift") }
             try verify { _, target in try Data("changed metadata".utf8).write(to: URL(fileURLWithPath: target)) }
             try verify { _, target in try require(unlink(target) == 0, "recursive missing entry") }
+            // Preserve total inventory count but replace the lexical name.
+            // A parent-local index must refuse it before using any retained node.
+            try verify { _, target in
+                try require(renameatx_np(AT_FDCWD, target, AT_FDCWD, target + "-unknown", UInt32(RENAME_EXCL)) == 0,
+                    "recursive unexpected same-count name")
+            }
             try verify { _, target in try Data("extra".utf8).write(to: URL(fileURLWithPath: target + "-extra")) }
             try verify { fixture, _ in
                 let link = fixture.framework + "/Python"
@@ -798,6 +821,93 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                     && chmod(ancestor, 0o755) == 0, "recursive ancestor replacement")
                 try Data("fixture".utf8).write(to: URL(fileURLWithPath: ancestor + "/file"))
                 try require(chmod(ancestor + "/file", 0o644) == 0, "recursive replacement mode")
+            }
+            // Exercise both production enumeration routes at their boundary,
+            // including an empty directory. Compare all observed paths against
+            // the independently captured inventory, not merely a pass result.
+            var routedEntries = entries
+            for (directory, count) in [("route-empty", 0), ("route-eight", 8), ("route-nine", 9)] {
+                routedEntries[directory] = .init(kind: .directory, mode: 0o755, target: nil)
+                for index in 0..<count {
+                    routedEntries[directory + "/file-\(index)"] = .init(kind: .file, mode: 0o644, target: nil)
+                }
+            }
+            let routedLayout = PolicyRuntimeLayout(entries: routedEntries)
+            do {
+                let fixture = try Fixture(layout: routedLayout); defer { try? fixture.remove() }
+                let retained = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: routedLayout)
+                var observed: [String: Bool] = [:], visited: Set<String> = []
+                try retained.testingRevalidateScan(root: fixture.framework, owner: geteuid(), layout: routedLayout,
+                    beforeDirectoryRead: { prefix in
+                        try require(visited.insert(prefix).inserted, "enumeration repeated a directory")
+                    }, afterEntryRead: { prefix, name, bulk in
+                        let path = prefix.isEmpty ? name : prefix + "/" + name
+                        try require(observed.updateValue(bulk, forKey: path) == nil, "enumeration repeated an entry")
+                    })
+                try require(Set(observed.keys) == Set(routedEntries.keys)
+                    && visited == Set(routedEntries.filter { $0.value.kind == .directory }.keys).union([""]),
+                    "enumeration omitted a name or empty directory")
+                for index in 0..<8 { try require(observed["route-eight/file-\(index)"] == false, "small directory missed named-stat route") }
+                for index in 0..<9 { try require(observed["route-nine/file-\(index)"] == true, "large directory missed bulk route") }
+                try require(try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: routedLayout) == retained,
+                            "mixed fresh scan differs from full capture")
+                try fixture.remove()
+            }
+            for directory in ["route-eight", "route-nine"] {
+                for variant in ["name", "inode", "mode"] {
+                    let fixture = try Fixture(layout: routedLayout); defer { try? fixture.remove() }
+                    let target = fixture.framework + "/" + directory + "/file-0"
+                    let replacement = fixture.path + "/replacement"
+                    if variant == "inode" {
+                        try Data(contentsOf: URL(fileURLWithPath: target)).write(to: URL(fileURLWithPath: replacement))
+                        try require(chmod(replacement, 0o644) == 0, "route replacement mode")
+                    }
+                    let retained = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: routedLayout)
+                    var entered = false, observedTarget = false
+                    try refused {
+                        try retained.testingRevalidateScan(root: fixture.framework, owner: geteuid(), layout: routedLayout,
+                            beforeDirectoryRead: { prefix in
+                                guard prefix == directory else { return }
+                                try require(!entered, "route mutation repeated"); entered = true
+                                // The directory has already passed its named/
+                                // opened identity preflight. These changes must
+                                // reach the actual enumeration/node checks.
+                                switch variant {
+                                case "name": try require(renameatx_np(AT_FDCWD, target, AT_FDCWD, target + "-unknown",
+                                    UInt32(RENAME_EXCL)) == 0, "route same-count name mutation")
+                                case "inode": try require(rename(replacement, target) == 0, "route inode substitution")
+                                default: try require(chmod(target, 0o600) == 0, "route file mode mutation")
+                                }
+                            }, afterEntryRead: { prefix, name, bulk in
+                                if prefix == directory && name == (variant == "name" ? "file-0-unknown" : "file-0") {
+                                    observedTarget = true
+                                    try require(bulk == (directory == "route-nine"), "mutation exercised wrong enumeration route")
+                                }
+                            })
+                    }
+                    try require(entered && observedTarget, "mutation refused before optimized enumeration")
+                    try fixture.remove()
+                }
+            }
+            do {
+                let fixture = try Fixture(layout: routedLayout); defer { try? fixture.remove() }
+                let retained = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: routedLayout)
+                var entered = false, observedUnexpected = false
+                try refused {
+                    try retained.testingRevalidateScan(root: fixture.framework, owner: geteuid(), layout: routedLayout,
+                        beforeDirectoryRead: { prefix in
+                            guard prefix == "route-empty" else { return }
+                            entered = true
+                            try Data("unexpected".utf8).write(to: URL(fileURLWithPath: fixture.framework + "/route-empty/unexpected"))
+                        }, afterEntryRead: { prefix, name, bulk in
+                            if prefix == "route-empty" && name == "unexpected" {
+                                observedUnexpected = true
+                                try require(!bulk, "empty directory used wrong enumeration route")
+                            }
+                        })
+                }
+                try require(entered && observedUnexpected, "expected-empty directory was not freshly enumerated")
+                try fixture.remove()
             }
             // Use the established qualified chmod fixture, then clear only
             // this owned ACL before identity-checked fixture removal.

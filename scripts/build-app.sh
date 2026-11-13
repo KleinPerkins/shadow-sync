@@ -9,13 +9,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 SCRATCH=""
 OUTPUT=""
 MODE="production"
+SIGNED_INSTALLATION_FIXTURE=0
 SOURCE_REVISION="0000000000000000000000000000000000000000"
 SOURCE_INPUT_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
 RELEASE_CONTRACT_SHA256=""
 
 usage() {
   cat <<'EOF'
-usage: build-app.sh --scratch-path ABSOLUTE_PATH --output-dir ABSOLUTE_PATH [--testing]
+usage: build-app.sh --scratch-path ABSOLUTE_PATH --output-dir ABSOLUTE_PATH [--testing | --signed-installation-fixture]
                     [--source-revision SHA1 --source-input-sha256 SHA256
                      --release-contract-sha256 SHA256]
 
@@ -40,6 +41,11 @@ while [ "$#" -gt 0 ]; do
       ;;
     --testing)
       MODE="testing"
+      shift
+      ;;
+    --signed-installation-fixture)
+      MODE="testing"
+      SIGNED_INSTALLATION_FIXTURE=1
       shift
       ;;
     --source-revision)
@@ -134,6 +140,13 @@ create_private_directory() {
     }
 }
 
+if [ "$SIGNED_INSTALLATION_FIXTURE" -eq 1 ]; then
+  [ "$MODE" = "testing" ] && [ "$SOURCE_REVISION" != "0000000000000000000000000000000000000000" ] \
+    && [ "$SOURCE_INPUT_SHA256" != "0000000000000000000000000000000000000000000000000000000000000000" ] || {
+      printf 'build-app: signed fixture requires explicit nonzero source bindings and testing mode\n' >&2; exit 2
+    }
+fi
+
 create_private_directory "$SCRATCH" "scratch path"
 create_private_directory "$OUTPUT" "output directory"
 BUILD_ARGS=(
@@ -149,6 +162,9 @@ BUILD_ARGS=(
 if [ "$MODE" = "testing" ]; then
   # Fixture readers use #filePath; testing binaries are never distributed.
   BUILD_ARGS+=(-Xswiftc -DSHADOW_SYNC_TESTING)
+  if [ "$SIGNED_INSTALLATION_FIXTURE" -eq 1 ]; then
+    BUILD_ARGS+=(-Xswiftc -DSHADOW_SYNC_SIGNED_FIXTURE)
+  fi
 else
   BUILD_ARGS+=(-Xswiftc -file-prefix-map -Xswiftc "$ROOT=/shadow-sync-source")
 fi
@@ -260,6 +276,9 @@ for icon in \
 done
 
 plutil -replace ShadowSyncBuildMode -string "$MODE" "$CONTENTS/Info.plist"
+if [ "$SIGNED_INSTALLATION_FIXTURE" -eq 1 ]; then
+  plutil -insert ShadowSyncSignedFixtureProfile -string "signed-installation/v1" "$CONTENTS/Info.plist"
+fi
 plutil -replace ShadowSyncSourceRevision -string "$SOURCE_REVISION" "$CONTENTS/Info.plist"
 plutil -replace ShadowSyncSourceInputSHA256 -string "$SOURCE_INPUT_SHA256" "$CONTENTS/Info.plist"
 plutil -replace ShadowSyncReleaseContractSHA256 -string "$RELEASE_CONTRACT_SHA256" "$CONTENTS/Info.plist"

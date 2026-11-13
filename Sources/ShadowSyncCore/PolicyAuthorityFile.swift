@@ -219,7 +219,7 @@ struct PolicyAuthorityFile: Equatable, Sendable {
     /// Retain the stat already filled by the ACL security query. This is a
     /// fresh observation, not a cache; callers still check names and the full
     /// batch postflight after every payload has been read.
-    private static func safeACLObservation(_ descriptor: Int32) throws -> (info: stat, acl: String) {
+    static func safeACLObservation(_ descriptor: Int32) throws -> (info: stat, acl: String) {
         var info = stat()
         let acl = try checkedACL(descriptor, allowingReadGrants: true, observedStat: &info)
         return (info, acl)

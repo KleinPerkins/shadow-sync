@@ -221,14 +221,15 @@ final class LifecycleLaunchAuthority {
         self.helper = helper
         if request.authority.isInstallationStaged {
             guard let installation else { throw CustodyRecordError.fenced }
+            try installation.validateCommittedRequest(request)
             try installation.validateStagedOperation(mode: request.authority, operation: command.operation)
             stagedCandidate = try InstallationStagedCandidateAuthority(binding: installation, helper: helper, account: account)
         } else {
             guard installation == nil else { throw CustodyRecordError.fenced }
             stagedCandidate = nil
         }
-        readGraph = try QualifiedCommandGraph.production(kind: .launchctlRead, helper: helper)
-        mutationGraph = try QualifiedCommandGraph.production(kind: .launchctlMutation, helper: helper)
+        readGraph = try QualifiedCommandGraph.forHelper(kind: .launchctlRead, helper: helper)
+        mutationGraph = try QualifiedCommandGraph.forHelper(kind: .launchctlMutation, helper: helper)
         executable = try PublisherExecutableSnapshot.capture(path: command.executable, owner: account.uid)
         let (code, identity) = try PublisherCodeVerifier.verifiedStatic(path: command.app,
             identifier: ReleaseIdentity.bundleIdentifier, team: ReleaseIdentity.publisherTeamIdentifier)
@@ -239,7 +240,7 @@ final class LifecycleLaunchAuthority {
         guard let dictionary = try PropertyListSerialization.propertyList(from: info.bytes, format: nil) as? [String: Any] else {
             throw PublisherPolicyError.unavailable
         }
-        let release = try ReleaseIdentity(infoDictionary: dictionary); try release.validate(requireProduction: true)
+        let release = try ReleaseIdentity(infoDictionary: dictionary); try helper.validationProfile.validate(release)
         guard release.releaseContractSHA256 == contract.sha256,
               (command.operation == .bootout && !request.authority.isInstallationStaged) || contract.sha256 == helper.releaseSHA256 else { throw PublisherPolicyError.unavailable }
         try PublisherCodeVerifier.sealed(contract, relativePath: "Resources/release-contract.json", code: code)
@@ -285,7 +286,7 @@ final class InstallationStagedCandidateAuthority {
             throw CustodyRecordError.fenced
         }
         try helper.validateInstallationPublisher(transaction); try slots.revalidate(); try plist.revalidate()
-        let artifact = try BundleArtifactIdentity.inspect(bundlePath: command.app, requireProduction: true)
+        let artifact = try helper.validationProfile.inspectBundle(command.app)
         guard artifact.release == candidate.release, artifact.canonicalSHA256 == candidate.bundleDigest,
               app.contentDigest == artifact.canonicalSHA256, launch.contentDigest == plist.sha256,
               launch.size == UInt64(plist.bytes.count) else { throw CustodyRecordError.fenced }

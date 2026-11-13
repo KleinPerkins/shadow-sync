@@ -36,11 +36,30 @@ protocol InstallationNamedSocketFixtureCustodyOwner: AnyObject {
     func retireNamedSocketFixture(deadline: MonotonicDeadline) throws
 }
 
+#if SHADOW_SYNC_SIGNED_FIXTURE
+/// Actual fixture-only service resources. Cancellation/retirement must be
+/// idempotent and use original anchors, never an observed PID.
+protocol SignedInstallationFixtureServiceCustody: AnyObject {
+    func closeFixtureService(deadline: MonotonicDeadline) throws
+}
+#endif
+
 /// Testing-only outer custody. Failed joins retain these actual owners and the
 /// exact root until the case/guardian observes successful independent drainage.
 final class InstallationReadinessFixtureCustody: @unchecked Sendable {
     let root: String
     private let identity: FileIdentity
+    #if SHADOW_SYNC_SIGNED_FIXTURE
+    private var retainedRoot: SignedInstallationFixtureContext.RootPin?
+    private var services: [any SignedInstallationFixtureServiceCustody] = []
+    init(retainingExternalRoot pin: SignedInstallationFixtureContext.RootPin) throws {
+        try pin.revalidate()
+        root = pin.path; identity = pin.rootIdentity; retainedRoot = pin
+    }
+    func retainService(_ owner: any SignedInstallationFixtureServiceCustody) {
+        lock.lock(); services.append(owner); lock.unlock()
+    }
+    #endif
     private let lock = NSLock()
     private var journals: [CustodyCatalogStore.InstallationStagedJournal] = []
     private var work: [InstallationFixtureWork] = []
@@ -67,6 +86,13 @@ final class InstallationReadinessFixtureCustody: @unchecked Sendable {
     }
     func finish(deadline: MonotonicDeadline) throws {
         lock.lock(); let journals = self.journals, work = self.work, registries = self.registries, namedSockets = self.namedSockets; lock.unlock()
+        #if SHADOW_SYNC_SIGNED_FIXTURE
+        lock.lock(); let services = self.services; lock.unlock()
+        // Cancel/close actual owned hosts before waiting on command work that
+        // may itself be awaiting a host handoff. This teardown budget cannot
+        // convert an expired installation transition into success.
+        for owner in services { try owner.closeFixtureService(deadline: deadline) }
+        #endif
         for journal in journals { try journal.closeReadiness(deadline: deadline) }
         for item in work { try item.join(deadline: deadline) }
         for registry in registries {
@@ -80,8 +106,21 @@ final class InstallationReadinessFixtureCustody: @unchecked Sendable {
         guard lstat(root, &current) == 0, FileIdentity(current).matchesStableNode(identity) else {
             throw CustodyRecordError.conflict
         }
+        #if SHADOW_SYNC_SIGNED_FIXTURE
+        if let retainedRoot {
+            // The external creator owns namespace disposal after coordinator
+            // reap. Inner custody retires resources but never deletes the source
+            // image from which this coordinator is still executing.
+            try retainedRoot.revalidate()
+        } else { try FileManager.default.removeItem(atPath: root) }
+        #else
         try FileManager.default.removeItem(atPath: root)
-        lock.lock(); self.journals.removeAll(); self.work.removeAll(); self.registries.removeAll(); self.bootstraps.removeAll(); self.namedSockets.removeAll(); lock.unlock()
+        #endif
+        lock.lock(); self.journals.removeAll(); self.work.removeAll(); self.registries.removeAll(); self.bootstraps.removeAll(); self.namedSockets.removeAll()
+        #if SHADOW_SYNC_SIGNED_FIXTURE
+        self.services.removeAll()
+        #endif
+        lock.unlock()
     }
 }
 

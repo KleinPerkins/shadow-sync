@@ -147,7 +147,7 @@ class ChannelTests(unittest.TestCase):
             path = Path(folder).resolve() / 'friend.shadow-sync-access'
             capture = io.StringIO()
             with contextlib.redirect_stdout(capture):
-                grant = delivery.create_grant(self.api, {'origin': 'https://download.example.invalid'}, 'friend-opaque', path, int(time.time()) + 3600)
+                grant = delivery.create_grant(self.api, self.api.config, 'friend-opaque', path, int(time.time()) + 3600)
             data = json.loads(path.read_text())
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(len(__import__('base64').urlsafe_b64decode(data['token'] + '=')), 32)
@@ -157,7 +157,7 @@ class ChannelTests(unittest.TestCase):
             self.assertEqual(row['token_hash'], hashlib.sha256(data['token'].encode()).hexdigest())
             self.assertEqual(row['is_owner'], 0)
             with self.assertRaises(delivery.DeliveryError):
-                delivery.create_grant(self.api, {'origin': 'https://download.example.invalid'}, 'friend-opaque', path, int(time.time()) + 3600)
+                delivery.create_grant(self.api, self.api.config, 'friend-opaque', path, int(time.time()) + 3600)
 
     def test_access_file_and_config_cannot_be_written_under_git_or_symlinks(self):
         with tempfile.TemporaryDirectory(prefix='shadow-sync-delivery-git-') as folder:
@@ -185,7 +185,7 @@ class ChannelTests(unittest.TestCase):
             path = Path(folder).resolve() / 'fixture.shadow-sync-access'
             for owner, expiry in ((False, int(time.time()) + 3600), (True, 1)):
                 with self.assertRaises(delivery.DeliveryError):
-                    delivery.create_grant(self.api, {'origin': 'https://download.example.invalid'}, 'fixture', path, expiry, owner, 'qualification')
+                    delivery.create_grant(self.api, self.api.config, 'fixture', path, expiry, owner, 'qualification')
             self.assertEqual(self.api.query('SELECT * FROM grants'), [])
 
     def test_exact_qualification_then_stable_promotion_and_downgrade_refusal(self):
@@ -604,6 +604,546 @@ class ChannelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Cached verification runtime changed'):
                 toolchain.node(cache=cache)
         execute.assert_not_called()
+
+
+
+class AccessLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.TemporaryDirectory(prefix='shadow-sync-access-fixture-')
+        self.addCleanup(self.home.cleanup)
+        isolated = patch.dict(os.environ, HOME=self.home.name, GIT_CONFIG_NOSYSTEM='1',
+                              GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_SYSTEM='/dev/null')
+        isolated.start()
+        self.addCleanup(isolated.stop)
+        self.api = MemoryAPI()
+        self.addCleanup(self.api.folder.cleanup)
+        self.addCleanup(self.api.db.close)
+        self.expiry = int(time.time()) + 3600
+
+    def create(self, name='original', owner=False, channel='stable', replaces=None):
+        output = self.api.root / (name + '.shadow-sync-access')
+        grant = delivery.create_grant(self.api, self.api.config, name, output, self.expiry, owner, channel, replaces)
+        return grant, output, Path(str(output) + '.attempt.json')
+
+    def test_lifecycle_status_expiry_revoke_and_redaction(self):
+        grant, output, _ = self.create()
+        self.assertEqual(delivery.access_rows(self.api, grant)[0]['status'], 'active')
+        expired = delivery.change_grant(self.api, grant, expires_at=int(time.time()) - 1)
+        self.assertEqual(expired['status'], 'expired')
+        with self.assertRaises(delivery.DeliveryError):
+            delivery.change_grant(self.api, grant, expires_at=self.expiry)
+        revoked = delivery.change_grant(self.api, grant)
+        self.assertEqual(revoked['status'], 'revoked')
+        rows = json.dumps(delivery.access_rows(self.api))
+        token = json.loads(output.read_text())['token']
+        for private in (token, hashlib.sha256(token.encode()).hexdigest(), str(self.api.root), 'token_hash', 'label'):
+            self.assertNotIn(private, rows)
+        self.assertEqual(delivery.change_grant(self.api, grant), revoked)
+
+    def test_wrong_app_channel_owner_and_multiple_entitlements_refuse(self):
+        grant, _, _ = self.create(owner=True, channel='qualification')
+        for channel, owner in (('stable', True), ('qualification', False), ('stable', False)):
+            with self.assertRaises(delivery.DeliveryError):
+                delivery.change_grant(self.api, grant, channel, owner)
+        self.api.query('UPDATE entitlements SET app_id=? WHERE grant_id=?', ('fixture.other', grant))
+        self.assertEqual(delivery.access_rows(self.api, grant), [])
+        with self.assertRaises(delivery.DeliveryError):
+            delivery.change_grant(self.api, grant, 'qualification', True)
+        self.api.query('INSERT INTO entitlements VALUES(?,?,?)', (grant, delivery.APP, 'qualification'))
+        self.assertEqual(delivery.access_rows(self.api, grant)[0]['status'], 'scope-conflict')
+        with self.assertRaises(delivery.DeliveryError):
+            delivery.change_grant(self.api, grant, 'qualification', True)
+        self.assertIsNone(self.api.query('SELECT revoked_at FROM grants WHERE grant_id=?', (grant,))[0]['revoked_at'])
+
+    def test_successful_replacement_keeps_files_scope_and_old_bytes_caveat(self):
+        old, old_file, _ = self.create(owner=True, channel='qualification')
+        old_bytes = old_file.read_bytes()
+        new, output, attempt = self.create('replacement', True, 'qualification', old)
+        self.assertEqual(old_file.read_bytes(), old_bytes)
+        self.assertEqual(delivery.access_rows(self.api, old)[0]['status'], 'revoked')
+        self.assertEqual(delivery.access_rows(self.api, new)[0]['channel'], 'qualification')
+        self.assertEqual(delivery.recover_grant(self.api, self.api.config, attempt)['status'], 'complete')
+        self.assertEqual(len(delivery.access_rows(self.api)), 2)
+        self.assertTrue(output.exists())
+
+    def test_replacement_cannot_extend_expiry_or_cross_authority(self):
+        old, _, _ = self.create()
+        self.expiry += 1
+        with self.assertRaises(delivery.DeliveryError): self.create('extended', replaces=old)
+        self.expiry -= 1
+        with self.assertRaises(delivery.DeliveryError): self.create('owner', owner=True, replaces=old)
+        self.assertEqual(len(delivery.access_rows(self.api)), 1)
+
+    def test_each_ambiguous_write_cut_reconciles_without_replay(self):
+        for step in ('grant', 'entitlement', 'revoke'):
+            for committed in (False, True):
+                with self.subTest(step=step, committed=committed):
+                    old, _, _ = self.create('old-' + step + str(committed))
+                    name = 'new-' + step + str(committed)
+                    output = self.api.root / (name + '.shadow-sync-access')
+                    attempt = Path(str(output) + '.attempt.json')
+                    query = self.api.query
+                    prefix = {'grant':'INSERT INTO grants', 'entitlement':'INSERT INTO entitlements', 'revoke':'UPDATE grants'}[step]
+                    failures = []
+                    def interrupted(sql, params=()):
+                        if sql.startswith(prefix) and not failures:
+                            failures.append((sql, params))
+                            if committed: query(sql, params)
+                            raise TimeoutError('synthetic ambiguous effect')
+                        return query(sql, params)
+                    with patch.object(self.api, 'query', side_effect=interrupted):
+                        with self.assertRaises(delivery.DeliveryError): self.create(name, replaces=old)
+                    self.assertTrue(output.exists())
+                    self.assertTrue(attempt.exists())
+                    writes_before = len([sql for sql,_ in self.api.calls if sql.startswith(prefix)])
+                    result = delivery.recover_grant(self.api, self.api.config, attempt, complete=True)
+                    writes_after = len([sql for sql,_ in self.api.calls if sql.startswith(prefix)])
+                    self.assertEqual(writes_after, writes_before)
+                    self.assertEqual(result['status'], 'complete' if committed else 'pending')
+                    expected = 'revoked' if committed else 'active'
+                    self.assertEqual(delivery.access_rows(self.api, old)[0]['status'], expected)
+
+    def test_local_cut_before_any_remote_intent_is_recoverable(self):
+        original = delivery.access_file
+        for failed_step in ('grant', 'entitlement', 'revoke'):
+            with self.subTest(step=failed_step):
+                old, _, _ = self.create('prior-' + failed_step)
+                def disk_full(path, value=None):
+                    if str(path).endswith('.attempt.json.' + failed_step) and value is not None:
+                        raise OSError('synthetic disk full before marker creation')
+                    return original(path, value)
+                with patch.object(delivery, 'access_file', side_effect=disk_full):
+                    with self.assertRaises(OSError): self.create('cut-' + failed_step, replaces=old)
+                attempt = self.api.root / ('cut-' + failed_step + '.shadow-sync-access.attempt.json')
+                self.assertEqual(delivery.recover_grant(self.api, self.api.config, attempt)['status'], 'pending')
+                self.assertEqual(delivery.recover_grant(self.api, self.api.config, attempt, complete=True)['status'], 'complete')
+                self.assertEqual(delivery.access_rows(self.api, old)[0]['status'], 'revoked')
+
+    def test_recovery_identity_file_modes_and_marker_tampering_refuse(self):
+        grant, output, attempt = self.create()
+        with self.assertRaises(delivery.DeliveryError):
+            delivery.recover_grant(self.api, dict(self.api.config, database_id='c' * 36), attempt, True)
+        output.chmod(0o644)
+        with self.assertRaises(delivery.DeliveryError): delivery.recover_grant(self.api, self.api.config, attempt, True)
+        output.chmod(0o600)
+        held = output.with_suffix('.held')
+        output.rename(held)
+        output.write_bytes(held.read_bytes()); output.chmod(0o600)
+        with self.assertRaises(delivery.DeliveryError): delivery.recover_grant(self.api, self.api.config, attempt, True)
+        output.unlink(); held.rename(output)
+        marker = Path(str(attempt) + '.grant')
+        marker.write_text('{}')
+        with self.assertRaises(delivery.DeliveryError): delivery.recover_grant(self.api, self.api.config, attempt, True)
+        self.assertEqual(delivery.access_rows(self.api, grant)[0]['status'], 'active')
+
+    def test_unsafe_custody_and_initial_file_failures_have_no_remote_effect(self):
+        private = self.api.root / 'private'
+        private.mkdir(mode=0o700)
+        linked = self.api.root / 'linked'
+        linked.symlink_to(private)
+        for root in (linked, self.api.root / 'open'):
+            if not root.exists():
+                root.mkdir(mode=0o700)
+                root.chmod(0o755)
+                self.assertEqual(root.stat().st_mode & 0o777, 0o755)
+            with self.assertRaises(delivery.DeliveryError):
+                delivery.create_grant(self.api, self.api.config, 'fixture', root / 'access', self.expiry)
+        real = delivery.access_file
+        def fail_attempt(path, value=None):
+            if str(path).endswith('.attempt.json') and value is not None: raise OSError('synthetic full disk')
+            return real(path, value)
+        with patch.object(delivery, 'access_file', side_effect=fail_attempt):
+            with self.assertRaises(OSError): self.create()
+        self.assertEqual(self.api.query('SELECT * FROM grants'), [])
+        self.assertTrue((self.api.root / 'original.shadow-sync-access').exists())
+        with self.assertRaises(delivery.DeliveryError): self.create()
+
+    def test_expiry_and_stale_free_proof_stop_pending_recovery_writes(self):
+        old, _, _ = self.create()
+        query = self.api.query
+        def interrupt(sql, params=()):
+            if sql.startswith('INSERT INTO entitlements'):
+                query(sql, params)
+                raise TimeoutError()
+            return query(sql, params)
+        with patch.object(self.api, 'query', side_effect=interrupt):
+            with self.assertRaises(delivery.DeliveryError): self.create('pending', replaces=old)
+        attempt = self.api.root / 'pending.shadow-sync-access.attempt.json'
+        with patch.object(delivery.time, 'time', return_value=self.expiry + 1):
+            result = delivery.recover_grant(self.api, self.api.config, attempt, True)
+            self.assertEqual(result['stage'], 'replacement-expired')
+        with patch.object(self.api, 'require_free', side_effect=delivery.DeliveryError('stale proof')):
+            with self.assertRaises(delivery.DeliveryError): delivery.recover_grant(self.api, self.api.config, attempt, True)
+        self.assertEqual(delivery.access_rows(self.api, old)[0]['status'], 'active')
+
+    def test_single_write_ambiguity_and_scope_race_never_claim_revocation(self):
+        for committed in (False, True):
+            grant, _, _ = self.create('single-' + str(committed))
+            query = self.api.query
+            writes = []
+            def ambiguous(sql, params=()):
+                if sql.startswith('UPDATE grants SET revoked_at'):
+                    writes.append(sql)
+                    if committed: query(sql, params)
+                    raise delivery.DeliveryError('Synthetic unknown write')
+                return query(sql, params)
+            with patch.object(self.api, 'query', side_effect=ambiguous):
+                with self.assertRaises(delivery.DeliveryError): delivery.change_grant(self.api, grant)
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(delivery.access_rows(self.api, grant)[0]['status'], 'revoked' if committed else 'active')
+        grant, _, _ = self.create('raced')
+        query = self.api.query
+        def changed_scope(sql, params=()):
+            if sql.startswith('UPDATE grants SET revoked_at'):
+                query('UPDATE entitlements SET app_id=? WHERE grant_id=?', ('fixture.other', grant))
+            return query(sql, params)
+        with patch.object(self.api, 'query', side_effect=changed_scope):
+            with self.assertRaises(delivery.DeliveryError): delivery.change_grant(self.api, grant)
+        self.assertIsNone(query('SELECT revoked_at FROM grants WHERE grant_id=?', (grant,))[0]['revoked_at'])
+        with patch.object(self.api, 'query', side_effect=delivery.DeliveryError('Synthetic unavailable read')):
+            with self.assertRaises(delivery.DeliveryError): delivery.access_rows(self.api, grant)
+
+    def test_replacement_does_not_revoke_original_if_new_scope_changes_at_write(self):
+        old, _, _ = self.create('race-old')
+        query = self.api.query
+        def change_new(sql, params=()):
+            if sql.startswith('UPDATE grants SET revoked_at'):
+                query('UPDATE entitlements SET app_id=? WHERE grant_id<>?', ('fixture.other', old))
+            return query(sql, params)
+        with patch.object(self.api, 'query', side_effect=change_new):
+            with self.assertRaises(delivery.DeliveryError): self.create('race-new', replaces=old)
+        self.assertEqual(delivery.access_rows(self.api, old)[0]['status'], 'active')
+        self.assertTrue((self.api.root / 'race-new.shadow-sync-access.attempt.json.revoke').exists())
+
+    def final_return_mutation(self, mutation):
+        # Every case reaches the actual final SQL boundary, including reconciliation
+        # after a revocation committed but its provider response was lost.
+        for recovery in ('completed-read-only', 'completed-explicit', 'lost-revoke-response'):
+            with self.subTest(mutation=mutation, recovery=recovery):
+                old, _, _ = self.create('old-' + mutation + '-' + recovery)
+                query = self.api.query
+                name = 'new-' + mutation + '-' + recovery
+                output = self.api.root / (name + '.shadow-sync-access')
+                attempt = Path(str(output) + '.attempt.json')
+                if recovery == 'lost-revoke-response':
+                    def lost_response(sql, params=()):
+                        result = query(sql, params)
+                        if sql.startswith('UPDATE grants SET revoked_at'):
+                            raise TimeoutError('synthetic lost committed response')
+                        return result
+                    with patch.object(self.api, 'query', side_effect=lost_response):
+                        with self.assertRaises(delivery.DeliveryError): self.create(name, replaces=old)
+                    new = json.loads(attempt.read_text())['grant']['grant_id']
+                else:
+                    new, output, attempt = self.create(name, replaces=old)
+                calls = len(self.api.calls)
+                fired = []
+                def raced_final_read(sql, params=()):
+                    if sql.startswith('SELECT g.*,e.app_id,e.channel'):
+                        self.assertFalse(fired)
+                        fired.append(True)
+                        if mutation in ('owner', 'channel', 'expiry', 'token', 'original-unrevoked',
+                                        'original-scope', 'missing-new', 'new-revoked', 'extra-scope',
+                                        'original-token', 'original-owner', 'original-expiry', 'original-revoked-at'):
+                            statement, values = {
+                                'owner': ('UPDATE grants SET is_owner=1 WHERE grant_id=?', (new,)),
+                                'channel': ('UPDATE entitlements SET channel=? WHERE grant_id=?', ('qualification', new)),
+                                'expiry': ('UPDATE grants SET expires_at=expires_at+3600 WHERE grant_id=?', (new,)),
+                                'token': ('UPDATE grants SET token_hash=? WHERE grant_id=?', (hashlib.sha256(('changed-' + new).encode()).hexdigest(), new)),
+                                'original-unrevoked': ('UPDATE grants SET revoked_at=NULL WHERE grant_id=?', (old,)),
+                                'original-scope': ('UPDATE entitlements SET app_id=? WHERE grant_id=?', ('fixture.other', old)),
+                                'missing-new': ('DELETE FROM grants WHERE grant_id=?', (new,)),
+                                'new-revoked': ('UPDATE grants SET revoked_at=? WHERE grant_id=?', (int(time.time()), new)),
+                                'extra-scope': ('INSERT INTO entitlements VALUES(?,?,?)', (new, 'fixture.other', 'stable')),
+                                'original-token': ('UPDATE grants SET token_hash=? WHERE grant_id=?', (hashlib.sha256(('changed-' + old).encode()).hexdigest(), old)),
+                                'original-owner': ('UPDATE grants SET is_owner=1 WHERE grant_id=?', (old,)),
+                                'original-expiry': ('UPDATE grants SET expires_at=expires_at+3600 WHERE grant_id=?', (old,)),
+                                'original-revoked-at': ('UPDATE grants SET revoked_at=revoked_at+1 WHERE grant_id=?', (old,)),
+                            }[mutation]
+                            if mutation == 'missing-new':
+                                self.api.db.execute('DELETE FROM entitlements WHERE grant_id=?', (new,))
+                            self.api.db.execute(statement, values)
+                        elif mutation in ('access-inode', 'attempt-inode'):
+                            target = output if mutation == 'access-inode' else attempt
+                            held = target.with_suffix('.held')
+                            target.rename(held)
+                            target.write_bytes(held.read_bytes()); target.chmod(0o600)
+                            self.assertNotEqual(target.stat().st_ino, held.stat().st_ino)
+                        elif mutation == 'access-bytes':
+                            value = json.loads(output.read_text()); value['token'] = 'synthetic-different-token'
+                            output.write_text(json.dumps(value))
+                        elif mutation == 'access-mode':
+                            output.chmod(0o644)
+                            self.assertEqual(output.stat().st_mode & 0o777, 0o644)
+                        elif mutation == 'access-whitespace':
+                            output.write_bytes(output.read_bytes() + b' ')
+                        elif mutation == 'attempt-whitespace':
+                            attempt.write_bytes(attempt.read_bytes() + b' ')
+                        elif mutation == 'attempt-mode':
+                            attempt.chmod(0o644)
+                        elif mutation == 'unknown':
+                            raise delivery.DeliveryError('Synthetic unavailable final observation')
+                        else:
+                            self.fail('Unknown fixture mutation')
+                    return query(sql, params)
+                with patch.object(self.api, 'query', side_effect=raced_final_read):
+                    with self.assertRaises(delivery.DeliveryError):
+                        delivery.recover_grant(self.api, self.api.config, attempt,
+                                               complete=recovery != 'completed-read-only')
+                self.assertEqual(fired, [True])
+                self.assertTrue(all(sql.startswith('SELECT') for sql, _ in self.api.calls[calls:]))
+                self.assertTrue(output.exists())
+                self.assertTrue(attempt.exists())
+
+    def test_final_recovery_refuses_changed_token_identity(self):
+        self.final_return_mutation('token')
+
+    def test_final_recovery_refuses_widened_owner(self):
+        self.final_return_mutation('owner')
+
+    def test_final_recovery_refuses_changed_channel(self):
+        self.final_return_mutation('channel')
+
+    def test_final_recovery_refuses_extended_expiry(self):
+        self.final_return_mutation('expiry')
+
+    def test_final_recovery_refuses_replaced_access_inode(self):
+        self.final_return_mutation('access-inode')
+
+    def test_final_recovery_refuses_changed_access_bytes(self):
+        self.final_return_mutation('access-bytes')
+
+    def test_final_recovery_refuses_open_access_permissions(self):
+        self.final_return_mutation('access-mode')
+
+    def test_final_recovery_refuses_replaced_attempt_inode(self):
+        self.final_return_mutation('attempt-inode')
+
+    def test_final_recovery_refuses_original_unrevoked(self):
+        self.final_return_mutation('original-unrevoked')
+
+    def test_final_recovery_refuses_original_foreign_scope(self):
+        self.final_return_mutation('original-scope')
+
+    def test_final_recovery_refuses_changed_original_identity(self):
+        for mutation in ('original-token', 'original-owner', 'original-expiry', 'original-revoked-at'):
+            self.final_return_mutation(mutation)
+
+    def test_final_recovery_refuses_missing_revoked_or_multiple_scope(self):
+        for mutation in ('missing-new', 'new-revoked', 'extra-scope'):
+            self.final_return_mutation(mutation)
+
+    def test_final_recovery_refuses_raw_byte_or_attempt_permission_drift(self):
+        for mutation in ('access-whitespace', 'attempt-whitespace', 'attempt-mode'):
+            self.final_return_mutation(mutation)
+
+    def test_final_recovery_unknown_observation_never_reports_completion(self):
+        self.final_return_mutation('unknown')
+
+    def test_final_recovery_preserves_positive_expired_and_redacted_outcomes(self):
+        old, _, _ = self.create('status-old')
+        new, output, attempt = self.create('status-new', replaces=old)
+        for expired in (False, True):
+            with self.subTest(expired=expired):
+                now = self.expiry + 1 if expired else int(time.time())
+                calls = len(self.api.calls)
+                with patch.object(delivery.time, 'time', return_value=now):
+                    result = delivery.recover_grant(self.api, self.api.config, attempt)
+                self.assertEqual(result, dict(grant_id=new, status='complete',
+                                              access_status='expired' if expired else 'active'))
+                reads = self.api.calls[calls:]
+                self.assertTrue(all(sql.startswith('SELECT') for sql, _ in reads))
+                self.assertEqual(sum(sql.startswith('SELECT g.*,e.app_id,e.channel') for sql, _ in reads), 1)
+                self.assertTrue(reads[-1][0].startswith('SELECT g.*,e.app_id,e.channel'))
+                for private in (json.loads(output.read_text())['token'], 'token_hash', str(self.api.root)):
+                    self.assertNotIn(private, json.dumps(result))
+
+    def test_custody_brackets_last_file_read_and_held_attempt_lock(self):
+        _, output, attempt = self.create()
+        real = delivery.access_custody
+        triggered = []
+        final = []
+        query = self.api.query
+        def mark_final(sql, params=()):
+            if sql.startswith('SELECT g.*,e.app_id,e.channel'): final.append(True)
+            return query(sql, params)
+        def change_earlier_file(path):
+            result = real(path)
+            if final and Path(path) == output and not triggered:
+                triggered.append(True)
+                attempt.write_bytes(attempt.read_bytes() + b' ')
+            return result
+        with patch.object(self.api, 'query', side_effect=mark_final), \
+             patch.object(delivery, 'access_custody', side_effect=change_earlier_file):
+            with self.assertRaises(delivery.DeliveryError):
+                delivery.recover_grant(self.api, self.api.config, attempt)
+        self.assertEqual(triggered, [True])
+
+    def test_custody_refuses_noncanonical_original_bytes_before_recovery(self):
+        _, output, attempt = self.create()
+        before = len(self.api.calls)
+        output.write_bytes(output.read_bytes() + b' ')
+        with self.assertRaises(delivery.DeliveryError):
+            delivery.recover_grant(self.api, self.api.config, attempt, complete=True)
+        self.assertEqual(len(self.api.calls), before)
+
+    def test_observed_attempt_marker_disappearance_never_replays(self):
+        for step, prefix in (('grant', 'INSERT INTO grants'), ('entitlement', 'INSERT INTO entitlements'),
+                             ('revoke', 'UPDATE grants SET revoked_at')):
+            with self.subTest(step=step):
+                old = self.create('prior-' + step)[0] if step == 'revoke' else None
+                query = self.api.query
+                writes = []
+                def lost_response(sql, params=()):
+                    if sql.startswith(prefix):
+                        writes.append(sql)
+                        raise TimeoutError('Synthetic ambiguous response before effect')
+                    return query(sql, params)
+                with patch.object(self.api, 'query', side_effect=lost_response):
+                    with self.assertRaises(delivery.DeliveryError):
+                        self.create('pending-' + step, replaces=old)
+                attempt = self.api.root / ('pending-' + step + '.shadow-sync-access.attempt.json')
+                marker = Path(str(attempt) + '.' + step)
+                self.assertTrue(marker.exists())
+                observed, removed = [], []
+                read = delivery.access_custody
+                def observed_custody(path):
+                    result = read(path)
+                    if Path(path) == marker: observed.append(True)
+                    return result
+                def remove_after_observation(sql, params=()):
+                    if sql.startswith('SELECT * FROM grants') and not removed:
+                        self.assertTrue(observed)
+                        removed.append(True)
+                        marker.unlink()
+                    if sql.startswith(prefix): writes.append(sql)
+                    return query(sql, params)
+                with patch.object(delivery, 'access_custody', side_effect=observed_custody), \
+                     patch.object(self.api, 'query', side_effect=remove_after_observation):
+                    with self.assertRaises(delivery.DeliveryError):
+                        delivery.recover_grant(self.api, self.api.config, attempt, complete=True)
+                self.assertEqual(removed, [True])
+                self.assertEqual(len(writes), 1, 'An ambiguous original write must never be replayed')
+
+    def test_final_step_marker_bytes_mode_inode_and_presence_are_retained(self):
+        for step in ('grant', 'entitlement', 'revoke'):
+            for mutation in ('bytes', 'mode', 'inode', 'missing'):
+                with self.subTest(step=step, mutation=mutation):
+                    name = step + '-' + mutation
+                    old = self.create('old-' + name)[0]
+                    _, _, attempt = self.create('new-' + name, replaces=old)
+                    marker = Path(str(attempt) + '.' + step)
+                    query, fired = self.api.query, []
+                    def changed_marker(sql, params=()):
+                        if sql.startswith('SELECT g.*,e.app_id,e.channel') and not fired:
+                            fired.append(True)
+                            if mutation == 'bytes': marker.write_bytes(b'{}\n')
+                            elif mutation == 'mode': marker.chmod(0o644)
+                            elif mutation == 'missing': marker.unlink()
+                            else:
+                                held = Path(str(marker) + '.retained')
+                                marker.rename(held)
+                                marker.write_bytes(held.read_bytes()); marker.chmod(0o600)
+                        return query(sql, params)
+                    before = len(self.api.calls)
+                    with patch.object(self.api, 'query', side_effect=changed_marker):
+                        with self.assertRaises(delivery.DeliveryError):
+                            delivery.recover_grant(self.api, self.api.config, attempt, complete=True)
+                    self.assertEqual(fired, [True])
+                    self.assertTrue(all(sql.startswith('SELECT') for sql, _ in self.api.calls[before:]))
+
+    def test_final_recovery_refuses_a_new_previously_absent_marker(self):
+        _, _, attempt = self.create()
+        intent = json.loads(attempt.read_text())
+        marker = Path(str(attempt) + '.revoke')
+        value = dict(attempt_id=intent['attempt_id'], intent_sha256=hashlib.sha256(
+            json.dumps(intent, sort_keys=True).encode()).hexdigest(), step='revoke')
+        query, fired = self.api.query, []
+        def create_during_final_read(sql, params=()):
+            if sql.startswith('SELECT g.*,e.app_id,e.channel') and not fired:
+                fired.append(True); delivery.access_file(marker, value)
+            return query(sql, params)
+        with patch.object(self.api, 'query', side_effect=create_during_final_read):
+            with self.assertRaises(delivery.DeliveryError):
+                delivery.recover_grant(self.api, self.api.config, attempt)
+        self.assertEqual(fired, [True])
+
+    def test_marker_custody_is_bracketed_after_later_marker_reads(self):
+        _, _, attempt = self.create()
+        grant, entitlement = Path(str(attempt) + '.grant'), Path(str(attempt) + '.entitlement')
+        query, read, final, changed = self.api.query, delivery.access_custody, [], []
+        def final_read(sql, params=()):
+            if sql.startswith('SELECT g.*,e.app_id,e.channel'): final.append(True)
+            return query(sql, params)
+        def change_earlier_marker(path):
+            result = read(path)
+            if final and Path(path) == entitlement and not changed:
+                changed.append(True); grant.write_bytes(grant.read_bytes() + b' ')
+            return result
+        with patch.object(self.api, 'query', side_effect=final_read), \
+             patch.object(delivery, 'access_custody', side_effect=change_earlier_marker):
+            with self.assertRaises(delivery.DeliveryError):
+                delivery.recover_grant(self.api, self.api.config, attempt)
+        self.assertEqual(changed, [True])
+
+    def test_new_marker_keeps_its_created_inode_before_provider_effect(self):
+        write, changed = delivery.access_file, []
+        def replace_after_creation(path, value=None):
+            result = write(path, value)
+            if value is not None and str(path).endswith('.grant') and not changed:
+                changed.append(True)
+                path = Path(path); held = Path(str(path) + '.retained')
+                path.rename(held); path.write_bytes(held.read_bytes()); path.chmod(0o600)
+            return result
+        with patch.object(delivery, 'access_file', side_effect=replace_after_creation):
+            with self.assertRaises(delivery.DeliveryError): self.create()
+        self.assertEqual(changed, [True])
+        self.assertTrue(all(sql.startswith('SELECT') for sql, _ in self.api.calls))
+
+    def test_cli_outputs_redacted_scoped_status(self):
+        grant, output, _ = self.create()
+        capture = io.StringIO()
+        with patch.object(delivery, 'load_config', return_value=self.api.config), patch.object(delivery, 'Cloudflare', return_value=self.api), \
+             patch.object(delivery.sys, 'argv', ['delivery.py', '--config', '/fixture/private.json', 'grant-status', '--grant-id', grant]), \
+             contextlib.redirect_stdout(capture):
+            self.assertEqual(delivery.main(), 0)
+        self.assertEqual(json.loads(capture.getvalue())[0]['status'], 'active')
+        self.assertNotIn(json.loads(output.read_text())['token'], capture.getvalue())
+
+
+    def test_initial_opened_marker_disappearance_is_not_absence(self):
+        import inspect
+        for step, prefix in (('grant', 'INSERT INTO grants'), ('entitlement', 'INSERT INTO entitlements'), ('revoke', 'UPDATE grants SET revoked_at')):
+            with self.subTest(step=step):
+                old = self.create('prior-' + step)[0] if step == 'revoke' else None
+                query = self.api.query
+                writes = []
+                def lost_response(sql, params=()):
+                    if sql.startswith(prefix):
+                        writes.append(sql)
+                        raise TimeoutError('Synthetic ambiguous response before effect')
+                    return query(sql, params)
+                with patch.object(self.api, 'query', side_effect=lost_response):
+                    with self.assertRaises(delivery.DeliveryError):
+                        self.create('pending-' + step, replaces=old)
+                attempt = self.api.root / ('pending-' + step + '.shadow-sync-access.attempt.json')
+                marker = Path(str(attempt) + '.' + step)
+                self.assertTrue(marker.exists())
+                realstat, removed = Path.stat, []
+                def remove_before_named_check(path, *args, **kwargs):
+                    if path == marker and kwargs.get('follow_symlinks') is False and not removed:
+                        self.assertEqual(inspect.currentframe().f_back.f_code.co_name, 'access_custody')
+                        removed.append(True)
+                        path.unlink()
+                    return realstat(path, *args, **kwargs)
+                def track_write(sql, params=()):
+                    if sql.startswith(prefix): writes.append(sql)
+                    return query(sql, params)
+                with patch.object(Path, 'stat', new=remove_before_named_check), patch.object(self.api, 'query', side_effect=track_write):
+                    with self.assertRaises(delivery.DeliveryError):
+                        delivery.recover_grant(self.api, self.api.config, attempt, complete=True)
+                self.assertEqual(removed, [True])
+                self.assertEqual(len(writes), 1, 'An opened marker disappearing must never authorize replay')
 
 
 if __name__ == '__main__':

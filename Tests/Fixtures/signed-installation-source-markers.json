@@ -1,0 +1,26 @@
+{
+  "schema": "shadow-sync-signed-installation-source-markers/v1",
+  "qualification": "connected-startup-stop-source-only",
+  "markers": [
+    "SignedInstallationFixtureContext",
+    "SignedInstallationFixtureSourceEntrypoint",
+    "--verify-signed-installation-fixture-source",
+    "shadow-sync-signed-installation-request/v1",
+    "shadow-sync-signed-installation-package/v1",
+    "signed-installation/source-preflight",
+    "SignedInstallationFixtureParentChannel",
+    "--shadow-sync-signed-installation-custodian",
+    "shadow-sync-signed-installation-parent/v1",
+    "SignedInstallationFixtureEntrypoint",
+    "--verify-signed-installation-fixture",
+    "SignedInstallationFixtureHostChannel",
+    "SignedInstallationFixtureService",
+    "SignedInstallationFixtureAdapterChannel",
+    "--shadow-sync-signed-installation-adapter",
+    "SignedInstallationFixtureApp",
+    "signed-installation/startup-stop",
+    "signed-installation/cleanup-endpoint/beforeUnlink",
+    "signed-installation/terminal-close/operation",
+    "signed-installation/terminal-successful-operation-close-deadline"
+  ]
+}

@@ -25,8 +25,9 @@ struct InstallationCommitDeliveryState {
 /// requires the actual journal's identity-bound one-shot delivery capability.
 enum InstallationCommitDeliveryBinding {
     static func message(ready: InstallationReadinessMessage, committed: InstallationControlRecord,
-                        deadline: MonotonicDeadline) throws -> InstallationReadinessMessage {
-        try ready.validate(); try committed.validate()
+                        deadline: MonotonicDeadline,
+                        validationProfile: InstallationValidationProfile = .production) throws -> InstallationReadinessMessage {
+        try ready.validate(); try committed.validate(profile: validationProfile)
         guard !deadline.hasExpired, let transaction = committed.transaction,
               let commit = committed.readinessCommit, ready.event == .ready,
               ready.transactionID == transaction.id, ready.boot == transaction.boot,

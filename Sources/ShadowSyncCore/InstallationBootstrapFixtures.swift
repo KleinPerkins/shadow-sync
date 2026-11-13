@@ -23,6 +23,15 @@ enum InstallationBootstrapFixtures {
         try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath:
             location.path + "/custody/installation.json")))
     }
+    // Authenticated stopped helpers retain the original journal's explicit
+    // profile; ordinary fixtures keep the strict default snapshot decoder.
+    private static func stored(_ location: StateLocation, bootstrap: B) throws -> InstallationControlRecord {
+        guard let journal = bootstrap.testingTerminalJournal() else { throw CustodyRecordError.fenced }
+        let profile = journal.testingValidationProfile
+        try profile.validateLocation(location)
+        return try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath:
+            location.path + "/custody/installation.json")), profile: profile)
+    }
     private static func assertGuardHeld(_ root: String) throws {
         let fd = open(root + "/state/.shadow-sync-initialization.lock", O_RDWR | O_NOFOLLOW | O_CLOEXEC)
         try H.check(fd >= 0, "bootstrap guard contender"); defer { close(fd) }
@@ -232,6 +241,12 @@ enum InstallationBootstrapFixtures {
                 guard !cleanup.hasExpired else { throw H.Failure(message: "bootstrap exclusive owned cleanup pending") }
                 Thread.sleep(forTimeInterval: 0.005)
             }
+            // Service custody is enrolled in the outer guardian before opening.
+            // Join before fixture-owned named cleanup; a failure retains root,
+            // bootstrap and journal for the guardian instead of deleting live work.
+            try bootstrap.testingReleaseFailedStartAliases()
+            try bootstrap.testingCloseReadiness(deadline: cleanup)
+            try bootstrap.testingRemoveReadinessEndpoint()
             try registry.testingDispose()
             if let failure { throw failure }
         }
@@ -953,5 +968,1993 @@ enum InstallationBootstrapFixtures {
         }
     }
 
+    private static func readinessPrepared(_ bootstrap: B, deadline: MonotonicDeadline = .init(seconds: 30)) throws {
+        try journalTransferred(bootstrap, deadline: deadline)
+        try bootstrap.continueStagedJournal()
+    }
+    // A UNIX socket cannot be opened as a regular ACL snapshot descriptor.
+    // Capture its named node here; the causal endpoint owner validates socket
+    // ACL/generation after the actual queue joins. Never race that queue's lock.
+    private static func readinessDisk(_ root: String) throws -> [String: H.Snapshot] {
+        var result: [String: H.Snapshot] = [:]
+        func visit(_ path: String) throws {
+            var node = stat(); try H.check(lstat(path, &node) == 0, "bootstrap readiness disk snapshot")
+            let kind = node.st_mode & S_IFMT
+            result[path] = H.Snapshot(identity: FileIdentity(node),
+                bytes: kind == S_IFREG ? try Data(contentsOf: URL(fileURLWithPath: path)) : nil,
+                link: kind == S_IFLNK ? try FileManager.default.destinationOfSymbolicLink(atPath: path) : nil,
+                flags: node.st_flags, acl: kind == S_IFLNK || kind == S_IFSOCK ? nil : try H.rawACL(path))
+            if kind == S_IFDIR {
+                for name in try FileManager.default.contentsOfDirectory(atPath: path).sorted() { try visit(path + "/" + name) }
+            }
+        }
+        try visit(root); return result
+    }
+    private static func readinessReplayRefuses(_ root: String, _ bootstrap: B) throws {
+        let disk = try readinessDisk(root), observation = bootstrap.observation()
+        let opening = bootstrap.stagedReadinessObservation(), closure = bootstrap.stagedReadinessClosureObservation()
+        let retained = bootstrap.testingReadinessRetention()
+        try H.refuses { try bootstrap.openStagedReadiness() }
+        try H.check(try readinessDisk(root) == disk && bootstrap.observation() == observation
+            && bootstrap.stagedReadinessObservation() == opening
+            && bootstrap.stagedReadinessClosureObservation() == closure
+            && bootstrap.testingReadinessRetention() == retained,
+            "bootstrap readiness replay changed actual owners or durable evidence")
+    }
+    static func readinessBeforeJournal() throws {
+        try exclusiveFixture { root, _, bootstrap, _ in
+            func refusesUnclaimed() throws {
+                try readinessReplayRefuses(root, bootstrap)
+                try H.check(bootstrap.stagedReadinessObservation() == .notAttempted,
+                            "bootstrap readiness preclaim consumed valid later attempt")
+            }
+            try refusesUnclaimed()
+            try bootstrap.reserve(deadline: .init(seconds: 30)); try refusesUnclaimed()
+            try bootstrap.prepareExclusive(); try refusesUnclaimed()
+            try bootstrap.transferToStagedAdmission(); try refusesUnclaimed()
+            try bootstrap.continueStagedJournal(); try bootstrap.openStagedReadiness()
+            try H.check(bootstrap.stagedReadinessObservation() == .complete,
+                        "bootstrap readiness preclaim refusal poisoned valid opening")
+        }
+    }
+    static func readinessPositive() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            try readinessPrepared(bootstrap)
+            let before = try stored(location)
+            try bootstrap.openStagedReadiness()
+            let completed = try stored(location)
+            try H.check(bootstrap.stagedReadinessObservation() == .complete && !bootstrap.observation().failedClosed
+                && bootstrap.stagedReadinessClosureObservation() == .notAttempted
+                && bootstrap.testingReadinessRetention().allSatisfy { $0 },
+                "bootstrap readiness successful opening lost retained outcome")
+            try H.check(completed.revision == before.revision + 1 && completed.step?.ordinal == 12
+                && completed.step?.action == .openStagedAdmission && completed.step?.status == .complete
+                && completed.phase == .active && completed.readinessCommit == nil
+                && completed.transaction?.sameBinding(as: before.transaction!) == true
+                && completed.state == before.state
+                && completed.transaction?.slots.images[.stateDestination] == before.transaction?.slots.images[.stateDestination],
+                "bootstrap readiness changed original transaction or state generation")
+            guard let endpoint = bootstrap.testingReadinessEndpoint(), let session = bootstrap.testingReadinessSession(),
+                  let node = completed.transaction?.slots.images[.installationSocket]?.node else {
+                throw H.Failure(message: "bootstrap readiness actual session or endpoint missing")
+            }
+            try H.check(node.type == .socket && node.mode == 0o140600 && node.links == 1
+                && before.transaction?.slots.images[.installationSocket]?.node == nil,
+                "bootstrap readiness socket completion differs from actual intent")
+            let receiptName = try FileManager.default.contentsOfDirectory(atPath: location.path + "/custody/receipts")
+                .filter { $0.hasPrefix(InstallationStepReceipt.prefix) }
+            let decodedReceipts: [InstallationStepReceipt] = try receiptName.map { name in
+                let receiptURL = URL(fileURLWithPath: location.path + "/custody/receipts/" + name)
+                let receiptBytes = try Data(contentsOf: receiptURL)
+                return try InstallationStepReceipt.decode(receiptBytes, uid: location.uid)
+            }
+            let receipts = decodedReceipts.sorted { left, right in
+                if left.ordinal == right.ordinal {
+                    return left.status == .intent && right.status == .complete
+                }
+                return left.ordinal < right.ordinal
+            }
+            try completed.validateReceiptChain(receipts)
+            try H.check(!registry.hasRetainedWork && registry.testingCount == 0 && registry.testingOriginalHelpersReaped
+                && session.testingAnchoredDeadline == nil, "bootstrap readiness launched command or reset readiness clock")
+            try InstallationOwnershipFixtures.excluded(location)
+            try readinessReplayRefuses(root, bootstrap)
+            try bootstrap.testingCloseReadiness(deadline: .init(seconds: 3))
+            try H.check(bootstrap.testingReadinessSession() == nil && bootstrap.testingReadinessEndpoint() === endpoint,
+                        "bootstrap readiness join lost named custody or kept service")
+            try endpoint.revalidate()
+        }
+    }
+    static func readinessReentrantReplay() throws {
+        try exclusiveFixture { root, _, bootstrap, _ in
+            var claims = 0, returns = 0
+            try bootstrap.testingConfigureStagedReadiness(afterClaim: { [weak bootstrap] in
+                guard let bootstrap else { throw H.Failure(message: "bootstrap readiness claim missing owner") }
+                claims += 1
+                try H.check(bootstrap.stagedReadinessObservation() == .running
+                    && !bootstrap.testingReadinessRetention()[0], "bootstrap readiness unclaimed completion")
+                try readinessReplayRefuses(root, bootstrap)
+            }, afterReturn: { [weak bootstrap] in
+                guard let bootstrap else { throw H.Failure(message: "bootstrap readiness return missing owner") }
+                returns += 1
+                try H.check(bootstrap.stagedReadinessObservation() == .running
+                    && bootstrap.testingReadinessRetention()[0] && bootstrap.testingReadinessJournalLockAvailable(),
+                    "bootstrap readiness postflight spans lock or lost actual result")
+                try readinessReplayRefuses(root, bootstrap)
+            })
+            try readinessPrepared(bootstrap); try bootstrap.openStagedReadiness()
+            try readinessReplayRefuses(root, bootstrap)
+            try H.check(claims == 1 && returns == 1 && bootstrap.stagedReadinessObservation() == .complete,
+                        "bootstrap readiness reentry repeated claimed work")
+        }
+    }
+    static func readinessOriginalDeadline() throws {
+        for point in 0..<3 {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                let original = MonotonicDeadline(seconds: 0.750)
+                let expire: () throws -> Void = {
+                    while !original.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+                }
+                try bootstrap.testingConfigureStagedReadiness(afterClaim: point == 1 ? expire : nil,
+                    afterReturn: point == 2 ? expire : nil)
+                try readinessPrepared(bootstrap, deadline: original)
+                let before = try stored(location)
+                if point == 0 { try expire() }
+                try H.refuses { try bootstrap.openStagedReadiness() }
+                try H.check(original.hasExpired && bootstrap.stagedReadinessObservation() == .failed
+                    && bootstrap.observation().failedClosed && bootstrap.testingStagedJournalStartsRefused()
+                    && bootstrap.stagedReadinessClosureObservation() == .pending
+                    && bootstrap.testingReadinessRetention() == [point == 2, true, true, true, true],
+                    "bootstrap readiness refreshed original deadline or lost failed owner")
+                let after = try stored(location)
+                try H.check(after.revision == before.revision + (point == 2 ? 1 : 0)
+                    && after.step?.status == (point == 2 ? .complete : .intent)
+                    && after.phase == .active && after.readinessCommit == nil,
+                    "bootstrap readiness expiration fabricated or discarded durable completion")
+                try InstallationOwnershipFixtures.excluded(location)
+                try readinessReplayRefuses(root, bootstrap)
+            }
+        }
+    }
+    static func readinessPartialPublication() throws {
+        for point in 0..<3 {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                try bootstrap.testingConfigureStagedReadiness(
+                    endpointCut: point == 0 ? .afterMode : (point == 1 ? .afterListen : nil), receiptCut: point == 2)
+                try readinessPrepared(bootstrap)
+                let before = try stored(location)
+                let oldReceipts = try FileManager.default.contentsOfDirectory(atPath: location.path + "/custody/receipts")
+                try H.refuses { try bootstrap.openStagedReadiness() }
+                guard let endpoint = bootstrap.testingReadinessEndpoint() else {
+                    throw H.Failure(message: "bootstrap readiness partial creator lost")
+                }
+                try H.check(bootstrap.stagedReadinessObservation() == .failed && bootstrap.observation().failedClosed
+                    && bootstrap.stagedReadinessClosureObservation() == .joined
+                    && bootstrap.testingReadinessRetention() == [false, true, true, true, true]
+                    && bootstrap.testingReadinessSession() == nil && bootstrap.testingStagedJournalStartsRefused(),
+                    "bootstrap readiness partial publication released owner or claimed completion")
+                try H.check(try stored(location) == before, "bootstrap readiness partial publication rewrote intent")
+                var node = stat()
+                try H.check(lstat(location.path + "/installation.sock", &node) == 0 && node.st_mode == S_IFSOCK | 0o600,
+                            "bootstrap readiness partial socket evidence erased")
+                let newReceipts = try FileManager.default.contentsOfDirectory(atPath: location.path + "/custody/receipts")
+                try H.check(newReceipts.count == oldReceipts.count + (point == 2 ? 1 : 0),
+                            "bootstrap readiness partial receipt evidence lost")
+                try endpoint.requireServiceClosed()
+                try InstallationOwnershipFixtures.excluded(location); try readinessReplayRefuses(root, bootstrap)
+            }
+        }
+    }
+    static func readinessReturnedFailure() throws {
+        for drift in 0..<3 {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                weak var actualEndpoint: InstallationReadinessEndpoint?
+                weak var actualSession: InstallationPrecommitSession?
+                let path = location.path + "/custody/installation.json", saved = root + "/retained-readiness-control"
+                try bootstrap.testingConfigureStagedReadiness(afterReturn: { [weak bootstrap] in
+                    guard let bootstrap else { throw H.Failure(message: "bootstrap readiness post-return owner missing") }
+                    actualEndpoint = bootstrap.testingReadinessEndpoint(); actualSession = bootstrap.testingReadinessSession()
+                    try H.check(actualEndpoint != nil && actualSession != nil && bootstrap.testingReadinessRetention()[0],
+                                "bootstrap readiness outcome not retained before failing postflight")
+                    if drift == 1 { try H.check(chmod(path, 0o644) == 0, "bootstrap readiness metadata drift") }
+                    else if drift == 2 {
+                        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+                        try H.check(rename(path, saved) == 0, "bootstrap readiness retain substituted control")
+                        try bytes.write(to: URL(fileURLWithPath: path), options: .withoutOverwriting)
+                        try H.check(chmod(path, 0o600) == 0, "bootstrap readiness replacement control mode")
+                    } else { throw CustodyRecordError.injectedFailure }
+                })
+                try readinessPrepared(bootstrap)
+                try H.refuses { try bootstrap.openStagedReadiness() }
+                let released = MonotonicDeadline(seconds: 0.750)
+                while actualSession != nil && !released.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+                try H.check(bootstrap.stagedReadinessObservation() == .failed && bootstrap.observation().failedClosed
+                    && bootstrap.stagedReadinessClosureObservation() == .joined
+                    && bootstrap.testingReadinessRetention().allSatisfy { $0 }
+                    && bootstrap.testingStagedJournalStartsRefused()
+                    && actualEndpoint != nil && bootstrap.testingReadinessEndpoint() === actualEndpoint
+                    && actualSession == nil && bootstrap.testingReadinessSession() == nil,
+                    "bootstrap readiness failed postflight dropped actual custody or failed to join")
+                if drift == 1 { try H.check(chmod(path, 0o600) == 0, "bootstrap readiness restore fixture metadata") }
+                else if drift == 2 {
+                    try H.check(unlink(path) == 0 && rename(saved, path) == 0, "bootstrap readiness restore original fixture control")
+                }
+                let completed = try stored(location)
+                try H.check(completed.step?.status == .complete && completed.step?.ordinal == 12
+                    && completed.phase == .active && completed.readinessCommit == nil,
+                    "bootstrap readiness postflight failure rewrote durable outcome")
+                try InstallationOwnershipFixtures.excluded(location); try readinessReplayRefuses(root, bootstrap)
+            }
+        }
+    }
+    static func readinessPublicationCancellation() throws {
+        for source in [false, true] {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                let barrier = CustodyLeaseTestingBarrier(), deadline = MonotonicDeadline(seconds: 30)
+                defer { barrier.release() }
+                try bootstrap.testingConfigureStagedReadiness(publicationBarrier: source ? nil : barrier,
+                    sourceBarrier: source ? barrier : nil)
+                try readinessPrepared(bootstrap, deadline: deadline)
+                let custody = try RuntimeFixtureSession.installationRoot(root), call = ExclusiveCall(bootstrap)
+                let work = custody.startWork { try H.refuses { try call.bootstrap.openStagedReadiness() } }
+                try H.check(barrier.waitUntilEntered(), "bootstrap readiness publication barrier not entered")
+                try H.check(bootstrap.stagedReadinessObservation() == .running && bootstrap.testingReadinessJournalLockAvailable(),
+                            "bootstrap readiness blocking source/publication held mutex")
+                try readinessReplayRefuses(root, bootstrap)
+                if source {
+                    try H.refuses { try bootstrap.testingCloseReadiness(deadline: .init(seconds: 0.02)) }
+                    try H.check(bootstrap.testingReadinessEndpoint() == nil, "bootstrap readiness created socket before source boundary")
+                } else {
+                    guard let session = bootstrap.testingReadinessSession() else {
+                        throw H.Failure(message: "bootstrap readiness unpublished queue owner missing")
+                    }
+                    try bootstrap.testingCloseReadiness(deadline: .init(seconds: 0.750))
+                    try H.check(bootstrap.testingReadinessSession() == nil && !session.start(),
+                                "bootstrap readiness cancelled reservation launched queue")
+                }
+                barrier.release(); try work.value(deadline: deadline)
+                try H.check(bootstrap.stagedReadinessObservation() == .failed
+                    && bootstrap.stagedReadinessClosureObservation() == .joined && bootstrap.testingStagedJournalStartsRefused(),
+                    "bootstrap readiness cancellation reopened claimed owner")
+                try InstallationOwnershipFixtures.excluded(location)
+            }
+        }
+    }
+    static func readinessFailedJoinCustody() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            let barrier = CustodyLeaseTestingBarrier(), deadline = MonotonicDeadline(seconds: 3)
+            defer { barrier.release() }
+            var peer: Int32 = -1
+            defer { if peer >= 0 { close(peer) } }
+            weak var actualSession: InstallationPrecommitSession?
+            weak var actualEndpoint: InstallationReadinessEndpoint?
+            try bootstrap.testingConfigureStagedReadiness(afterReturn: { [weak bootstrap] in
+                guard let bootstrap, let session = bootstrap.testingReadinessSession() else {
+                    throw H.Failure(message: "bootstrap readiness failed-join actual session missing")
+                }
+                actualSession = session; actualEndpoint = bootstrap.testingReadinessEndpoint()
+                session.testingPauseVerification(barrier)
+                peer = socket(AF_UNIX, SOCK_STREAM, 0)
+                try H.check(peer >= 0, "bootstrap readiness untrusted fixture peer")
+                var address = try HostControlIO.address(path: location.path + "/installation.sock")
+                let connected = withUnsafePointer(to: &address) { p in
+                    p.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(peer, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+                }
+                try H.check(connected == 0 && barrier.waitUntilEntered(), "bootstrap readiness actual verification queue not reached")
+                try H.check(bootstrap.testingReadinessJournalLockAvailable(), "bootstrap readiness verifier held metadata lock")
+                throw CustodyRecordError.injectedFailure
+            })
+            try readinessPrepared(bootstrap, deadline: deadline)
+            try H.refuses { try bootstrap.openStagedReadiness() }
+            try H.check(deadline.hasExpired && bootstrap.stagedReadinessObservation() == .failed
+                && bootstrap.stagedReadinessClosureObservation() == .pending && bootstrap.testingStagedJournalStartsRefused()
+                && actualSession != nil && bootstrap.testingReadinessSession() === actualSession
+                && actualEndpoint != nil && bootstrap.testingReadinessEndpoint() === actualEndpoint,
+                "bootstrap readiness failed join discarded actual service owner")
+            let custody = try RuntimeFixtureSession.installationRoot(root)
+            try H.refuses { try custody.finish(deadline: .init(seconds: 0.02)) }
+            var info = stat()
+            try H.check(lstat(root, &info) == 0 && RuntimeFixtureSession.installationRoot(root) === custody
+                && bootstrap.testingReadinessSession() === actualSession,
+                "bootstrap readiness failed join removed root or unresolved custody")
+            try InstallationOwnershipFixtures.excluded(location); try readinessReplayRefuses(root, bootstrap)
+            barrier.release()
+            try bootstrap.testingCloseReadiness(deadline: .init(seconds: 3))
+            let released = MonotonicDeadline(seconds: 0.750)
+            while actualSession != nil && !released.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+            try H.check(bootstrap.testingReadinessSession() == nil && actualSession == nil
+                && bootstrap.testingReadinessEndpoint() === actualEndpoint,
+                "bootstrap readiness released verifier did not join actual session")
+            // Fixture drainage does not rewrite the failed production attempt.
+            try H.check(bootstrap.stagedReadinessClosureObservation() == .pending,
+                        "bootstrap readiness fixture cleanup manufactured production completion")
+        }
+    }
+
+    static func readinessConcurrentSession() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            let barrier = CustodyLeaseTestingBarrier()
+            defer { barrier.release() }
+            var peer: Int32 = -1
+            defer { if peer >= 0 { close(peer) } }
+            weak var actualSession: InstallationPrecommitSession?
+            try bootstrap.testingConfigureStagedReadiness(afterReturn: { [weak bootstrap] in
+                guard let bootstrap, let session = bootstrap.testingReadinessSession() else {
+                    throw H.Failure(message: "bootstrap readiness concurrent actual session missing")
+                }
+                actualSession = session
+                session.testingPauseVerification(barrier)
+                peer = socket(AF_UNIX, SOCK_STREAM, 0)
+                try H.check(peer >= 0, "bootstrap readiness concurrent untrusted peer")
+                var address = try HostControlIO.address(path: location.path + "/installation.sock")
+                let connected = withUnsafePointer(to: &address) { p in
+                    p.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(peer, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+                }
+                try H.check(connected == 0 && barrier.waitUntilEntered(), "bootstrap readiness concurrent verifier not reached")
+            })
+            try readinessPrepared(bootstrap); try bootstrap.openStagedReadiness()
+            try H.check(bootstrap.stagedReadinessObservation() == .complete && actualSession != nil
+                && bootstrap.testingReadinessSession() === actualSession && bootstrap.testingReadinessJournalLockAvailable(),
+                "bootstrap readiness live queue prevented exact journal postflight")
+            try H.refuses { try bootstrap.testingCloseReadiness(deadline: .init(seconds: 0.02)) }
+            try H.check(bootstrap.testingReadinessSession() === actualSession,
+                        "bootstrap readiness live verification owner dropped on pending join")
+            try InstallationOwnershipFixtures.excluded(location); try readinessReplayRefuses(root, bootstrap)
+            barrier.release(); try bootstrap.testingCloseReadiness(deadline: .init(seconds: 3))
+            try H.check(bootstrap.testingReadinessSession() == nil,
+                        "bootstrap readiness concurrent actual queue not joined")
+        }
+    }
+
+    private static func startPrepared(_ root: String, _ bootstrap: B,
+        deadline: MonotonicDeadline = .init(seconds: 30)) throws {
+        // Existing actual-custodian fixture mode: suppress serial telemetry only;
+        // the real three-child graph, EOF, reap and retirement are unchanged.
+        _ = try TestIsolation.validateRoot(root)
+        let marker = root + "/home/.staged-completion-quiet"
+        let fd = open(marker, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        try H.check(fd >= 0, "bootstrap start fixture marker")
+        defer { close(fd) }
+        let bytes = Data("staged-completion-quiet/v1\n".utf8)
+        try bytes.withUnsafeBytes {
+            try H.check(Darwin.write(fd, $0.baseAddress, $0.count) == $0.count && fsync(fd) == 0,
+                        "bootstrap start fixture marker durability")
+        }
+        try readinessPrepared(bootstrap, deadline: deadline)
+        try bootstrap.openStagedReadiness()
+    }
+    private static func startReplayRefuses(_ bootstrap: B) throws {
+        let before = bootstrap.bootstrapStartObservation(), kickstart = bootstrap.kickstartStartObservation()
+        let failed = bootstrap.observation().failedClosed
+        try H.refuses { try bootstrap.bootstrapCandidate() }
+        try H.refuses { try bootstrap.kickstartCandidate() }
+        try H.check(before == bootstrap.bootstrapStartObservation() && kickstart == bootstrap.kickstartStartObservation()
+            && failed == bootstrap.observation().failedClosed, "bootstrap start replay changed claimed state")
+    }
+    /// Only pending token/scope observations are retried. A fixture failure or
+    /// unrelated error escapes; this never supplies a fresh production deadline.
+    private static func collectFailedStarts(_ bootstrap: B, deadline: MonotonicDeadline) throws {
+        while bootstrap.failedStartRetirementObservation() != .retired {
+            try H.check(bootstrap.testingFailedStartRetirementDeadline() == deadline.absoluteUptimeNanoseconds,
+                        "retirement observation replaced the original absolute ceiling")
+            guard !deadline.hasExpired else { throw H.Failure(message: "failed start original retirement deadline") }
+            do { try bootstrap.retireFailedStartCommands() }
+            catch CustodyRecordError.fenced { Thread.sleep(forTimeInterval: 0.001) }
+            catch CustodyRecordError.busy { Thread.sleep(forTimeInterval: 0.001) }
+        }
+    }
+    private static func failedStartDelayedRetirement() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            let original = MonotonicDeadline(seconds: 30)
+            try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                guard operation == .bootstrap else { return }
+                if point == .commandRetained { registry.testingDeferNextRead(.outputUntilReleased) }
+                if point == .submitted {
+                    guard let handle = bootstrap?.testingStartHandle(kickstart: false) else {
+                        throw H.Failure(message: "failed start delayed original handle")
+                    }
+                    while registry.testingReadObservation(handle)?.terminalReceived != true {
+                        guard !original.hasExpired else { throw H.Failure(message: "failed start delayed terminal") }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    throw CustodyRecordError.injectedFailure
+                }
+            })
+            try startPrepared(root, bootstrap, deadline: original)
+            try H.refuses { try bootstrap.bootstrapCandidate() }
+            guard let handle = bootstrap.testingStartHandle(kickstart: false) else {
+                throw H.Failure(message: "failed start delayed custody lost")
+            }
+            defer { registry.testingReleaseDeferredRead(handle) }
+            let before = try stored(location)
+            try H.refuses { try bootstrap.retireFailedStartCommands() }
+            try H.check(bootstrap.failedStartRetirementObservation() == .pending
+                && bootstrap.testingFailedStartRetirementRetention(kickstart: false) == [false, true, false]
+                && registry.hasRetainedWork && bootstrap.testingStartHandle(kickstart: false) === handle,
+                "pending EOF released original command aliases")
+            try InstallationOwnershipFixtures.excluded(location)
+            registry.testingReleaseDeferredRead(handle)
+            while registry.hasRetainedWork {
+                guard !original.hasExpired else { throw H.Failure(message: "delayed EOF original registry settlement") }
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+            // Closing the original context before registry retirement cannot
+            // produce staged evidence through today's open-scope-only API.
+            // Preserve that distinction even after real EOF/reap/removal.
+            try H.refuses { try bootstrap.retireFailedStartCommands() }
+            try H.check(bootstrap.testingFailedStartRetirementRetention(kickstart: false) == [false, true, false]
+                && bootstrap.failedStartRetirementObservation() == .pending
+                && !registry.hasRetainedWork && registry.testingOriginalHelpersReaped
+                && (try stored(location)) == before && bootstrap.observation().failedClosed,
+                "late EOF manufactured missing original recovery authority")
+            try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    private static func failedStartDelayedToken() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            let original = MonotonicDeadline(seconds: 30), barrier = CustodyLeaseTestingBarrier()
+            defer { barrier.release() }
+            try bootstrap.testingConfigureStarts(checkpoint: { operation, point in
+                guard operation == .bootstrap else { return }
+                if point == .commandRetained { registry.testingPauseNextRetirement(barrier) }
+                if point == .submitted {
+                    try H.check(barrier.waitUntilEntered(), "actual original retirement delivery barrier missing")
+                    throw CustodyRecordError.injectedFailure
+                }
+            })
+            try startPrepared(root, bootstrap, deadline: original)
+            try H.refuses { try bootstrap.bootstrapCandidate() }
+            let control = try stored(location)
+            try H.refuses { try bootstrap.retireFailedStartCommands() }
+            try H.check(bootstrap.failedStartRetirementObservation() == .pending
+                && bootstrap.testingFailedStartRetirementRetention(kickstart: false) == [false, true, false],
+                "undelivered actual token released command aliases")
+            barrier.release()
+            try collectFailedStarts(bootstrap, deadline: original)
+            try H.check(bootstrap.testingFailedStartRetirementRetention(kickstart: false) == [true, true, true]
+                && registry.testingCount == 0 && registry.testingOriginalHelpersReaped
+                && (try stored(location)) == control && bootstrap.observation().failedClosed,
+                "delayed actual token changed failed start or failed to release aliases")
+            try H.refuses { try bootstrap.retireFailedStartCommands() }
+            try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    private static func failedStartQueuedSubmission() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            let original = MonotonicDeadline(seconds: 30), barrier = CustodyLeaseTestingBarrier()
+            defer { barrier.release() }
+            try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                guard operation == .kickstart else { return }
+                if point == .commandRetained {
+                    guard let prior = bootstrap?.testingStartHandle(kickstart: false) else {
+                        throw H.Failure(message: "queued failure lost original preceding handle")
+                    }
+                    registry.testingCancelAndPauseQueue(prior, barrier)
+                    try H.check(barrier.waitUntilEntered(), "queued failure barrier not entered")
+                }
+                if point == .submitted { throw CustodyRecordError.injectedFailure }
+            })
+            try startPrepared(root, bootstrap, deadline: original)
+            try bootstrap.bootstrapCandidate()
+            try H.refuses { try bootstrap.kickstartCandidate() }
+            guard let handle = bootstrap.testingStartHandle(kickstart: true) else {
+                throw H.Failure(message: "queued failure did not retain returned handle")
+            }
+            let control = try stored(location)
+            try H.refuses { try bootstrap.retireFailedStartCommands() }
+            try H.check(bootstrap.failedStartRetirementObservation() == .pending
+                && bootstrap.testingFailedStartRetirementRetention(kickstart: true) == [false, true, false]
+                && registry.hasRetainedWork && bootstrap.testingStartHandle(kickstart: true) === handle,
+                "queued submission was mistaken for never submitted retirement")
+            barrier.release()
+            while registry.hasRetainedWork {
+                guard !original.hasExpired else { throw H.Failure(message: "queued original registry failed to settle") }
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+            // The actual registry rejected the closed context before metadata.
+            // It supplies no staged recovery token; an empty registry is not one.
+            try H.refuses { try bootstrap.retireFailedStartCommands() }
+            try H.check(bootstrap.failedStartRetirementObservation() == .pending
+                && bootstrap.testingFailedStartRetirementRetention(kickstart: true) == [false, true, false]
+                && (try stored(location)) == control,
+                "empty registry fabricated queued-command retirement authority")
+            try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    private static func failedStartRefusedCommands() throws {
+        for cut in [RetainedCleanupRegistry.TestCut.beforeSpawn, .afterAnchor, .afterOwner] {
+            try exclusiveFixture { root, location, bootstrap, registry in
+                let original = MonotonicDeadline(seconds: 30)
+                try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                    guard operation == .bootstrap else { return }
+                    if point == .commandRetained { registry.testingFault(cut) }
+                    if point == .submitted {
+                        guard let handle = bootstrap?.testingStartHandle(kickstart: false) else {
+                            throw H.Failure(message: "refused original command lost handle")
+                        }
+                        let result = handle.wait()
+                        try H.check(result.phase == .finished && result.journal?.outcome == .admissionRefused,
+                                    "refused command lacks actual terminal outcome")
+                        throw CustodyRecordError.injectedFailure
+                    }
+                })
+                try startPrepared(root, bootstrap, deadline: original)
+                try H.refuses { try bootstrap.bootstrapCandidate() }
+                guard let handle = bootstrap.testingStartHandle(kickstart: false) else {
+                    throw H.Failure(message: "refused command handle lost after return")
+                }
+                let control = try stored(location), result = handle.snapshot()
+                try collectFailedStarts(bootstrap, deadline: original)
+                try H.check(bootstrap.failedStartRetirementObservation() == .retired
+                    && result.journal?.outcome == .admissionRefused
+                    && handle.snapshot().journal == result.journal
+                    && bootstrap.bootstrapStartObservation() == .failed
+                    && bootstrap.testingFailedStartRetirementRetention(kickstart: false) == [true, true, true]
+                    && (try stored(location)) == control,
+                    "retirement converted actual refusal into successful command")
+                try H.refuses { try bootstrap.retireFailedStartCommands() }
+                try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+            }
+        }
+    }
+    private static func failedStartPartialAndPoison() throws {
+        try failedStartQueuedSubmission()
+        try failedStartRefusedCommands()
+        for cut in [B.StartCheckpoint.claimed, .intentRetained, .contextRetained, .commandRetained] {
+            try exclusiveFixture { root, location, bootstrap, registry in
+                try bootstrap.testingConfigureStarts(checkpoint: { operation, point in
+                    if operation == .bootstrap && point == cut { throw CustodyRecordError.injectedFailure }
+                })
+                try startPrepared(root, bootstrap)
+                try H.refuses { try bootstrap.bootstrapCandidate() }
+                let before = bootstrap.testingStartRetention(kickstart: false), control = try stored(location)
+                try H.check(bootstrap.testingStartHandle(kickstart: false) == nil && !registry.hasRetainedWork,
+                            "partial fixture unexpectedly submitted command")
+                for _ in 0..<2 {
+                    try H.refuses { try bootstrap.retireFailedStartCommands() }
+                    try H.check(bootstrap.failedStartRetirementObservation() == .pending
+                        && bootstrap.testingStartRetention(kickstart: false) == before
+                        && !bootstrap.testingFailedStartRetirementRetention(kickstart: false)[0]
+                        && (try stored(location)) == control,
+                        "missing handle was treated as safe resource retirement")
+                }
+                try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+            }
+        }
+        try exclusiveFixture { root, location, bootstrap, _ in
+            try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                if operation == .bootstrap && point == .retirementReceived {
+                    guard let context = bootstrap?.testingStartContext(kickstart: false) else {
+                        throw H.Failure(message: "poison fixture lost original scope")
+                    }
+                    // Negative-only poison of the actual owner; no proof is minted.
+                    context.testingScope.markPending()
+                    throw CustodyRecordError.injectedFailure
+                }
+            })
+            try startPrepared(root, bootstrap)
+            try H.refuses { try bootstrap.bootstrapCandidate() }
+            let control = try stored(location)
+            for _ in 0..<2 {
+                try H.refuses { try bootstrap.retireFailedStartCommands() }
+                try H.check(bootstrap.failedStartRetirementObservation() == .pending
+                    && bootstrap.testingFailedStartRetirementRetention(kickstart: false) == [true, true, true]
+                    && (try stored(location)) == control,
+                    "poisoned real token was discarded or accepted")
+            }
+            try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    private static func failedStartTokenAndConcurrentTurns() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            let original = MonotonicDeadline(seconds: 30), barrier = CustodyLeaseTestingBarrier()
+            defer { barrier.release() }
+            var retainedEvents = 0, releasedEvents = 0
+            try bootstrap.testingConfigureStarts(checkpoint: { operation, point in
+                if operation == .bootstrap && point == .retirementReceived { throw CustodyRecordError.injectedFailure }
+            }, failedRetirementCheckpoint: { [weak bootstrap] point in
+                guard let bootstrap else { throw H.Failure(message: "failed retirement owner lost") }
+                try H.check(bootstrap.testingReadinessJournalLockAvailable(), "retirement callback holds metadata lock")
+                if point == .retirementRetained {
+                    retainedEvents += 1
+                    try H.check(barrier.pause(), "failed retirement token barrier")
+                    throw CustodyRecordError.injectedFailure
+                }
+                if point == .aliasesReleased { releasedEvents += 1 }
+            })
+            try startPrepared(root, bootstrap, deadline: original)
+            try H.refuses { try bootstrap.bootstrapCandidate() }
+            let control = try stored(location), call = ExclusiveCall(bootstrap)
+            let work = try RuntimeFixtureSession.installationRoot(root).startWork {
+                try H.refuses { try call.bootstrap.retireFailedStartCommands() }
+            }
+            try H.check(barrier.waitUntilEntered(), "failed retirement token was not retained")
+            try H.check(bootstrap.failedStartRetirementObservation() == .collecting
+                && bootstrap.testingFailedStartRetirementRetention(kickstart: false) == [true, true, false],
+                "fallible retirement callback preceded token retention")
+            try H.refuses { try bootstrap.retireFailedStartCommands() }
+            try InstallationOwnershipFixtures.excluded(location)
+            barrier.release(); try work.value(deadline: original)
+            try H.check(bootstrap.failedStartRetirementObservation() == .pending
+                && retainedEvents == 1 && releasedEvents == 0,
+                "concurrent turn released or recollected original token")
+            try collectFailedStarts(bootstrap, deadline: original)
+            try H.refuses { try bootstrap.retireFailedStartCommands() }
+            try H.check(retainedEvents == 1 && releasedEvents == 1
+                && bootstrap.testingFailedStartRetirementRetention(kickstart: false) == [true, true, true]
+                && (try stored(location)) == control && bootstrap.observation().failedClosed,
+                "repeated retirement double-released aliases or changed failure")
+            try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+
+    static func startBeforeReadiness() throws {
+        try exclusiveFixture { root, _, bootstrap, _ in
+            try startReplayRefuses(bootstrap)
+            try readinessPrepared(bootstrap)
+            try startReplayRefuses(bootstrap)
+            try H.check(bootstrap.bootstrapStartObservation() == .notAttempted
+                && bootstrap.kickstartStartObservation() == .notAttempted,
+                "bootstrap start preclaim refusal consumed valid attempt")
+            // Marker is needed only by command fixtures, not admission itself.
+            let marker = root + "/home/.staged-completion-quiet"
+            try Data("staged-completion-quiet/v1\n".utf8).write(to: URL(fileURLWithPath: marker), options: .withoutOverwriting)
+            try H.check(chmod(marker, 0o600) == 0, "bootstrap start order marker mode")
+            try bootstrap.openStagedReadiness()
+            try H.refuses { try bootstrap.kickstartCandidate() }
+            try H.check(bootstrap.kickstartStartObservation() == .notAttempted,
+                        "bootstrap kickstart before bootstrap claimed execution")
+            try bootstrap.bootstrapCandidate(); try bootstrap.kickstartCandidate()
+            try startReplayRefuses(bootstrap)
+        }
+    }
+    static func startSequence() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            let deadline = MonotonicDeadline(seconds: 30)
+            var events: [String] = []
+            weak var actualContext: CommandCustodyContext?
+            try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                guard let bootstrap else { throw H.Failure(message: "bootstrap start owner lost") }
+                let kickstart = operation == .kickstart
+                events.append("\(kickstart):\(point)")
+                try H.check(bootstrap.testingReadinessJournalLockAvailable(), "bootstrap start callback held metadata lock")
+                if point == .contextRetained {
+                    actualContext = bootstrap.testingStartContext(kickstart: kickstart)
+                    try H.check(actualContext != nil, "bootstrap start context not retained before boundary")
+                }
+                if point == .commandRetained {
+                    guard let budget = bootstrap.testingStartBudget(kickstart: kickstart) else {
+                        throw H.Failure(message: "bootstrap start missing actual command budget")
+                    }
+                    try budget.validate(kind: .launchctlMutation, permittedWorkSeconds: 10,
+                        now: DispatchTime.now().uptimeNanoseconds)
+                    try H.check([budget.work, budget.term, budget.kill, budget.receipt].allSatisfy {
+                        $0 <= deadline.absoluteUptimeNanoseconds
+                    }, "bootstrap start command escaped original caller ceiling")
+                }
+                if point == .retired {
+                    try H.check(actualContext == nil && registry.testingCount == 0 && registry.testingOriginalHelpersReaped
+                        && bootstrap.testingStartRetention(kickstart: kickstart) == [true, false, false, true, true, false],
+                        "bootstrap start published completion with retained command aliases")
+                    try H.check(try stored(location).step?.status == .intent, "bootstrap start completed before actual retirement")
+                }
+            })
+            try startPrepared(root, bootstrap, deadline: deadline)
+            let original = try stored(location)
+            try bootstrap.bootstrapCandidate()
+            let first = try stored(location)
+            try H.check(first.step?.ordinal == 13 && first.step?.action == .bootstrapCandidate
+                && first.step?.status == .complete && first.revision == original.revision + 2,
+                "bootstrap start did not complete same journal bootstrap")
+            try bootstrap.kickstartCandidate()
+            let second = try stored(location)
+            try H.check(second.step?.ordinal == 14 && second.step?.action == .kickstartCandidate
+                && second.step?.status == .complete && second.revision == first.revision + 2
+                && second.phase == .active && second.readinessCommit == nil && second.state == original.state
+                && second.transaction?.sameBinding(as: original.transaction!) == true,
+                "bootstrap start changed transaction or invented candidate readiness")
+            let expected = ["claimed", "intentRetained", "contextRetained", "commandRetained", "submitted", "retirementReceived", "aliasesReleased", "retired", "completed"]
+            try H.check(events == [false, true].flatMap { value in expected.map { "\(value):\($0)" } }
+                && bootstrap.bootstrapStartObservation() == .complete && bootstrap.kickstartStartObservation() == .complete
+                && !bootstrap.observation().failedClosed,
+                "bootstrap start fixed command sequence differs")
+            try H.check(try bootstrap.testingStartReadinessDeadline() == bootstrap.testingReadinessSession()?.testingAnchoredDeadline?.absoluteUptimeNanoseconds,
+                        "bootstrap start restarted retirement-anchored readiness clock")
+            try InstallationOwnershipFixtures.excluded(location)
+            let disk = try readinessDisk(root)
+            try startReplayRefuses(bootstrap)
+            try H.check(try readinessDisk(root) == disk, "bootstrap start replay changed durable bytes")
+        }
+    }
+    static func startConcurrent() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            let barrier = CustodyLeaseTestingBarrier()
+            defer { barrier.release() }
+            try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                guard operation == .bootstrap && point == .submitted else { return }
+                guard let bootstrap else { throw H.Failure(message: "bootstrap concurrent owner lost") }
+                try startReplayRefuses(bootstrap)
+                try H.check(barrier.pause(), "bootstrap concurrent barrier timed out")
+            })
+            try startPrepared(root, bootstrap)
+            let call = ExclusiveCall(bootstrap), custody = try RuntimeFixtureSession.installationRoot(root)
+            let work = custody.startWork { try call.bootstrap.bootstrapCandidate() }
+            try H.check(barrier.waitUntilEntered(), "bootstrap concurrent submission not reached")
+            try H.check(bootstrap.bootstrapStartObservation() == .running
+                && bootstrap.testingReadinessJournalLockAvailable(), "bootstrap wait retained metadata mutex")
+            try startReplayRefuses(bootstrap)
+            try InstallationOwnershipFixtures.excluded(location)
+            barrier.release(); try work.value(deadline: .init(seconds: 8))
+            try H.check(bootstrap.bootstrapStartObservation() == .complete && !registry.hasRetainedWork,
+                        "bootstrap concurrent winner did not retire")
+            try bootstrap.kickstartCandidate()
+        }
+    }
+    static func startOriginalDeadline() throws {
+        for point in 0..<4 {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                let original = MonotonicDeadline(seconds: 0.750)
+                let expire = { while !original.hasExpired { Thread.sleep(forTimeInterval: 0.001) } }
+                try bootstrap.testingConfigureStarts(checkpoint: { operation, checkpoint in
+                    guard operation == .bootstrap else { return }
+                    if (point == 1 && checkpoint == .claimed) || (point == 2 && checkpoint == .commandRetained)
+                        || (point == 3 && checkpoint == .completed) { expire() }
+                })
+                try startPrepared(root, bootstrap, deadline: original)
+                let before = try stored(location)
+                if point == 0 { expire() }
+                try H.refuses { try bootstrap.bootstrapCandidate() }
+                let after = try stored(location)
+                try H.check(original.hasExpired && bootstrap.bootstrapStartObservation() == .failed
+                    && bootstrap.observation().failedClosed && bootstrap.testingStagedJournalStartsRefused()
+                    && bootstrap.stagedReadinessClosureObservation() == .pending,
+                    "bootstrap start refreshed caller or cleanup deadline")
+                try H.check(after.revision == before.revision + (point < 2 ? 0 : (point == 2 ? 1 : 2))
+                    && after.phase == .active && after.readinessCommit == nil,
+                    "bootstrap expired command lost durable outcome")
+                try InstallationOwnershipFixtures.excluded(location); try startReplayRefuses(bootstrap)
+            }
+        }
+    }
+    static func startPendingEOF() throws {
+        try failedStartDelayedRetirement()
+        try failedStartDelayedToken()
+        try exclusiveFixture { root, location, bootstrap, registry in
+            let original = MonotonicDeadline(seconds: 0.750)
+            var terminalWithoutEOF = false
+            try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                if operation == .bootstrap && point == .commandRetained {
+                    registry.testingDeferNextRead(.outputUntilReleased)
+                }
+                if operation == .bootstrap && point == .submitted {
+                    guard let handle = bootstrap?.testingStartHandle(kickstart: false) else {
+                        throw H.Failure(message: "bootstrap EOF observation lost handle")
+                    }
+                    while !terminalWithoutEOF {
+                        guard !original.hasExpired else { throw H.Failure(message: "bootstrap EOF terminal not observed") }
+                        if let observed = registry.testingReadObservation(handle) {
+                            terminalWithoutEOF = observed.terminalReceived && !observed.outputEOF
+                        }
+                        if !terminalWithoutEOF { Thread.sleep(forTimeInterval: 0.001) }
+                    }
+                }
+            })
+            try startPrepared(root, bootstrap, deadline: original)
+            let call = ExclusiveCall(bootstrap), custody = try RuntimeFixtureSession.installationRoot(root)
+            let work = custody.startWork { try H.refuses { try call.bootstrap.bootstrapCandidate() } }
+            try work.value(deadline: .init(seconds: 2))
+            guard let handle = bootstrap.testingStartHandle(kickstart: false) else {
+                throw H.Failure(message: "bootstrap EOF pending lost exact handle")
+            }
+            defer { registry.testingReleaseDeferredRead(handle) }
+            try H.check(terminalWithoutEOF && original.hasExpired && bootstrap.bootstrapStartObservation() == .failed
+                && bootstrap.testingStartRetention(kickstart: false) == [true, true, true, true, false, false]
+                && bootstrap.testingStartContext(kickstart: false)?.isClosed == true
+                && registry.hasRetainedWork && bootstrap.testingStagedJournalStartsRefused(),
+                "bootstrap pending EOF dropped uncertain command or manufactured retirement")
+            try H.refuses { _ = try handle.stagedCompletion() }
+            try H.refuses { try bootstrap.retireFailedStartCommands() }
+            try H.check(bootstrap.failedStartRetirementObservation() == .pending
+                && bootstrap.testingFailedStartRetirementRetention(kickstart: false) == [false, true, false],
+                "expired original attempt manufactured retirement or released aliases")
+            let control = try stored(location)
+            try H.check(control.step?.action == .bootstrapCandidate && control.step?.status == .intent
+                && control.readinessCommit == nil, "bootstrap pending EOF published completion")
+            try InstallationOwnershipFixtures.excluded(location); try startReplayRefuses(bootstrap)
+            registry.testingReleaseDeferredRead(handle)
+            let cleanup = MonotonicDeadline(seconds: 8)
+            while registry.hasRetainedWork {
+                guard !cleanup.hasExpired else { throw H.Failure(message: "bootstrap pending fixture retirement") }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+            try H.check(try stored(location) == control && bootstrap.bootstrapStartObservation() == .failed,
+                        "bootstrap late retirement retried failed start")
+            try H.refuses { try bootstrap.retireFailedStartCommands() }
+            try H.check(bootstrap.testingFailedStartRetirementRetention(kickstart: false) == [false, true, false]
+                && bootstrap.failedStartRetirementObservation() == .pending,
+                "late actual retirement refreshed expired invocation budget")
+        }
+    }
+    static func startFailureAndAlias() throws {
+        try failedStartPartialAndPoison()
+        for alias in [false, true] {
+            try exclusiveFixture { root, location, bootstrap, registry in
+                var heldAlias: CustodyAuthorityLeaseSet?
+                defer { heldAlias = nil }
+                try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                    guard operation == .bootstrap, let bootstrap else { return }
+                    if point == .contextRetained && alias {
+                        heldAlias = try bootstrap.testingStartContext(kickstart: false)!.testingScope.leases.duplicate()
+                    }
+                    if point == .commandRetained && !alias { registry.testingFault(.beforeSpawn) }
+                })
+                let original = MonotonicDeadline(seconds: 30)
+                try startPrepared(root, bootstrap, deadline: original)
+                try H.refuses { try bootstrap.bootstrapCandidate() }
+                let current = try stored(location)
+                try H.check(bootstrap.observation().failedClosed && bootstrap.bootstrapStartObservation() == .failed
+                    && bootstrap.testingStagedJournalStartsRefused() && current.step?.status == .intent
+                    && current.step?.action == .bootstrapCandidate && current.readinessCommit == nil,
+                    "bootstrap failed or borrowed command became durable completion")
+                if alias {
+                    try withExtendedLifetime(heldAlias) {
+                        try H.check(bootstrap.testingStartRetention(kickstart: false) == [true, false, false, true, true, false],
+                                    "bootstrap alias refusal lost actual retired token")
+                    }
+                }
+                heldAlias = nil
+                try H.refuses { try bootstrap.retireFailedStartCommands() }
+                try H.check(original.hasExpired && bootstrap.failedStartRetirementObservation() == .pending
+                    && (try stored(location)) == current,
+                    "expired command/alias failure obtained renewed retirement budget")
+                try InstallationOwnershipFixtures.excluded(location); try startReplayRefuses(bootstrap)
+            }
+        }
+    }
+    static func startPublicationFailure() throws {
+        for kickstart in [false, true] {
+            for completion in [false, true] {
+                try exclusiveFixture { root, location, bootstrap, _ in
+                    let action: InstallationAction = kickstart ? .kickstartCandidate : .bootstrapCandidate
+                    let probe = CustodyCatalogStore.InstallationStagedJournal.TestingPublicationProbe(
+                        action: action, status: completion ? .complete : .intent, failure: .afterReceipt)
+                    try bootstrap.testingConfigureStarts(publicationProbe: probe)
+                    try startPrepared(root, bootstrap)
+                    if kickstart { try bootstrap.bootstrapCandidate() }
+                    let before = try stored(location)
+                    if kickstart { try H.refuses { try bootstrap.kickstartCandidate() } }
+                    else { try H.refuses { try bootstrap.bootstrapCandidate() } }
+                    guard let observed = probe.observed else { throw H.Failure(message: "bootstrap start persistence cut missed") }
+                    let current = try stored(location)
+                    try H.check(observed.before == current && current.revision == before.revision + (completion ? 1 : 0)
+                        && observed.after.step?.action == action && current.readinessCommit == nil
+                        && bootstrap.observation().failedClosed && bootstrap.testingStagedJournalStartsRefused(),
+                        "bootstrap start persistence uncertainty rewritten or unfenced")
+                    try H.check(bootstrap.testingStartRetention(kickstart: kickstart)
+                        == (completion ? [true, false, false, true, true, false] : [false, false, false, false, false, false]),
+                        "bootstrap start partial persistence lost retained execution")
+                    try InstallationOwnershipFixtures.excluded(location); try startReplayRefuses(bootstrap)
+                }
+            }
+        }
+    }
+    static func startReturnedFailure() throws {
+        try failedStartTokenAndConcurrentTurns()
+        for kickstart in [false, true] {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                try bootstrap.testingConfigureStarts(checkpoint: { operation, point in
+                    if (operation == .kickstart) == kickstart && point == .completed {
+                        throw CustodyRecordError.injectedFailure
+                    }
+                })
+                let original = MonotonicDeadline(seconds: 30)
+                try startPrepared(root, bootstrap, deadline: original)
+                if kickstart { try bootstrap.bootstrapCandidate() }
+                if kickstart { try H.refuses { try bootstrap.kickstartCandidate() } }
+                else { try H.refuses { try bootstrap.bootstrapCandidate() } }
+                let current = try stored(location)
+                try H.check(current.step?.action == (kickstart ? .kickstartCandidate : .bootstrapCandidate)
+                    && current.step?.status == .complete && current.phase == .active && current.readinessCommit == nil
+                    && bootstrap.testingStartRetention(kickstart: kickstart) == [true, false, false, true, true, true]
+                    && bootstrap.testingStagedJournalStartsRefused(),
+                    "bootstrap returned command completion was dropped or became installation success")
+                try collectFailedStarts(bootstrap, deadline: original)
+                try H.check(bootstrap.failedStartRetirementObservation() == .retired
+                    && bootstrap.testingFailedStartRetirementRetention(kickstart: kickstart) == [true, true, true]
+                    && bootstrap.observation().failedClosed && (try stored(location)) == current,
+                    "retirement of returned failure changed installation outcome")
+                try H.refuses { try bootstrap.retireFailedStartCommands() }
+                try InstallationOwnershipFixtures.excluded(location); try startReplayRefuses(bootstrap)
+            }
+        }
+    }
+    static func startRetirementClock() throws {
+        try exclusiveFixture { root, _, bootstrap, registry in
+            let probe = RetainedCleanupRegistry.ReadinessSchedulingProbe()
+            defer { probe.barrier.release() }
+            try bootstrap.testingConfigureStarts(checkpoint: { operation, point in
+                if operation == .kickstart && point == .commandRetained { registry.testingPauseReadinessScheduling(probe) }
+            })
+            try startPrepared(root, bootstrap); try bootstrap.bootstrapCandidate()
+            let call = ExclusiveCall(bootstrap)
+            let work = try RuntimeFixtureSession.installationRoot(root).startWork { try call.bootstrap.kickstartCandidate() }
+            try H.check(probe.barrier.waitUntilEntered(), "bootstrap kickstart retirement scheduling not reached")
+            guard let captured = probe.absoluteDeadline else { throw H.Failure(message: "bootstrap retirement timestamp absent") }
+            try H.check(bootstrap.kickstartStartObservation() == .running
+                && bootstrap.testingStartRetention(kickstart: true)[4] == false,
+                "bootstrap kickstart invented token before registry delivery")
+            Thread.sleep(forTimeInterval: 0.05)
+            probe.barrier.release(); try work.value(deadline: .init(seconds: 8))
+            try H.refuses { try bootstrap.retireFailedStartCommands() }
+            try H.check(bootstrap.failedStartRetirementObservation() == .notAttempted,
+                        "successful starts admitted failed-start retirement")
+            try H.check(try bootstrap.testingStartReadinessDeadline() == captured
+                && bootstrap.testingReadinessSession()?.testingAnchoredDeadline?.absoluteUptimeNanoseconds == captured,
+                "bootstrap command delivery or journal completion reset five-second clock")
+        }
+    }
+    static func startScopeClosureDeadline() throws {
+        for expire in [false, true] {
+            try exclusiveFixture { root, location, bootstrap, registry in
+                let original = MonotonicDeadline(seconds: expire ? 0.750 : 30)
+                let barrier = CustodyLeaseTestingBarrier(), aliasesReleased = CustodyLeaseTestingBarrier()
+                defer { barrier.release(); aliasesReleased.release() }
+                try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                    guard operation == .bootstrap, let bootstrap else { return }
+                    if point == .retirementReceived {
+                        guard let handle = bootstrap.testingStartHandle(kickstart: false) else {
+                            throw H.Failure(message: "bootstrap scope closure missing handle")
+                        }
+                        // The command is already removed. Pause that same queue
+                        // before closeContext queues its final scope closure.
+                        registry.testingCancelAndPauseQueue(handle, barrier)
+                        try H.check(barrier.waitUntilEntered(), "bootstrap scope close queue cut missing")
+                    }
+                    if point == .aliasesReleased {
+                        try H.check(aliasesReleased.pause(), "bootstrap alias release barrier failed")
+                    }
+                })
+                try startPrepared(root, bootstrap, deadline: original)
+                let call = ExclusiveCall(bootstrap)
+                let work = try RuntimeFixtureSession.installationRoot(root).startWork {
+                    if expire { try H.refuses { try call.bootstrap.bootstrapCandidate() } }
+                    else { try call.bootstrap.bootstrapCandidate() }
+                }
+                try H.check(aliasesReleased.waitUntilEntered(), "bootstrap scope closure did not release client aliases")
+                try H.check(bootstrap.testingStartRetention(kickstart: false) == [true, false, false, true, true, false]
+                    && bootstrap.bootstrapStartObservation() == .running && bootstrap.testingReadinessJournalLockAvailable()
+                    && (try stored(location)).step?.status == .intent,
+                    "bootstrap scope closure assumed terminal delivery was final alias retirement")
+                aliasesReleased.release()
+                if expire {
+                    try work.value(deadline: .init(seconds: 2))
+                    try H.check(original.hasExpired && bootstrap.bootstrapStartObservation() == .failed
+                        && bootstrap.stagedReadinessClosureObservation() == .pending
+                        && (try stored(location)).step?.status == .intent,
+                        "bootstrap stalled close reset deadline or completed journal")
+                    barrier.release()
+                    try H.refuses { try bootstrap.retireFailedStartCommands() }
+                    try H.check(bootstrap.failedStartRetirementObservation() == .pending
+                        && bootstrap.testingFailedStartRetirementRetention(kickstart: false) == [false, true, true],
+                        "scope closure continuation refreshed original deadline")
+                    try startReplayRefuses(bootstrap)
+                } else {
+                    // Give the actual validator a chance to observe pending
+                    // scope ownership. No snapshot is used as success evidence.
+                    Thread.sleep(forTimeInterval: 0.02)
+                    try H.check(bootstrap.bootstrapStartObservation() == .running,
+                                "bootstrap scope closure completed while queue retained alias")
+                    barrier.release(); try work.value(deadline: .init(seconds: 8))
+                    try H.check(bootstrap.bootstrapStartObservation() == .complete,
+                                "bootstrap delayed scope close did not converge")
+                }
+                try InstallationOwnershipFixtures.excluded(location)
+            }
+        }
+    }
+    static func startBudgetCeilings() throws {
+        let fixed = try CustodyBudget.make(kind: .launchctlMutation, workSeconds: 10)
+        let originalEndpoints = [fixed.work, fixed.term, fixed.kill, fixed.receipt]
+        let short = MonotonicDeadline(seconds: 0.750)
+        let clipped = try fixed.clipped(to: short, kind: .launchctlMutation, permittedWorkSeconds: 10)
+        let endpoints = [clipped.work, clipped.term, clipped.kill, clipped.receipt]
+        try H.check(zip(endpoints, originalEndpoints).allSatisfy { pair in pair.0 <= pair.1 }
+            && endpoints.allSatisfy { $0 <= short.absoluteUptimeNanoseconds }
+            && clipped.issued == fixed.issued, "bootstrap caller clipping extended an endpoint")
+        let long = try fixed.clipped(to: .init(seconds: 30), kind: .launchctlMutation, permittedWorkSeconds: 10)
+        try H.check(long == fixed && fixed.work - fixed.issued == 10_000_000_000
+            && fixed.term - fixed.work == 2_000_000_000 && fixed.kill - fixed.term == 2_000_000_000
+            && fixed.receipt - fixed.kill == 1_000_000_000, "bootstrap optional ceiling changed default command limits")
+        try H.refuses { _ = try fixed.clipped(to: .init(seconds: 0), kind: .launchctlMutation, permittedWorkSeconds: 10) }
+    }
+
+    private static func readyReplayRefuses(_ bootstrap: B) throws {
+        let before = bootstrap.candidateReadinessObservation(), failed = bootstrap.observation().failedClosed
+        let retained = bootstrap.testingCandidateReadyRetention()
+        // The same retained state must back every diagnostic observation; a
+        // refused replay may not expose a context, handle or command budget.
+        try H.check((bootstrap.testingCandidateReadyContext() != nil) == retained[1]
+            && (bootstrap.testingCandidateReadyHandle() != nil) == retained[3]
+            && (bootstrap.testingCandidateReadyBudget() != nil) == retained[2],
+            "ready observations disagree with actual retained command custody")
+        try H.refuses { try bootstrap.confirmCandidateReady() }
+        try H.check(bootstrap.candidateReadinessObservation() == before
+            && bootstrap.observation().failedClosed == failed
+            && bootstrap.testingCandidateReadyRetention() == retained,
+            "bootstrap ready replay changed claim or retained custody")
+    }
+    static func readyBeforeKickstart() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            try readyReplayRefuses(bootstrap)
+            try startPrepared(root, bootstrap)
+            try readyReplayRefuses(bootstrap)
+            try bootstrap.bootstrapCandidate()
+            try readyReplayRefuses(bootstrap)
+            try H.check(bootstrap.candidateReadinessObservation() == .notAttempted,
+                        "bootstrap ready invalid order consumed its later claim")
+            try bootstrap.kickstartCandidate()
+            try H.check(!bootstrap.observation().failedClosed, "ready order poisoned original journal")
+            try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    static func readyClaimFailure() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            var reached = false
+            try bootstrap.testingConfigureCandidateReady(checkpoint: { [weak bootstrap] point in
+                guard let bootstrap else { throw H.Failure(message: "bootstrap ready owner lost") }
+                try H.check(bootstrap.testingReadinessJournalLockAvailable(), "ready callback holds metadata lock")
+                guard point == .claimed else { throw H.Failure(message: "ready claim cut progressed") }
+                reached = true
+                try readyReplayRefuses(bootstrap)
+                throw CustodyRecordError.injectedFailure
+            })
+            try startPrepared(root, bootstrap); try bootstrap.bootstrapCandidate(); try bootstrap.kickstartCandidate()
+            let before = try stored(location)
+            do { try bootstrap.confirmCandidateReady(); throw H.Failure(message: "ready claim cut succeeded") }
+            catch CustodyRecordError.injectedFailure {}
+            try H.check(reached && bootstrap.candidateReadinessObservation() == .failed
+                && bootstrap.observation().failedClosed && bootstrap.testingStagedJournalStartsRefused()
+                && bootstrap.testingCandidateReadyRetention() == Array(repeating: false, count: 6)
+                && bootstrap.stagedReadinessClosureObservation() == .joined
+                && registry.testingCount == 0 && registry.testingOriginalHelpersReaped,
+                "ready claim failure lost owner or fabricated diagnostic")
+            try H.check(try stored(location) == before, "ready claim failure changed durable evidence")
+            try readyReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    static func readyConcurrent() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            let barrier = CustodyLeaseTestingBarrier()
+            defer { barrier.release() }
+            try bootstrap.testingConfigureCandidateReady(checkpoint: { point in
+                guard point == .claimed else { throw H.Failure(message: "ready concurrent passed claim cut") }
+                try H.check(barrier.pause(), "ready concurrent barrier expired")
+                throw CustodyRecordError.injectedFailure
+            })
+            try startPrepared(root, bootstrap); try bootstrap.bootstrapCandidate(); try bootstrap.kickstartCandidate()
+            let before = try stored(location), call = ExclusiveCall(bootstrap)
+            let work = try RuntimeFixtureSession.installationRoot(root).startWork {
+                do { try call.bootstrap.confirmCandidateReady(); throw H.Failure(message: "ready concurrent cut succeeded") }
+                catch CustodyRecordError.injectedFailure {}
+            }
+            try H.check(barrier.waitUntilEntered(), "ready concurrent did not claim")
+            try H.check(bootstrap.candidateReadinessObservation() == .running
+                && bootstrap.testingReadinessJournalLockAvailable(), "ready callback spans owner lock")
+            try readyReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+            barrier.release(); try work.value(deadline: .init(seconds: 3))
+            try H.check(try stored(location) == before && bootstrap.candidateReadinessObservation() == .failed,
+                        "ready concurrent loser changed durable state")
+        }
+    }
+    static func readyRequiresAuthenticatedPeer() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            try startPrepared(root, bootstrap); try bootstrap.bootstrapCandidate(); try bootstrap.kickstartCandidate()
+            let before = try stored(location)
+            guard let session = bootstrap.testingReadinessSession(), let deadline = session.testingAnchoredDeadline else {
+                throw H.Failure(message: "ready refusal missing original session")
+            }
+            // No peer, message, PID or ready flag is supplied. The real bounded
+            // session must expire rather than minting diagnostic authority.
+            try H.refuses { try bootstrap.confirmCandidateReady() }
+            try H.check(deadline.hasExpired && bootstrap.candidateReadinessObservation() == .failed
+                && bootstrap.observation().failedClosed && bootstrap.testingStagedJournalStartsRefused()
+                && bootstrap.testingCandidateReadyRetention() == Array(repeating: false, count: 6)
+                && registry.testingCount == 0 && registry.testingOriginalHelpersReaped,
+                "ready missing peer fabricated convergence or renewed deadline")
+            try H.check(try stored(location) == before && before.phase == .active && before.readinessCommit == nil,
+                        "unready continuation committed or changed evidence")
+            try readyReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    static func readyRetirementDeadline() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            var anchored: UInt64?
+            try bootstrap.testingConfigureCandidateReady(checkpoint: { [weak bootstrap] point in
+                guard point == .claimed, let bootstrap,
+                      let deadline = bootstrap.testingReadinessSession()?.testingAnchoredDeadline else {
+                    throw H.Failure(message: "ready deadline lost original anchor")
+                }
+                anchored = deadline.absoluteUptimeNanoseconds
+                while !deadline.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+            })
+            try startPrepared(root, bootstrap); try bootstrap.bootstrapCandidate(); try bootstrap.kickstartCandidate()
+            let deadline = try bootstrap.testingStartReadinessDeadline(), before = try stored(location)
+            try H.refuses { try bootstrap.confirmCandidateReady() }
+            try H.check(anchored == deadline && bootstrap.candidateReadinessObservation() == .failed
+                && bootstrap.testingCandidateReadyRetention() == Array(repeating: false, count: 6)
+                && bootstrap.stagedReadinessClosureObservation() == .pending,
+                "ready claim reset retirement clock or invented joined cleanup")
+            try H.check(try stored(location) == before, "expired readiness changed control")
+            try readyReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+
+    static func readyInvocationCeiling() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            let invocation = MonotonicDeadline(seconds: 3)
+            try startPrepared(root, bootstrap, deadline: invocation)
+            try bootstrap.bootstrapCandidate(); try bootstrap.kickstartCandidate()
+            let retirement = try bootstrap.testingStartReadinessDeadline()
+            guard let session = bootstrap.testingReadinessSession(), let anchored = session.testingAnchoredDeadline else {
+                throw H.Failure(message: "ready ceiling missing actual session")
+            }
+            try H.check(anchored.absoluteUptimeNanoseconds == min(invocation.absoluteUptimeNanoseconds, retirement)
+                && anchored.absoluteUptimeNanoseconds == invocation.absoluteUptimeNanoseconds,
+                "ready session discarded original invocation ceiling")
+            let before = try stored(location)
+            try H.refuses { try bootstrap.confirmCandidateReady() }
+            try H.check(invocation.hasExpired && !MonotonicDeadline(uptimeNanoseconds: retirement).hasExpired
+                && bootstrap.candidateReadinessObservation() == .failed
+                && bootstrap.testingCandidateReadyRetention() == Array(repeating: false, count: 6),
+                "ready wait renewed the caller budget at kickstart retirement")
+            try H.check(try stored(location) == before, "expired invocation published readiness")
+            try readyReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    static func cleanupBeforeStartup() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            for phase in 0..<3 {
+                if phase == 1 { try startPrepared(root, bootstrap) }
+                if phase == 2 { try bootstrap.bootstrapCandidate(); try bootstrap.kickstartCandidate() }
+                let repairBefore = try stored(location)
+                try H.refuses { try bootstrap.repairStoppedFreshInstallation() }
+                try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+                try H.check(try stored(location) == repairBefore && bootstrap.completionObservation() == .notAttempted,
+                    "unretained stopped repair changed control or consumed completion")
+                try H.refuses { try bootstrap.cleanupReadinessCoordination() }
+                try H.refuses { try bootstrap.stopReadinessOnlyHost() }
+                try H.check(bootstrap.stoppedRecoveryObservation() == .notAttempted,
+                    "incomplete readiness granted stop or mutated original continuation")
+                try H.check(bootstrap.coordinationCleanupObservation() == .notAttempted
+                    && !bootstrap.observation().failedClosed,
+                    "cleanup preclaim fabricated authenticated startup or consumed valid continuation")
+            }
+            try H.check(try stored(location).readinessCommit == nil, "cleanup preclaim manufactured commit")
+            try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    static func startupBeforeCommit() throws {
+        try InstallationFreshRetirementManifestFixtures.bounds()
+        try exclusiveFixture { root, location, bootstrap, _ in
+            try H.refuses { try bootstrap.observeNormalStartup() }
+            try H.refuses { try bootstrap.stopNormallyStartedHost() }
+            try H.refuses { try authenticatedCommittedStoppedContinuation(bootstrap, root: root, location: location) }
+            try H.refuses { try authenticatedFreshStoppedRestoration(bootstrap, root: root, location: location) }
+            try H.refuses { try authenticatedFreshRestorationTerminalCut(bootstrap, root: root, location: location, resource: .metadata) }
+            try H.refuses { try authenticatedFreshRestorationContention(bootstrap, root: root, location: location) }
+            for replaceChild in [false,true] {
+                try H.refuses { try authenticatedFreshPartialTreeRefusal(bootstrap, root: root, location: location, replaceChild: replaceChild) }
+            }
+            for mutation in FreshRestorationMutation.allCases {
+                try H.refuses { try authenticatedFreshInCallMutationRefusal(bootstrap, root: root, location: location, mutation: mutation) }
+            }
+            for fault in InstallationFreshRestorationResourceFault.allCases {
+                try H.refuses { try authenticatedFreshResourceRefusal(bootstrap, root: root, location: location, fault: fault) }
+            }
+            for adversary in FreshRestorationAdversary.allCases {
+                try H.refuses { try authenticatedFreshRestorationRefusal(bootstrap, root: root, location: location, adversary: adversary) }
+            }
+            for cut in StoppedFreshRepairCut.allCases {
+                try H.refuses { try authenticatedStoppedFreshRepair(bootstrap, root: root, location: location, cut: cut) }
+            }
+            try H.refuses { try bootstrap.stopReadinessOnlyHost() }
+            try H.refuses { try authenticatedReadinessStoppedContinuation(bootstrap, root: root, location: location) }
+            try H.refuses { try authenticatedReadinessStoppedContinuation(bootstrap, root: root, location: location,
+                cut: .streamClosedBeforeStop) }
+            try H.check(bootstrap.stoppedRecoveryObservation() == .notAttempted,
+                        "unauthenticated bootstrap minted stopped recovery")
+            try H.check(bootstrap.normalStartupObservation() == .notAttempted
+                && !bootstrap.observation().attempted, "invalid startup preclaim consumed bootstrap")
+        }
+    }
+    /// Existing signed driver supplies the original invocation after actual
+    /// authenticated NormalStarted, plus its enrolled fixed-command helper.
+    /// Prerequisite refusal is registered; a refusal is not a positive run.
+    @inline(never)
+    static func authenticatedCommittedStoppedContinuation(_ bootstrap: InstallationBootstrap,
+        root: String, location: StateLocation) throws {
+        _ = try RuntimeFixtureSession.installationRoot(TestIsolation.validateRoot(root))
+        guard bootstrap.normalStartupObservation() == .observed,
+              bootstrap.coordinationCleanupObservation() == .notAttempted,
+              bootstrap.completionObservation() == .notAttempted else { throw CustodyRecordError.fenced }
+        let before = try stored(location)
+        guard before.phase == .committed, before.readinessCommit != nil,
+              before.step?.action == .readinessCommit else { throw CustodyRecordError.fenced }
+        let quiet = try PolicyAuthorityFile.read(path: root + "/home/.staged-completion-quiet",
+            owner: geteuid(), maximumBytes: 32)
+        try H.check(quiet.bytes == Data("staged-completion-quiet/v1\n".utf8),
+                    "signed stopped Bootstrap omitted actual command fixture contract")
+        try InstallationOwnershipFixtures.excluded(location)
+        try bootstrap.stopNormallyStartedHost()
+        let after = try stored(location)
+        try H.check(bootstrap.stoppedRecoveryObservation() == .exclusive
+            && bootstrap.stoppedDeliveryObservation() == .complete
+            && after.phase == .recovery && after.readinessCommit == before.readinessCommit
+            && after.state == before.state && after.step == before.step,
+                    "actual Bootstrap stopped continuation lost commit or exclusive custody")
+        try InstallationOwnershipFixtures.excluded(location)
+        try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock")
+        try H.refuses { try bootstrap.stopNormallyStartedHost() }
+        try H.refuses { try bootstrap.finishFreshInstallation() }
+    }
+    enum StoppedFreshRepairCut: CaseIterable { case none, endpointAfterUnlink, endpointParentSync, endpointAncestorClose, receiptAfterWrite, controlBeforeWrite }
+    /// The signed driver must supply the same original authenticated invocation.
+    /// Ordinary enrollment tests only the prerequisite refusal, never a positive.
+    @inline(never)
+    static func authenticatedStoppedFreshRepair(_ bootstrap: InstallationBootstrap,
+        root: String, location: StateLocation, cut: StoppedFreshRepairCut = .none) throws {
+        _ = try RuntimeFixtureSession.installationRoot(TestIsolation.validateRoot(root))
+        guard bootstrap.normalStartupObservation() == .observed,
+              bootstrap.stoppedRecoveryObservation() == .notAttempted,
+              bootstrap.coordinationCleanupObservation() == .notAttempted else { throw CustodyRecordError.fenced }
+        let before = try stored(location)
+        guard before.transaction?.intent == .install, before.transaction?.priorCommitDigest == nil else {
+            throw CustodyRecordError.fenced
+        }
+        try authenticatedCommittedStoppedContinuation(bootstrap, root: root, location: location)
+        let endpointCut: InstallationReadinessEndpoint.CleanupCut?
+        switch cut {
+        case .none, .receiptAfterWrite, .controlBeforeWrite: endpointCut = nil
+        case .endpointAfterUnlink: endpointCut = .afterUnlink
+        case .endpointParentSync: endpointCut = .parentSyncFailure
+        case .endpointAncestorClose: endpointCut = .beforeAncestorClose
+        }
+        if let endpointCut { try bootstrap.testingStoppedRepairCut(endpointCut) }
+        if cut == .receiptAfterWrite || cut == .controlBeforeWrite {
+            try bootstrap.testingStoppedRepairPublicationCut(beforeControl: cut == .controlBeforeWrite)
+        }
+        if cut != .none {
+            try H.refuses { try bootstrap.repairStoppedFreshInstallation() }
+            let interrupted = try stored(location)
+            try H.check(interrupted.phase == .recovery && interrupted.readinessCommit == before.readinessCommit
+                && bootstrap.completionObservation() == .pending,
+                "stopped cleanup cut lost commit or reported completion")
+            try InstallationOwnershipFixtures.excluded(location)
+            try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock")
+        }
+        try bootstrap.repairStoppedFreshInstallation()
+        let after = try stored(location)
+        try H.check(after.phase == .committed && after.readinessCommit == before.readinessCommit
+            && after.transaction?.id == before.transaction?.id && after.state == before.state
+            && after.step?.action == .finish && after.step?.status == .complete
+            && bootstrap.completionObservation() == .complete,
+            "stopped fresh suffix did not preserve commit through durable checked finish")
+        for slot in [InstallationSlot.installationSocket, .hostOwner, .hostSocket, .applicationIncoming,
+                     .applicationPrevious, .plistIncoming, .plistPrevious] {
+            try H.check(after.transaction?.slots.images[slot]?.node == nil, "stopped repair retained forbidden residue")
+        }
+        try InstallationOwnershipFixtures.excluded(location, expected: false)
+        try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock", expected: false)
+        try H.refuses { try bootstrap.repairStoppedFreshInstallation() }
+        try H.refuses { try bootstrap.finishFreshInstallation() }
+        try H.refuses { try bootstrap.stopNormallyStartedHost() }
+    }
+    /// Requires the real signed readiness and bootout chain. The ordinary
+    /// registered before-commit case proves refusal, never a positive token.
+    @inline(never)
+    static func authenticatedFreshStoppedRestoration(_ bootstrap: InstallationBootstrap,
+        root: String, location: StateLocation, cut: InstallationFreshRestorationCut? = nil,
+        endpointCut: InstallationReadinessEndpoint.CleanupCut? = nil,
+        publicationBeforeControl: Bool? = nil) throws {
+        _ = try RuntimeFixtureSession.installationRoot(TestIsolation.validateRoot(root))
+        guard bootstrap.candidateReadinessObservation() == .complete,
+              bootstrap.readinessCommitObservation() == .notAttempted,
+              bootstrap.normalStartupObservation() == .notAttempted else { throw CustodyRecordError.fenced }
+        try authenticatedReadinessStoppedContinuation(bootstrap, root: root, location: location)
+        let before = try stored(location, bootstrap: bootstrap)
+        if let cut { try bootstrap.testingFreshRestorationCut(cut) }
+        if let endpointCut { try bootstrap.testingReadinessRestorationEndpointCut(endpointCut) }
+        if let publicationBeforeControl { try bootstrap.testingStoppedRepairPublicationCut(beforeControl: publicationBeforeControl) }
+        if cut != nil || endpointCut != nil || publicationBeforeControl != nil {
+            try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+            if let cut { try H.check(bootstrap.testingFreshRestorationReachedCut == cut, "fresh restoration fault was not reached") }
+            let interrupted = try stored(location, bootstrap: bootstrap)
+            try H.check(interrupted.phase == .recovery && interrupted.readinessCommit == nil
+                && interrupted.state == before.state && interrupted.transaction?.id == before.transaction?.id
+                && bootstrap.completionObservation() == .pending,
+                "fresh stopped restoration cut fabricated completion or lost fence")
+            try InstallationOwnershipFixtures.excluded(location)
+            try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock")
+            if case .some(.closeUnknown(_)) = cut {
+                try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }; return
+            }
+            if cut == .plistCloseUnknown {
+                try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }; return
+            }
+        }
+        try bootstrap.restoreStoppedFreshInstallation()
+        let after = try stored(location, bootstrap: bootstrap)
+        try H.check(after.phase == .recovery && after.recoveryReason == .restoredStopped && after.readinessCommit == nil
+            && after.state == before.state && after.transaction?.id == before.transaction?.id
+            && after.step?.action == .finish && after.step?.status == .complete
+            && bootstrap.completionObservation() == .complete,
+            "fresh rollback did not retain stopped recovery through checked operation-last finish")
+        for slot in InstallationSlot.allCases where slot != .stateDestination {
+            try H.check(after.transaction?.slots.images[slot]?.node == nil, "fresh restoration retained nonpreimage slot")
+        }
+        try InstallationOwnershipFixtures.excluded(location, expected: false)
+        try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock", expected: false)
+        try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+        try H.refuses { try bootstrap.repairStoppedFreshInstallation() }
+        try H.refuses { try bootstrap.finishFreshInstallation() }
+        try H.refuses { try bootstrap.commitCandidateReadiness() }
+    }
+    @inline(never)
+    static func authenticatedFreshPartialTreeRefusal(_ bootstrap: InstallationBootstrap,
+        root: String, location: StateLocation, replaceChild: Bool) throws {
+        _ = try RuntimeFixtureSession.installationRoot(TestIsolation.validateRoot(root))
+        guard bootstrap.candidateReadinessObservation() == .complete,
+              bootstrap.readinessCommitObservation() == .notAttempted,
+              bootstrap.normalStartupObservation() == .notAttempted else { throw CustodyRecordError.fenced }
+        try authenticatedReadinessStoppedContinuation(bootstrap, root: root, location: location)
+        try bootstrap.testingFreshRestorationCut(.afterUnlink(0))
+        try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+        try H.check(bootstrap.testingFreshRestorationReachedCut == .afterUnlink(0), "partial-tree unlink fault not reached")
+        let control = try stored(location, bootstrap: bootstrap), application = root + "/home/Applications/ShadowSync.app"
+        try H.check(control.step?.action == .restoreApplication && control.step?.status == .intent
+            && control.phase == .recovery && control.readinessCommit == nil, "partial deletion published a complete bundle image")
+        if replaceChild {
+            guard let enumerator = FileManager.default.enumerator(atPath: application) else { throw CustodyRecordError.fenced }
+            var target: String?
+            while let relative = enumerator.nextObject() as? String {
+                let path = application + "/" + relative
+                var info = stat()
+                if lstat(path,&info) == 0 && info.st_mode & S_IFMT == S_IFREG { target = path; break }
+            }
+            guard let target else { throw CustodyRecordError.fenced }
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: target))
+            var info = stat(); try H.check(lstat(target,&info) == 0, "partial-tree replacement identity")
+            try H.check(unlink(target) == 0, "partial-tree unexplained child unlink")
+            try bytes.write(to: URL(fileURLWithPath: target),options: .withoutOverwriting)
+            try H.check(chmod(target,info.st_mode & 0o7777) == 0, "partial-tree replacement mode")
+        } else {
+            let raw = open(application + "/fixture-unlisted",O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,0o600)
+            try H.check(raw >= 0, "partial-tree extra child")
+            try H.check(OwnedFileDescriptor(raw).retireChecked() == .succeeded, "partial-tree extra child close")
+        }
+        let changed = try H.snapshot(application)
+        try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+        try H.check(try stored(location, bootstrap: bootstrap) == control && H.snapshot(application) == changed,
+            "partial-tree drift caused more deletion or completed receipt")
+        try InstallationOwnershipFixtures.excluded(location)
+        try InstallationOwnershipFixtures.excluded(location,name: "lifecycle.lock")
+    }
+    @inline(never)
+    static func authenticatedFreshRestorationTerminalCut(_ bootstrap: InstallationBootstrap,
+        root: String, location: StateLocation,
+        resource: CustodyCatalogStore.InstallationStagedJournal.FinishPermit.Resource,
+        expireAfterSuccessfulOperationClose: Bool = false) throws {
+        guard bootstrap.candidateReadinessObservation() == .complete,
+              bootstrap.readinessCommitObservation() == .notAttempted,
+              bootstrap.normalStartupObservation() == .notAttempted,
+              resource != .stagedSlots && resource != .temporaryStore,
+              !expireAfterSuccessfulOperationClose || resource == .operation else { throw CustodyRecordError.fenced }
+        try authenticatedReadinessStoppedContinuation(bootstrap, root: root, location: location)
+        guard let journal = bootstrap.testingTerminalJournal() else { throw CustodyRecordError.fenced }
+        if expireAfterSuccessfulOperationClose { journal.testingTerminalDeadlineAfterSuccessfulClose = .operation }
+        else { journal.testingTerminalUncertainClose = resource }
+        try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+        guard let finish = journal.testingTerminalPermit else { throw H.Failure(message: "fresh terminal cut not reached") }
+        let state = try stored(location, bootstrap: bootstrap), ownership = journal.testingOwner.testingTerminalOwnership()
+        try H.check(journal.testingTerminalUncertainClose == nil
+            && journal.testingTerminalDeadlineAfterSuccessfulClose == nil
+            && journal.terminalObservation() == .pending && bootstrap.completionObservation() == .pending
+            && journal.testingTerminalCustodyRetained && !ownership.complete
+            && state == finish.control && state.phase == .recovery && state.recoveryReason == .restoredStopped
+            && state.readinessCommit == nil && state.step?.action == .finish && state.step?.status == .complete,
+            "fresh terminal uncertainty escaped stopped recovery or dropped custody")
+        if resource == .operation {
+            if expireAfterSuccessfulOperationClose {
+                try H.check(ownership.operation == .succeeded && finish.deadline.hasExpired,
+                    "fresh successful operation close deadline did not reach actual close")
+            } else {
+                if case .uncertain = ownership.operation {} else { throw H.Failure(message: "fresh operation close cut not reached") }
+            }
+            // A failed close can already have released EX in the kernel. Do not
+            // infer exclusion; durable recovery and retained uncertainty remain.
+        } else {
+            try H.check(ownership.operation == .notAttempted, "fresh early close failure attempted operation release")
+            try InstallationOwnershipFixtures.excluded(location)
+        }
+        try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+        try H.refuses { try bootstrap.finishFreshInstallation() }
+        try H.check(try stored(location, bootstrap: bootstrap) == state, "fresh terminal replay changed recovery fence")
+    }
+    /// Each value is a separate fixture/root/invocation in the signed driver.
+    /// These cells enter the actual stopped route, then mutate at the second
+    /// child boundary WITHOUT unwinding or reentering Bootstrap.
+    enum FreshRestorationMutation: CaseIterable {
+        case operationLock, lifecycleLock, namespaceLock, catalogGuard, catalog, control, receipt, source, registry, launchPlist
+        case extraChild, missingChild, replacedChild, changedContent, changedMode, changedACL, changedXattr
+        case changedHardLink, changedFlags, changedGID, changedSealedLink, replacedRoot, replacedParent
+    }
+    private static func freshReplaceFile(_ path: String, retained: String) throws {
+        var before = stat()
+        try H.check(lstat(path, &before) == 0 && before.st_mode & S_IFMT == S_IFREG,
+            "fresh mutation original regular node")
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        try H.check(rename(path, retained) == 0, "fresh mutation retains original inode")
+        try bytes.write(to: URL(fileURLWithPath: path), options: .withoutOverwriting)
+        try H.check(chmod(path, before.st_mode & 0o7777) == 0, "fresh mutation replacement mode")
+        var after = stat()
+        try H.check(lstat(path, &after) == 0 && after.st_ino != before.st_ino,
+            "fresh mutation did not substitute named inode")
+    }
+    private static func freshGrantACL(_ path: String) throws {
+        let raw = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        try H.check(raw >= 0, "fresh mutation ACL open")
+        let descriptor = OwnedFileDescriptor(raw)
+        do {
+            let before = try H.rawACL(path)
+            var acl = acl_init(1)
+            defer { if let acl { acl_free(UnsafeMutableRawPointer(acl)) } }
+            var entry: acl_entry_t?
+            try H.check(acl_create_entry(&acl, &entry) == 0 && entry != nil, "fresh mutation ACL entry")
+            var uuid = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!.uuid
+            try H.check(acl_set_tag_type(entry!, ACL_EXTENDED_ALLOW) == 0
+                && acl_set_qualifier(entry!, &uuid) == 0, "fresh mutation ACL qualifier")
+            var permissions: acl_permset_t?
+            try H.check(acl_get_permset(entry!, &permissions) == 0 && permissions != nil
+                && acl_add_perm(permissions!, ACL_READ_DATA) == 0
+                && acl_set_fd_np(raw, acl, ACL_TYPE_EXTENDED) == 0, "fresh mutation ACL grant")
+            try H.check(try H.rawACL(path) != before, "fresh mutation ACL not changed")
+            try H.check(descriptor.retireChecked() == .succeeded, "fresh mutation ACL checked close")
+        } catch {
+            guard descriptor.retireChecked() == .succeeded else { throw CustodyRecordError.fenced }
+            throw error
+        }
+    }
+    @inline(never)
+    static func authenticatedFreshInCallMutationRefusal(_ bootstrap: InstallationBootstrap,
+        root: String, location: StateLocation, mutation: FreshRestorationMutation) throws {
+        let custody = try RuntimeFixtureSession.installationRoot(TestIsolation.validateRoot(root))
+        guard bootstrap.candidateReadinessObservation() == .complete,
+              bootstrap.readinessCommitObservation() == .notAttempted,
+              bootstrap.normalStartupObservation() == .notAttempted,
+              let session = bootstrap.testingReadinessSession(), let deadline = session.testingAnchoredDeadline else {
+            throw CustodyRecordError.fenced
+        }
+        try authenticatedReadinessStoppedContinuation(bootstrap, root: root, location: location)
+        guard let journal = bootstrap.testingTerminalJournal(),
+              let registry = journal.testingFreshRestorationRegistry else { throw CustodyRecordError.fenced }
+        let source = mutation == .source ? try journal.testingOwner.testingFreshRestorationSourceBundle(root: root) : nil
+        let application = root + "/home/Applications/ShadowSync.app"
+        let replacementRegistry = RetainedCleanupRegistry.testingInstance()
+        custody.retain(replacementRegistry) // retain even if a later assertion throws
+        var reached = false
+        var pinnedControl: InstallationControlRecord?
+        var changed: [String: H.Snapshot]?
+        var retainedLock: String?
+        try bootstrap.testingFreshRestorationMutationBarrier { [weak bootstrap, weak journal] count, nextPath in
+            guard let bootstrap, let journal else { throw H.Failure(message: "fresh original fixture owners lost") }
+            try H.check(!reached && count == 1 && bootstrap.testingFreshRestorationUnlinks == 1
+                && !deadline.hasExpired, "fresh in-call mutation missed first successful unlink")
+            reached = true
+            let control = try stored(location, bootstrap: bootstrap)
+            try H.check(control.phase == .recovery && control.readinessCommit == nil
+                && control.transaction?.intent == .install && control.transaction?.priorCommitDigest == nil
+                && control.step?.action == .restoreApplication && control.step?.status == .intent,
+                "fresh in-call mutation has no exact restore intent")
+            pinnedControl = control
+            // Prefer the next held child, otherwise a remaining regular leaf.
+            // The candidate is partial; do not inspect it as a signed bundle.
+            var target = application + "/" + nextPath, info = stat()
+            if lstat(target, &info) != 0 || info.st_mode & S_IFMT != S_IFREG {
+                guard let enumerator = FileManager.default.enumerator(atPath: application) else { throw H.Failure(message: "fresh remaining manifest") }
+                var found: String?
+                while let relative = enumerator.nextObject() as? String {
+                    let path = application + "/" + relative
+                    if lstat(path, &info) == 0 && info.st_mode & S_IFMT == S_IFREG { found = path; break }
+                }
+                guard let found else { throw H.Failure(message: "fresh fixture requires a second regular child") }
+                target = found
+            }
+            switch mutation {
+            case .operationLock, .lifecycleLock, .namespaceLock:
+                let name = mutation == .operationLock ? "operation.lock" : mutation == .lifecycleLock ? "lifecycle.lock" : "latest.log"
+                retainedLock = name + ".fixture-held"
+                try freshReplaceFile(location.path + "/" + name, retained: location.path + "/" + retainedLock!)
+                // Verify the old description really still excludes its retained
+                // inode; the replacement name MUST NOT be reported protected.
+                try InstallationOwnershipFixtures.excluded(location, name: retainedLock!)
+                try InstallationOwnershipFixtures.excluded(location, name: name, expected: false)
+            case .catalogGuard:
+                try freshReplaceFile(location.path + "/custody/catalog.lock", retained: root + "/fixture-held-catalog-lock")
+            case .catalog:
+                try freshReplaceFile(location.path + "/custody/catalog.json", retained: root + "/fixture-held-catalog")
+            case .control:
+                try freshReplaceFile(location.path + "/custody/" + InstallationControlRecord.filename,
+                    retained: root + "/fixture-held-control")
+            case .receipt:
+                let names = try FileManager.default.contentsOfDirectory(atPath: location.path + "/custody/receipts")
+                guard let name = names.sorted().first(where: { $0.hasPrefix(InstallationStepReceipt.prefix) }) else {
+                    throw H.Failure(message: "fresh in-call original receipt missing")
+                }
+                try freshReplaceFile(location.path + "/custody/receipts/" + name, retained: root + "/fixture-held-receipt")
+            case .source:
+                guard let source, source.hasPrefix(root + "/"), source != application else { throw H.Failure(message: "fresh owned source prerequisite") }
+                // Change the independently bound original source, not the
+                // partially retired installed tree. Its original root is kept.
+                try H.check(rename(source, root + "/fixture-held-source") == 0
+                    && mkdir(source, 0o755) == 0, "fresh in-call source substitution")
+            case .registry:
+                try journal.testingOwner.testingSubstituteRetirementRegistry(replacementRegistry, root: root)
+            case .launchPlist:
+                try freshReplaceFile(root + "/home/Library/LaunchAgents/com.kleinperkins.shadow-sync.plist",
+                    retained: root + "/fixture-held-plist")
+            case .extraChild:
+                try Data("unlisted".utf8).write(to: URL(fileURLWithPath: application + "/fixture-unlisted"), options: .withoutOverwriting)
+            case .missingChild:
+                try H.check(unlink(target) == 0, "fresh in-call missing child")
+            case .replacedChild:
+                try freshReplaceFile(target, retained: root + "/fixture-held-child")
+            case .changedContent:
+                let raw = open(target, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+                try H.check(raw >= 0, "fresh in-call content open")
+                let descriptor = OwnedFileDescriptor(raw)
+                var byte: UInt8 = 0
+                let read = pread(raw, &byte, 1, 0)
+                byte ^= 1
+                let changed = read >= 0 && pwrite(raw, &byte, 1, 0) == 1 && fsync(raw) == 0
+                let closed = descriptor.retireChecked() == .succeeded
+                try H.check(changed && closed, "fresh in-call content mutation/close")
+            case .changedMode:
+                try H.check(chmod(target, (info.st_mode & 0o7777) ^ 0o100) == 0, "fresh in-call mode mutation")
+            case .changedACL:
+                try freshGrantACL(target)
+            case .changedXattr:
+                var byte: UInt8 = 1
+                try H.check(setxattr(target, "com.example.fixture-retirement", &byte, 1, 0, XATTR_NOFOLLOW) == 0,
+                    "fresh in-call xattr mutation")
+            case .changedHardLink:
+                try H.check(link(target, root + "/fixture-hard-link") == 0, "fresh in-call hard link")
+                var changed = stat()
+                try H.check(lstat(target, &changed) == 0 && changed.st_nlink == info.st_nlink + 1,
+                    "fresh in-call hard link not applied")
+            case .changedFlags:
+                try H.check(chflags(target, UInt32(UF_HIDDEN)) == 0, "fresh in-call flags mutation")
+            case .changedGID:
+                let count = getgroups(0, nil)
+                try H.check(count > 0 && count <= 1024, "fresh gid fixture requires a bounded group list")
+                var groups = [gid_t](repeating: 0, count: Int(count))
+                try H.check(getgroups(count, &groups) == count, "fresh gid fixture groups")
+                guard let group = groups.first(where: { $0 != info.st_gid }) else {
+                    throw H.Failure(message: "fresh gid cell requires a permitted alternate fixture group")
+                }
+                try H.check(chown(target, uid_t.max, group) == 0, "fresh in-call gid mutation")
+                var changed = stat()
+                try H.check(lstat(target, &changed) == 0 && changed.st_gid == group && changed.st_uid == info.st_uid,
+                    "fresh in-call gid not applied")
+            case .changedSealedLink:
+                guard let enumerator = FileManager.default.enumerator(atPath: application) else { throw H.Failure(message: "fresh sealed link roster") }
+                var linkPath: String?
+                while let relative = enumerator.nextObject() as? String {
+                    let path = application + "/" + relative
+                    var node = stat()
+                    if lstat(path, &node) == 0 && node.st_mode & S_IFMT == S_IFLNK { linkPath = path; break }
+                }
+                guard let linkPath else { throw H.Failure(message: "fresh cell requires a remaining sealed link") }
+                try H.check(unlink(linkPath) == 0 && symlink("../../fixture-escape", linkPath) == 0,
+                    "fresh in-call sealed link substitution")
+            case .replacedRoot:
+                try H.check(rename(application, root + "/fixture-held-app") == 0 && mkdir(application, 0o755) == 0,
+                    "fresh in-call app substitution")
+            case .replacedParent:
+                let parent = root + "/home/Applications"
+                try H.check(rename(parent, root + "/fixture-held-applications") == 0 && mkdir(parent, 0o755) == 0,
+                    "fresh in-call parent substitution")
+            }
+            changed = try H.snapshot(root)
+            try H.check(!deadline.hasExpired, "fresh mutation setup exhausted original deadline")
+        }
+        // Exactly one uninterrupted call: a second Bootstrap call would exercise
+        // outer preflight and conceal a missing per-child live gate.
+        try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+        try H.check(reached && !deadline.hasExpired && bootstrap.testingFreshRestorationUnlinks == 1,
+            "fresh in-call mutation did not stop the next unlink within the original deadline")
+        guard let pinnedControl, let changed else { throw H.Failure(message: "fresh in-call barrier not observed") }
+        try H.check(try stored(location, bootstrap: bootstrap) == pinnedControl && H.snapshot(root) == changed
+            && bootstrap.completionObservation() == .pending,
+            "fresh in-call substitution changed pins, unrelated bytes or continued deletion")
+        if let retainedLock {
+            try InstallationOwnershipFixtures.excluded(location, name: retainedLock)
+            let replaced = mutation == .operationLock ? "operation.lock" : mutation == .lifecycleLock ? "lifecycle.lock" : "latest.log"
+            try InstallationOwnershipFixtures.excluded(location, name: replaced, expected: false)
+            for name in ["operation.lock", "lifecycle.lock", "latest.log"] where name != replaced {
+                try InstallationOwnershipFixtures.excluded(location, name: name)
+            }
+        } else {
+            try InstallationOwnershipFixtures.excluded(location)
+            try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock")
+        }
+        try H.check(!registry.hasRetainedWork && registry.testingCount == 0 && registry.testingOriginalHelpersReaped,
+            "fresh mutation fixture lost original command children")
+        try H.check(!replacementRegistry.hasRetainedWork && replacementRegistry.testingOriginalHelpersReaped,
+            "fresh mutation replacement registry acquired work")
+    }
+    @inline(never)
+    static func authenticatedFreshResourceRefusal(_ bootstrap: InstallationBootstrap,
+        root: String, location: StateLocation, fault: InstallationFreshRestorationResourceFault) throws {
+        _ = try RuntimeFixtureSession.installationRoot(TestIsolation.validateRoot(root))
+        guard bootstrap.candidateReadinessObservation() == .complete,
+              bootstrap.readinessCommitObservation() == .notAttempted,
+              bootstrap.normalStartupObservation() == .notAttempted,
+              let session = bootstrap.testingReadinessSession(), let deadline = session.testingAnchoredDeadline else {
+            throw CustodyRecordError.fenced
+        }
+        try authenticatedReadinessStoppedContinuation(bootstrap, root: root, location: location)
+        guard let journal = bootstrap.testingTerminalJournal(), let registry = journal.testingFreshRestorationRegistry else {
+            throw CustodyRecordError.fenced
+        }
+        try bootstrap.testingFreshRestorationResourceFault(fault)
+        // These are owned syscall-site failures, never host descriptor pressure
+        // or rlimit changes. Acquisition that succeeded is enrolled before fault.
+        try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+        guard let observed = bootstrap.testingFreshRestorationResources else { throw H.Failure(message: "fresh resource owner absent") }
+        try H.check(observed.fault == fault && !deadline.hasExpired
+            && observed.unlinks == (fault.isPartial ? 1 : 0)
+            && observed.acquired == observed.closed + observed.retained,
+            "fresh resource fault unreached, masked by expiry, or descriptor enrollment lost")
+        let control = try stored(location, bootstrap: bootstrap), snapshot = try H.snapshot(root)
+        try H.check(control.phase == .recovery && control.readinessCommit == nil
+            && control.step?.action == .restoreApplication && control.step?.status == .intent
+            && bootstrap.completionObservation() == .pending, "fresh resource failure lost exact durable intent")
+        try InstallationOwnershipFixtures.excluded(location)
+        try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock")
+        if !fault.isPartial {
+            try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+            try H.check(try stored(location, bootstrap: bootstrap) == control && H.snapshot(root) == snapshot,
+                "fresh failed enrollment was adopted by retry")
+        }
+        try H.check(!registry.hasRetainedWork && registry.testingCount == 0 && registry.testingOriginalHelpersReaped,
+            "fresh resource failure lost original children")
+        // Actual retained descriptions are handed to the root's already-enrolled
+        // retirement object; guardian cleanup checks every close before removal.
+    }
+    enum FreshRestorationAdversary: CaseIterable {
+        case extraChild, missingChild, replacedChild, changedContent, changedMode, changedXattr
+        case changedSealedLink, replacedRoot, replacedParent, originalDeadline
+    }
+    /// These checks deliberately change real disposable filesystem nodes after
+    /// the genuine drain. They cannot manufacture the drain or bypass the source
+    /// verifier. Root cleanup remains owned by its existing fixture guardian.
+    @inline(never)
+    static func authenticatedFreshRestorationRefusal(_ bootstrap: InstallationBootstrap,
+        root: String, location: StateLocation, adversary: FreshRestorationAdversary) throws {
+        _ = try RuntimeFixtureSession.installationRoot(TestIsolation.validateRoot(root))
+        guard bootstrap.candidateReadinessObservation() == .complete,
+              bootstrap.readinessCommitObservation() == .notAttempted,
+              bootstrap.normalStartupObservation() == .notAttempted else { throw CustodyRecordError.fenced }
+        let application = root + "/home/Applications/ShadowSync.app"
+        guard let journal = bootstrap.testingTerminalJournal() else { throw CustodyRecordError.fenced }
+        let artifact = try journal.testingValidationProfile.inspectBundle(application)
+        let records = artifact.inventory.map { $0.components(separatedBy: "\0") }
+        guard let regular = records.first(where: { $0.count == 5 && $0[0] == "f" && $0[3] != "0" }),
+              let session = bootstrap.testingReadinessSession(), let deadline = session.testingAnchoredDeadline else {
+            throw CustodyRecordError.fenced
+        }
+        try authenticatedReadinessStoppedContinuation(bootstrap, root: root, location: location)
+        let before = try stored(location, bootstrap: bootstrap)
+        let target = application + "/" + regular[1]
+        switch adversary {
+        case .extraChild:
+            let fd = open(application + "/fixture-unlisted", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            try H.check(fd >= 0, "fresh rollback extra-child creation")
+            try H.check(OwnedFileDescriptor(fd).retireChecked() == .succeeded, "fresh rollback extra-child close")
+        case .missingChild:
+            try H.check(unlink(target) == 0, "fresh rollback missing-child cut")
+        case .replacedChild:
+            var before = stat(); try H.check(lstat(target,&before) == 0, "fresh rollback child identity")
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: target))
+            try H.check(unlink(target) == 0, "fresh rollback child replacement cut")
+            try bytes.write(to: URL(fileURLWithPath: target), options: .withoutOverwriting)
+            try H.check(chmod(target,before.st_mode & 0o7777) == 0, "fresh rollback child replacement mode")
+        case .changedContent:
+            let raw = open(target,O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+            try H.check(raw >= 0, "fresh rollback content cut open")
+            let descriptor = OwnedFileDescriptor(raw)
+            var byte: UInt8 = 0
+            try H.check(pread(raw,&byte,1,0) == 1, "fresh rollback content preimage")
+            byte ^= 1
+            try H.check(pwrite(raw,&byte,1,0) == 1 && fsync(raw) == 0, "fresh rollback content cut")
+            try H.check(descriptor.retireChecked() == .succeeded, "fresh rollback content close")
+        case .changedMode:
+            var info = stat(); try H.check(lstat(target,&info) == 0, "fresh rollback mode preimage")
+            try H.check(chmod(target,(info.st_mode & 0o7777) ^ 0o100) == 0, "fresh rollback mode cut")
+        case .changedXattr:
+            var byte: UInt8 = 1
+            try H.check(setxattr(target,"com.example.fixture-retirement",&byte,1,0,XATTR_NOFOLLOW) == 0,
+                "fresh rollback xattr cut")
+        case .changedSealedLink:
+            guard let link = records.first(where: { $0.count == 5 && $0[0] == "l" }) else { throw CustodyRecordError.fenced }
+            let path = application + "/" + link[1]
+            try H.check(unlink(path) == 0 && symlink("../../fixture-escape",path) == 0, "fresh rollback sealed-leaf cut")
+        case .replacedRoot:
+            let held = root + "/home/Applications/fixture-held-app"
+            try H.check(rename(application,held) == 0 && mkdir(application,0o755) == 0, "fresh rollback app substitution")
+        case .replacedParent:
+            let path = root + "/home/Applications", held = root + "/home/fixture-held-applications"
+            try H.check(rename(path,held) == 0 && mkdir(path,0o755) == 0, "fresh rollback parent substitution")
+        case .originalDeadline:
+            while !deadline.hasExpired { Thread.sleep(forTimeInterval: min(0.001,Double(deadline.remainingMilliseconds) / 1_000)) }
+        }
+        try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+        let after = try stored(location, bootstrap: bootstrap)
+        try H.check(after.phase == .recovery && after.readinessCommit == nil && after.state == before.state
+            && after.transaction?.id == before.transaction?.id && after.recoveryReason != .restoredStopped
+            && bootstrap.completionObservation() != .complete, "fresh restoration accepted substituted/expired authority")
+        try InstallationOwnershipFixtures.excluded(location)
+        try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock")
+        try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+        try H.refuses { try bootstrap.finishFreshInstallation() }
+    }
+    @inline(never)
+    static func authenticatedFreshRestorationContention(_ bootstrap: InstallationBootstrap,
+        root: String, location: StateLocation) throws {
+        _ = try RuntimeFixtureSession.installationRoot(TestIsolation.validateRoot(root))
+        guard bootstrap.candidateReadinessObservation() == .complete,
+              bootstrap.readinessCommitObservation() == .notAttempted,
+              bootstrap.normalStartupObservation() == .notAttempted else { throw CustodyRecordError.fenced }
+        let raw = open(location.path + "/lifecycle.lock",O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        try H.check(raw >= 0, "fresh restoration lifecycle contender")
+        let contender = OwnedFileDescriptor(raw)
+        do {
+            try H.check(flock(raw,LOCK_SH | LOCK_NB) == 0, "fresh restoration lifecycle contention setup")
+            try H.refuses { try bootstrap.stopReadinessOnlyHost() }
+            try H.check(bootstrap.stoppedRecoveryObservation() == .pending,
+                "fresh restoration reentry accepted contended lifecycle inode")
+            try InstallationOwnershipFixtures.excluded(location)
+            try H.refuses { try bootstrap.restoreStoppedFreshInstallation() }
+            try H.check(contender.retireChecked() == .succeeded, "fresh restoration contender checked close")
+        } catch {
+            guard contender.retireChecked() == .succeeded else { throw CustodyRecordError.fenced }; throw error
+        }
+    }
+    /// Original signed driver prerequisites only. Ordinary enrolled invocation
+    /// reaches refusal; actual authenticated positive remains separately qualified.
+    enum ReadinessStopCut { case none, streamClosedBeforeStop }
+    @inline(never)
+    static func authenticatedReadinessStoppedContinuation(_ bootstrap: InstallationBootstrap,
+        root: String, location: StateLocation, cut: ReadinessStopCut = .none) throws {
+        _ = try RuntimeFixtureSession.installationRoot(TestIsolation.validateRoot(root))
+        guard bootstrap.candidateReadinessObservation() == .complete,
+              bootstrap.readinessCommitObservation() == .notAttempted,
+              bootstrap.normalStartupObservation() == .notAttempted,
+              bootstrap.stoppedRecoveryObservation() == .notAttempted else { throw CustodyRecordError.fenced }
+        let before = try stored(location, bootstrap: bootstrap)
+        guard before.phase == .active, before.readinessCommit == nil,
+              before.step?.action == .candidateReady, before.step?.status == .complete else { throw CustodyRecordError.fenced }
+        let quiet = try PolicyAuthorityFile.read(path: root + "/home/.staged-completion-quiet", owner: geteuid(), maximumBytes: 32)
+        try H.check(quiet.bytes == Data("staged-completion-quiet/v1\n".utf8),
+                    "signed readiness stop omitted actual command fixture contract")
+        try InstallationOwnershipFixtures.excluded(location)
+        if cut == .streamClosedBeforeStop {
+            guard let session = bootstrap.testingReadinessSession(), let deadline = session.testingAnchoredDeadline else {
+                throw CustodyRecordError.fenced
+            }
+            // Cut the actual original stream after signed readiness. Its joined
+            // service and any resulting host exit still cannot supply an ack.
+            try session.cancelAndJoin(deadline: deadline)
+            try H.refuses { try bootstrap.stopReadinessOnlyHost() }
+            try H.check(try bootstrap.stoppedRecoveryObservation() == .pending
+                && bootstrap.stoppedDeliveryObservation() != .complete && stored(location, bootstrap: bootstrap) == before,
+                "transport loss invented readiness drain or candidate-stop evidence")
+            try InstallationOwnershipFixtures.excluded(location)
+            try H.refuses { try bootstrap.stopReadinessOnlyHost() }
+            return
+        }
+        try bootstrap.stopReadinessOnlyHost()
+        let after = try stored(location, bootstrap: bootstrap)
+        try H.check(bootstrap.stoppedRecoveryObservation() == .exclusive
+            && bootstrap.stoppedDeliveryObservation() == .complete && after.phase == .recovery
+            && after.readinessCommit == nil && after.state == before.state
+            && after.transaction == before.transaction && after.step?.action == .candidateStop
+            && after.step?.status == .complete && after.step?.ordinal == 16,
+                    "readiness-only stop did not retain exact stopped recovery custody")
+        try InstallationOwnershipFixtures.excluded(location)
+        try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock")
+        try H.refuses { try bootstrap.stopReadinessOnlyHost() }
+        try H.refuses { try bootstrap.commitCandidateReadiness() }
+        try H.refuses { try bootstrap.stopNormallyStartedHost() }
+        try H.refuses { try bootstrap.finishFreshInstallation() }
+    }
+    /// Missing original stages must not be counted as a reached signed fault.
+    /// These are prerequisite refusals only; no authenticated positive is minted.
+    @inline(never)
+    static func bootstrapNativeHarnessPrerequisites() throws {
+        for variant in 0..<3 {
+            try exclusiveFixture { root, location, bootstrap, registry in
+                let before = try H.snapshot(root)
+                if variant == 0 {
+                    try H.refuses {
+                        try InstallationBootstrapCommitTransitionHarness.persistenceCut(.commitIntent,
+                            failure: .receiptBeforeSwap, bootstrap: bootstrap, root: root,
+                            location: location, prepare: {})
+                    }
+                } else {
+                    do {
+                        try InstallationBootstrapCommitTransitionHarness.returnedCommitFailure(
+                            delivered: variant == 2, bootstrap: bootstrap, root: root,
+                            location: location, prepare: {})
+                        throw H.Failure(message: "native commit harness accepted an unreached transition")
+                    } catch InstallationCandidateReadyTransitionHarness.Prerequisite.authenticatedTransitionNotReached {}
+                }
+                try H.check(!bootstrap.observation().attempted && !bootstrap.observation().failedClosed
+                    && bootstrap.readinessCommitObservation() == .notAttempted
+                    && bootstrap.testingCommitRetention() == [false, false, false, false],
+                    "native commit prerequisite refusal consumed or fabricated authority")
+                try H.check(try H.snapshot(root) == before && registry.testingCount == 0
+                    && registry.testingOriginalHelpersReaped
+                    && bootstrap.testingRetained() == Array(repeating: false, count: 6),
+                    "native commit prerequisite refusal changed original disk or retained work")
+                for path in [location.path + "/operation.lock", location.path + "/custody/installation.json"] {
+                    var node = stat()
+                    try H.check(lstat(path, &node) == -1 && errno == ENOENT,
+                                "native commit prerequisite refusal created installation authority")
+                }
+            }
+        }
+    }
+    static func commitBeforeReady() throws {
+        try exclusiveFixture { root, location, bootstrap, _ in
+            for phase in 0..<3 {
+                if phase == 1 { try startPrepared(root, bootstrap) }
+                if phase == 2 { try bootstrap.bootstrapCandidate(); try bootstrap.kickstartCandidate() }
+                try H.refuses { try bootstrap.commitCandidateReadiness() }
+                try H.refuses { try bootstrap.testingFenceCommitFailure() }
+                try H.check(bootstrap.readinessCommitObservation() == .notAttempted
+                    && bootstrap.commitFailureObservation() == .noCommitObserved
+                    && bootstrap.testingCommitRetention() == [false, false, false, false]
+                    && !bootstrap.observation().failedClosed,
+                    "commit or recovery preclaim fabricated durable authority")
+            }
+            let before = try stored(location)
+            try H.check(before.phase == .active && before.readinessCommit == nil,
+                        "commit order fixture unexpectedly committed")
+            try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    static func commitRecoveryMetadata() throws {
+        // Value contract only. These synthetic records never enter Bootstrap,
+        // mint an authenticated observation, or grant a journal writer.
+        typealias C = InstallationControlFixtures
+        var h = try C.Harness(); try h.throughReady(); try h.commitReady()
+        let committed = h.record, receiptBytes = try h.receipts.map { try $0.encode(uid: h.state.directory.uid) }
+        try h.recover(.startupUncertain)
+        try H.check(h.record.phase == .recovery && h.record.readinessCommit == committed.readinessCommit
+            && h.record.step == committed.step && h.record.latestReceiptDigest == committed.latestReceiptDigest
+            && h.record.transaction == committed.transaction
+            && (try h.receipts.map { try $0.encode(uid: h.state.directory.uid) }) == receiptBytes,
+            "postcommit recovery changed durable convergence or receipt chain")
+        let erased = InstallationControlRecord(revision: h.record.revision + 1, phase: .recovery,
+            state: h.record.state, transaction: h.record.transaction, step: h.record.step,
+            latestReceiptDigest: h.record.latestReceiptDigest, readinessCommit: nil, recoveryReason: .startupUncertain)
+        try C.refuses { try h.record.validateReplacement(erased, receipts: h.receipts) }
+        try C.refuses { try h.record.validateReplacement(committed, receipts: h.receipts) }
+    }
+
+}
+
+/// Native-driver harness only. A caller must supply the actual authenticated
+/// session and original fixture custody through prepare; an unreached real
+/// publication is a missing prerequisite, never a passing negative case.
+/// This harness creates no ReadyObservation, PID, command result or retirement.
+enum InstallationBootstrapCommitTransitionHarness {
+    typealias B = InstallationBootstrap
+    typealias H = InstallationParentPreparationFixtures
+    typealias J = CustodyCatalogStore.InstallationStagedJournal
+    typealias Edge = InstallationCandidateReadyTransitionHarness.Transition
+    private static func control(_ location: StateLocation) throws -> InstallationControlRecord {
+        try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath:
+            location.path + "/custody/installation.json")))
+    }
+    private static func checkRoot(_ root: String, _ location: StateLocation) throws {
+        try H.check(try StateLocation.isolated(root: TestIsolation.validateRoot(root)).path == location.path,
+                    "bootstrap native harness root does not own state")
+    }
+    /// Existing nine exact persistence cuts at all four real ready/commit edges.
+    /// prepare must finish the original bootstrap/kickstart and authenticated
+    /// handshake; for commit edges it must also finish confirmCandidateReady.
+    @inline(never)
+    static func persistenceCut(_ edge: Edge, failure: J.TestingPublicationFailure,
+        bootstrap: B, root: String, location: StateLocation, prepare: () throws -> Void) throws {
+        try checkRoot(root, location)
+        let probe = J.TestingPublicationProbe(action: edge.action, status: edge.status, failure: failure)
+        if edge.action == .candidateReady { try bootstrap.testingConfigureCandidateReady(publicationProbe: probe) }
+        else { try bootstrap.testingConfigureReadinessCommit(publicationProbe: probe) }
+        try prepare()
+        var refused = false
+        do {
+            if edge.action == .candidateReady { try bootstrap.confirmCandidateReady() }
+            else { try bootstrap.commitCandidateReadiness() }
+        } catch CustodyRecordError.injectedFailure { refused = true }
+        catch CustodyRecordError.committedCleanupFailure { refused = true }
+        // This is checked BEFORE interpreting any refusal as the selected cut.
+        let trace = try InstallationCandidateReadyTransitionHarness.requireReached(probe)
+        try H.check(refused && bootstrap.observation().failedClosed, "bootstrap actual cut did not fail closed")
+        let swapped: Bool
+        switch failure {
+        case .controlAfterSwap, .controlAfterDirectorySync, .controlAfterPreimageUnlink: swapped = true
+        default: swapped = false
+        }
+        let observed = try control(location)
+        try H.check(observed == (swapped ? trace.after : trace.before), "bootstrap cut replaced actual durable outcome")
+        let receiptPath = location.path + "/custody/receipts/" + (try trace.receipt.filename(uid: location.uid))
+        if failure == .receiptBeforeSwap {
+            var node = stat()
+            try H.check(lstat(receiptPath, &node) == -1 && errno == ENOENT, "bootstrap pre-swap receipt exists")
+        } else {
+            try H.check(try Data(contentsOf: URL(fileURLWithPath: receiptPath)) == trace.receipt.encode(uid: location.uid),
+                        "bootstrap cut lost exact pending receipt")
+        }
+        if edge == .commitComplete {
+            try H.check(bootstrap.testingCommitRetention()[0]
+                && bootstrap.commitFailureObservation() == .pending,
+                "bootstrap uncertain commit cut lost proposal or invented repair")
+            if swapped { try H.check(observed.readinessCommit == trace.after.readinessCommit,
+                                     "bootstrap postcommit failure erased convergence") }
+        }
+        let frozen = try Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json"))
+        try H.refuses { try bootstrap.confirmCandidateReady() }
+        try H.refuses { try bootstrap.commitCandidateReadiness() }
+        try H.check(try Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")) == frozen,
+                    "bootstrap failed publication replayed a capability")
+        try InstallationOwnershipFixtures.excluded(location)
+    }
+    /// Deliberately fail AFTER the actual returned publication/delivery; the
+    /// original deadline, operation owner, committed record and transport result
+    /// remain observable. This does not assert normal host startup.
+    @inline(never)
+    static func returnedCommitFailure(delivered: Bool, bootstrap: B, root: String,
+        location: StateLocation, prepare: () throws -> Void) throws {
+        try checkRoot(root, location)
+        var reached = false
+        try bootstrap.testingConfigureReadinessCommit(checkpoint: { [weak bootstrap] point in
+            guard point == (delivered ? .delivered : .published) else { return }
+            guard let bootstrap else { throw H.Failure(message: "bootstrap returned outcome owner lost") }
+            reached = true
+            let held = bootstrap.testingCommitRetention()
+            try H.check(held[0] && held[1] && held[3] == delivered,
+                        "bootstrap returned outcome was not held before postflight")
+            throw CustodyRecordError.injectedFailure
+        })
+        try prepare()
+        try H.refuses { try bootstrap.commitCandidateReadiness() }
+        guard reached else {
+            throw InstallationCandidateReadyTransitionHarness.Prerequisite.authenticatedTransitionNotReached
+        }
+        let observed = try control(location), held = bootstrap.testingCommitRetention()
+        try H.check(held[0] && held[1] && held[3] == delivered && observed.readinessCommit != nil
+            && bootstrap.readinessCommitObservation() == .failed,
+            "bootstrap failure lost actual commit/transport outcome")
+        if bootstrap.commitFailureObservation() == .fenced {
+            try H.check(observed.phase == .recovery && held[2], "bootstrap claimed recovery without durable fence")
+        } else {
+            try H.check(bootstrap.commitFailureObservation() == .pending,
+                        "bootstrap postcommit failure permitted precommit rollback")
+        }
+        try H.refuses { try bootstrap.commitCandidateReadiness() }
+        try InstallationOwnershipFixtures.excluded(location)
+    }
 }
 #endif

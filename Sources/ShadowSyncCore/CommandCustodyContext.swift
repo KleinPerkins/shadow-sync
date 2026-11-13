@@ -138,7 +138,8 @@ final class CommandCustodyContext: @unchecked Sendable {
         let permit = try journal.commandPermit(for: owner, deadline: deadline)
         try permit.validateOwner(owner)
         return try Self(leases: owner.retainExclusiveLeases(), helper: helper,
-            account: EffectiveAccount.current(), location: StateLocation.production(),
+            account: permit.observation.validationProfile.destinationAccount,
+            location: permit.observation.validationProfile.stateLocation,
             admissionSource: .installation(owner), installation: permit)
     }
     static func borrowing(_ admission: InstallationStagedAdmission,
@@ -146,20 +147,29 @@ final class CommandCustodyContext: @unchecked Sendable {
                           deadline: MonotonicDeadline) throws -> CommandCustodyContext {
         let permit = try intent.commandPermit(admission: admission, deadline: deadline)
         return try Self(leases: admission.retainStartLeases(), helper: intent.commandHelper(),
-            account: EffectiveAccount.current(), location: StateLocation.production(), installation: permit)
+            account: permit.observation.validationProfile.destinationAccount,
+            location: permit.observation.validationProfile.stateLocation, installation: permit)
     }
     static func borrowing(_ admission: InstallationStagedStopAdmission,
                           intent: CustodyCatalogStore.InstallationStagedCommandObservation,
                           deadline: MonotonicDeadline) throws -> CommandCustodyContext {
         let permit = try intent.commandPermit(admission: admission, deadline: deadline)
         return try Self(leases: admission.retainStopLeases(), helper: intent.commandHelper(),
-            account: EffectiveAccount.current(), location: StateLocation.production(), installation: permit)
+            account: permit.observation.validationProfile.destinationAccount,
+            location: permit.observation.validationProfile.stateLocation, installation: permit)
+    }
+    static func borrowing(_ stop: CustodyCatalogStore.InstallationCommittedStop) throws -> CommandCustodyContext {
+        let permit = try stop.commandPermit()
+        return try Self(leases: stop.retainLeases(), helper: stop.commandHelper(),
+            account: permit.observation.validationProfile.destinationAccount,
+            location: permit.observation.validationProfile.stateLocation, installation: permit)
     }
     static func observing(_ recovery: CustodyCatalogStore.InstallationStagedRecovery,
                           deadline: MonotonicDeadline) throws -> CommandCustodyContext {
         let permit = try recovery.commandPermit(deadline: deadline)
         return try Self(leases: recovery.retainLeases(), helper: recovery.commandHelper(),
-            account: EffectiveAccount.current(), location: StateLocation.production(), installation: permit)
+            account: permit.observation.validationProfile.destinationAccount,
+            location: permit.observation.validationProfile.stateLocation, installation: permit)
     }
     static func observing(_ authority: RunAuthority) throws -> CommandCustodyContext {
         let helper = try CustodyHelperExecutable.production()
@@ -305,7 +315,8 @@ final class CommandCustodyContext: @unchecked Sendable {
             arguments = ["--verify", "--strict", "--verbose=2", account.homeDirectory + "/Applications/ShadowSync.app"]
         }
         let originalBudget = try supplied ?? CustodyBudget.make(kind: kind, workSeconds: 10)
-        let budget = try installation?.boundDiagnosticBudget(originalBudget) ?? originalBudget
+        let diagnosticBudget = try installation?.boundDiagnosticBudget(originalBudget) ?? originalBudget
+        let budget = try installation?.boundCommittedBudget(diagnosticBudget, kind: kind) ?? diagnosticBudget
         try budget.validate(kind: kind, permittedWorkSeconds: 10, now: DispatchTime.now().uptimeNanoseconds)
         try revalidate()
         let raw = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -321,12 +332,16 @@ final class CommandCustodyContext: @unchecked Sendable {
     }
 
     func prepareLifecycle(_ operation: LifecycleLaunchCommand.Operation,
-                          cancellation: CancellationToken? = nil) throws -> PreparedCustodyCommand {
+                          deadline: MonotonicDeadline? = nil, cancellation: CancellationToken? = nil) throws -> PreparedCustodyCommand {
         guard helper.isLifecycleCoordinator else { throw CustodyRecordError.fenced }
         if let installation {
             try installation.observation.validateStagedOperation(mode: mode, operation: operation)
         } else { guard mode == .lifecycleMutation else { throw CustodyRecordError.fenced } }
-        let budget = try CustodyBudget.make(kind: .launchctlMutation, workSeconds: 10)
+        let originalBudget = try CustodyBudget.make(kind: .launchctlMutation, workSeconds: 10)
+        let invocationBudget = try deadline.map {
+            try originalBudget.clipped(to: $0, kind: .launchctlMutation, permittedWorkSeconds: 10)
+        } ?? originalBudget
+        let budget = try installation?.boundCommittedBudget(invocationBudget, kind: .launchctlMutation) ?? invocationBudget
         try revalidate()
         let command = LifecycleLaunchCommand(operation: operation, account: account)
         let raw = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -467,9 +482,22 @@ final class CommandCustodyContext: @unchecked Sendable {
     /// The existing read/EX phase supplies its actual account, retained state
     /// descriptor and publisher. No lock or command admission is reopened.
     func currentPolicyBinder(cancellation: CancellationToken) throws -> SelectedRepositoryScopeBinder {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCost = DiscoveryFixtureDiagnostic.currentCatalogCost
+        let diagnosticStarted = DispatchTime.now().uptimeNanoseconds
+        var diagnosticDeadline: UInt64? = nil
+        var diagnosticMilestones: [UInt64] = []
+        defer { diagnosticCost?.captureSetup(started: diagnosticStarted,
+            ended: DispatchTime.now().uptimeNanoseconds, milestones: diagnosticMilestones,
+            deadline: diagnosticDeadline) }
+        #endif
         try validatePhaseAdmission()
         guard mode == .read || mode == .mutation else { throw CustodyRecordError.fenced }
         let deadline = DispatchTime.now().uptimeNanoseconds &+ RepositorySelectionCatalogLimits().elapsedNanoseconds
+        #if SHADOW_SYNC_TESTING
+        diagnosticDeadline = deadline
+        if diagnosticCost != nil { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
+        #endif
         let publisher: PublisherPolicyResources
         #if SHADOW_SYNC_TESTING
         if try helper.testingDiscoveryGraphResource() != nil {
@@ -482,8 +510,14 @@ final class CommandCustodyContext: @unchecked Sendable {
         try validatePhaseAdmission(account: EffectiveAccount.current())
         publisher = try PublisherPolicyResources.production(account: account)
         #endif
+        #if SHADOW_SYNC_TESTING
+        if diagnosticCost != nil { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
+        #endif
         guard DispatchTime.now().uptimeNanoseconds < deadline else { throw SelectedRepositoryScopeError.policyUnavailable }
         let snapshot = try HostPolicySnapshot.load(account: account, contract: QualifiedAWAContract.decode(publisher.contract))
+        #if SHADOW_SYNC_TESTING
+        if diagnosticCost != nil { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
+        #endif
         let state = try scope.leases.duplicateStateDirectory()
         return try PolicyCatalogSession(snapshot: snapshot, publisher: publisher, context: self,
             scratchDescriptor: state.0.value, cancellation: cancellation)
@@ -620,14 +654,41 @@ final class CommandCustodyContext: @unchecked Sendable {
             admissionSource: .installation(owner), installation: permit)
     }
     static func testingStaged(_ admission: InstallationStagedAdmission,
-        intent: CustodyCatalogStore.InstallationStagedCommandObservation, root: String) throws -> CommandCustodyContext {
-        let permit = try intent.commandPermit(admission: admission, deadline: .init(seconds: 3))
+        intent: CustodyCatalogStore.InstallationStagedCommandObservation, root: String,
+        deadline: MonotonicDeadline = .init(seconds: 3)) throws -> CommandCustodyContext {
+        let permit = try intent.commandPermit(admission: admission, deadline: deadline)
         return try testingStaged(leases: admission.retainStartLeases(), permit: permit, root: root)
     }
     static func testingStaged(_ admission: InstallationStagedStopAdmission,
         intent: CustodyCatalogStore.InstallationStagedCommandObservation, root: String) throws -> CommandCustodyContext {
         let permit = try intent.commandPermit(admission: admission, deadline: .init(seconds: 3))
         return try testingStaged(leases: admission.retainStopLeases(), permit: permit, root: root)
+    }
+    @_silgen_name("shadowSyncTesting_testingCommittedStop")
+    @inline(never)
+    static func testingCommittedStop(_ capability: CustodyCatalogStore.InstallationCommittedStop,
+        root: String) throws -> CommandCustodyContext {
+        let permit = try capability.commandPermit()
+        // Inspect the actual journal-issued permit and sealed payload. A direct
+        // metadata binding fixture cannot detect a dropped factory argument.
+        let observed = try InstallationCommandBinding.decode(permit.sealedInput())
+        guard observed == permit.observation, observed.isCommittedStop,
+              observed.committedStopDeadline == capability.deadline.absoluteUptimeNanoseconds,
+              case .object(let wire) = observed.wire,
+              wire["schema"] == .string("shadow-sync-installation-command/v2"),
+              wire["purpose"] == .string("committed-candidate-stop"),
+              wire["deadline"] == .unsigned(capability.deadline.absoluteUptimeNanoseconds) else {
+            throw CustodyRecordError.fenced
+        }
+        return try testingStaged(leases: capability.retainLeases(), permit: permit, root: root)
+    }
+    @_silgen_name("shadowSyncTesting_testingCommittedBootout")
+    @inline(never)
+    func testingCommittedBootout() throws -> PreparedCustodyCommand {
+        guard let installation, installation.observation.isCommittedStop else { throw CustodyRecordError.fenced }
+        let original = try CustodyBudget.make(kind: .launchctlMutation, workSeconds: 10)
+        return try testingStagedLifecycle(.bootout,
+            budget: installation.boundCommittedBudget(original, kind: .launchctlMutation))
     }
     static func testingRecovery(_ recovery: CustodyCatalogStore.InstallationStagedRecovery,
                                 root: String) throws -> CommandCustodyContext {

@@ -604,7 +604,22 @@ public final class SecureStateDirectory: @unchecked Sendable {
 public final class RunAuthority: @unchecked Sendable {
     private let custodyMutex = NSLock()
     private var custodyBorrowCount = 0
+    // Root families report all descendant close outcomes before their release
+    // callback. A vanished weak family alone must never prove retirement.
+    private let installationCloseMutex = NSLock()
+    private var installationAliasClose: OwnedFileDescriptor.Retirement = .succeeded
+    private var installationTerminalAttempted = false
+    private var installationTerminalComplete = false
+    private func recordInstallationAliasClose(_ result: OwnedFileDescriptor.Retirement) {
+        installationCloseMutex.lock(); defer { installationCloseMutex.unlock() }
+        if installationAliasClose == .succeeded, result != .succeeded { installationAliasClose = result }
+    }
+    private var installationAliasesClosedSuccessfully: Bool {
+        installationCloseMutex.lock(); defer { installationCloseMutex.unlock() }
+        return installationAliasClose == .succeeded
+    }
     private var custodyAliasFamilies: [WeakInstallationAliasFamily] = []
+    private var installationFamilies: [InstallationAliasRetirement] = []
     // Retirement, staged admission and release close this scope permanently.
     // A failed/busy transition does not reopen it; only a fresh authority may
     // issue new leases. Existing retained descriptions remain valid until closed.
@@ -621,11 +636,14 @@ public final class RunAuthority: @unchecked Sendable {
     private let commandMode: CustodyAuthorityMode
     private let releasesInitializationLocksForStaging: Bool
     private let initializationAliases: InstallationPublicationAliases?
-    private enum InstallationAdmissionPhase { case exclusive, transferring, staged, failed }
+    private enum InstallationAdmissionPhase { case exclusive, transferring, staged, failed, reenteringStopped, stoppedExclusive, stoppedRecoveryFailed }
     private var installationAdmissionPhase: InstallationAdmissionPhase = .exclusive
     private var stagedNamespace: OwnedFileDescriptor?
     private var stagedLifecycle: OwnedFileDescriptor?
-    private enum InstallationStagedBorrowingPhase { case start, closingStart, stop }
+    // Never aliases of the original operation description. Retain failed fresh
+    // acquisition/close custody instead of dropping an uncertain descriptor.
+    private var stoppedLifecycle: OwnedFileDescriptor?
+    private enum InstallationStagedBorrowingPhase { case start, closingStart, stop, closingStop }
     private var installationStagedBorrowingPhase: InstallationStagedBorrowingPhase = .start
     private var installationCompletionBorrowed = false
 
@@ -934,7 +952,9 @@ public final class RunAuthority: @unchecked Sendable {
         installationSeal = seal
         return seal
     }
-    private func validateInstallationDescriptions(_ binding: InstallationStateBinding) throws {
+    private func validateInstallationDescriptions(_ binding: InstallationStateBinding,
+        phase expectedPhase: InstallationAdmissionPhase? = nil) throws {
+        let phase = expectedPhase ?? installationAdmissionPhase
         // Observation opens never acquire a lock. All authority remains in the
         // original operation description; its actual descriptor is checked below.
         let current = try InstallationStateBinding.capture(stateDescriptor: state.descriptor.value, uid: state.uid)
@@ -947,7 +967,7 @@ public final class RunAuthority: @unchecked Sendable {
             throw CustodyRecordError.fenced
         }
         try validateInstallationDescriptor(operation, expected: binding.operation)
-        switch installationAdmissionPhase {
+        switch phase {
         case .exclusive:
             try validateInstallationDescriptor(namespace, expected: binding.namespace)
             try validateInstallationDescriptor(lifecycle, expected: binding.lifecycle)
@@ -957,6 +977,22 @@ public final class RunAuthority: @unchecked Sendable {
                   lifecycle.value < 0, run == nil || run!.value < 0 else { throw CustodyRecordError.fenced }
             try validateInstallationDescriptor(stagedNamespace, expected: binding.namespace)
             try validateInstallationDescriptor(stagedLifecycle, expected: binding.lifecycle)
+        case .reenteringStopped, .stoppedExclusive, .stoppedRecoveryFailed:
+            guard namespace.value < 0, lifecycle.value < 0, run == nil || run!.value < 0 else {
+                throw CustodyRecordError.fenced
+            }
+            if let stagedNamespace, stagedNamespace.value >= 0 {
+                try validateInstallationDescriptor(stagedNamespace, expected: binding.namespace)
+            }
+            if let stagedLifecycle, stagedLifecycle.value >= 0 {
+                try validateInstallationDescriptor(stagedLifecycle, expected: binding.lifecycle)
+            }
+            if phase == .stoppedExclusive {
+                guard (stagedNamespace?.value ?? -1) >= 0, (stoppedLifecycle?.value ?? -1) >= 0 else {
+                    throw CustodyRecordError.fenced
+                }
+                try validateInstallationDescriptor(stoppedLifecycle!, expected: binding.lifecycle)
+            }
         case .transferring, .failed:
             guard namespace.value < 0, lifecycle.value < 0, run == nil || run!.value < 0,
                   stagedNamespace == nil, stagedLifecycle == nil else { throw CustodyRecordError.fenced }
@@ -1037,12 +1073,19 @@ public final class RunAuthority: @unchecked Sendable {
         try validateInstallationDescriptions(seal.binding)
     }
     fileprivate func validateInstallation(_ seal: InstallationOwnershipSeal, closedBorrowing: Bool = false) throws {
-        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        custodyMutex.lock()
         guard installationSeal === seal, custodyAdmissionClosed,
+              !closedBorrowing || (installationBorrowingClosed && custodyBorrowCount == 0) else {
+            custodyMutex.unlock(); throw CustodyRecordError.fenced
+        }
+        let phase = installationAdmissionPhase
+        custodyMutex.unlock()
+        try validateInstallationDescriptions(seal.binding, phase: phase)
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal, custodyAdmissionClosed, installationAdmissionPhase == phase,
               !closedBorrowing || (installationBorrowingClosed && custodyBorrowCount == 0) else {
             throw CustodyRecordError.fenced
         }
-        try validateInstallationDescriptions(seal.binding)
     }
     fileprivate func borrowInstallation(_ owner: InstallationTransactionOwner,
                                        seal: InstallationOwnershipSeal) throws -> CustodyAuthorityLeaseSet {
@@ -1052,6 +1095,8 @@ public final class RunAuthority: @unchecked Sendable {
             throw CustodyRecordError.fenced
         }
         try validateInstallationDescriptions(seal.binding)
+        let retirement = InstallationAliasRetirement()
+        installationFamilies.append(retirement)
         let result = try CustodyAuthorityLeaseSet.copy(state: state, members: [
             (.state, state.descriptor), (.namespace, namespace), (.lifecycle, lifecycle), (.operation, operation),
         ], mode: .lifecycleMutation, onRelease: { [self, owner] in
@@ -1061,6 +1106,8 @@ public final class RunAuthority: @unchecked Sendable {
             withExtendedLifetime(owner) {
                 custodyMutex.lock(); custodyBorrowCount -= 1; custodyMutex.unlock()
             }
+        }, onCheckedRetirement: { [self, retirement] in
+            retirement.complete($0); recordInstallationAliasClose($0)
         })
         custodyAliasFamilies.removeAll { $0.family == nil }
         custodyAliasFamilies.append(WeakInstallationAliasFamily(result.initializationAliases))
@@ -1080,7 +1127,7 @@ public final class RunAuthority: @unchecked Sendable {
                                              mode: CustodyAuthorityMode,
                                              forCompletion: Bool = false) throws -> CustodyAuthorityLeaseSet {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
-        guard !installationCompletionBorrowed,
+        guard !installationCompletionBorrowed, installationAliasesClosedSuccessfully,
               !forCompletion || (custodyBorrowCount == 0 && custodyAliasFamilies.allSatisfy({ $0.family == nil })),
               installationSeal === seal, custodyAdmissionClosed, installationBorrowingClosed,
               installationAdmissionPhase == .staged,
@@ -1090,6 +1137,8 @@ public final class RunAuthority: @unchecked Sendable {
         try validateInstallationDescriptions(seal.binding)
         // Duplicate the original EX operation description and the two fresh SH
         // descriptions. No operation open, lock conversion, run or new authority.
+        let retirement = InstallationAliasRetirement()
+        installationFamilies.append(retirement)
         let result = try CustodyAuthorityLeaseSet.copy(state: state, members: [
             (.state, state.descriptor), (.namespace, stagedNamespace),
             (.lifecycle, stagedLifecycle), (.operation, operation),
@@ -1099,6 +1148,8 @@ public final class RunAuthority: @unchecked Sendable {
                 if forCompletion { installationCompletionBorrowed = false }
                 custodyMutex.unlock()
             }
+        }, onCheckedRetirement: { [self, retirement] in
+            retirement.complete($0); recordInstallationAliasClose($0)
         })
         custodyAliasFamilies.removeAll { $0.family == nil }
         custodyAliasFamilies.append(WeakInstallationAliasFamily(result.initializationAliases))
@@ -1109,14 +1160,14 @@ public final class RunAuthority: @unchecked Sendable {
     fileprivate func validateStagedCommandAliasesRetired(_ seal: InstallationOwnershipSeal) throws {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
         guard installationSeal === seal, installationAdmissionPhase == .staged,
-              installationBorrowingClosed, custodyBorrowCount == 0,
+              installationBorrowingClosed, custodyBorrowCount == 0, installationAliasesClosedSuccessfully,
               custodyAliasFamilies.allSatisfy({ $0.family == nil }) else { throw CustodyRecordError.fenced }
         try validateInstallationDescriptions(seal.binding)
     }
     fileprivate func closeStagedInstallationStarts(_ seal: InstallationOwnershipSeal) throws {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
         guard installationSeal === seal, installationAdmissionPhase == .staged,
-              installationStagedBorrowingPhase != .stop else { throw CustodyRecordError.fenced }
+              installationStagedBorrowingPhase == .start || installationStagedBorrowingPhase == .closingStart else { throw CustodyRecordError.fenced }
         // Close before any drainage or publisher check; a failure never reopens
         // the gate. Every descendant shares the enrolled root alias family.
         installationStagedBorrowingPhase = .closingStart
@@ -1140,6 +1191,93 @@ public final class RunAuthority: @unchecked Sendable {
         try validateInstallationDescriptions(seal.binding)
         installationStagedBorrowingPhase = .stop
     }
+    fileprivate func closeStagedInstallationStops(_ seal: InstallationOwnershipSeal) throws {
+        custodyMutex.lock()
+        guard installationSeal === seal, !installationTerminalAttempted,
+              installationAdmissionPhase == .staged, installationBorrowingClosed,
+              installationStagedBorrowingPhase == .stop || installationStagedBorrowingPhase == .closingStop else {
+            custodyMutex.unlock(); throw CustodyRecordError.fenced
+        }
+        installationStagedBorrowingPhase = .closingStop
+        let families = custodyAliasFamilies.compactMap(\.family)
+        custodyMutex.unlock()
+        // Never hold the owner mutex while closing a descendant's family gate.
+        // Failed drainage keeps closingStop; it cannot reenter start/stop mode.
+        for family in families { family.closeAdmission() }
+        try validateClosedStagedInstallationStops(seal)
+    }
+    fileprivate func validateClosedStagedInstallationStops(_ seal: InstallationOwnershipSeal) throws {
+        custodyMutex.lock()
+        guard installationSeal === seal, !installationTerminalAttempted,
+              [.staged, .reenteringStopped, .stoppedExclusive].contains(installationAdmissionPhase), installationBorrowingClosed,
+              installationStagedBorrowingPhase == .closingStop, !installationCompletionBorrowed,
+              custodyBorrowCount == 0, installationAliasesClosedSuccessfully,
+              installationFamilies.allSatisfy({ $0.succeeded }) else {
+            custodyMutex.unlock(); throw CustodyRecordError.fenced
+        }
+        let phase = installationAdmissionPhase
+        custodyMutex.unlock()
+        try validateInstallationDescriptions(seal.binding, phase: phase)
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        guard installationSeal === seal, !installationTerminalAttempted,
+              installationAdmissionPhase == phase, installationStagedBorrowingPhase == .closingStop,
+              !installationCompletionBorrowed, custodyBorrowCount == 0 else { throw CustodyRecordError.fenced }
+    }
+    fileprivate func reenterStoppedInstallation(_ seal: InstallationOwnershipSeal,
+        deadline: MonotonicDeadline, boundary: () throws -> Void) throws {
+        try validateClosedStagedInstallationStops(seal)
+        guard custodyMutex.try() else { throw CustodyRecordError.busy }
+        guard installationSeal === seal, !installationTerminalAttempted,
+              installationAdmissionPhase == .staged, let oldLifecycle = stagedLifecycle,
+              stoppedLifecycle == nil else { custodyMutex.unlock(); throw CustodyRecordError.fenced }
+        installationAdmissionPhase = .reenteringStopped
+        custodyMutex.unlock()
+        do {
+            try boundary()
+            guard !deadline.hasExpired, oldLifecycle.retireChecked() == .succeeded else {
+                throw CustodyRecordError.fenced
+            }
+            try boundary()
+            // Committed repair never moves the namespace. Retain its SH and
+            // obtain a fresh description of the exact original lifecycle inode.
+            // No operation open/dup/flock/close occurs in this transition.
+            let fresh = OwnedFileDescriptor(try state.openRegularFile(named: "lifecycle.lock",
+                flags: O_RDWR, create: false, repairPermissions: false))
+            stoppedLifecycle = fresh
+            try validateInstallationDescriptor(fresh, expected: seal.binding.lifecycle)
+            try boundary()
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            guard flock(fresh.value, LOCK_EX | LOCK_NB) == 0 else {
+                let code = errno
+                if code == EWOULDBLOCK { throw SecureStateError.contention("lifecycle.lock") }
+                throw SecureStateError.systemCall("stopped installation admission", code)
+            }
+            try state.validateRegular(fd: fresh.value, name: "lifecycle.lock", repairPermissions: false)
+            try validateInstallationDescriptor(fresh, expected: seal.binding.lifecycle)
+            try boundary()
+            guard custodyMutex.try() else { throw CustodyRecordError.busy }
+            guard installationSeal === seal, installationAdmissionPhase == .reenteringStopped,
+                  !installationTerminalAttempted, !deadline.hasExpired else {
+                custodyMutex.unlock(); throw CustodyRecordError.fenced
+            }
+            installationAdmissionPhase = .stoppedExclusive; custodyMutex.unlock()
+            try boundary()
+        } catch {
+            // Checked retirement is one-shot. An uncertain number is never
+            // retried, and no prior SH admission is reopened on failure.
+            _ = stoppedLifecycle?.retireChecked()
+            custodyMutex.lock(); installationAdmissionPhase = .stoppedRecoveryFailed; custodyMutex.unlock()
+            throw error
+        }
+    }
+    fileprivate func validateStoppedInstallation(_ seal: InstallationOwnershipSeal) throws {
+        custodyMutex.lock()
+        let valid = installationSeal === seal && !installationTerminalAttempted
+            && installationAdmissionPhase == .stoppedExclusive
+        custodyMutex.unlock()
+        guard valid else { throw CustodyRecordError.fenced }
+        try validateInstallationDescriptions(seal.binding)
+    }
     fileprivate func installationCommandsOpen(_ seal: InstallationOwnershipSeal) -> Bool {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
         return installationSeal === seal && custodyAdmissionClosed && !installationBorrowingClosed
@@ -1153,18 +1291,58 @@ public final class RunAuthority: @unchecked Sendable {
         guard custodyBorrowCount == 0 else { throw CustodyRecordError.fenced }
         try validateInstallationDescriptions(seal.binding)
     }
+    /// Only the original journal's consumed terminal capability reaches here.
+    /// There is no unlock, conversion, reopen or numeric retry, including after
+    /// uncertain close. Operation is last; failures keep the real owner retained.
+    fileprivate func finishInstallation(_ seal: InstallationOwnershipSeal,
+        permit: CustodyCatalogStore.InstallationStagedJournal.FinishPermit) throws {
+        guard custodyMutex.try() else { throw CustodyRecordError.busy }
+        guard installationSeal === seal, !installationTerminalAttempted,
+              installationAdmissionPhase == (permit.requiresStoppedExclusive ? .stoppedExclusive : .staged), installationBorrowingClosed,
+              installationStagedBorrowingPhase == (permit.requiresStoppedExclusive ? .closingStop : .closingStart), custodyBorrowCount == 0,
+              !permit.requiresStoppedExclusive || installationFamilies.allSatisfy({ $0.succeeded }),
+              !installationCompletionBorrowed, installationAliasesClosedSuccessfully,
+              initializationAliases?.isRetired ?? true,
+              custodyAliasFamilies.allSatisfy({ $0.family == nil }) else {
+            custodyMutex.unlock(); throw CustodyRecordError.fenced
+        }
+        installationTerminalAttempted = true
+        custodyMutex.unlock()
+        try validateInstallationDescriptions(seal.binding)
+        try permit.consumeForOriginalRelease()
+        for descriptor in [stoppedLifecycle, stagedLifecycle, stagedNamespace, run, lifecycle, namespace].compactMap({ $0 }) {
+            try permit.retire(descriptor, resource: .admission)
+        }
+        // State observation is no longer needed after exact finish and descriptor
+        // postflight. The original operation remains effective through this close.
+        try permit.retire(state.descriptor, resource: .state)
+        try permit.retire(operation, resource: .operation)
+        custodyMutex.lock(); installationTerminalComplete = true; custodyMutex.unlock()
+    }
+
     fileprivate func releaseInstallation(_ seal: InstallationOwnershipSeal) {
         custodyMutex.lock(); defer { custodyMutex.unlock() }
-        guard installationSeal === seal else { return }
+        guard installationSeal === seal, !installationTerminalAttempted else { return }
         // Every borrowed family strongly retains its owner until its descriptors
         // have closed and its release hook has run. No public release method can
         // get here, and the old seal stays consumed after the final close.
         installationBorrowingClosed = true
-        stagedLifecycle?.closeNow(); stagedNamespace?.closeNow()
+        stoppedLifecycle?.closeNow(); stagedLifecycle?.closeNow(); stagedNamespace?.closeNow()
         run?.closeNow(); lifecycle.closeNow(); namespace.closeNow(); operation.closeNow()
     }
 
     #if SHADOW_SYNC_TESTING
+    struct TestingTerminalOwnership {
+        let attempted: Bool
+        let complete: Bool
+        let operation: OwnedFileDescriptor.Retirement
+        let state: OwnedFileDescriptor.Retirement
+    }
+    fileprivate func testingTerminalOwnership() -> TestingTerminalOwnership {
+        custodyMutex.lock(); defer { custodyMutex.unlock() }
+        return TestingTerminalOwnership(attempted: installationTerminalAttempted, complete: installationTerminalComplete,
+            operation: operation.retirementObservation, state: state.descriptor.retirementObservation)
+    }
     static let testingPublicationCapture = InstallationPublicationTestingCapture()
     private var testingCustodyBarrier: CustodyLeaseTestingBarrier?
     private var testingCustodyRetirementBarrier: CustodyLeaseTestingBarrier?
@@ -1206,8 +1384,48 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     private let bindingMutex = NSLock()
     private var liveBinding: InstallationLiveSnapshot?
     private var installationJournalClaimed = false
+    private let retirementMutex = NSLock()
+    private weak var retirementRegistry: RetainedCleanupRegistry?
+    private weak var closedStops: ClosedInstallationStagedStops?
+    private var closedStopsIssued = false
+    private var stopClosureDeadline: MonotonicDeadline?
+    func bindRetirementRegistry(_ registry: RetainedCleanupRegistry) throws {
+        retirementMutex.lock(); defer { retirementMutex.unlock() }
+        guard retirementRegistry == nil || retirementRegistry === registry else { throw CustodyRecordError.fenced }
+        retirementRegistry = registry
+    }
+    func validateRetirementRegistry(_ registry: RetainedCleanupRegistry) throws {
+        retirementMutex.lock(); defer { retirementMutex.unlock() }
+        guard retirementRegistry === registry else { throw CustodyRecordError.fenced }
+    }
+
     #if SHADOW_SYNC_TESTING
     private var testingBindingSource: InstallationBindingTestingSource?
+    func testingFreshRestorationSourceBundle(root: String) throws -> String {
+        _ = try RuntimeFixtureSession.installationRoot(TestIsolation.validateRoot(root))
+        try revalidate()
+        let path: String
+        if let publisher { path = try publisher.installationSourceBundle() }
+        else {
+            guard fixtureRoot == root else { throw CustodyRecordError.fenced }
+            path = root + "/candidate/ShadowSync.app"
+        }
+        guard path.hasPrefix(root + "/"), !path.contains("/../"),
+              let canonical = realpath(path, nil) else { throw CustodyRecordError.fenced }
+        defer { free(canonical) }
+        guard String(cString: canonical) == path else { throw CustodyRecordError.fenced }
+        return path
+    }
+    // Fault injection only: replace a real previously bound registry in an
+    // owned fixture. This cannot manufacture a stopped owner or retirement.
+    func testingSubstituteRetirementRegistry(_ replacement: RetainedCleanupRegistry, root: String) throws {
+        _ = try RuntimeFixtureSession.installationRoot(TestIsolation.validateRoot(root))
+        guard location.path.hasPrefix(root + "/") else { throw CustodyRecordError.fenced }
+        retirementMutex.lock(); defer { retirementMutex.unlock() }
+        guard retirementRegistry != nil, retirementRegistry !== replacement,
+              closedStops != nil, closedStopsIssued else { throw CustodyRecordError.fenced }
+        retirementRegistry = replacement
+    }
     #endif
 
     private init(original: RunAuthority, publisher: LifecyclePublisher?, fixtureRoot: String?, location: StateLocation) throws {
@@ -1231,8 +1449,20 @@ final class InstallationTransactionOwner: @unchecked Sendable {
         guard authority.stateDirectory.uid == publisher.account.uid else { throw CustodyRecordError.fenced }
         return try Self(original: authority, publisher: publisher, fixtureRoot: nil, location: StateLocation.production())
     }
+    var validationProfile: InstallationValidationProfile { publisher?.validationProfile ?? .production }
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    static func consumeSignedFixture(_ authority: RunAuthority,
+                                     context: SignedInstallationFixtureContext) throws -> InstallationTransactionOwner {
+        try context.revalidate()
+        try context.profile.validateLocation(context.paths.state)
+        guard authority.stateDirectory.uid == context.publisher.account.uid else { throw CustodyRecordError.fenced }
+        return try Self(original: authority, publisher: context.publisher, fixtureRoot: nil, location: context.paths.state)
+    }
+    #endif
     private func revalidateOriginal() throws {
-        if let publisher { try publisher.revalidate() }
+        if let publisher {
+            try publisher.revalidate(); try publisher.validationProfile.validateLocation(location)
+        }
         else {
             #if SHADOW_SYNC_TESTING
             guard let fixtureRoot, try TestIsolation.validateRoot(fixtureRoot) == fixtureRoot,
@@ -1262,7 +1492,13 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     func validateInstallationPaths(_ paths: InstallationPaths) throws {
         try revalidate()
         if publisher != nil {
-            guard paths == (try InstallationPaths.production()) else { throw CustodyRecordError.fenced }
+            try validationProfile.validateLocation(paths.state)
+            let account = EffectiveAccount(uid: paths.state.uid, username: publisher!.account.username, homeDirectory: paths.home)
+            try validationProfile.validateDestinationAccount(account, publisher: publisher!.account)
+            guard paths.app == paths.home + "/Applications/ShadowSync.app",
+                  paths.launchAgent == paths.home + "/Library/LaunchAgents/com.kleinperkins.shadow-sync.plist" else {
+                throw CustodyRecordError.fenced
+            }
         } else {
             #if SHADOW_SYNC_TESTING
             guard let fixtureRoot, paths == (try InstallationPaths.isolated(root: fixtureRoot)) else {
@@ -1277,17 +1513,20 @@ final class InstallationTransactionOwner: @unchecked Sendable {
     // a second capture can reconstruct its pending publication capability.
     func claimInstallationJournal() throws {
         try original.requireExclusiveInstallation(seal)
-        bindingMutex.lock(); defer { bindingMutex.unlock() }
         try revalidateOriginal()
+        bindingMutex.lock(); defer { bindingMutex.unlock() }
         guard !installationJournalClaimed else { throw CustodyRecordError.fenced }
         installationJournalClaimed = true
     }
     func installationBinding() throws -> InstallationLiveBinding {
+        bindingMutex.lock(); let expected = liveBinding; bindingMutex.unlock()
+        let observed = try captureLiveBinding(generation: expected?.process.generation ?? RunIdentity.make())
         bindingMutex.lock(); defer { bindingMutex.unlock() }
-        let observed = try captureLiveBinding(generation: liveBinding?.process.generation ?? RunIdentity.make())
-        if let liveBinding {
-            guard observed == liveBinding else { throw CustodyRecordError.fenced }
-        } else { liveBinding = observed }
+        // A crossing first binder cannot replace this observation or borrow its
+        // generation. Refuse; source verification never runs under this mutex.
+        guard liveBinding == expected else { throw CustodyRecordError.fenced }
+        if let expected { guard observed == expected else { throw CustodyRecordError.fenced } }
+        else { liveBinding = observed }
         return InstallationLiveBinding(owner: self, snapshot: observed)
     }
     private func captureLiveBinding(generation: String) throws -> InstallationLiveSnapshot {
@@ -1316,7 +1555,7 @@ final class InstallationTransactionOwner: @unchecked Sendable {
               process.userID == original.stateDirectory.uid,
               RunIdentity.isValid(process.generation), process.startSeconds > 0,
               process.startMicroseconds < 1_000_000 else { throw CustodyRecordError.fenced }
-        try identity.candidate.validate()
+        try identity.candidate.validate(profile: validationProfile)
         try revalidateOriginal()
         return InstallationLiveSnapshot(boot: boot, process: process, identity: identity, state: seal.binding)
     }
@@ -1451,8 +1690,67 @@ final class InstallationTransactionOwner: @unchecked Sendable {
         try original.enterStagedInstallationStop(seal)
         return InstallationStagedStopAdmission(self)
     }
+    fileprivate func closeStagedStops(deadline: MonotonicDeadline) throws -> ClosedInstallationStagedStops {
+        // Seal first even on expired invocation or live aliases. The original
+        // operation is untouched; reconciliation may only observe this closure.
+        retirementMutex.lock()
+        if stopClosureDeadline == nil { stopClosureDeadline = deadline }
+        let originalDeadline = stopClosureDeadline!
+        retirementMutex.unlock()
+        try original.closeStagedInstallationStops(seal)
+        try revalidate()
+        guard !originalDeadline.hasExpired else { throw CustodyRecordError.busy }
+        retirementMutex.lock(); defer { retirementMutex.unlock() }
+        guard !closedStopsIssued, retirementRegistry != nil else { throw CustodyRecordError.fenced }
+        let result = ClosedInstallationStagedStops(self, deadline: originalDeadline)
+        closedStops = result; closedStopsIssued = true
+        return result
+    }
+    fileprivate func validateClosedStagedStops(_ closed: ClosedInstallationStagedStops) throws {
+        retirementMutex.lock(); let same = closedStops === closed; retirementMutex.unlock()
+        guard same else { throw CustodyRecordError.fenced }
+        try revalidate(); try original.validateClosedStagedInstallationStops(seal)
+    }
+    /// Consume only this original journal's one-use, actual stopped recovery.
+    /// The returned capability exposes neither descriptors nor general mutation.
+    func reenterStoppedRecovery(_ intent: CustodyCatalogStore.InstallationStagedJournal.StoppedRecoveryIntent)
+        throws -> InstallationStoppedExclusive {
+        try intent.claim(for: self)
+        do {
+            try original.reenterStoppedInstallation(seal, deadline: intent.deadline) {
+                try intent.revalidate(for: self)
+                try self.revalidate()
+            }
+            try intent.revalidate(for: self)
+            try original.validateStoppedInstallation(seal)
+            return InstallationStoppedExclusive(owner: self, intent: intent)
+        } catch {
+            // Bootstrap and the journal retain the original owner and failed
+            // phase. No reset, new transaction or restoration is authorized.
+            throw error
+        }
+    }
+    fileprivate func validateStoppedExclusive(_ intent: CustodyCatalogStore.InstallationStagedJournal.StoppedRecoveryIntent) throws {
+        try intent.revalidate(for: self); try revalidate(); try original.validateStoppedInstallation(seal)
+    }
+    fileprivate func validateRetainedStoppedOwner() throws {
+        try original.validateStoppedInstallation(seal)
+    }
+    private var terminalRetainedOwner: InstallationTransactionOwner?
+    func finishInstallation(_ permit: CustodyCatalogStore.InstallationStagedJournal.FinishPermit) throws {
+        try permit.validateOwner(self)
+        // Enroll before the first fallible descriptor retirement. A throwing
+        // close cannot run a destructor that claims final operation release.
+        terminalRetainedOwner = self
+        try revalidate()
+        try original.finishInstallation(seal, permit: permit)
+        terminalRetainedOwner = nil
+    }
     deinit { original.releaseInstallation(seal) }
     #if SHADOW_SYNC_TESTING
+    func testingTerminalOwnership() -> RunAuthority.TestingTerminalOwnership {
+        original.testingTerminalOwnership()
+    }
     // Synchronous one-shot fixture observations. No worker can outlive the
     // caller's stack and trigger root cleanup before this transfer has returned.
     private var testingAdmissionTransferObservation: (() throws -> Void)?
@@ -1521,8 +1819,59 @@ final class InstallationStagedStopAdmission: @unchecked Sendable {
         guard owner === candidate else { throw CustodyRecordError.fenced }; try revalidate()
     }
     func revalidate() throws { try owner.validateStagedBorrowing(mode: .installationStagedStop) }
+    func closeStops(deadline: MonotonicDeadline) throws -> ClosedInstallationStagedStops {
+        try owner.closeStagedStops(deadline: deadline)
+    }
     func retainStopLeases() throws -> CustodyAuthorityLeaseSet {
         try owner.retainStagedLeases(mode: .installationStagedStop)
+    }
+}
+
+/// Only the original consumed owner creates this after irreversible stop gate
+/// closure and positive retirement of every enrolled root/descendant family.
+/// This is not host drainage, StopDelivery closure or exclusive reentry.
+final class ClosedInstallationStagedStops: @unchecked Sendable {
+    private let owner: InstallationTransactionOwner
+    let deadline: MonotonicDeadline
+    private let mutex = NSLock()
+    private var retirementClaimed = false
+    fileprivate init(_ owner: InstallationTransactionOwner, deadline: MonotonicDeadline) {
+        self.owner = owner; self.deadline = deadline
+    }
+    func belongs(to candidate: InstallationTransactionOwner) -> Bool { owner === candidate }
+    func validate(registry: RetainedCleanupRegistry) throws {
+        guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+        try owner.validateRetirementRegistry(registry)
+        try owner.validateClosedStagedStops(self)
+        guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+    }
+    func claimRetirement(registry: RetainedCleanupRegistry) throws {
+        try validate(registry: registry)
+        mutex.lock(); defer { mutex.unlock() }
+        guard !retirementClaimed else { throw CustodyRecordError.fenced }
+        retirementClaimed = true
+    }
+}
+
+/// The actual original stopped-exclusive owner. Its fixed fresh repair path
+/// grants no descriptor, command borrow, generic writer or startup API.
+final class InstallationStoppedExclusive {
+    private let owner: InstallationTransactionOwner
+    private let intent: CustodyCatalogStore.InstallationStagedJournal.StoppedRecoveryIntent
+    fileprivate init(owner: InstallationTransactionOwner,
+                     intent: CustodyCatalogStore.InstallationStagedJournal.StoppedRecoveryIntent) {
+        self.owner = owner; self.intent = intent
+    }
+    func revalidate() throws { try owner.validateStoppedExclusive(intent) }
+    func validateRetainedOwner(_ owner: InstallationTransactionOwner) throws {
+        guard self.owner === owner, !intent.deadline.hasExpired else { throw CustodyRecordError.fenced }
+        try owner.validateRetainedStoppedOwner()
+    }
+    func permitsReadinessDrain(_ drain: CustodyCatalogStore.InstallationStagedJournal.ReadinessCandidateDrain) -> Bool {
+        intent.matchesReadinessDrain(drain)
+    }
+    func permitsCommittedDrain(_ drain: CustodyCatalogStore.InstallationStagedJournal.CandidateDrain) -> Bool {
+        intent.matchesCommittedDrain(drain)
     }
 }
 
@@ -1578,6 +1927,9 @@ final class InstallationBindingTestingSource {
 /// Only the consumed owner can mint this in-memory capsule. It is a permanently
 /// closed borrowing family, not evidence that command journals are retired.
 final class ClosedInstallationBorrowing: @unchecked Sendable {
+    func bindRegistry(_ registry: RetainedCleanupRegistry) throws {
+        try validate(); try owner.bindRetirementRegistry(registry); try validate()
+    }
     private let owner: InstallationTransactionOwner
     fileprivate init(_ owner: InstallationTransactionOwner) { self.owner = owner }
     func validate() throws { try owner.validateClosedBorrowing() }
@@ -1712,6 +2064,20 @@ public final class LifecycleAdmissionAuthority: @unchecked Sendable {
 /// custody context must also reconcile/reserve its durable catalog entry. There
 /// is no public/raw-FD initializer and no close method that can invalidate another
 /// holder. Only the last strong reference closes these duplicated descriptions.
+/// Positive per-root result retained by the original owner, independent of the
+/// weak family object. Pending and uncertain never become success by disappearance.
+fileprivate final class InstallationAliasRetirement: @unchecked Sendable {
+    private let mutex = NSLock()
+    private var outcome: OwnedFileDescriptor.Retirement = .notAttempted
+    private var completed = false
+    func complete(_ result: OwnedFileDescriptor.Retirement) {
+        mutex.lock(); defer { mutex.unlock() }
+        guard !completed else { return }
+        completed = true; outcome = result
+    }
+    var succeeded: Bool { mutex.lock(); defer { mutex.unlock() }; return completed && outcome == .succeeded }
+}
+
 fileprivate final class WeakInstallationAliasFamily {
     weak var family: InstallationPublicationAliases?
     init(_ family: InstallationPublicationAliases) { self.family = family }
@@ -1744,6 +2110,22 @@ final class CustodyAuthorityLeaseSet: @unchecked Sendable {
         }
         var observation: OwnedFileDescriptor.Retirement { mutex.lock(); defer { mutex.unlock() }; return result }
     }
+    /// Positive receipt of this actual lease object's completed destructor.
+    /// Retaining this receipt does not retain descriptors. A live root, a held
+    /// descendant, or an uncertain partial close can never report success.
+    final class CheckedClosure {
+        private let mutex = NSLock()
+        private var result: OwnedFileDescriptor.Retirement = .notAttempted
+        fileprivate func complete(_ result: OwnedFileDescriptor.Retirement) {
+            mutex.lock(); defer { mutex.unlock() }
+            guard self.result == .notAttempted else { return }
+            self.result = result
+        }
+        var observation: OwnedFileDescriptor.Retirement {
+            mutex.lock(); defer { mutex.unlock() }; return result
+        }
+    }
+    let checkedClosure = CheckedClosure()
     private let checkedRetirementResults: CheckedRetirementResults
     private struct Member {
         let role: CustodyDescriptorClaim.Role
@@ -1778,6 +2160,7 @@ final class CustodyAuthorityLeaseSet: @unchecked Sendable {
         onCheckedRetirement?(checkedRetirementResults.observation)
         if retainedParent == nil, checkedRetirementResults.observation == .succeeded { initializationAliases.didCloseDescriptions() }
         onRelease?()
+        checkedClosure.complete(checkedRetirementResults.observation)
     }
 
     fileprivate static func copy(state: SecureStateDirectory,
@@ -1803,6 +2186,9 @@ final class CustodyAuthorityLeaseSet: @unchecked Sendable {
         for (role, source) in inputs {
             let descriptor = OwnedFileDescriptor(try source.duplicate(minimum: 201))
             acquired.append(descriptor)
+            #if SHADOW_SYNC_TESTING
+            try parent?.testingPartialDuplication(descriptor, count: acquired.count)
+            #endif
             let snapshot = try snapshot(descriptor.value, role: role, uid: state.uid)
             members.append(Member(role: role, descriptor: descriptor, identity: snapshot.0,
                                   access: snapshot.1, acl: snapshot.2))
@@ -1866,11 +2252,46 @@ final class CustodyAuthorityLeaseSet: @unchecked Sendable {
         let members = roles.compactMap { role in inherited.descriptors[role].map { (role,$0) } }
         let leases = try copy(state: state, members: members, mode: inherited.request.authority)
         let claims = try leases.descriptorClaims()
-        guard claims == inherited.request.descriptors.filter({ roles.contains($0.role) }) else { throw CustodyRecordError.fenced }
+        let recorded = inherited.request.descriptors.filter { roles.contains($0.role) }
+        // These are fresh observations of the retained inherited descriptions.
+        // Only the state directory's positive child count may differ; count,
+        // order, role, access and every regular lock binding remain exact.
+        guard claims.count == recorded.count,
+              zip(claims, recorded).allSatisfy({ CustodyInheritedCommand.matchesInheritedClaim($0.0, $0.1) }) else {
+            throw CustodyRecordError.fenced
+        }
         return leases
     }
 
     #if SHADOW_SYNC_TESTING
+    private let testingDuplicationMutex = NSLock()
+    private var testingDuplicationCut: (count: Int, uncertain: Bool)?
+    @_silgen_name("shadowSyncTesting_testingFailNextDuplicate")
+    @inline(never)
+    func testingFailNextDuplicate(after count: Int, uncertain: Bool) {
+        testingDuplicationMutex.lock(); testingDuplicationCut = (count, uncertain); testingDuplicationMutex.unlock()
+    }
+    private func testingPartialDuplication(_ descriptor: OwnedFileDescriptor, count: Int) throws {
+        testingDuplicationMutex.lock()
+        guard let cut = testingDuplicationCut, cut.count == count else { testingDuplicationMutex.unlock(); return }
+        testingDuplicationCut = nil; testingDuplicationMutex.unlock()
+        if cut.uncertain {
+            descriptor.testingClose = { raw in
+                guard Darwin.close(raw) == 0 else { return errno }; return EIO
+            }
+        }
+        throw CustodyRecordError.injectedFailure
+    }
+    func testingUncertainInstallationClose() throws {
+        guard mode.isInstallationStaged,
+              let descriptor = members.first(where: { $0.role == .operation })?.descriptor else {
+            throw CustodyRecordError.fenced
+        }
+        descriptor.testingClose = { raw in
+            guard Darwin.close(raw) == 0 else { return errno }
+            return EIO
+        }
+    }
     func testingUncertainObservationClose(_ closed: @escaping () -> Void) throws {
         guard mode == .observation, let descriptor = members.first(where: { $0.role == .lifecycle })?.descriptor else {
             throw CustodyRecordError.fenced

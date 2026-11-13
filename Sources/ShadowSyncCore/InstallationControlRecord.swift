@@ -265,8 +265,8 @@ extension InstallationCoordinatorObservation {
 struct InstallationCandidate: Equatable {
     let release: ReleaseIdentity
     let bundleDigest: String, appCDHash: String, coordinatorCDHash: String
-    func validate() throws {
-        try release.validate(requireProduction: true)
+    func validate(profile: InstallationValidationProfile = .production) throws {
+        try profile.validateCandidate(self)
         try InstallationWire.requireDigest(bundleDigest)
         guard CustodyWire.hex(appCDHash, bytes: 20), CustodyWire.hex(coordinatorCDHash, bytes: 20) else {
             throw InstallationRecordError.invalidRecord
@@ -278,12 +278,13 @@ struct InstallationCandidate: Equatable {
     ]) }
 }
 extension InstallationCandidate {
-    init(wire: PolicyWireValue) throws {
+    init(wire: PolicyWireValue) throws { try self.init(wire: wire, profile: .production) }
+    init(wire: PolicyWireValue, profile: InstallationValidationProfile) throws {
         let v = try wire.object(keys: ["release", "bundleDigest", "appCDHash", "coordinatorCDHash"])
         release = try ReleaseIdentity.decode(CustodyWire.encode(CustodyWire.required(v["release"]), maximum: 16_384))
         bundleDigest = try CustodyWire.text(v["bundleDigest"])
         appCDHash = try CustodyWire.text(v["appCDHash"]); coordinatorCDHash = try CustodyWire.text(v["coordinatorCDHash"])
-        try validate()
+        try validate(profile: profile)
     }
 }
 
@@ -295,14 +296,14 @@ struct InstallationTransaction: Equatable {
     let candidate: InstallationCandidate?
     let priorCommitDigest: String?
     let slots: InstallationSlotSnapshot
-    func validate(state: InstallationStateBinding) throws {
+    func validate(state: InstallationStateBinding, profile: InstallationValidationProfile = .production) throws {
         guard RunIdentity.isValid(id), RunIdentity.isValid(boot), (intent == .remove) == (candidate == nil) else {
             throw InstallationRecordError.invalidRecord
         }
         try coordinator.validate(uid: state.directory.uid)
         try InstallationWire.requireDigest(sourceReleaseDigest)
         if let priorCommitDigest { try InstallationWire.requireDigest(priorCommitDigest) }
-        try candidate?.validate(); try slots.validate(uid: state.directory.uid)
+        try candidate?.validate(profile: profile); try slots.validate(uid: state.directory.uid)
     }
     func bindingDigest(state: InstallationStateBinding) throws -> String {
         try InstallationWire.digest(.object(["state": state.wire, "transaction": .object(bindingWire)]))
@@ -316,12 +317,13 @@ struct InstallationTransaction: Equatable {
     func sameBinding(as other: Self) -> Bool { PolicyWireValue.object(bindingWire) == PolicyWireValue.object(other.bindingWire) }
 }
 extension InstallationTransaction {
-    init(wire: PolicyWireValue) throws {
+    init(wire: PolicyWireValue) throws { try self.init(wire: wire, profile: .production) }
+    init(wire: PolicyWireValue, profile: InstallationValidationProfile) throws {
         let v = try wire.object(keys: ["id", "boot", "intent", "coordinator", "sourceReleaseDigest", "candidate", "priorCommitDigest", "slots"])
         id = try CustodyWire.text(v["id"]); boot = try CustodyWire.text(v["boot"]); intent = try InstallationWire.enumeration(v["intent"])
         coordinator = try InstallationCoordinatorObservation(wire: CustodyWire.required(v["coordinator"]))
         sourceReleaseDigest = try CustodyWire.text(v["sourceReleaseDigest"])
-        candidate = try InstallationWire.optional(v["candidate"], InstallationCandidate.init(wire:))
+        candidate = try InstallationWire.optional(v["candidate"], { try InstallationCandidate(wire: $0, profile: profile) })
         priorCommitDigest = try CustodyWire.optionalText(v["priorCommitDigest"])
         slots = try InstallationSlotSnapshot(wire: CustodyWire.required(v["slots"]))
     }
@@ -497,7 +499,7 @@ struct InstallationControlRecord: Equatable {
             latestReceiptDigest: nil, readinessCommit: nil, recoveryReason: nil)
         try value.validate(); return value
     }
-    func validate() throws {
+    func validate(profile: InstallationValidationProfile = .production) throws {
         try state.validate()
         guard revision > 0 else { throw InstallationRecordError.invalidRecord }
         if phase == .initial {
@@ -512,7 +514,7 @@ struct InstallationControlRecord: Equatable {
               transaction.intent != .remove || (phase != .committed && readinessCommit == nil) else {
             throw InstallationRecordError.invalidRecord
         }
-        try transaction.validate(state: state); try step.validate(); try InstallationWire.requireDigest(latestReceiptDigest)
+        try transaction.validate(state: state, profile: profile); try step.validate(); try InstallationWire.requireDigest(latestReceiptDigest)
         guard InstallationActionTable.isKnown(step.action, intent: transaction.intent) else { throw InstallationRecordError.invalidRecord }
         if let readinessCommit {
             try readinessCommit.validate(transaction: transaction, state: state, revision: revision)
@@ -534,9 +536,9 @@ struct InstallationControlRecord: Equatable {
         "readinessCommit": readinessCommit?.wire ?? .null,
         "recoveryReason": recoveryReason.map { .string($0.rawValue) } ?? .null,
     ]) }
-    func encode() throws -> Data { try validate(); return try CustodyWire.encode(wire, maximum: Self.maximumBytes) }
-    static func decode(_ data: Data) throws -> Self {
-        do { let value = try Self(wire: InstallationWire.decode(data)); try value.validate(); return value }
+    func encode(profile: InstallationValidationProfile = .production) throws -> Data { try validate(profile: profile); return try CustodyWire.encode(wire, maximum: Self.maximumBytes) }
+    static func decode(_ data: Data, profile: InstallationValidationProfile = .production) throws -> Self {
+        do { let value = try Self(wire: InstallationWire.decode(data), profile: profile); try value.validate(profile: profile); return value }
         catch { throw InstallationRecordError.invalidRecord }
     }
     func bindingDigest() throws -> String {
@@ -548,14 +550,15 @@ struct InstallationControlRecord: Equatable {
     // read by the store's exact fixed receipt-family recognizer. This binds wire
     // observations only. Storage metadata, extras, current boot/process, live
     // peers, retired commands and allowed residual layout remain caller gates.
-    func validateReceiptChain(_ receipts: [InstallationStepReceipt]) throws {
+    func validateReceiptChain(_ receipts: [InstallationStepReceipt], profile: InstallationValidationProfile = .production) throws {
         guard receipts.count <= 256 else { throw InstallationRecordError.invalidRecord }
         try validateReceiptChain(observations: receipts.map {
             try InstallationStepReceipt.CanonicalObservation(validating: $0, uid: state.directory.uid)
-        })
+        }, profile: profile)
     }
-    func validateReceiptChain(observations: [InstallationStepReceipt.CanonicalObservation]) throws {
-        try validate()
+    func validateReceiptChain(observations: [InstallationStepReceipt.CanonicalObservation],
+                              profile: InstallationValidationProfile = .production) throws {
+        try validate(profile: profile)
         if phase == .initial { guard observations.isEmpty else { throw InstallationRecordError.invalidRecord }; return }
         guard let transaction, let step, !observations.isEmpty, observations.count <= 256 else { throw InstallationRecordError.invalidRecord }
         // Every receipt publication consumes at least one control revision after
@@ -615,8 +618,9 @@ struct InstallationControlRecord: Equatable {
     // Pure proposal validation. The typed store must perform this against LIVE
     // old control and a fully validated chain while retaining its original guard.
     // No public API accepts an arbitrary executable transition/action list.
-    func validateReplacement(_ next: Self, receipts: [InstallationStepReceipt]) throws {
-        try validate(); try next.validateReceiptChain(receipts)
+    func validateReplacement(_ next: Self, receipts: [InstallationStepReceipt],
+                             profile: InstallationValidationProfile = .production) throws {
+        try validate(profile: profile); try next.validateReceiptChain(receipts, profile: profile)
         guard revision < UInt64.max, next.revision == revision + 1, state == next.state else { throw InstallationRecordError.invalidTransition }
         if phase == .initial || (phase == .committed && step?.action == .finish && step?.status == .complete) {
             guard next.phase == .active, let transaction = next.transaction,
@@ -684,12 +688,13 @@ struct InstallationControlRecord: Equatable {
     }
 }
 extension InstallationControlRecord {
-    init(wire: PolicyWireValue) throws {
+    init(wire: PolicyWireValue) throws { try self.init(wire: wire, profile: .production) }
+    init(wire: PolicyWireValue, profile: InstallationValidationProfile) throws {
         let v = try wire.object(keys: ["schema", "revision", "phase", "state", "transaction", "step", "latestReceiptDigest", "readinessCommit", "recoveryReason"])
         guard try CustodyWire.text(v["schema"]) == Self.schema else { throw InstallationRecordError.invalidRecord }
         revision = try CustodyWire.uint(v["revision"]); phase = try InstallationWire.enumeration(v["phase"])
         state = try InstallationStateBinding(wire: CustodyWire.required(v["state"]))
-        transaction = try InstallationWire.optional(v["transaction"], InstallationTransaction.init(wire:))
+        transaction = try InstallationWire.optional(v["transaction"], { try InstallationTransaction(wire: $0, profile: profile) })
         step = try InstallationWire.optional(v["step"], InstallationStep.init(wire:))
         latestReceiptDigest = try CustodyWire.optionalText(v["latestReceiptDigest"])
         readinessCommit = try InstallationWire.optional(v["readinessCommit"], InstallationReadinessCommit.init(wire:))

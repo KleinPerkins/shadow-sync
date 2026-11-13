@@ -68,8 +68,15 @@ final class InstallationParentPreparation {
     private let publisher: LifecyclePublisher?
     private let source: LifecyclePublisher.InstallationIdentity?
     private let account: EffectiveAccount
+    private let validationProfile: InstallationValidationProfile
     private let home: Pin
     private let mutex = NSLock()
+    // A reserved turn excludes competing mutation while the mutex is free for
+    // observations. Publisher checks, callbacks and synchronization run outside
+    // this short bookkeeping lock, as in InstallationStagedJournal.
+    private var serializing = false
+    private var metadataGeneration: UInt64 = 0
+    private var publishedEvidence: [Evidence] = []
     private var entries: [Parent: Entry] = [:]
     private var failedClosed = false
     #if SHADOW_SYNC_TESTING
@@ -103,9 +110,16 @@ final class InstallationParentPreparation {
         return try Self(publisher: publisher, source: source, account: publisher.account)
         #endif
     }
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    static func signedFixture(_ context: SignedInstallationFixtureContext) throws -> InstallationParentPreparation {
+        try context.revalidate()
+        return try Self(publisher: context.publisher, source: context.source,
+                        account: context.destinationAccount, validationProfile: context.profile)
+    }
+    #endif
     private init(publisher: LifecyclePublisher?, source: LifecyclePublisher.InstallationIdentity?,
-                 account: EffectiveAccount) throws {
-        self.publisher = publisher; self.source = source; self.account = account
+                 account: EffectiveAccount, validationProfile: InstallationValidationProfile = .production) throws {
+        self.publisher = publisher; self.source = source; self.account = account; self.validationProfile = validationProfile
         home = try Self.openHome(account)
         try authenticate()
         // Read-only preflight visits all existing fixed parents before any mkdir.
@@ -118,16 +132,19 @@ final class InstallationParentPreparation {
                 entries[parent] = Entry(pin: pin, progress: .observedExisting)
             } else { entries[parent] = Entry(pin: nil, progress: .absent) }
         }
-        try validateLocked()
+        try validateRetained()
+        publishedEvidence = Parent.allCases.map { Evidence(parent: $0, identity: entries[$0]?.pin?.identity,
+            progress: entries[$0]?.progress ?? .indeterminate) }
     }
     private func authenticate() throws {
         if let publisher, let source {
             try publisher.revalidate(); try source.revalidate()
-            guard publisher.account == account, try EffectiveAccount.current() == account,
-                  getuid() == account.uid else { throw CustodyRecordError.fenced }
+            try validationProfile.validateDestinationAccount(account, publisher: publisher.account)
+            guard getuid() == account.uid else { throw CustodyRecordError.fenced }
         } else {
             #if SHADOW_SYNC_TESTING
-            guard !rejectPublisher, account.uid == geteuid(), account.uid == getuid() else { throw CustodyRecordError.fenced }
+            mutex.lock(); let rejected = rejectPublisher; mutex.unlock()
+            guard !rejected, account.uid == geteuid(), account.uid == getuid() else { throw CustodyRecordError.fenced }
             let root = URL(fileURLWithPath: account.homeDirectory).deletingLastPathComponent().path
             _ = try TestIsolation.validateRoot(root)
             try TestIsolation.validateContainedDirectory(account.homeDirectory, root: root)
@@ -202,10 +219,26 @@ final class InstallationParentPreparation {
         else { result = lstat("/", &named) }
         guard result == 0, pin.identity.names(named) else { throw CustodyRecordError.conflict }
     }
+    private func serialized<T>(_ action: () throws -> T) throws -> T {
+        guard mutex.try() else { throw CustodyRecordError.busy }
+        guard !serializing, metadataGeneration < UInt64.max else { mutex.unlock(); throw CustodyRecordError.busy }
+        serializing = true; metadataGeneration += 1
+        let generation = metadataGeneration; mutex.unlock()
+        defer {
+            mutex.lock()
+            publishedEvidence = Parent.allCases.map { Evidence(parent: $0, identity: entries[$0]?.pin?.identity,
+                progress: entries[$0]?.progress ?? .indeterminate) }
+            serializing = false; mutex.unlock()
+        }
+        let result = try action()
+        mutex.lock(); let unchanged = serializing && metadataGeneration == generation; mutex.unlock()
+        guard unchanged else { throw CustodyRecordError.fenced }
+        return result
+    }
     private func enclosingPin(_ parent: Parent) -> Pin? {
         if let ancestor = parent.ancestor { return entries[ancestor]?.pin }; return home
     }
-    private func validateLocked(checkContents: Bool = false) throws {
+    private func validateRetained(checkContents: Bool = false) throws {
         guard !failedClosed else { throw CustodyRecordError.fenced }
         try authenticate(); try Self.validatePin(home)
         for parent in Parent.allCases {
@@ -227,16 +260,40 @@ final class InstallationParentPreparation {
     /// Call after preparation and immediately before/after the downstream
     /// initializer and journal capture. Retains original open descriptions.
     func revalidate() throws {
-        mutex.lock(); defer { mutex.unlock() }
-        try validateLocked()
-        guard entries.values.allSatisfy({ $0.progress == .observedExisting || $0.progress == .observedParentSynced }) else {
-            throw CustodyRecordError.fenced
+        try serialized {
+            try validateRetained()
+            guard entries.values.allSatisfy({ $0.progress == .observedExisting || $0.progress == .observedParentSynced }) else {
+                throw CustodyRecordError.fenced
+            }
+        }
+    }
+    func requireHome(_ home: String) throws {
+        guard account.homeDirectory == home else { throw CustodyRecordError.fenced }
+        try revalidate()
+    }
+    /// Retire only this bootstrap's retained observations after the original
+    /// journal's exact durable finish. No parent name is deleted or re-opened.
+    func retireAfterFinish(_ permit: CustodyCatalogStore.InstallationStagedJournal.FinishPermit,
+                           owner: InstallationTransactionOwner) throws {
+        try permit.validateOwner(owner)
+        try serialized {
+            try validateRetained()
+            failedClosed = true
+            let leaves = Parent.allCases.compactMap { entries[$0]?.pin } + [home]
+            var seen = Set<ObjectIdentifier>()
+            for leaf in leaves {
+                var pin: Pin? = leaf
+                while let current = pin {
+                    if seen.insert(ObjectIdentifier(current.descriptor)).inserted {
+                        try permit.retire(current.descriptor, resource: .bootstrapParents)
+                    }
+                    pin = current.parent
+                }
+            }
         }
     }
     func evidence() -> [Evidence] {
-        mutex.lock(); defer { mutex.unlock() }
-        return Parent.allCases.map { Evidence(parent: $0, identity: entries[$0]?.pin?.identity,
-                                             progress: entries[$0]?.progress ?? .indeterminate) }
+        mutex.lock(); defer { mutex.unlock() }; return publishedEvidence
     }
     /// A throw preserves all nodes. This SAME object may finish fsync of its
     /// exact retained observations, without attributing their creation. EEXIST
@@ -245,70 +302,71 @@ final class InstallationParentPreparation {
     /// ownership, cleanup or recovery rights from a previous mkdir result.
     /// The downstream initializer and journal keep their existing authority.
     func prepare() throws {
-        mutex.lock(); defer { mutex.unlock() }
-        try validateLocked(checkContents: true)
-        for parent in Parent.allCases {
-            guard var entry = entries[parent], let enclosing = enclosingPin(parent) else { throw CustodyRecordError.fenced }
-            if entry.progress == .observedExisting || entry.progress == .observedParentSynced { continue }
-            if entry.progress == .absent {
-                #if SHADOW_SYNC_TESTING
-                try checkpoint(.beforeCreate(parent))
-                #endif
-                try validateLocked(checkContents: true)
-                #if SHADOW_SYNC_TESTING
-                try checkpoint(.beforeMkdir(parent))
-                #endif
-                guard mkdirat(enclosing.descriptor.value, parent.name, 0o700) == 0 else {
-                    failedClosed = true; throw CustodyRecordError.persistence(errno)
+        try serialized {
+            try validateRetained(checkContents: true)
+            for parent in Parent.allCases {
+                guard var entry = entries[parent], let enclosing = enclosingPin(parent) else { throw CustodyRecordError.fenced }
+                if entry.progress == .observedExisting || entry.progress == .observedParentSynced { continue }
+                if entry.progress == .absent {
+                    #if SHADOW_SYNC_TESTING
+                    try checkpoint(.beforeCreate(parent))
+                    #endif
+                    try validateRetained(checkContents: true)
+                    #if SHADOW_SYNC_TESTING
+                    try checkpoint(.beforeMkdir(parent))
+                    #endif
+                    guard mkdirat(enclosing.descriptor.value, parent.name, 0o700) == 0 else {
+                        failedClosed = true; throw CustodyRecordError.persistence(errno)
+                    }
+                    // A successful mkdir supplies no inode identity. First capture
+                    // a safe named/opened observation, without claiming its origin.
+                    // An unavailable or unsafe observation fences this invocation.
+                    entries[parent] = Entry(pin: nil, progress: .indeterminate)
+                    do {
+                        #if SHADOW_SYNC_TESTING
+                        try checkpoint(.beforeFirstObservation(parent))
+                        #endif
+                        var observed = stat()
+                        guard fstatat(enclosing.descriptor.value, parent.name, &observed, AT_SYMLINK_NOFOLLOW) == 0,
+                              observed.st_mode == S_IFDIR | 0o700, observed.st_uid == account.uid,
+                              observed.st_flags == 0 else { throw CustodyRecordError.conflict }
+                        #if SHADOW_SYNC_TESTING
+                        try checkpoint(.afterMkdir(parent))
+                        #endif
+                        guard let pin = try Self.openNamed(parent.name, at: enclosing, uid: account.uid,
+                                                          privateMode: true, ancestor: false),
+                              pin.identity.names(observed), try Self.children(pin).isEmpty else { throw CustodyRecordError.conflict }
+                        entry = Entry(pin: pin, progress: .observedAfterMkdir); entries[parent] = entry
+                    } catch { failedClosed = true; throw error }
+                    #if SHADOW_SYNC_TESTING
+                    try checkpoint(.afterCreate(parent))
+                    #endif
                 }
-                // A successful mkdir supplies no inode identity. First capture
-                // a safe named/opened observation, without claiming its origin.
-                // An unavailable or unsafe observation fences this invocation.
-                entries[parent] = Entry(pin: nil, progress: .indeterminate)
-                do {
+                guard let pin = entry.pin else { throw CustodyRecordError.fenced }
+                try validateRetained(checkContents: true)
+                if entry.progress == .observedAfterMkdir {
                     #if SHADOW_SYNC_TESTING
-                    try checkpoint(.beforeFirstObservation(parent))
+                    if shouldRejectSync(.afterChildSync(parent)) { throw CustodyRecordError.persistence(EIO) }
                     #endif
-                    var observed = stat()
-                    guard fstatat(enclosing.descriptor.value, parent.name, &observed, AT_SYMLINK_NOFOLLOW) == 0,
-                          observed.st_mode == S_IFDIR | 0o700, observed.st_uid == account.uid,
-                          observed.st_flags == 0 else { throw CustodyRecordError.conflict }
+                    guard fsync(pin.descriptor.value) == 0 else { throw CustodyRecordError.persistence(errno) }
+                    entry.progress = .observedNodeSynced; entries[parent] = entry
                     #if SHADOW_SYNC_TESTING
-                    try checkpoint(.afterMkdir(parent))
+                    try checkpoint(.afterChildSync(parent))
                     #endif
-                    guard let pin = try Self.openNamed(parent.name, at: enclosing, uid: account.uid,
-                                                      privateMode: true, ancestor: false),
-                          pin.identity.names(observed), try Self.children(pin).isEmpty else { throw CustodyRecordError.conflict }
-                    entry = Entry(pin: pin, progress: .observedAfterMkdir); entries[parent] = entry
-                } catch { failedClosed = true; throw error }
+                }
+                try validateRetained(checkContents: true)
                 #if SHADOW_SYNC_TESTING
-                try checkpoint(.afterCreate(parent))
+                if shouldRejectSync(.afterParentSync(parent)) { throw CustodyRecordError.persistence(EIO) }
+                #endif
+                guard fsync(enclosing.descriptor.value) == 0 else { throw CustodyRecordError.persistence(errno) }
+                try validateRetained(checkContents: true)
+                entry.progress = .observedParentSynced; entries[parent] = entry
+                #if SHADOW_SYNC_TESTING
+                try checkpoint(.afterParentSync(parent))
                 #endif
             }
-            guard let pin = entry.pin else { throw CustodyRecordError.fenced }
-            try validateLocked(checkContents: true)
-            if entry.progress == .observedAfterMkdir {
-                #if SHADOW_SYNC_TESTING
-                if rejectSync == .afterChildSync(parent) { throw CustodyRecordError.persistence(EIO) }
-                #endif
-                guard fsync(pin.descriptor.value) == 0 else { throw CustodyRecordError.persistence(errno) }
-                entry.progress = .observedNodeSynced; entries[parent] = entry
-                #if SHADOW_SYNC_TESTING
-                try checkpoint(.afterChildSync(parent))
-                #endif
-            }
-            try validateLocked(checkContents: true)
-            #if SHADOW_SYNC_TESTING
-            if rejectSync == .afterParentSync(parent) { throw CustodyRecordError.persistence(EIO) }
-            #endif
-            guard fsync(enclosing.descriptor.value) == 0 else { throw CustodyRecordError.persistence(errno) }
-            try validateLocked(checkContents: true)
-            entry.progress = .observedParentSynced; entries[parent] = entry
-            #if SHADOW_SYNC_TESTING
-            try checkpoint(.afterParentSync(parent))
-            #endif
+            try validateRetained(checkContents: true)
         }
-        try validateLocked(checkContents: true)
     }
     private static func children(_ pin: Pin) throws -> Set<String> {
         let fd = openat(pin.descriptor.value, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -345,13 +403,16 @@ final class InstallationParentPreparation {
         guard raw >= 0 else { throw CustodyRecordError.unsafeMetadata }; defer { close(raw) }
         _ = try identity(raw, owner: geteuid() == 0 ? 1 : 0, privateMode: true, ancestor: false)
     }
-    func testingCut(_ cut: Cut?) { self.cut = cut }
-    func testingMutation(_ mutation: ((Cut) throws -> Void)?) { self.mutation = mutation }
-    func testingRejectPublisher() { rejectPublisher = true }
-    func testingSyncFailure(_ cut: Cut?) { rejectSync = cut }
+    func testingCut(_ cut: Cut?) { mutex.lock(); self.cut = cut; mutex.unlock() }
+    func testingMutation(_ mutation: ((Cut) throws -> Void)?) { mutex.lock(); self.mutation = mutation; mutex.unlock() }
+    func testingRejectPublisher() { mutex.lock(); rejectPublisher = true; mutex.unlock() }
+    func testingSyncFailure(_ cut: Cut?) { mutex.lock(); rejectSync = cut; mutex.unlock() }
+    private func shouldRejectSync(_ stage: Cut) -> Bool { mutex.lock(); defer { mutex.unlock() }; return rejectSync == stage }
     private func checkpoint(_ stage: Cut) throws {
-        try mutation?(stage)
-        if cut == stage { cut = nil; throw CustodyRecordError.persistence(EINTR) }
+        mutex.lock(); let callback = mutation; mutex.unlock()
+        try callback?(stage)
+        mutex.lock(); let stop = cut == stage; if stop { cut = nil }; mutex.unlock()
+        if stop { throw CustodyRecordError.persistence(EINTR) }
     }
     #endif
 }

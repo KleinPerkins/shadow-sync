@@ -68,6 +68,8 @@ struct PolicyHelperTransport {
         var diagnosticPassed = false
         var diagnosticMilestones: [UInt64] = []
         defer {
+            DiscoveryFixtureDiagnostic.currentCatalogCost?.captureHelper(started: diagnosticStart,
+                ended: DispatchTime.now().uptimeNanoseconds)
             DiscoveryFixtureDiagnostic.record(.transport, stage: diagnosticStage,
                 started: diagnosticStart, deadline: absoluteDeadline, succeeded: diagnosticPassed,
                 milestones: diagnosticMilestones)

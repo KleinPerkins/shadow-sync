@@ -19,13 +19,23 @@ final class CustodyInheritedCommand {
     }
     private final class TestingConstructionObservation: @unchecked Sendable {
         private let lock = NSLock()
-        private var stage = TestingConstructionStage.helper
+        private var stage = TestingConstructionStage.helper.rawValue
         func record(_ value: TestingConstructionStage) {
-            lock.lock(); defer { lock.unlock() }; stage = value
+            lock.lock(); defer { lock.unlock() }; stage = value.rawValue
+        }
+        func recordClaim(_ role: CustodyDescriptorClaim.Role, _ step: TestingClaimStep) {
+            lock.lock(); defer { lock.unlock() }; stage = CustodyInheritedCommand.testingClaimFailureCode(role, step)
         }
         var failureCode: Int32 {
-            lock.lock(); defer { lock.unlock() }; return stage.rawValue
+            lock.lock(); defer { lock.unlock() }; return stage
         }
+    }
+    // Closed, process-local exit observations: 110 + three slots per declared
+    // role, for snapshot checks, bound-claim comparison and duplication. No
+    // descriptor numbers, resource identities or raw errors are disclosed.
+    enum TestingClaimStep: Int32 { case snapshot, comparison, duplicate }
+    static func testingClaimFailureCode(_ role: CustodyDescriptorClaim.Role, _ step: TestingClaimStep) -> Int32 {
+        110 + Int32(CustodyDescriptorClaim.Role.allCases.firstIndex(of: role)!) * 3 + step.rawValue
     }
     private static let testingConstructionObservation = TestingConstructionObservation()
     static func testingRecordConstructionStage(_ stage: TestingConstructionStage) {
@@ -50,6 +60,9 @@ final class CustodyInheritedCommand {
     let installation: InstallationCommandBinding?
     private var installationStore: CustodyCatalogStore?
     private var stagedCandidate: InstallationStagedCandidateAuthority?
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    private(set) var signedAdapter: SignedInstallationFixtureAdapterChannel.Inherited?
+    #endif
     private(set) var lifecycle: LifecycleLaunchAuthority?
     var lifecycleCommand: LifecycleLaunchCommand? {
         #if SHADOW_SYNC_TESTING
@@ -119,7 +132,45 @@ final class CustodyInheritedCommand {
                 && access == other.access && acl == other.acl
         }
     }
-    private init(helper: CustodyHelperExecutable, fixture: Bool, discoveryFixture: Bool = false) throws {
+    /// State children can change while another command creates its sealed
+    /// input. This is the same stable-node contract used by the original lease
+    /// and later helper revalidation; it grants no authority from decoded data.
+    /// Other roles, including the immutable Git directory, remain exact.
+    static func matchesInheritedClaim(_ observed: CustodyDescriptorClaim,
+                                              _ expected: CustodyDescriptorClaim) -> Bool {
+        guard expected.role == .state else { return observed == expected }
+        return observed.role == expected.role && observed.device == expected.device
+            && observed.inode == expected.inode && observed.uid == expected.uid
+            && observed.mode == expected.mode && observed.mode == UInt32(S_IFDIR | 0o700)
+            && observed.access == expected.access && observed.access == .read
+            && observed.links > 0 && expected.links > 0
+    }
+    private static func captureInheritedClaim(_ claim: CustodyDescriptorClaim, descriptor: Int32) throws -> Snapshot {
+        #if SHADOW_SYNC_TESTING
+        Self.testingConstructionObservation.recordClaim(claim.role, .snapshot)
+        #endif
+        let snapshot = try Snapshot.capture(descriptor, role: claim.role, uid: geteuid())
+        #if SHADOW_SYNC_TESTING
+        Self.testingConstructionObservation.recordClaim(claim.role, .comparison)
+        #endif
+        guard matchesInheritedClaim(snapshot.claim(claim.role), claim) else { throw CustodyResourceError.invalidResource }
+        return snapshot
+    }
+    #if SHADOW_SYNC_TESTING
+    static func testingValidateInheritedClaim(_ claim: CustodyDescriptorClaim, descriptor: Int32) throws {
+        _ = try captureInheritedClaim(claim, descriptor: descriptor)
+    }
+    #endif
+
+    private init(helper: CustodyHelperExecutable, fixture: Bool, discoveryFixture: Bool = false,
+                 originalDescriptors: Set<Int32>? = nil) throws {
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        guard originalDescriptors == nil || (!fixture && !discoveryFixture && helper.signedInheritedParent != nil) else {
+            throw CustodyResourceError.invalidResource
+        }
+        #else
+        guard originalDescriptors == nil else { throw CustodyResourceError.invalidResource }
+        #endif
         #if SHADOW_SYNC_TESTING
         testingDiscovery = discoveryFixture
         #else
@@ -131,7 +182,7 @@ final class CustodyInheritedCommand {
         #if SHADOW_SYNC_TESTING
         Self.testingRecordConstructionStage(.descriptors)
         #endif
-        let actual = try Self.openDescriptors()
+        let actual = try originalDescriptors ?? Self.openDescriptors()
         let permitted: Set<Int32> = [0,1,2,7,8,9,10,11,12,190,191,192,193,194,195,196,197,198,199,200]
         guard actual.isSubset(of: permitted), Set([0,1,2,190,191,192,193,194,197,200]).isSubset(of: actual) else {
             throw CustodyResourceError.invalidResource
@@ -145,6 +196,12 @@ final class CustodyInheritedCommand {
         Self.testingRecordConstructionStage(.request)
         #endif
         let raw = try Self.readSealed(190)
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if let parent = helper.signedInheritedParent {
+            try parent.revalidate()
+            guard CustodyRecordBinding.digest(raw) == parent.requestDigest else { throw CustodyRecordError.fenced }
+        }
+        #endif
         let object = try CustodyWire.decode(raw, maximum: 1_048_576).object(keys: ["schema","binding","command","budget","limits","descriptors"])
         let binding = try CustodyBinding(wire: CustodyWire.required(object["binding"]))
         guard binding.trustedUID == geteuid(), binding.bootID == (try CustodyBootIdentity.current()),
@@ -218,7 +275,9 @@ final class CustodyInheritedCommand {
         sealedCode = request.kind == .policyClassify ? try Self.readSealed(9, role: .code) : nil
         if installationInput {
             guard let sealedInput else { throw CustodyRecordError.fenced }
-            installation = try InstallationCommandBinding.decode(sealedInput)
+            installation = try InstallationCommandBinding.decode(sealedInput, validationProfile: helper.validationProfile)
+            guard let transaction = installation?.control.transaction else { throw CustodyRecordError.fenced }
+            try helper.validationProfile.bindInstallationSlots(transactionID: transaction.id)
         } else { installation = nil }
         let inputHash = sealedInput.map(CustodyRecordBinding.digest), codeHash = sealedCode.map(CustodyRecordBinding.digest)
         guard request.inputSHA256 == inputHash,
@@ -238,8 +297,10 @@ final class CustodyInheritedCommand {
             default: Self.testingRecordConstructionStage(.claims)
             }
             #endif
-            let fd = Int32(claim.role.number), snapshot = try Snapshot.capture(fd, role: claim.role, uid: geteuid())
-            guard snapshot.claim(claim.role) == claim else { throw CustodyResourceError.invalidResource }
+            let fd = Int32(claim.role.number), snapshot = try Self.captureInheritedClaim(claim, descriptor: fd)
+            #if SHADOW_SYNC_TESTING
+            Self.testingConstructionObservation.recordClaim(claim.role, .duplicate)
+            #endif
             let copy = fcntl(fd, F_DUPFD_CLOEXEC, 201); guard copy >= 0 else { throw CustodyResourceError.invalidResource }
             owned[claim.role] = OwnedFileDescriptor(copy); snapshots[claim.role] = snapshot
         }
@@ -302,7 +363,7 @@ final class CustodyInheritedCommand {
                 }
             } else {
                 guard request.arguments.count == 1,
-                  ["installation-absent","installation-loaded","installation-foreign","complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay","deadline-before-control",
+                  ["state-capture-named","state-capture-unlinked","installation-absent","installation-loaded","installation-foreign","complete","fail","wait","resist","overflow","after-admit","before-resume","after-preparation","terminal-delay","deadline-before-control",
                    "trace-complete","trace-overflow","trace-resist","policy-echo","policy-resist",
                     "system-complete","system-missing","system-faildata","system-resist","system-overflow",
                     "config-complete","config-resist-sigterm-fixture", "serial-complete", "serial-system-failure", "serial-policy-failure",
@@ -319,7 +380,17 @@ final class CustodyInheritedCommand {
                 fixtureMode = request.arguments[0]
             }
         } else {
-            account = try EffectiveAccount.current(); statePath = try StateLocation.production().path; fixtureMode = nil
+            #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+            if case let .signedFixture(profile) = helper.validationProfile {
+                guard helper.signedInheritedParent != nil else { throw CustodyRecordError.fenced }
+                account = try profile.destinationAccount; statePath = try profile.location.path
+            } else {
+                account = try EffectiveAccount.current(); statePath = try StateLocation.production().path
+            }
+            #else
+            account = try EffectiveAccount.current(); statePath = try StateLocation.production().path
+            #endif
+            fixtureMode = nil
         }
         #else
         guard !fixture else { throw CustodyResourceError.invalidResource }
@@ -417,6 +488,7 @@ final class CustodyInheritedCommand {
             if fixture { try helper.bindTestingInstallationSource(root: URL(fileURLWithPath: account.homeDirectory).deletingLastPathComponent().path) }
             #endif
             try installation.validateParent(parent, helper: helper)
+            try installation.validateCommittedRequest(request)
             guard request.authority == (installation.stagedMode ?? .lifecycleMutation) else { throw CustodyRecordError.fenced }
             if installation.control.step?.action == .candidateReady {
                 guard request.kind == .launchctlRead else { throw CustodyRecordError.fenced }
@@ -428,7 +500,8 @@ final class CustodyInheritedCommand {
                 }
                 stagedCandidate = try InstallationStagedCandidateAuthority(binding: installation, helper: helper, account: account)
             }
-            installationStore = try CustodyCatalogStore(leases: CustodyAuthorityLeaseSet.importing(self))
+            installationStore = try CustodyCatalogStore(leases: CustodyAuthorityLeaseSet.importing(self),
+                validationProfile: helper.validationProfile)
         }
         #if SHADOW_SYNC_TESTING
         Self.testingRecordConstructionStage(.resourcePostflight)
@@ -453,6 +526,28 @@ final class CustodyInheritedCommand {
     static func lifecycle() throws -> CustodyInheritedCommand {
         try Self(helper: CustodyHelperExecutable.lifecycle(LifecyclePublisher.current()), fixture: false)
     }
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    static func signedInstallation() throws -> CustodyInheritedCommand {
+        // Capture exactly the inherited set BEFORE source/root pins open their
+        // own descriptions. Newly opened pins are owned by the retained profile.
+        let original = try openDescriptors()
+        let allowed: Set<Int32> = [0,1,2,7,8,9,10,11,12,190,191,192,193,194,195,196,197,198,199,200,211,212]
+        guard original.isSubset(of: allowed),
+              Set([0,1,2,8,190,191,192,193,194,197,198,200,211,212]).isSubset(of: original) else {
+            throw CustodyResourceError.invalidResource
+        }
+        for fd in original { guard fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 else { throw CustodyResourceError.invalidResource } }
+        let parent = try SignedInstallationFixtureParentChannel.Inherited.consume()
+        let context = try SignedInstallationFixtureContext.captureInherited(parent)
+        let helper = try CustodyHelperExecutable.lifecycle(context.publisher)
+        let (_, code) = try PublisherCodeVerifier.runningCode(path: helper.path,
+            identifier: LifecyclePublisher.identifier, team: ReleaseIdentity.publisherTeamIdentifier)
+        let adapter = try SignedInstallationFixtureAdapterChannel.Inherited(parent: parent, code: code)
+        let value = try Self(helper: helper, fixture: false, originalDescriptors: original.subtracting([211,212]))
+        value.signedAdapter = adapter
+        return value
+    }
+    #endif
     #if SHADOW_SYNC_TESTING
     static func testing() throws -> CustodyInheritedCommand {
         try Self(helper: CustodyHelperExecutable.testing(releaseSHA256: String(repeating: "c", count: 64)), fixture: true)
@@ -466,6 +561,7 @@ final class CustodyInheritedCommand {
               try helper.authenticateParent(parent.processID, generation: parent.generation) == parent else { throw CustodyRecordError.fenced }
     }
     func revalidateResources() throws {
+        try installation?.validateCommittedRequest(request)
         try revalidatePersistenceResources()
         try installationStore?.checkInheritedInstallation(self)
         try stagedCandidate?.revalidate()

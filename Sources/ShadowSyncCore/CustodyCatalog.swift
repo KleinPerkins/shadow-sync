@@ -1,6 +1,32 @@
 import Darwin
 import Foundation
 
+#if SHADOW_SYNC_TESTING
+/// Synchronous, thread-scoped observations at the actual live capture cuts.
+/// The observer cannot supply an identity, lease, result or production bypass.
+enum InstallationStateCaptureTesting {
+    enum Point { case initial, final }
+    private final class Observation {
+        let body: (Point, InstallationNodeIdentity) throws -> Void
+        init(_ body: @escaping (Point, InstallationNodeIdentity) throws -> Void) { self.body = body }
+    }
+    private static let key = "shadow-sync-installation-state-capture"
+    static func withObservation<T>(_ observer: @escaping (Point, InstallationNodeIdentity) throws -> Void,
+                                   _ body: () throws -> T) throws -> T {
+        let prior = Thread.current.threadDictionary[key]
+        Thread.current.threadDictionary[key] = Observation(observer)
+        defer {
+            if let prior { Thread.current.threadDictionary[key] = prior }
+            else { Thread.current.threadDictionary.removeObject(forKey: key) }
+        }
+        return try body()
+    }
+    static func hit(_ point: Point, _ identity: InstallationNodeIdentity) throws {
+        try (Thread.current.threadDictionary[key] as? Observation)?.body(point, identity)
+    }
+}
+#endif
+
 // Descriptor observations only. No path, PID, decoded record or opened file
 // grants a lease. Callers must retain their original typed authority separately.
 extension InstallationStateBinding {
@@ -31,6 +57,9 @@ extension InstallationStateBinding {
     }
     static func capture(stateDescriptor: Int32, uid: uid_t) throws -> Self {
         let state = try identity(stateDescriptor, uid: uid, directory: true)
+        #if SHADOW_SYNC_TESTING
+        try InstallationStateCaptureTesting.hit(.initial, state)
+        #endif
         let custody = try open(stateDescriptor, "custody", uid: uid, directory: true)
         let namespace = try open(stateDescriptor, "latest.log", uid: uid, directory: false)
         let lifecycle = try open(stateDescriptor, "lifecycle.lock", uid: uid, directory: false)
@@ -49,19 +78,28 @@ extension InstallationStateBinding {
                   named.st_uid == current.uid, UInt32(named.st_mode) == current.mode,
                   UInt64(named.st_nlink) == current.links else { throw CustodyRecordError.unsafeMetadata }
         }
-        guard try identity(stateDescriptor, uid: uid, directory: true) == state else { throw CustodyRecordError.unsafeMetadata }
+        let finalState = try identity(stateDescriptor, uid: uid, directory: true)
+        #if SHADOW_SYNC_TESTING
+        try InstallationStateCaptureTesting.hit(.final, finalState)
+        #endif
+        guard sameLiveStateNode(finalState, state) else { throw CustodyRecordError.unsafeMetadata }
         let result = Self(directory: state, namespace: namespace.identity, lifecycle: lifecycle.identity,
             operation: operation.identity, run: run.identity, launcher: launcher.identity, catalogGuard: catalog.identity)
         try result.validate(); return result
     }
+    // Only fresh observations of the mutable state root use this comparison.
+    // Durable records and all named lock/custody observations remain exact.
+    private static func sameLiveStateNode(_ a: InstallationNodeIdentity, _ b: InstallationNodeIdentity) -> Bool {
+        a.type == .directory && b.type == .directory && a.device == b.device && a.inode == b.inode
+            && a.uid == b.uid && a.mode == b.mode && a.aclDigest == b.aclDigest
+            && a.links > 0 && b.links > 0
+    }
     func validateLive(stateDescriptor: Int32, uid: uid_t, leases: CustodyAuthorityLeaseSet) throws {
         try validate()
         let current = try Self.capture(stateDescriptor: stateDescriptor, uid: uid)
-        // Directory link counts may change when valid child directories appear.
+        // Directory link counts may change when valid state children appear or disappear.
         // Both observations must be live/private; only this count is not stable.
-        let a = directory, b = current.directory
-        guard a.device == b.device, a.inode == b.inode, a.type == b.type, a.uid == b.uid,
-              a.mode == b.mode, a.aclDigest == b.aclDigest, a.links > 0, b.links > 0,
+        guard Self.sameLiveStateNode(directory, current.directory),
               namespace == current.namespace, lifecycle == current.lifecycle, operation == current.operation,
               run == current.run, launcher == current.launcher, catalogGuard == current.catalogGuard else {
             throw CustodyRecordError.fenced
@@ -96,6 +134,7 @@ final class CustodyMetadataScope: @unchecked Sendable {
     private var stagedRetirements: [CustodyCatalogStore.StagedRetiredCommand] = []
     private let store: CustodyCatalogStore
     private let installation: CustodyCatalogStore.InstallationCommandPermit?
+    var validationProfile: InstallationValidationProfile { installation?.observation.validationProfile ?? .production }
 
     init(leases: CustodyAuthorityLeaseSet, releaseSHA256: String, generation: String, installation: CustodyCatalogStore.InstallationCommandPermit? = nil) throws {
         guard CustodyWire.hex(releaseSHA256, bytes: 32), RunIdentity.isValid(generation) else { throw CustodyRecordError.invalidRecord }
@@ -104,11 +143,17 @@ final class CustodyMetadataScope: @unchecked Sendable {
         guard !leases.mode.isInstallationStaged || installation?.observation.stagedMode == leases.mode else { throw CustodyRecordError.fenced }
         self.leases = leases; self.releaseSHA256 = releaseSHA256; self.generation = generation; self.installation = installation
         bootID = try CustodyBootIdentity.current(); uid = geteuid()
-        store = try CustodyCatalogStore(leases: leases)
+        store = try CustodyCatalogStore(leases: leases,
+            validationProfile: installation?.observation.validationProfile ?? .production)
         // Validate all evidence now, then again in the same guarded transition
         // as every reservation. This initial read is never cached admission.
         try installation?.revalidate()
         try store.checkFence(ownRequests: [], scope: id, mode: leases.mode, installation: installation)
+    }
+    func registerInstallationRetirement(in registry: RetainedCleanupRegistry) throws -> InstallationTransactionOwner? {
+        guard let owner = installation?.stagedObservation?.session.retirementOwner else { return nil }
+        try owner.validateRetirementRegistry(registry)
+        return owner
     }
     func revalidateInstallation() throws {
         guard let installation else { return }
@@ -338,7 +383,12 @@ final class CustodyCatalogStore: @unchecked Sendable {
         let acl: String
         let bytes: Data
     }
-    private let leases: CustodyAuthorityLeaseSet
+    private let validationProfile: InstallationValidationProfile
+    private let leasedAuthority: CustodyAuthorityLeaseSet?
+    private let stoppedBinding: InstallationStateBinding?
+    private var leases: CustodyAuthorityLeaseSet {
+        get throws { guard let leasedAuthority else { throw CustodyRecordError.fenced }; return leasedAuthority }
+    }
     private let root: OwnedFileDescriptor
     private let uid: uid_t
     private let directory: Node
@@ -348,12 +398,24 @@ final class CustodyCatalogStore: @unchecked Sendable {
     private var poisoned = false
     private var installationCommandPins: [String: Node] = [:]
 
-    init(leases: CustodyAuthorityLeaseSet) throws {
-        self.leases = leases
+    init(leases: CustodyAuthorityLeaseSet, validationProfile: InstallationValidationProfile = .production) throws {
+        self.validationProfile = validationProfile
+        self.leasedAuthority = leases; stoppedBinding = nil
         let state = try leases.duplicateStateDirectory(); root = state.0; uid = state.1
+        try validationProfile.validateStateDescriptor(root.value)
         directory = try Self.openNode(root.value, "custody", uid: uid, directory: true)
         guardFile = try Self.openNode(directory.descriptor.value, "catalog.lock", uid: uid, directory: false)
         receipts = try Self.openNode(directory.descriptor.value, "receipts", uid: uid, directory: true)
+    }
+    // This view never escapes the stopped repair turn. Its descriptors remain
+    // owned by the original journal; closing the view cannot close their owners.
+    private init(stoppedRoot: OwnedFileDescriptor, binding: InstallationStateBinding,
+                 directory: Node, guardFile: Node, receipts: Node,
+                 validationProfile: InstallationValidationProfile) {
+        self.validationProfile = validationProfile
+        leasedAuthority = nil; stoppedBinding = binding
+        root = stoppedRoot; uid = binding.directory.uid
+        self.directory = directory; self.guardFile = guardFile; self.receipts = receipts
     }
     private static func node(_ fd: OwnedFileDescriptor, uid: uid_t, directory: Bool) throws -> Node {
         var info = stat()
@@ -377,24 +439,89 @@ final class CustodyCatalogStore: @unchecked Sendable {
         }
     }
     private func validateBindings() throws {
-        try leases.validate()
+        try validationProfile.validateStateDescriptor(root.value)
+        if let leasedAuthority { try leasedAuthority.validate() }
+        else {
+            guard let stoppedBinding else { throw CustodyRecordError.fenced }
+            let actual = try Self.node(root, uid: uid, directory: true)
+            guard UInt64(actual.identity.device) == stoppedBinding.directory.device,
+                  UInt64(actual.identity.inode) == stoppedBinding.directory.inode,
+                  actual.identity.owner == stoppedBinding.directory.uid,
+                  UInt32(actual.identity.mode) == stoppedBinding.directory.mode,
+                  CustodyRecordBinding.digest(Data(actual.acl.utf8)) == stoppedBinding.directory.aclDigest else {
+                throw CustodyRecordError.fenced
+            }
+            // Full publisher/owner validation occurs outside this metadata guard.
+            // These are named identity checks only, without open/flock/dup on op.
+            for (name, expected) in [("latest.log", stoppedBinding.namespace), ("lifecycle.lock", stoppedBinding.lifecycle),
+                ("operation.lock", stoppedBinding.operation), ("run.lock", stoppedBinding.run), ("launcher.lock", stoppedBinding.launcher)] {
+                var named = stat()
+                guard fstatat(root.value, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                      UInt64(named.st_dev) == expected.device, UInt64(named.st_ino) == expected.inode,
+                      named.st_uid == expected.uid, UInt32(named.st_mode) == expected.mode,
+                      UInt64(named.st_nlink) == expected.links else { throw CustodyRecordError.fenced }
+            }
+        }
         try validate(directory, at: root.value, name: "custody", isDirectory: true)
         try validate(guardFile, at: directory.descriptor.value, name: "catalog.lock", isDirectory: false)
         try validate(receipts, at: directory.descriptor.value, name: "receipts", isDirectory: true)
     }
-    private func locked<T>(_ action: () throws -> T) throws -> T {
-        guard mutex.try() else { throw CustodyRecordError.busy }
-        defer { mutex.unlock() }
+    private struct AdmissionWait {
+        let deadline: UInt64
+        let revalidate: () throws -> Void
+    }
+    /// A false result proves that neither lock was acquired together and no
+    /// catalog action ran. Other errors are not retryable acquisition results.
+    private func tryAcquireCatalog() throws -> Bool {
+        guard mutex.try() else {
+            #if SHADOW_SYNC_TESTING
+            DiscoveryFixtureDiagnostic.RepositoryBusyObservation.busy(.catalogMutex)
+            #endif
+            return false
+        }
+        var acquired = false
+        defer { if !acquired { mutex.unlock() } }
         guard !poisoned else { throw CustodyRecordError.fenced }
         try validateBindings()
         guard flock(guardFile.descriptor.value, LOCK_EX | LOCK_NB) == 0 else {
-            if errno == EWOULDBLOCK { throw CustodyRecordError.busy }
-            throw CustodyRecordError.persistence(errno)
+            let failure = errno
+            if failure == EWOULDBLOCK {
+                #if SHADOW_SYNC_TESTING
+                DiscoveryFixtureDiagnostic.RepositoryBusyObservation.busy(.catalogFileLock)
+                #endif
+                return false
+            }
+            throw CustodyRecordError.persistence(failure)
         }
+        acquired = true
+        return true
+    }
+    private func locked<T>(admission: AdmissionWait? = nil, _ action: () throws -> T) throws -> T {
+        while true {
+            if let admission {
+                guard DispatchTime.now().uptimeNanoseconds < admission.deadline else { throw CustodyRecordError.busy }
+                // No catalog mutex or file lock spans control/liveness checks.
+                try admission.revalidate()
+                guard DispatchTime.now().uptimeNanoseconds < admission.deadline else { throw CustodyRecordError.busy }
+            }
+            if try tryAcquireCatalog() { break }
+            guard let admission else { throw CustodyRecordError.busy }
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < admission.deadline else { throw CustodyRecordError.busy }
+            // Retry acquisition only, yielding with neither catalog lock held.
+            // The supplied absolute limit is never restarted or stretched.
+            usleep(useconds_t(min(1_000, (admission.deadline - now) / 1_000)))
+        }
+        defer { mutex.unlock() }
         // This guard is a private, unduplicated metadata lock. No operation or
         // inherited authority descriptor is ever unlocked here.
         defer { _ = flock(guardFile.descriptor.value, LOCK_UN) }
         try validateBindings()
+        if let admission {
+            guard DispatchTime.now().uptimeNanoseconds < admission.deadline else { throw CustodyRecordError.busy }
+        }
+        // The action is outside the acquisition loop. Its errors, including a
+        // possibly applied durable write, must propagate without replay.
         return try action()
     }
     private func read(_ name: String, at parent: Int32? = nil, maximum: Int) throws -> File {
@@ -445,8 +572,9 @@ final class CustodyCatalogStore: @unchecked Sendable {
                                       pendingStep: InstallationStepReceipt.CanonicalObservation? = nil,
                                       pendingControl: InstallationControlRecord? = nil) throws -> (File, InstallationControlRecord) {
         let file = try read(InstallationControlRecord.filename, maximum: InstallationControlRecord.maximumBytes)
-        let record = try InstallationControlRecord.decode(file.bytes)
-        try record.state.validateLive(stateDescriptor: root.value, uid: uid, leases: leases)
+        let record = try InstallationControlRecord.decode(file.bytes, profile: validationProfile)
+        if let leasedAuthority { try record.state.validateLive(stateDescriptor: root.value, uid: uid, leases: leasedAuthority) }
+        else { guard record.state == stoppedBinding else { throw CustodyRecordError.fenced }; try validateBindings() }
         let fd = openat(receipts.descriptor.value, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw CustodyRecordError.unsafeMetadata }
         guard let stream = fdopendir(fd) else { close(fd); throw CustodyRecordError.unsafeMetadata }
@@ -510,9 +638,9 @@ final class CustodyCatalogStore: @unchecked Sendable {
            let index = chain.firstIndex(where: { $0.digest == pendingStep.digest }) {
             guard index == chain.count - 1, chain[index].receipt == pendingStep.receipt,
                   let pendingControl else { throw CustodyRecordError.fenced }
-            try record.validateReceiptChain(observations: Array(chain.dropLast()))
-            try record.validateReplacement(pendingControl, receipts: chain.map(\.receipt))
-        } else { try record.validateReceiptChain(observations: chain) }
+            try record.validateReceiptChain(observations: Array(chain.dropLast()), profile: validationProfile)
+            try record.validateReplacement(pendingControl, receipts: chain.map(\.receipt), profile: validationProfile)
+        } else { try record.validateReceiptChain(observations: chain, profile: validationProfile) }
         // Every referenced document must resolve to complete recoverable bytes,
         // in the exact transaction/namespace/document slot. Unreferenced bytes
         // are permitted ONLY for the same live factory's pending capture.
@@ -571,7 +699,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
         let pending = Dictionary(uniqueKeysWithValues: capture.canonicalPreimages.map { ($0.digest, $0.receipt) })
         try locked {
             do {
-                guard leases.mode == .lifecycleMutation else { throw CustodyRecordError.fenced }
+                guard try leases.mode == .lifecycleMutation else { throw CustodyRecordError.fenced }
                 let record = try installationSnapshot(pendingPreimages: pending).1
                 // Historical committed rollover requires its separate full-chain
                 // retention design. Capture cannot silently start that migration.
@@ -620,11 +748,13 @@ final class CustodyCatalogStore: @unchecked Sendable {
     /// kickstart edge and all pending command records remain required. The
     /// optional exact next receipt is observation of publication in progress,
     /// never permission to reconcile or write it from the host.
-    static func precommitWaitObservation(admission: LifecycleAdmissionAuthority) throws -> InstallationControlRecord {
-        let store = try Self(leases: admission.retainObservationLeases())
+    static func precommitWaitObservation(admission: LifecycleAdmissionAuthority,
+                                          validationProfile: InstallationValidationProfile = .production) throws -> InstallationControlRecord {
+        try validationProfile.revalidate()
+        let store = try Self(leases: admission.retainObservationLeases(), validationProfile: validationProfile)
         return try store.locked {
             let raw = try InstallationControlRecord.decode(store.read(InstallationControlRecord.filename,
-                maximum: InstallationControlRecord.maximumBytes).bytes)
+                maximum: InstallationControlRecord.maximumBytes).bytes, profile: validationProfile)
             let pending = raw.step?.action == .kickstartCandidate && raw.step?.status == .intent
                 ? try InstallationPrecommitWait.completion(of: raw) : nil
             let control = try store.installationSnapshot(pendingStep: pending?.1, pendingControl: pending?.0).1
@@ -647,7 +777,8 @@ final class CustodyCatalogStore: @unchecked Sendable {
                 let controlNode = try Self.openNode(store.directory.descriptor.value, InstallationControlRecord.filename,
                     uid: store.uid, directory: false)
                 let binding = try InstallationCommandBinding(control: control,
-                    controlNode: store.installationCommandNode(controlNode.identity, acl: controlNode.acl), receiptNodes: receiptNodes)
+                    controlNode: store.installationCommandNode(controlNode.identity, acl: controlNode.acl), receiptNodes: receiptNodes,
+                    validationProfile: store.validationProfile)
                 let inputDigest = CustodyRecordBinding.digest(try binding.encode())
                 for entry in catalog.1.entries {
                     guard entry.authority == .installationStagedStart,
@@ -662,8 +793,22 @@ final class CustodyCatalogStore: @unchecked Sendable {
             return control
         }
     }
-    static func precommitObservation(admission: LifecycleAdmissionAuthority) throws -> InstallationControlRecord {
-        let control = try precommitWaitObservation(admission: admission)
+    static func requiresStagedHost(admission: LifecycleAdmissionAuthority,
+                                   validationProfile: InstallationValidationProfile = .production) throws -> Bool {
+        try validationProfile.revalidate()
+        let store = try Self(leases: admission.retainObservationLeases(), validationProfile: validationProfile)
+        return try store.locked {
+            let control = try InstallationControlRecord.decode(store.read(InstallationControlRecord.filename,
+                maximum: InstallationControlRecord.maximumBytes).bytes, profile: validationProfile)
+            if control.phase == .active { return true }
+            guard control.phase == .committed else { throw CustodyRecordError.fenced }
+            _ = try store.installationSnapshot()
+            return false
+        }
+    }
+    static func precommitObservation(admission: LifecycleAdmissionAuthority,
+                                     validationProfile: InstallationValidationProfile = .production) throws -> InstallationControlRecord {
+        let control = try precommitWaitObservation(admission: admission, validationProfile: validationProfile)
         guard control.step?.status == .complete else { throw CustodyRecordError.fenced }
         return control
     }
@@ -700,9 +845,10 @@ final class CustodyCatalogStore: @unchecked Sendable {
         guard !deadline.hasExpired else { throw CustodyRecordError.busy }
         try validateBindings()
         let installation = try installationSnapshot(), catalog = try snapshot()
-        guard installation.1 == expected, expected.phase == .committed,
+        guard installation.1 == expected,
+              expected.phase == .committed || (expected.phase == .recovery && expected.recoveryReason == .startupUncertain),
               expected.step?.action == .readinessCommit, expected.step?.status == .complete,
-              expected.readinessCommit?.commitRevision == expected.revision,
+              expected.readinessCommit?.commitRevision == (expected.phase == .committed ? expected.revision : expected.revision - 1),
               catalog.1.entries.isEmpty else { throw CustodyRecordError.fenced }
         var files = [InstallationControlRecord.filename: installation.0, "catalog.json": catalog.0]
         for name in try InstallationStagedAdmissionIntent.names(receipts.descriptor.value) {
@@ -722,11 +868,30 @@ final class CustodyCatalogStore: @unchecked Sendable {
         guard !deadline.hasExpired else { throw CustodyRecordError.busy }
         return files
     }
+    static func readinessStopHostObservation(admission: LifecycleAdmissionAuthority,
+        expected: InstallationControlRecord, deadline: MonotonicDeadline,
+        validationProfile: InstallationValidationProfile = .production) throws {
+        try validationProfile.revalidate()
+        guard admission.commandAdmissionIsOpen, !deadline.hasExpired,
+              expected.phase == .recovery, expected.readinessCommit == nil,
+              expected.recoveryReason == .readinessFailed, expected.step?.action == .candidateStop,
+              expected.step?.status == .intent, expected.step?.ordinal == 16,
+              expected.transaction?.boot == (try CustodyBootIdentity.current()) else { throw CustodyRecordError.fenced }
+        let store = try Self(leases: admission.retainObservationLeases(), validationProfile: validationProfile)
+        try store.locked {
+            guard try store.installationSnapshot().1 == expected,
+                  try store.snapshot().1.entries.isEmpty else { throw CustodyRecordError.fenced }
+            try store.validateBindings()
+        }
+        guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+    }
     static func committedHostObservation(admission: LifecycleAdmissionAuthority,
                                          expected: InstallationControlRecord,
-                                         deadline: MonotonicDeadline) throws -> HostCommittedObservation {
+                                         deadline: MonotonicDeadline,
+                                         validationProfile: InstallationValidationProfile = .production) throws -> HostCommittedObservation {
         guard admission.commandAdmissionIsOpen, !deadline.hasExpired else { throw CustodyRecordError.fenced }
-        let store = try Self(leases: admission.retainObservationLeases())
+        try validationProfile.revalidate()
+        let store = try Self(leases: admission.retainObservationLeases(), validationProfile: validationProfile)
         let files = try store.hostCommittedFiles(expected: expected, deadline: deadline)
         var pins: [String: Node] = [:]
         for (name, file) in files {
@@ -753,7 +918,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
     }
     func checkFreshInitializationFence(_ proof: FreshStateInitialization.ControlInspection) throws {
         try locked {
-            guard proof.leases === leases, leases.mode == .mutation else { throw CustodyRecordError.fenced }
+            guard try proof.leases === leases, try leases.mode == .mutation else { throw CustodyRecordError.fenced }
             let record = try installationSnapshot().1
             guard record.phase == .initial,
                   Set(try names()) == ["catalog.lock", "catalog.json", "receipts", InstallationControlRecord.filename],
@@ -840,7 +1005,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
     }
     func checkFence(ownRequests: Set<String>, scope: String, mode: CustodyAuthorityMode, installation: InstallationCommandPermit? = nil) throws {
         try locked {
-            guard mode == leases.mode else { throw CustodyRecordError.fenced }
+            guard try mode == leases.mode else { throw CustodyRecordError.fenced }
             if let installation { try validateInstallationCommand(installation.observation) }
             else { try installationFence(mode: mode) }
             let s = try snapshot(); try fence(s.1, journals: s.2, ownRequests: ownRequests, scope: scope, mode: mode)
@@ -867,7 +1032,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
             diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds)
             diagnosticStage = .installationFence
             #endif
-            guard journal.authority == leases.mode, journal.binding.scopeID == scope,
+            guard try journal.authority == leases.mode, journal.binding.scopeID == scope,
                   journal.binding.uid == uid, journal.phase == .prepared else { throw CustodyRecordError.fenced }
             if let installation { try validateInstallationCommand(installation.observation) }
             else { try installationFence(mode: journal.authority) }
@@ -911,36 +1076,74 @@ final class CustodyCatalogStore: @unchecked Sendable {
         #endif
     }
     fileprivate func replaceJournal(_ expected: CustodyJournal, with next: CustodyJournal) throws {
-        try locked {
-            let s = try snapshot()
-            guard s.1.entries.contains(CustodyCatalogEntry(expected)), s.2[expected.binding.requestID] == expected,
-                  expected.binding == next.binding, expected.kind == next.kind, expected.authority == next.authority,
-                  expected.budget == next.budget, expected.inputSHA256 == next.inputSHA256,
-                  expected.resourcesSHA256 == next.resourcesSHA256, expected.leases == next.leases,
-                  expected.ordinal < UInt64.max, next.ordinal == expected.ordinal + 1 else { throw CustodyRecordError.conflict }
-            // The proposed transition must be obtainable from the closed model.
-            let proposal = try next.phase == .recoveredAfterBoot ? expected.recoveredAfterBoot()
-                : expected.advancing(to: next.phase, custodian: next.custodian, target: next.target,
-                    outcome: next.outcome, reason: next.reason, waitStatus: next.waitStatus)
-            guard proposal == next else { throw CustodyRecordError.invalidTransition }
-            if next.kind == .discoveryGit, next.phase == .terminal {
-                guard try discoveryResource(expected).phase == .retired else { throw CustodyRecordError.fenced }
-            }
-            let name = expected.binding.requestID + ".json", file = try read(name, maximum: CustodyJournal.maximumBytes)
-            try write(name, bytes: next.encode(), expected: file)
+        try locked { try replaceJournalLocked(expected, with: next) }
+    }
+    fileprivate func admitJournal(_ expected: CustodyJournal, with next: CustodyJournal,
+                                 deadline: UInt64, revalidate: @escaping () throws -> Void) throws {
+        guard expected.phase == .prepared, next.phase == .admitted else { throw CustodyRecordError.invalidTransition }
+        guard deadline <= expected.budget.work else { throw CustodyProtocolError.invalidBudget }
+        try locked(admission: AdmissionWait(deadline: deadline, revalidate: revalidate)) {
+            try replaceJournalLocked(expected, with: next)
         }
+    }
+    private func replaceJournalLocked(_ expected: CustodyJournal, with next: CustodyJournal) throws {
+        let s = try snapshot()
+        guard s.1.entries.contains(CustodyCatalogEntry(expected)), s.2[expected.binding.requestID] == expected,
+              expected.binding == next.binding, expected.kind == next.kind, expected.authority == next.authority,
+              expected.budget == next.budget, expected.inputSHA256 == next.inputSHA256,
+              expected.resourcesSHA256 == next.resourcesSHA256, expected.leases == next.leases,
+              expected.ordinal < UInt64.max, next.ordinal == expected.ordinal + 1 else { throw CustodyRecordError.conflict }
+        // The proposed transition must be obtainable from the closed model.
+        let proposal = try next.phase == .recoveredAfterBoot ? expected.recoveredAfterBoot()
+            : expected.advancing(to: next.phase, custodian: next.custodian, target: next.target,
+                outcome: next.outcome, reason: next.reason, waitStatus: next.waitStatus)
+        guard proposal == next else { throw CustodyRecordError.invalidTransition }
+        if next.kind == .discoveryGit, next.phase == .terminal {
+            guard try discoveryResource(expected).phase == .retired else { throw CustodyRecordError.fenced }
+        }
+        let name = expected.binding.requestID + ".json", file = try read(name, maximum: CustodyJournal.maximumBytes)
+        try write(name, bytes: next.encode(), expected: file)
     }
     fileprivate func claimHelper(_ inherited: CustodyInheritedCommand) throws -> CustodyJournal {
         try locked {
             if let installation = inherited.installation { try validateInstallationCommand(installation) }
             else { try installationFence(mode: inherited.request.authority) }
-            let s = try snapshot(), request = inherited.request
-            let expected = try CustodyJournal(prepared: request, leases: leases.descriptorClaims())
-            guard s.1.entries.contains(CustodyCatalogEntry(expected)),
-                  s.2[request.binding.requestID] == expected else { throw CustodyRecordError.fenced }
-            return expected
+            return try claimPrepared(inherited.request)
         }
     }
+    /// Called under catalog.lock after the unchanged installation fence. Keep
+    /// the durable prepared bytes as the exact preimage; fresh live lease
+    /// observations validate their bindings, not a mutable directory child count.
+    private func claimPrepared(_ request: UnvalidatedCustodyRequest) throws -> CustodyJournal {
+        let s = try snapshot()
+        guard let recorded = s.2[request.binding.requestID] else { throw CustodyRecordError.fenced }
+        let live = try leases.descriptorClaims().sorted { $0.role.number < $1.role.number }
+        guard recorded.leases.count == live.count,
+              zip(live, recorded.leases).allSatisfy({ CustodyInheritedCommand.matchesInheritedClaim($0.0, $0.1) }) else {
+            throw CustodyRecordError.fenced
+        }
+        let expected = try CustodyJournal(prepared: request, leases: recorded.leases)
+        guard s.1.entries.contains(CustodyCatalogEntry(expected)), recorded == expected else { throw CustodyRecordError.fenced }
+        return recorded
+    }
+    #if SHADOW_SYNC_TESTING
+    /// Exercises the actual admission persistence/acquisition path with synthetic
+    /// process observations only; this cannot spawn or grant helper authority.
+    @_silgen_name("shadowSyncTesting_testingAdmitJournal")
+    @inline(never)
+    func testingAdmitJournal(_ expected: CustodyJournal, with next: CustodyJournal,
+                             deadline: UInt64, revalidate: @escaping () throws -> Void) throws {
+        try admitJournal(expected, with: next, deadline: deadline, revalidate: revalidate)
+    }
+    /// Metadata-only fixture entry through the same guarded comparison. It
+    /// neither constructs a helper nor transfers writer/process authority.
+    func testingClaimPrepared(_ request: UnvalidatedCustodyRequest) throws -> CustodyJournal {
+        try locked {
+            try installationFence(mode: request.authority)
+            return try claimPrepared(request)
+        }
+    }
+    #endif
     /// Narrow persistence primitive for the discovery resource owner. The
     /// existing outstanding journal supplies the durable admission fence. This
     /// does not create or delete scratch resources or grant target admission.
@@ -1116,7 +1319,7 @@ final class CustodyCatalogStore: @unchecked Sendable {
     /// authority. This preserves the complete preimage before publishing unknown
     /// interruption; it does not signal, spawn, access candidates or retire work.
     fileprivate func recoverPriorBoot(_ context: CustodyRecoveryContext) throws -> [CustodyJournal] {
-        guard context.owns(leases) else { throw CustodyRecordError.fenced }
+        guard try context.owns(leases) else { throw CustodyRecordError.fenced }
         let claims = try leases.descriptorClaims()
         return try locked {
             let snapshot = try snapshot()
@@ -1345,6 +1548,14 @@ final class CustodyHelperJournal {
     static func begin(_ inherited: CustodyInheritedCommand) throws -> CustodyHelperJournal {
         try inherited.revalidateResources(); try inherited.revalidateParent()
         let leases = try CustodyAuthorityLeaseSet.importing(inherited), store = try CustodyCatalogStore(leases: leases)
+        #if SHADOW_SYNC_TESTING
+        if let mode = inherited.fixtureMode, ["state-capture-named", "state-capture-unlinked"].contains(mode) {
+            let prepared = try CustodyStateCaptureFixtures.claimHelper(leases: leases, unlinking: mode == "state-capture-unlinked") {
+                try store.claimHelper(inherited)
+            }
+            return try Self(inherited, leases: leases, store: store, prepared: prepared)
+        }
+        #endif
         return try Self(inherited, leases: leases, store: store, prepared: store.claimHelper(inherited))
     }
     private func replace(_ next: CustodyJournal) throws {
@@ -1358,10 +1569,15 @@ final class CustodyHelperJournal {
         #endif
         try store.replaceJournal(current, with: next); current = next
     }
-    func admit() throws {
+    func admit(deadline: UInt64, revalidateAdmission: @escaping () throws -> Void) throws {
         guard current.phase == .prepared else { throw CustodyRecordError.invalidTransition }
-        try inherited.revalidateParent()
-        try replace(current.advancing(to: .admitted, custodian: helperObservation))
+        try inherited.revalidatePersistenceResources(); try leases.validate()
+        let next = try current.advancing(to: .admitted, custodian: helperObservation)
+        try store.admitJournal(current, with: next, deadline: deadline) { [self] in
+            try inherited.revalidateParent()
+            try revalidateAdmission()
+        }
+        current = next
     }
     private func recordSerialRetirement(_ owner: OwnedDirectChild, streamsDrained: Bool) throws -> Int32 {
         guard [.repositoryGit, .retentionArchive, .discoveryGit, .launchctlMutation].contains(inherited.request.kind), current.phase == .executing,
@@ -1561,6 +1777,7 @@ extension CustodyCatalogStore {
         private let staged: InstallationStagedCommandObservation?
         private let commandMutex = NSLock()
         private var mutationClaimed = false
+        private var committedKindsClaimed = Set<CustodyCommandKind>()
         private var recoveryDiagnosticClaimed = false
         fileprivate init(staged: InstallationStagedCommandObservation) {
             self.staged = staged; session = nil; observation = staged.binding
@@ -1575,12 +1792,22 @@ extension CustodyCatalogStore {
             else if let session { try session.validateCommandPermit(self) }
             else { throw CustodyRecordError.fenced }
         }
+        func boundCommittedBudget(_ budget: CustodyBudget, kind: CustodyCommandKind) throws -> CustodyBudget {
+            guard let deadline = staged?.session.committedStopDeadline(for: staged!) else { return budget }
+            return try budget.clipped(to: deadline, kind: kind, permittedWorkSeconds: 10)
+        }
         func boundDiagnosticBudget(_ budget: CustodyBudget) throws -> CustodyBudget {
             guard let ready = staged?.ready else { return budget }
             try ready.revalidate(for: staged!.session)
             return try budget.clipped(to: ready.deadline, kind: .launchctlRead, permittedWorkSeconds: 10)
         }
         func validateRequest(_ request: UnvalidatedCustodyRequest) throws {
+            if observation.isCommittedStop {
+                try observation.validateCommittedRequest(request)
+                commandMutex.lock(); defer { commandMutex.unlock() }
+                guard committedKindsClaimed.insert(request.kind).inserted else { throw CustodyRecordError.fenced }
+                return
+            }
             if let ready = staged?.ready {
                 // prepare already revalidated the live session before taking its
                 // scope mutex. This section performs only bounded value checks.
@@ -1639,6 +1866,8 @@ extension CustodyCatalogStore {
         private let store: CustodyCatalogStore
         private let transaction: InstallationTransaction
         private let mutex = NSLock()
+        private var serializing = false
+        private var metadataGeneration: UInt64 = 0
         private var anchor: File
         private var current: InstallationControlRecord
         private var chain: [InstallationStepReceipt] = []
@@ -1671,7 +1900,8 @@ extension CustodyCatalogStore {
                         nodes[name] = try store.installationCommandNode(retained.identity, acl: retained.acl)
                     }
                     let observation = try InstallationCommandBinding(control: current,
-                        controlNode: store.installationCommandNode(anchor.identity, acl: anchor.acl), receiptNodes: nodes)
+                        controlNode: store.installationCommandNode(anchor.identity, acl: anchor.acl), receiptNodes: nodes,
+                        validationProfile: store.validationProfile)
                     try observation.validate(); try store.validateInstallationCommand(observation)
                     commandsClaimed = true
                     return InstallationCommandPermit(session: self, observation: observation)
@@ -1679,11 +1909,12 @@ extension CustodyCatalogStore {
             }
         }
         fileprivate func validateCommandPermit(_ permit: InstallationCommandPermit) throws {
-            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
-            guard commandsClaimed, owner.commandAdmissionIsOpen, pending == nil,
-                  current == permit.observation.control else { throw CustodyRecordError.fenced }
-            try binding.revalidate(for: owner); try capture.validateSource()
-            try store.locked { try store.validateInstallationCommand(permit.observation) }
+            try withTurn {
+                guard commandsClaimed, owner.commandAdmissionIsOpen, pending == nil,
+                      current == permit.observation.control else { throw CustodyRecordError.fenced }
+                try binding.revalidate(for: owner); try capture.validateSource()
+                try store.locked { try store.validateInstallationCommand(permit.observation) }
+            }
         }
         // Pin exact receipt descriptions across a cut. Identical replacement
         // bytes/inode metadata cannot substitute for this live durability proof.
@@ -1693,6 +1924,15 @@ extension CustodyCatalogStore {
         private var cut: Cut?
         private var receiptFault: CustodyCatalogStore.Fault?
         private var controlFault: CustodyCatalogStore.Fault?
+        private func takeReceiptFault() -> CustodyCatalogStore.Fault? {
+            mutex.lock(); defer { mutex.unlock() }; let value = receiptFault; receiptFault = nil; return value
+        }
+        private func takeControlFault() -> CustodyCatalogStore.Fault? {
+            mutex.lock(); defer { mutex.unlock() }; let value = controlFault; controlFault = nil; return value
+        }
+        private func consumeCut(_ value: Cut) -> Bool {
+            mutex.lock(); defer { mutex.unlock() }; guard cut == value else { return false }; cut = nil; return true
+        }
         func testingCut(_ value: Cut?) { mutex.lock(); cut = value; mutex.unlock() }
         func testingWriteFault(receipt: CustodyCatalogStore.Fault? = nil, control: CustodyCatalogStore.Fault? = nil) {
             mutex.lock(); receiptFault = receipt; controlFault = control; mutex.unlock()
@@ -1704,7 +1944,7 @@ extension CustodyCatalogStore {
             self.owner = owner
             let binding = try owner.installationBinding()
             let capture = try lifecycle.captureInstallationSlots(owner: owner, binding: binding, transactionID: RunIdentity.make())
-            let store = try CustodyCatalogStore(leases: owner.retainExclusiveLeases())
+            let store = try CustodyCatalogStore(leases: owner.retainExclusiveLeases(), validationProfile: owner.validationProfile)
             let observed = try store.locked {
                 let value = try store.installationSnapshot(pendingPreimages: Self.documents(capture))
                 guard value.1.phase == .initial, value.1.state == binding.state,
@@ -1717,18 +1957,30 @@ extension CustodyCatalogStore {
             transaction = InstallationTransaction(id: capture.transactionID, boot: binding.boot, intent: intent,
                 coordinator: binding.coordinator, sourceReleaseDigest: binding.sourceReleaseDigest,
                 candidate: intent == .remove ? nil : binding.candidate, priorCommitDigest: nil, slots: try capture.snapshot)
-            try transaction.validate(state: binding.state)
+            try transaction.validate(state: binding.state, profile: owner.validationProfile)
             try capture.validateSource()
         }
         private static func documents(_ capture: InstallationCapturedSlots) -> [String: InstallationDocumentPreimage] {
             Dictionary(uniqueKeysWithValues: capture.canonicalPreimages.map { ($0.digest, $0.receipt) })
         }
-        private func serialized<T>(deadline: MonotonicDeadline, _ action: (MonotonicDeadline) throws -> T) throws -> T {
-            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
-            try validateSource(deadline)
-            let result = try action(deadline)
-            try validateSource(deadline)
+        private func withTurn<T>(_ action: () throws -> T) throws -> T {
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, metadataGeneration < UInt64.max else { mutex.unlock(); throw CustodyRecordError.busy }
+            serializing = true; metadataGeneration += 1
+            let generation = metadataGeneration; mutex.unlock()
+            defer { mutex.lock(); serializing = false; mutex.unlock() }
+            let result = try action()
+            mutex.lock(); let unchanged = serializing && metadataGeneration == generation; mutex.unlock()
+            guard unchanged else { throw CustodyRecordError.fenced }
             return result
+        }
+        private func serialized<T>(deadline: MonotonicDeadline, _ action: (MonotonicDeadline) throws -> T) throws -> T {
+            try withTurn {
+                try validateSource(deadline)
+                let result = try action(deadline)
+                try validateSource(deadline)
+                return result
+            }
         }
         private func validateSource(_ deadline: MonotonicDeadline) throws {
             guard !deadline.hasExpired else { throw CustodyRecordError.busy }
@@ -1736,7 +1988,7 @@ extension CustodyCatalogStore {
             guard !deadline.hasExpired else { throw CustodyRecordError.busy }
         }
         private func validateLocked(_ deadline: MonotonicDeadline) throws {
-            guard !deadline.hasExpired, store.leases.mode == .lifecycleMutation else { throw CustodyRecordError.busy }
+            guard !deadline.hasExpired, try store.leases.mode == .lifecycleMutation else { throw CustodyRecordError.busy }
             let value = try store.installationSnapshot(pendingPreimages: Self.documents(capture),
                 pendingStep: pending?.receipt, pendingControl: pending?.control)
             guard value.0.identity == anchor.identity, value.0.acl == anchor.acl,
@@ -1767,7 +2019,7 @@ extension CustodyCatalogStore {
             let next = InstallationControlRecord(revision: current.revision + 1, phase: current.phase == .initial ? .active : current.phase,
                 state: binding.state, transaction: nextTransaction, step: try receipt.step(), latestReceiptDigest: canonical.digest,
                 readinessCommit: nil, recoveryReason: current.recoveryReason)
-            try current.validateReplacement(next, receipts: chain + [receipt])
+            try current.validateReplacement(next, receipts: chain + [receipt], profile: owner.validationProfile)
             return Pending(control: next, receipt: canonical)
         }
         func begin(deadline: MonotonicDeadline) throws -> InstallationControlRecord {
@@ -1850,7 +2102,7 @@ extension CustodyCatalogStore {
                 try validateLocked(deadline)
                 pending = proposed
                 #if SHADOW_SYNC_TESTING
-                store.testingCut = receiptFault; receiptFault = nil
+                store.testingCut = takeReceiptFault()
                 #endif
                 let receipt = proposed.receipt
                 try store.write(receipt.filename, at: store.receipts.descriptor.value,
@@ -1861,7 +2113,7 @@ extension CustodyCatalogStore {
                 // documents before leaving this guard interval.
                 try validateLocked(deadline)
                 #if SHADOW_SYNC_TESTING
-                if cut == .afterReceipt { cut = nil; throw CustodyRecordError.injectedFailure }
+                if consumeCut(.afterReceipt) { throw CustodyRecordError.injectedFailure }
                 #endif
             }
             try validateSource(deadline)
@@ -1898,13 +2150,13 @@ extension CustodyCatalogStore {
                       fsync(held.descriptor.value) == 0, fsync(store.receipts.descriptor.value) == 0 else {
                     throw CustodyRecordError.fenced
                 }
-                try current.validateReplacement(pending.control, receipts: chain + [pending.receipt.receipt])
+                try current.validateReplacement(pending.control, receipts: chain + [pending.receipt.receipt], profile: owner.validationProfile)
                 #if SHADOW_SYNC_TESTING
-                if cut == .beforeControl { cut = nil; throw CustodyRecordError.injectedFailure }
-                store.testingCut = controlFault; controlFault = nil
+                if consumeCut(.beforeControl) { throw CustodyRecordError.injectedFailure }
+                store.testingCut = takeControlFault()
                 #endif
                 guard !deadline.hasExpired else { throw CustodyRecordError.busy }
-                try store.write(InstallationControlRecord.filename, bytes: pending.control.encode(), expected: anchor)
+                try store.write(InstallationControlRecord.filename, bytes: pending.control.encode(profile: owner.validationProfile), expected: anchor)
                 let after = try store.installationSnapshot()
                 guard after.1 == pending.control else { throw CustodyRecordError.conflict }
                 try store.validateRetainedInstallationPreimages(capture); try store.validateBindings()
@@ -1920,13 +2172,13 @@ extension CustodyCatalogStore {
                 let next = InstallationControlRecord(revision: current.revision + 1, phase: .recovery,
                     state: current.state, transaction: current.transaction, step: current.step,
                     latestReceiptDigest: current.latestReceiptDigest, readinessCommit: current.readinessCommit, recoveryReason: reason)
-                try current.validateReplacement(next, receipts: chain)
+                try current.validateReplacement(next, receipts: chain, profile: owner.validationProfile)
                 return try store.locked {
                     try validateLocked(deadline)
                     #if SHADOW_SYNC_TESTING
-                    store.testingCut = controlFault; controlFault = nil
+                    store.testingCut = takeControlFault()
                     #endif
-                    try store.write(InstallationControlRecord.filename, bytes: next.encode(), expected: anchor)
+                    try store.write(InstallationControlRecord.filename, bytes: next.encode(profile: owner.validationProfile), expected: anchor)
                     let after = try store.installationSnapshot()
                     guard after.1 == next else { throw CustodyRecordError.conflict }
                     try store.validateRetainedInstallationPreimages(capture); try store.validateBindings()
@@ -1948,7 +2200,7 @@ extension CustodyCatalogStore {
     }
     private func validateInstallationCommand(_ binding: InstallationCommandBinding) throws {
         try binding.validate()
-        guard leases.mode == (binding.stagedMode ?? .lifecycleMutation) else { throw CustodyRecordError.fenced }
+        guard try leases.mode == (binding.stagedMode ?? .lifecycleMutation) else { throw CustodyRecordError.fenced }
         let value = try installationSnapshot()
         let receiptNames = try InstallationStagedAdmissionIntent.names(receipts.descriptor.value).filter {
             $0.hasPrefix(InstallationStepReceipt.prefix) || $0.hasPrefix(InstallationDocumentPreimage.prefix)
@@ -1991,7 +2243,7 @@ extension CustodyCatalogStore {
     final class InstallationStagedAdmissionIntent {
         fileprivate let owner: InstallationTransactionOwner
         fileprivate let slots: InstallationPreparedSlotObservation
-        private let root: OwnedFileDescriptor
+        fileprivate let root: OwnedFileDescriptor
         fileprivate let directory: Node
         fileprivate let receipts: Node
         fileprivate let guardFile: Node
@@ -2000,14 +2252,15 @@ extension CustodyCatalogStore {
         fileprivate let control: Evidence
         fileprivate let catalog: Evidence
         fileprivate let receiptFiles: [String: Evidence]
-        private let mutex = NSLock()
+        fileprivate let mutex = NSLock()
         private var continuationClaimed = false
+        fileprivate var terminalPinsClosing = false
         func continueJournal(admission: InstallationStagedAdmission, deadline: MonotonicDeadline) throws -> InstallationStagedJournal {
             try admission.validateOwner(owner, intent: self)
             do { try revalidate(for: owner, deadline: deadline) }
             catch { _ = try? admission.closeStarts(); throw error }
             guard mutex.try() else { throw CustodyRecordError.busy }
-            guard !continuationClaimed else { mutex.unlock(); throw CustodyRecordError.fenced }
+            guard !continuationClaimed, !terminalPinsClosing else { mutex.unlock(); throw CustodyRecordError.fenced }
             continuationClaimed = true
             mutex.unlock()
             // Claim is one-way; construction verifies publisher outside mutex.
@@ -2028,7 +2281,7 @@ extension CustodyCatalogStore {
                 return Evidence(node: node, bytes: file.bytes)
             }
             control = try pin(InstallationControlRecord.filename, parent: directory.descriptor.value, maximum: InstallationControlRecord.maximumBytes)
-            guard control.bytes == (try expected.encode()), expected.phase == .active,
+            guard control.bytes == (try expected.encode(profile: owner.validationProfile)), expected.phase == .active,
                   expected.step?.action == .openStagedAdmission, expected.step?.status == .intent,
                   expected.step?.ordinal == 12, expected.readinessCommit == nil else { throw CustodyRecordError.fenced }
             catalog = try pin("catalog.json", parent: directory.descriptor.value, maximum: CustodyCatalog.maximumBytes)
@@ -2086,12 +2339,13 @@ extension CustodyCatalogStore {
         func revalidate(for owner: InstallationTransactionOwner, deadline: MonotonicDeadline) throws {
             guard self.owner === owner, !deadline.hasExpired else { throw CustodyRecordError.fenced }
             guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !terminalPinsClosing else { mutex.unlock(); throw CustodyRecordError.fenced }
             let claimed = continuationClaimed; mutex.unlock()
             try owner.revalidate(); try slots.revalidate(for: owner, deadline: deadline)
             guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
             do {
             defer { mutex.unlock() }
-            guard continuationClaimed == claimed else { throw CustodyRecordError.fenced }
+            guard continuationClaimed == claimed, !terminalPinsClosing else { throw CustodyRecordError.fenced }
             try validate(directory, parent: root.value, name: "custody", isDirectory: true)
             try validate(guardFile, parent: directory.descriptor.value, name: "catalog.lock", isDirectory: false)
             guard flock(guardFile.descriptor.value, LOCK_EX | LOCK_NB) == 0 else { throw CustodyRecordError.busy }
@@ -2158,11 +2412,41 @@ extension CustodyCatalogStore {
         func commandHelper() throws -> CustodyHelperExecutable { try observation.commandHelper() }
     }
 
+    /// One retained committed recovery, subordinate to its unchanged installation
+    /// step. Only this journal factory supplies the original owner and stop family.
+    final class InstallationCommittedStop {
+        fileprivate let observation: InstallationStagedCommandObservation
+        fileprivate let stop: InstallationStagedStopAdmission
+        let deadline: MonotonicDeadline
+        fileprivate init(observation: InstallationStagedCommandObservation,
+                         stop: InstallationStagedStopAdmission, deadline: MonotonicDeadline) {
+            self.observation = observation; self.stop = stop; self.deadline = deadline
+        }
+        func commandPermit() throws -> InstallationCommandPermit {
+            try observation.session.committedStopPermit(self)
+        }
+        func retainLeases() throws -> CustodyAuthorityLeaseSet {
+            try observation.revalidate(deadline: deadline); return try stop.retainStopLeases()
+        }
+        func commandHelper() throws -> CustodyHelperExecutable { try observation.commandHelper() }
+    }
+    /// Actual bootout plus final fixed absence and registry retirement. This is
+    /// neither authenticated host drainage nor stopped-exclusive authority.
+    final class InstallationCommittedStopCompletion {
+        fileprivate let capability: InstallationCommittedStop
+        fileprivate let retirement: RetainedCleanupRegistry.StagedCommandCompletion
+        fileprivate init(_ capability: InstallationCommittedStop,
+                         _ retirement: RetainedCleanupRegistry.StagedCommandCompletion) {
+            self.capability = capability; self.retirement = retirement
+        }
+    }
+
     /// Continuation of the original detached intent. Only metadata descriptions
     /// are retained between calls; a temporary store borrows the SAME live staged
     /// owner's leases for each bounded write. No old exclusive aliases survive.
     final class InstallationStagedJournal: @unchecked Sendable {
         private let owner: InstallationTransactionOwner
+        fileprivate var retirementOwner: InstallationTransactionOwner { owner }
         private let admission: InstallationStagedAdmission
         private let intent: InstallationStagedAdmissionIntent
         private let slots: InstallationPreparedSlotObservation
@@ -2177,10 +2461,35 @@ extension CustodyCatalogStore {
         private var chain: [InstallationStepReceipt]
         private var stop: InstallationStagedStopAdmission?
         private var commandsClaimed = false
+        private var committedStopAttempted = false
+        private var committedStopFailed = false
+        private var committedStop: InstallationCommittedStop?
+        private var committedStopRetired = false
+        private var committedStopCompletion: InstallationCommittedStopCompletion?
         private weak var recovery: InstallationStagedRecovery?
         private var recoveryDiagnosticClaimed = false
         private var candidateReady: InstallationPrecommitSession.ReadyObservation?
         private var commitDeliveryReserved = false
+        /// Observations of this journal's own writes, never recovery authority.
+        /// A proposed commit is deliberately separate from verified fsync. A
+        /// poisoned atomic-write cut retains the proposal without adopting it.
+        struct CommitOutcome {
+            var proposed: InstallationControlRecord?
+            var durable: InstallationControlRecord?
+            var recovery: InstallationControlRecord?
+            var recoveryProposed: InstallationControlRecord?
+            var recoveryAttempted = false
+        }
+        private let commitOutcomeMutex = NSLock()
+        private var commitOutcome = CommitOutcome()
+        private var postcommitFenceAttempted = false
+        func readinessCommitOutcome() -> CommitOutcome {
+            commitOutcomeMutex.lock(); defer { commitOutcomeMutex.unlock() }; return commitOutcome
+        }
+        private func retainCommitOutcome(_ update: (inout CommitOutcome) -> Void) {
+            commitOutcomeMutex.lock(); defer { commitOutcomeMutex.unlock() }; update(&commitOutcome)
+        }
+
 
         /// Only this journal mints a delivery after its own fsynced commit is
         /// read back. The object is not constructible from a decoded record.
@@ -2201,6 +2510,1203 @@ extension CustodyCatalogStore {
                 try ready.deliver(self)
             }
         }
+        /// One original journal, one durable cleanup intent and one endpoint.
+        /// No decoded record or successful close can construct this authority.
+        final class CleanupPermit {
+            fileprivate let journal: InstallationStagedJournal
+            fileprivate let endpoint: InstallationReadinessEndpoint
+            fileprivate let owner: InstallationTransactionOwner
+            fileprivate let session: InstallationPrecommitSession
+            fileprivate let started: InstallationPrecommitSession.NormalStarted
+            fileprivate let control: InstallationControlRecord
+            fileprivate let generation: UInt64
+            let deadline: MonotonicDeadline
+            fileprivate init(journal: InstallationStagedJournal, endpoint: InstallationReadinessEndpoint,
+                session: InstallationPrecommitSession, started: InstallationPrecommitSession.NormalStarted) {
+                self.journal = journal; self.endpoint = endpoint; owner = journal.owner
+                self.session = session; self.started = started; control = journal.current
+                generation = journal.metadataGeneration; deadline = started.deadline
+            }
+            func matches(session: InstallationPrecommitSession,
+                         started: InstallationPrecommitSession.NormalStarted) -> Bool {
+                self.session === session && self.started === started
+            }
+            func validateNamedImage(_ image: InstallationSlotImage,
+                                    endpoint: InstallationReadinessEndpoint, owner: InstallationTransactionOwner) throws {
+                try validate(endpoint: endpoint, owner: owner)
+                guard image.node?.type == .socket,
+                      control.transaction?.slots.images[.installationSocket] == image else {
+                    throw CustodyRecordError.fenced
+                }
+            }
+            func validate(endpoint: InstallationReadinessEndpoint, owner: InstallationTransactionOwner,
+                          completion: Bool = false) throws {
+                guard self.endpoint === endpoint, self.owner === owner else { throw CustodyRecordError.fenced }
+                try journal.validateCleanupPermit(self, completion: completion)
+            }
+        }
+        enum CleanupProgress: String { case notAttempted, intent, joined, unlinked, durable, complete, pending }
+        private var cleanupAttempted = false
+        private var cleanupPermit: CleanupPermit?
+        private var cleanupProgress: CleanupProgress = .notAttempted
+        private var cleanupRetirement: InstallationReadinessEndpoint.CleanupPostimage?
+        func cleanupObservation() -> CleanupProgress {
+            mutex.lock(); defer { mutex.unlock() }; return cleanupProgress
+        }
+        private func setCleanupProgress(_ value: CleanupProgress) {
+            mutex.lock(); cleanupProgress = value; mutex.unlock()
+        }
+        private func validateCleanupPermit(_ permit: CleanupPermit, completion: Bool) throws {
+            guard !permit.deadline.hasExpired else { throw CustodyRecordError.busy }
+            try owner.validateReadinessOwner()
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard serializing, !failed, pending == nil, cleanupPermit === permit,
+                  cleanupAttempted, !commandsClaimed, stop == nil,
+                  current.phase == .committed, current.readinessCommit == permit.control.readinessCommit,
+                  current.transaction?.id == permit.control.transaction?.id,
+                  current.step?.action == .cleanupCoordination else { throw CustodyRecordError.fenced }
+            if completion {
+                guard current.step?.status == .complete, current.revision == permit.control.revision + 1,
+                      metadataGeneration == permit.generation + 1 else { throw CustodyRecordError.fenced }
+            } else {
+                guard current == permit.control, metadataGeneration == permit.generation + 1 else {
+                    throw CustodyRecordError.fenced
+                }
+            }
+        }
+        /// Successful committed-start path only. Every wait uses the actual
+        /// ready deadline, outside journal/catalog/owner/registry locks. The
+        /// completion family proves zero prior aliases and prevents new borrows
+        /// until this turn ends; it is not command retirement by itself.
+        func cleanupCoordination(after started: InstallationPrecommitSession.NormalStarted) throws -> InstallationControlRecord {
+            guard let session = started.session, !started.deadline.hasExpired else { throw CustodyRecordError.fenced }
+            try started.revalidatePeer()
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !failed, !cleanupAttempted, pending == nil, !commandsClaimed,
+                  current == started.control, current.phase == .committed,
+                  current.step?.action == .readinessCommit, current.step?.status == .complete,
+                  current.readinessCommit != nil else { mutex.unlock(); throw CustodyRecordError.fenced }
+            cleanupAttempted = true; mutex.unlock()
+            do {
+                let result = try performCleanup(started: started, session: session)
+                return result
+            } catch {
+                mutex.lock(); failed = true; cleanupProgress = .pending; mutex.unlock()
+                // Never replay unlink, receipt publication or the session. An
+                // uncertain write remains pending; only an exact durable chain
+                // can be restricted to recovery, preserving readinessCommit.
+                _ = try? fenceReadinessCommitFailure()
+                _ = try? admission.closeStarts()
+                throw error
+            }
+        }
+        private func performCleanup(started: InstallationPrecommitSession.NormalStarted,
+                                    session: InstallationPrecommitSession) throws -> InstallationControlRecord {
+            let deadline = started.deadline
+            try owner.validateStagedCommandAliasesRetired()
+            let leases = try owner.retainStagedCommandCompletionLeases(mode: .installationStagedStart)
+            let permit = try serialized(deadline: deadline, completionLeases: leases,
+                                        requiresOpenReadiness: true) { store in
+                try started.revalidatePeer()
+                try lockReadiness(deadline)
+                let endpoint = readinessSession === session ? readinessEndpoint : nil
+                readinessMutex.unlock()
+                guard let endpoint, current == started.control else { throw CustodyRecordError.fenced }
+                // Preserve exact native-created host nodes while authentication
+                // is still live. They remain validated after this stream closes.
+                try slots.prepareReadinessRetirement(started, for: owner, deadline: deadline)
+                _ = try publish(proposal(.cleanupCoordination, status: .intent), store: store, deadline: deadline)
+                try store.locked { try validateLocked(store, deadline) }
+                let permit = CleanupPermit(journal: self, endpoint: endpoint, session: session, started: started)
+                cleanupPermit = permit; setCleanupProgress(.intent)
+                return permit
+            }
+            #if SHADOW_SYNC_TESTING
+            try testingCleanupProbe?(permit)
+            #endif
+            // Close the service admission first. No serializing turn or catalog
+            // guard spans native authentication, queue join or checked closes.
+            try lockReadiness(deadline); readinessClosed = true; readinessMutex.unlock()
+            let joined = try session.retireForCleanup(permit, started: started)
+            setCleanupProgress(.joined)
+            let completed = try serialized(deadline: deadline, completionLeases: leases) { store in
+                try store.locked { try validateLocked(store, deadline) }
+                let postimage = try permit.endpoint.retireForCleanup(permit, joined: joined)
+                cleanupRetirement = postimage; setCleanupProgress(.unlinked)
+                try slots.acceptReadinessRetirement(postimage, permit: permit, for: owner, deadline: deadline)
+                let completed = try publish(proposal(.cleanupCoordination, status: .complete,
+                    postimage: slots.readinessSnapshot), store: store, deadline: deadline)
+                try store.locked { try validateLocked(store, deadline) }
+                setCleanupProgress(.durable)
+                try permit.endpoint.completeCleanup(permit, postimage: postimage)
+                setCleanupProgress(.complete)
+                return completed
+            }
+            mutex.lock(); cleanupPermit = nil; cleanupRetirement = nil; mutex.unlock()
+            return completed
+        }
+        #if SHADOW_SYNC_TESTING
+        var testingCleanupProbe: ((CleanupPermit) throws -> Void)?
+        var testingCleanupPermit: CleanupPermit? { cleanupPermit }
+        var testingOwner: InstallationTransactionOwner { owner }
+        var testingValidationProfile: InstallationValidationProfile { owner.validationProfile }
+        #endif
+
+        /// This capability exists only after this journal's actual committed
+        /// drain entered ordinary stopped-exclusive. It is never a start permit.
+        final class StoppedCleanupPermit {
+            fileprivate let journal: InstallationStagedJournal
+            fileprivate let exclusive: InstallationStoppedExclusive
+            fileprivate let drain: CandidateDrain
+            let deadline: MonotonicDeadline
+            fileprivate init(_ journal: InstallationStagedJournal, exclusive: InstallationStoppedExclusive,
+                             drain: CandidateDrain) {
+                self.journal = journal; self.exclusive = exclusive; self.drain = drain
+                deadline = drain.acknowledgment.deadline
+            }
+            func validate(owner: InstallationTransactionOwner, endpoint: InstallationReadinessEndpoint? = nil,
+                          action: InstallationAction = .cleanupCoordination, completion: Bool = false) throws {
+                guard journal.owner === owner, !deadline.hasExpired,
+                      journal.mutex.try() else { throw CustodyRecordError.fenced }
+                defer { journal.mutex.unlock() }
+                guard let repair = journal.stoppedRepair, repair.permit === self,
+                      journal.serializing, journal.failed, journal.pending == nil,
+                      journal.current.phase == .recovery, journal.current.readinessCommit == drain.pins.control.readinessCommit,
+                      journal.current.transaction?.id == drain.pins.control.transaction?.id,
+                      journal.current.step?.action == action,
+                      journal.current.step?.status == .intent || journal.current.step?.status == .complete,
+                      !completion || journal.current.step?.status == .complete,
+                      endpoint == nil || endpoint === journal.slots.retainedReadinessEndpoint else {
+                    throw CustodyRecordError.fenced
+                }
+            }
+            func validateOwner() throws { try exclusive.validateRetainedOwner(journal.owner); try journal.owner.revalidate() }
+            func validateDrain() throws {
+                try drain.delivery.validateCompleted(drain.acknowledgment)
+                try exclusive.validateRetainedOwner(journal.owner)
+            }
+            func matches(slots: InstallationPreparedSlotObservation) -> Bool { journal.slots === slots }
+        }
+        private final class StoppedRepair {
+            let exclusive: InstallationStoppedExclusive
+            let drain: CandidateDrain
+            let permit: StoppedCleanupPermit
+            var store: CustodyCatalogStore?
+            var retained: InstallationStagedJournal?
+            var running = false
+            var finalizing = false
+            var complete = false
+            init(_ journal: InstallationStagedJournal, exclusive: InstallationStoppedExclusive, drain: CandidateDrain) {
+                self.exclusive = exclusive; self.drain = drain
+                permit = StoppedCleanupPermit(journal, exclusive: exclusive, drain: drain)
+                retained = journal
+            }
+        }
+        private var stoppedRepair: StoppedRepair?
+        #if SHADOW_SYNC_TESTING
+        func testingStoppedRepairCut(_ cut: InstallationReadinessEndpoint.CleanupCut) throws {
+            guard let endpoint = slots.retainedReadinessEndpoint, stoppedRepair == nil else { throw CustodyRecordError.fenced }
+            endpoint.testingCleanupCut = cut
+        }
+        #endif
+        /// Original-invocation fresh repair only. A failed publication can be
+        /// continued only using this same retained store and known pending pin.
+        /// Poisoned atomic replacements, unknown images and uncertain closes
+        /// remain fenced, including when their names happen to look correct.
+        func repairStoppedFreshInstallation(_ exclusive: InstallationStoppedExclusive,
+            parents: InstallationParentPreparation, registry: RetainedCleanupRegistry) throws -> InstallationControlRecord {
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            let existing = stoppedRepair
+            let drain = candidateDrain
+            let initialControl = current, initialPending = pending != nil
+            let initialCleanup = cleanupProgress
+            guard !serializing, !stoppedPinsReading, completionParents === parents,
+                  failed, !commandsClaimed, terminalProgress == .notAttempted,
+                  current.transaction?.intent == .install, current.transaction?.priorCommitDigest == nil,
+                  current.phase == .recovery, current.readinessCommit != nil,
+                  let drain, drain.registry === registry, exclusive.permitsCommittedDrain(drain),
+                  existing == nil || (existing?.exclusive === exclusive && existing?.running == false
+                    && existing?.finalizing == false && existing?.complete == false) else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            mutex.unlock()
+            if existing == nil {
+                // Full immutable drain validation precedes any moving journal pin.
+                try exclusive.revalidate()
+                try validateCandidateDrain(drain)
+                guard initialControl == drain.pins.control, !initialPending,
+                      initialControl.step?.action == .readinessCommit, initialControl.step?.status == .complete,
+                      initialCleanup == .notAttempted else { throw CustodyRecordError.fenced }
+            }
+            try exclusive.validateRetainedOwner(owner)
+            try owner.revalidate(); try parents.revalidate()
+            try drain.delivery.validateCompleted(drain.acknowledgment)
+            try drain.retirement.revalidate(for: owner, registry: registry)
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !stoppedPinsReading, stoppedRepair === existing, current == initialControl,
+                  metadataGeneration < UInt64.max, !drain.acknowledgment.deadline.hasExpired else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            let repair = existing ?? StoppedRepair(self, exclusive: exclusive, drain: drain)
+            stoppedRepair = repair; repair.running = true; serializing = true; metadataGeneration += 1
+            mutex.unlock()
+            let deadline = repair.permit.deadline
+            do {
+                let store: CustodyCatalogStore
+                if let original = repair.store { store = original }
+                else { store = CustodyCatalogStore(stoppedRoot: intent.root, binding: current.state,
+                    directory: directory, guardFile: guardFile, receipts: receipts,
+                    validationProfile: owner.validationProfile); repair.store = store }
+                // Only an actually retained receipt pin with unchanged old control
+                // may finish the receipt->control edge. Store poison refuses first.
+                if let proposed = pending {
+                    try store.locked {
+                        try validateLocked(store, deadline)
+                        guard let pin = receiptPins[proposed.receipt.filename],
+                              pin.bytes == (try proposed.receipt.receipt.encode(uid: proposed.receipt.uid)),
+                              fsync(pin.node.descriptor.value) == 0, fsync(receipts.descriptor.value) == 0 else {
+                            throw CustodyRecordError.fenced
+                        }
+                    }
+                    try validateSource(deadline)
+                    try store.locked {
+                        try validateLocked(store, deadline)
+                        try current.validateReplacement(proposed.control, receipts: chain + [proposed.receipt.receipt], profile: owner.validationProfile)
+                        try replaceControl(proposed.control, store: store, deadline: deadline)
+                        chain.append(proposed.receipt.receipt); pending = nil
+                    }
+                }
+                for action in [InstallationAction.cleanupCoordination, .cleanupBackups, .cleanupIncoming, .finish] {
+                    guard let step = current.step else { throw CustodyRecordError.fenced }
+                    let suffix: [InstallationAction] = [.readinessCommit, .cleanupCoordination, .cleanupBackups, .cleanupIncoming, .finish]
+                    guard let index = suffix.firstIndex(of: step.action), let target = suffix.firstIndex(of: action) else {
+                        throw CustodyRecordError.fenced
+                    }
+                    if index > target { continue }
+                    if index == target && step.status == .complete {
+                        if action == .cleanupCoordination { try slots.finishStoppedCoordination(repair.permit) }
+                        continue
+                    }
+                    try repair.permit.validateOwner(); try parents.revalidate()
+                    try store.locked { try validateLocked(store, deadline) }
+                    if index < target {
+                        guard index + 1 == target, step.status == .complete else { throw CustodyRecordError.fenced }
+                        _ = try publish(proposal(action, status: .intent), store: store, deadline: deadline)
+                    }
+                    let after: InstallationSlotSnapshot
+                    if action == .cleanupCoordination {
+                        after = try slots.cleanupStoppedCoordination(repair.permit)
+                    } else {
+                        after = try slots.completeStoppedFreshCleanup(repair.permit, action: action)
+                    }
+                    _ = try publish(proposal(action, status: .complete, postimage: after), store: store, deadline: deadline)
+                    try store.locked { try validateLocked(store, deadline) }
+                    if action == .cleanupCoordination { try slots.finishStoppedCoordination(repair.permit) }
+                }
+                // Endpoint and host nodes are causally absent, with checked owned
+                // observations retired. No host/start permission is reconstructed.
+                try slots.revalidateStoppedRepair(repair.permit, for: owner, deadline: deadline)
+                try repair.permit.validateOwner(); try parents.revalidate()
+                // Registry callbacks acquire their own short journal read turn.
+                // No journal mutex/reservation spans that validation interval.
+                let finishedRecovery = current, generation = metadataGeneration
+                mutex.lock(); serializing = false; mutex.unlock()
+                try drain.retirement.revalidate(for: owner, registry: registry)
+                guard mutex.try() else { throw CustodyRecordError.busy }
+                guard !serializing, !stoppedPinsReading, stoppedRepair === repair, repair.running,
+                      current == finishedRecovery, metadataGeneration == generation else {
+                    mutex.unlock(); throw CustodyRecordError.fenced
+                }
+                serializing = true; mutex.unlock()
+                guard current.step?.action == .finish, current.step?.status == .complete,
+                      current.phase == .recovery, current.revision < UInt64.max else { throw CustodyRecordError.fenced }
+                let committed = InstallationControlRecord(revision: current.revision + 1, phase: .committed,
+                    state: current.state, transaction: current.transaction, step: current.step,
+                    latestReceiptDigest: current.latestReceiptDigest, readinessCommit: current.readinessCommit, recoveryReason: nil)
+                try current.validateReplacement(committed, receipts: chain, profile: owner.validationProfile)
+                try store.locked { try validateLocked(store, deadline); try replaceControl(committed, store: store, deadline: deadline) }
+                try validateSource(deadline)
+                // No further journal turn is allowed after durable finish. This
+                // borrowed view owns no descriptions or completion lease to close.
+                repair.store = nil; repair.finalizing = true
+                cleanupProgress = .complete
+                let permit = FinishPermit(self, deadline: deadline)
+                terminalPermit = permit; terminalParents = parents; terminalRetainedSelf = self
+                terminalProgress = .durable
+                mutex.lock(); serializing = false; mutex.unlock()
+                try permit.validateOwner(owner)
+                setTerminalProgress(.retiring)
+                try slots.retireAfterStoppedFinish(permit)
+                try parents.retireAfterFinish(permit, owner: owner)
+                try retireFinishedMetadata(permit)
+                mutex.lock(); terminalResourcesRetired = true; mutex.unlock()
+                try owner.finishInstallation(permit)
+                setTerminalProgress(.complete)
+                mutex.lock(); repair.complete = true; repair.running = false; repair.retained = nil
+                terminalPermit = nil; terminalParents = nil; terminalRetainedSelf = nil; mutex.unlock()
+                return permit.control
+            } catch {
+                // Preserve failed and every original stage/pin. Final-close
+                // uncertainty cannot be retried or reported as held kernel EX.
+                mutex.lock(); serializing = false; repair.running = false
+                if repair.finalizing { terminalProgress = .pending }
+                mutex.unlock()
+                throw error
+            }
+        }
+
+        /// This capability exists only after this journal's actual readiness-only
+        /// drain entered ordinary stopped-exclusive. It is never a start permit.
+        final class ReadinessRestorationPermit {
+            fileprivate let journal: InstallationStagedJournal
+            fileprivate let exclusive: InstallationStoppedExclusive
+            fileprivate let drain: ReadinessCandidateDrain
+            let deadline: MonotonicDeadline
+            fileprivate init(_ journal: InstallationStagedJournal, exclusive: InstallationStoppedExclusive,
+                             drain: ReadinessCandidateDrain) {
+                self.journal = journal; self.exclusive = exclusive; self.drain = drain
+                deadline = drain.acknowledgment.deadline
+            }
+            func validate(owner: InstallationTransactionOwner, endpoint: InstallationReadinessEndpoint? = nil,
+                          action: InstallationAction = .cleanupCoordination, completion: Bool = false) throws {
+                guard journal.owner === owner, !deadline.hasExpired,
+                      journal.mutex.try() else { throw CustodyRecordError.fenced }
+                defer { journal.mutex.unlock() }
+                guard let repair = journal.readinessRestoration, repair.permit === self,
+                      journal.serializing, journal.failed, journal.pending == nil,
+                      journal.current.phase == .recovery, journal.current.readinessCommit == drain.pins.control.readinessCommit,
+                      journal.current.transaction?.id == drain.pins.control.transaction?.id,
+                      journal.current.step?.action == action,
+                      journal.current.step?.status == .intent || journal.current.step?.status == .complete,
+                      !completion || journal.current.step?.status == .complete,
+                      endpoint == nil || endpoint === journal.slots.retainedReadinessEndpoint else {
+                    throw CustodyRecordError.fenced
+                }
+            }
+            func validateOwner() throws { try exclusive.validateRetainedOwner(journal.owner); try journal.owner.revalidate() }
+            func validateDrain() throws {
+                try drain.delivery.validateCompleted(drain.acknowledgment)
+                try exclusive.validateRetainedOwner(journal.owner)
+            }
+            func matches(slots: InstallationPreparedSlotObservation) -> Bool { journal.slots === slots }
+            /// A fresh live check for ONE destructive boundary. It grants no
+            /// reusable token: the caller immediately performs its held/named
+            /// child check and syscall within the existing serial action.
+            func validateMutation(owner: InstallationTransactionOwner, action: InstallationAction) throws {
+                guard journal.owner === owner else { throw CustodyRecordError.fenced }
+                try journal.validateFreshRestorationMutation(self, action: action)
+            }
+        }
+        /// Metadata is reconciled under its original nonblocking guard. The
+        /// source verifier, registry callbacks and retained owner checks run
+        /// with neither journal nor catalog mutex held. The running restoration
+        /// continues to exclude another writer while registry archive readers
+        /// take their existing short read turns. No deadline or pin is renewed.
+        private func validateFreshRestorationMutation(_ permit: ReadinessRestorationPermit,
+            action: InstallationAction) throws {
+            guard [.restoreApplication, .restorePlist].contains(action),
+                  !permit.deadline.hasExpired, mutex.try() else { throw CustodyRecordError.fenced }
+            guard let repair = readinessRestoration, repair.permit === permit,
+                  repair.running, !repair.finalizing, !repair.complete,
+                  serializing, !stoppedPinsReading, failed, pending == nil, !commandsClaimed,
+                  terminalProgress == .notAttempted, stoppedRepair == nil,
+                  readinessDrain === repair.drain, readinessStopCompletion === repair.drain.command,
+                  continuationRecovery === repair.drain.delivery,
+                  current.phase == .recovery, current.readinessCommit == nil,
+                  current.transaction?.intent == .install, current.transaction?.priorCommitDigest == nil,
+                  current.step?.action == action, current.step?.status == .intent,
+                  let store = repair.store, let parents = completionParents else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            let pins = stoppedPins()
+            mutex.unlock()
+            // Keep the serial reservation while the borrowed store uses the
+            // shared guard description. This excludes stopped-pin readers;
+            // flock on one open description would not exclude a second reader.
+            try store.locked { try validateLocked(store, permit.deadline) }
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard serializing, !stoppedPinsReading, readinessRestoration === repair,
+                  repair.running, current == pins.control, metadataGeneration == pins.generation,
+                  pending == nil, failed, !permit.deadline.hasExpired else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            serializing = false
+            mutex.unlock()
+            // Every thrown check leaves this invocation fenced. The caller's
+            // existing catch clears running; it cannot publish a complete image.
+            try validateStoppedPins(pins, deadline: permit.deadline)
+            try permit.validateOwner()
+            try repair.drain.delivery.validateCompleted(repair.drain.acknowledgment)
+            try repair.drain.retirement.revalidate(for: owner, registry: repair.drain.registry)
+            try parents.revalidate()
+            try slots.revalidateFreshRestoration(permit, for: owner, deadline: permit.deadline)
+            // Reconcile the SAME retained pins after outside verification. The
+            // partial installed app is checked only by its retained manifest;
+            // independently bound source bytes still require normal verification.
+            try validateStoppedPins(pins, deadline: permit.deadline)
+            try permit.validateOwner()
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            defer { mutex.unlock() }
+            guard !serializing, !stoppedPinsReading, failed, pending == nil, !commandsClaimed,
+                  readinessRestoration === repair, repair.permit === permit, repair.running,
+                  !repair.finalizing, !repair.complete, repair.store === store,
+                  completionParents === parents, readinessDrain === repair.drain,
+                  readinessStopCompletion === repair.drain.command, continuationRecovery === repair.drain.delivery,
+                  terminalProgress == .notAttempted, current == pins.control,
+                  metadataGeneration == pins.generation, !permit.deadline.hasExpired,
+                  controlPin.descriptor === pins.controlPin.node.descriptor,
+                  controlPin.identity == pins.controlPin.node.identity, controlPin.acl == pins.controlPin.node.acl,
+                  anchor.identity == pins.controlPin.node.identity, anchor.acl == pins.controlPin.node.acl,
+                  anchor.bytes == pins.controlPin.bytes, chain == pins.chain,
+                  catalogPin.node.descriptor === pins.catalog.node.descriptor,
+                  catalogPin.node.identity == pins.catalog.node.identity, catalogPin.node.acl == pins.catalog.node.acl,
+                  catalogPin.bytes == pins.catalog.bytes,
+                  Set(receiptPins.keys) == Set(pins.receipts.keys),
+                  receiptPins.allSatisfy({ name, pin in
+                    guard let retained = pins.receipts[name] else { return false }
+                    return pin.node.descriptor === retained.node.descriptor && pin.node.identity == retained.node.identity
+                        && pin.node.acl == retained.node.acl && pin.bytes == retained.bytes
+                  }) else { throw CustodyRecordError.fenced }
+            serializing = true
+        }
+        private final class ReadinessRestoration {
+            let exclusive: InstallationStoppedExclusive
+            let drain: ReadinessCandidateDrain
+            let permit: ReadinessRestorationPermit
+            var store: CustodyCatalogStore?
+            var retained: InstallationStagedJournal?
+            var running = false
+            var finalizing = false
+            var complete = false
+            init(_ journal: InstallationStagedJournal, exclusive: InstallationStoppedExclusive, drain: ReadinessCandidateDrain) {
+                self.exclusive = exclusive; self.drain = drain
+                permit = ReadinessRestorationPermit(journal, exclusive: exclusive, drain: drain)
+                retained = journal
+            }
+        }
+        private var readinessRestoration: ReadinessRestoration?
+        #if SHADOW_SYNC_TESTING
+        var testingFreshRestorationReachedCut: InstallationFreshRestorationCut? { slots.testingRestorationReachedCut }
+        func testingFreshRestorationCut(_ cut: InstallationFreshRestorationCut) throws {
+            guard readinessRestoration == nil, stoppedRepair == nil else { throw CustodyRecordError.fenced }
+            slots.testingRestorationCut = cut
+        }
+        var testingFreshRestorationUnlinks: Int { slots.testingRestorationUnlinks }
+        var testingFreshRestorationResources: InstallationFreshRestorationResourceObservation? { slots.testingRestorationResourceObservation }
+        var testingFreshRestorationRegistry: RetainedCleanupRegistry? { readinessDrain?.registry }
+        func testingFreshRestorationMutationBarrier(_ barrier: @escaping (Int, String) throws -> Void) throws {
+            guard readinessRestoration == nil, stoppedRepair == nil, readinessDrain != nil else { throw CustodyRecordError.fenced }
+            slots.testingRestorationMutationBarrier = barrier
+        }
+        func testingFreshRestorationResourceFault(_ fault: InstallationFreshRestorationResourceFault) throws {
+            guard readinessRestoration == nil, stoppedRepair == nil, readinessDrain != nil else { throw CustodyRecordError.fenced }
+            slots.testingRestorationResourceFault = fault
+        }
+        func testingFreshRestorationProbe(_ probe: @escaping (InstallationAction) throws -> Void) throws {
+            guard readinessRestoration == nil, stoppedRepair == nil else { throw CustodyRecordError.fenced }
+            slots.testingRestorationProbe = probe
+        }
+        func testingReadinessRestorationCut(_ cut: InstallationReadinessEndpoint.CleanupCut) throws {
+            guard let endpoint = slots.retainedReadinessEndpoint, readinessRestoration == nil else { throw CustodyRecordError.fenced }
+            endpoint.testingCleanupCut = cut
+        }
+        #endif
+        /// Original-invocation fresh stopped restoration only. A failed publication can be
+        /// continued only using this same retained store and known pending pin.
+        /// Poisoned atomic replacements, unknown images and uncertain closes
+        /// remain fenced, including when their names happen to look correct.
+        func restoreStoppedFreshInstallation(_ exclusive: InstallationStoppedExclusive,
+            parents: InstallationParentPreparation, registry: RetainedCleanupRegistry) throws -> InstallationControlRecord {
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            let existing = readinessRestoration
+            let drain = readinessDrain
+            let initialControl = current, initialPending = pending != nil
+            let initialCleanup = cleanupProgress
+            guard !serializing, !stoppedPinsReading, completionParents === parents,
+                  failed, !commandsClaimed, terminalProgress == .notAttempted,
+                  current.transaction?.intent == .install, current.transaction?.priorCommitDigest == nil,
+                  current.phase == .recovery, current.readinessCommit == nil,
+                  let drain, drain.registry === registry, exclusive.permitsReadinessDrain(drain),
+                  existing == nil || (existing?.exclusive === exclusive && existing?.running == false
+                    && existing?.finalizing == false && existing?.complete == false) else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            mutex.unlock()
+            if existing == nil {
+                // Full immutable drain validation precedes any moving journal pin.
+                try exclusive.revalidate()
+                try validateReadinessCandidateDrain(drain)
+                try slots.requireFreshRestorationPreimages()
+                guard initialControl == drain.pins.control, !initialPending,
+                      initialControl.step?.action == .candidateStop, initialControl.step?.status == .complete,
+                      initialCleanup == .notAttempted else { throw CustodyRecordError.fenced }
+            }
+            try exclusive.validateRetainedOwner(owner)
+            try owner.revalidate(); try parents.revalidate()
+            try drain.delivery.validateCompleted(drain.acknowledgment)
+            try drain.retirement.revalidate(for: owner, registry: registry)
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !stoppedPinsReading, readinessRestoration === existing, current == initialControl,
+                  metadataGeneration < UInt64.max, !drain.acknowledgment.deadline.hasExpired else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            let repair = existing ?? ReadinessRestoration(self, exclusive: exclusive, drain: drain)
+            readinessRestoration = repair; repair.running = true; serializing = true; metadataGeneration += 1
+            mutex.unlock()
+            let deadline = repair.permit.deadline
+            do {
+                let store: CustodyCatalogStore
+                if let original = repair.store { store = original }
+                else { store = CustodyCatalogStore(stoppedRoot: intent.root, binding: current.state,
+                    directory: directory, guardFile: guardFile, receipts: receipts,
+                    validationProfile: owner.validationProfile); repair.store = store }
+                // Only an actually retained receipt pin with unchanged old control
+                // may finish the receipt->control edge. Store poison refuses first.
+                if let proposed = pending {
+                    try store.locked {
+                        try validateLocked(store, deadline)
+                        guard let pin = receiptPins[proposed.receipt.filename],
+                              pin.bytes == (try proposed.receipt.receipt.encode(uid: proposed.receipt.uid)),
+                              fsync(pin.node.descriptor.value) == 0, fsync(receipts.descriptor.value) == 0 else {
+                            throw CustodyRecordError.fenced
+                        }
+                    }
+                    try validateSource(deadline)
+                    try store.locked {
+                        try validateLocked(store, deadline)
+                        try current.validateReplacement(proposed.control, receipts: chain + [proposed.receipt.receipt], profile: owner.validationProfile)
+                        try replaceControl(proposed.control, store: store, deadline: deadline)
+                        chain.append(proposed.receipt.receipt); pending = nil
+                    }
+                }
+                for action in [InstallationAction.cleanupCoordination, .moveStateBack, .restoreApplication, .restorePlist, .restoreCoordination, .cleanupIncoming, .finish] {
+                    guard let step = current.step else { throw CustodyRecordError.fenced }
+                    let suffix: [InstallationAction] = [.candidateStop, .cleanupCoordination, .moveStateBack, .restoreApplication, .restorePlist, .restoreCoordination, .cleanupIncoming, .finish]
+                    guard let index = suffix.firstIndex(of: step.action), let target = suffix.firstIndex(of: action) else {
+                        throw CustodyRecordError.fenced
+                    }
+                    if index > target { continue }
+                    if index == target && step.status == .complete {
+                        if action == .cleanupCoordination { try slots.finishReadinessCoordination(repair.permit) }
+                        continue
+                    }
+                    try repair.permit.validateOwner(); try parents.revalidate()
+                    try store.locked { try validateLocked(store, deadline) }
+                    if index < target {
+                        guard index + 1 == target, step.status == .complete else { throw CustodyRecordError.fenced }
+                        _ = try publish(proposal(action, status: .intent), store: store, deadline: deadline)
+                    }
+                    let after: InstallationSlotSnapshot
+                    if action == .cleanupCoordination {
+                        after = try slots.cleanupReadinessCoordination(repair.permit)
+                    } else {
+                        after = try slots.completeFreshRestoration(repair.permit, action: action)
+                    }
+                    _ = try publish(proposal(action, status: .complete, postimage: after), store: store, deadline: deadline)
+                    try store.locked { try validateLocked(store, deadline) }
+                    if action == .cleanupCoordination { try slots.finishReadinessCoordination(repair.permit) }
+                }
+                // Endpoint and host nodes are causally absent, with checked owned
+                // observations retired. No host/start permission is reconstructed.
+                try slots.revalidateFreshRestoration(repair.permit, for: owner, deadline: deadline)
+                try repair.permit.validateOwner(); try parents.revalidate()
+                // Registry callbacks acquire their own short journal read turn.
+                // No journal mutex/reservation spans that validation interval.
+                let finishedRecovery = current, generation = metadataGeneration
+                mutex.lock(); serializing = false; mutex.unlock()
+                try drain.retirement.revalidate(for: owner, registry: registry)
+                guard mutex.try() else { throw CustodyRecordError.busy }
+                guard !serializing, !stoppedPinsReading, readinessRestoration === repair, repair.running,
+                      current == finishedRecovery, metadataGeneration == generation else {
+                    mutex.unlock(); throw CustodyRecordError.fenced
+                }
+                serializing = true; mutex.unlock()
+                guard current.step?.action == .finish, current.step?.status == .complete,
+                      current.phase == .recovery, current.revision < UInt64.max else { throw CustodyRecordError.fenced }
+                let committed = InstallationControlRecord(revision: current.revision + 1, phase: .recovery,
+                    state: current.state, transaction: current.transaction, step: current.step,
+                    latestReceiptDigest: current.latestReceiptDigest, readinessCommit: nil, recoveryReason: .restoredStopped)
+                try current.validateReplacement(committed, receipts: chain, profile: owner.validationProfile)
+                try store.locked { try validateLocked(store, deadline); try replaceControl(committed, store: store, deadline: deadline) }
+                try validateSource(deadline)
+                // No further journal turn is allowed after durable finish. This
+                // borrowed view owns no descriptions or completion lease to close.
+                repair.store = nil; repair.finalizing = true
+                cleanupProgress = .complete
+                let permit = FinishPermit(self, deadline: deadline)
+                terminalPermit = permit; terminalParents = parents; terminalRetainedSelf = self
+                terminalProgress = .durable
+                mutex.lock(); serializing = false; mutex.unlock()
+                try permit.validateOwner(owner)
+                setTerminalProgress(.retiring)
+                try slots.retireAfterRestoredFinish(permit)
+                try parents.retireAfterFinish(permit, owner: owner)
+                try retireFinishedMetadata(permit)
+                mutex.lock(); terminalResourcesRetired = true; mutex.unlock()
+                try owner.finishInstallation(permit)
+                setTerminalProgress(.complete)
+                mutex.lock(); repair.complete = true; repair.running = false; repair.retained = nil
+                terminalPermit = nil; terminalParents = nil; terminalRetainedSelf = nil; mutex.unlock()
+                return permit.control
+            } catch {
+                // Preserve failed and every original stage/pin. Final-close
+                // uncertainty cannot be retried or reported as held kernel EX.
+                mutex.lock(); serializing = false; repair.running = false
+                if repair.finalizing { terminalProgress = .pending }
+                mutex.unlock()
+                throw error
+            }
+        }
+
+        /// A closed action permit for the original fresh install only. Neither
+        /// a decoded finish nor a cleanup observation can construct one.
+        final class FreshCleanupPermit {
+            fileprivate let journal: InstallationStagedJournal
+            let action: InstallationAction
+            let deadline: MonotonicDeadline
+            fileprivate let control: InstallationControlRecord
+            fileprivate init(_ journal: InstallationStagedJournal, action: InstallationAction,
+                             deadline: MonotonicDeadline) {
+                self.journal = journal; self.action = action; self.deadline = deadline; control = journal.current
+            }
+            #if SHADOW_SYNC_TESTING
+            func testingFail(_ point: TestingTerminalCut) throws { try journal.testingTerminalFail(point) }
+            #endif
+            func validate(slots: InstallationPreparedSlotObservation, owner: InstallationTransactionOwner) throws {
+                guard journal.slots === slots, journal.owner === owner, !deadline.hasExpired,
+                      journal.mutex.try() else { throw CustodyRecordError.fenced }
+                defer { journal.mutex.unlock() }
+                guard journal.serializing, !journal.failed, journal.pending == nil,
+                      journal.terminalProgress == .running, journal.current == control,
+                      control.transaction?.intent == .install, control.transaction?.priorCommitDigest == nil,
+                      control.phase == .committed, control.readinessCommit != nil,
+                      control.step?.action == action, control.step?.status == .intent,
+                      [.cleanupBackups, .cleanupIncoming, .finish].contains(action) else {
+                    throw CustodyRecordError.fenced
+                }
+            }
+        }
+        final class FinishPermit {
+            fileprivate let journal: InstallationStagedJournal
+            let deadline: MonotonicDeadline
+            let control: InstallationControlRecord
+            let isStoppedRepair: Bool
+            let isRestoredStopped: Bool
+            var requiresStoppedExclusive: Bool { isStoppedRepair || isRestoredStopped }
+            private let lock = NSLock()
+            private var consumed = false
+            fileprivate init(_ journal: InstallationStagedJournal, deadline: MonotonicDeadline) {
+                self.journal = journal; self.deadline = deadline; control = journal.current
+                isStoppedRepair = journal.stoppedRepair != nil
+                isRestoredStopped = journal.readinessRestoration != nil
+            }
+            func validateOwner(_ owner: InstallationTransactionOwner) throws {
+                guard journal.owner === owner else { throw CustodyRecordError.fenced }
+                try journal.validateFinish(self)
+            }
+            func validateSlots(_ slots: InstallationPreparedSlotObservation) throws {
+                guard journal.slots === slots else { throw CustodyRecordError.fenced }
+                try journal.validateFinish(self)
+            }
+            enum Resource: String { case temporaryStore, stagedSlots, stagedParents, bootstrapParents, metadata, admission, state, operation }
+            func retire(_ descriptor: OwnedFileDescriptor, resource: Resource) throws {
+                guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+                #if SHADOW_SYNC_TESTING
+                if journal.testingTerminalUncertainClose == resource,
+                   descriptor.retirementObservation == .notAttempted {
+                    journal.testingTerminalUncertainClose = nil
+                    descriptor.testingClose = { raw in
+                        guard Darwin.close(raw) == 0 else { return errno }
+                        return EIO
+                    }
+                }
+                #endif
+                guard descriptor.retireChecked() == .succeeded else { throw CustodyRecordError.fenced }
+                #if SHADOW_SYNC_TESTING
+                if journal.testingTerminalDeadlineAfterSuccessfulClose == resource {
+                    journal.testingTerminalDeadlineAfterSuccessfulClose = nil
+                    // The real close has succeeded. Let this same original clock
+                    // expire; never replace its budget or simulate close failure.
+                    while !deadline.hasExpired {
+                        Thread.sleep(forTimeInterval: min(0.001, Double(deadline.remainingMilliseconds) / 1_000))
+                    }
+                }
+                #endif
+                guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            }
+            func consumeForOriginalRelease() throws {
+                try journal.validateFinish(self, retired: true)
+                guard lock.try() else { throw CustodyRecordError.busy }; defer { lock.unlock() }
+                guard !consumed else { throw CustodyRecordError.fenced }; consumed = true
+            }
+        }
+        enum TerminalProgress: String { case notAttempted, running, durable, retiring, complete, pending }
+        private var terminalProgress: TerminalProgress = .notAttempted
+        private var terminalPermit: FinishPermit?
+        private var terminalStore: CustodyCatalogStore?
+        private var terminalParents: InstallationParentPreparation?
+        private var completionParents: InstallationParentPreparation?
+        func bindCompletionParents(_ parents: InstallationParentPreparation) throws {
+            try slots.validateCompletionParents(parents)
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard !serializing, !failed, completionParents == nil,
+                  current.step?.action == .openStagedAdmission, current.step?.status == .intent else {
+                throw CustodyRecordError.fenced
+            }
+            completionParents = parents
+        }
+        private var terminalRetainedSelf: InstallationStagedJournal?
+        private var terminalResourcesRetired = false
+        func terminalObservation() -> TerminalProgress {
+            mutex.lock(); defer { mutex.unlock() }; return terminalProgress
+        }
+        private func setTerminalProgress(_ progress: TerminalProgress) {
+            mutex.lock(); terminalProgress = progress; mutex.unlock()
+        }
+        private func validateFinish(_ permit: FinishPermit, retired: Bool = false) throws {
+            guard !permit.deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
+            defer { mutex.unlock() }
+            guard terminalPermit === permit, !serializing, (!failed || permit.isStoppedRepair || permit.isRestoredStopped), pending == nil,
+                  current == permit.control,
+                  permit.isRestoredStopped
+                    ? (current.phase == .recovery && current.readinessCommit == nil && current.recoveryReason == .restoredStopped)
+                    : (current.phase == .committed && current.readinessCommit != nil),
+                  current.step?.action == .finish, current.step?.status == .complete,
+                  cleanupProgress == .complete, terminalProgress == .durable || terminalProgress == .retiring,
+                  !retired || terminalResourcesRetired else { throw CustodyRecordError.fenced }
+        }
+        /// Finite successful fresh-install continuation. The original caller's
+        /// parents and registry are retained by Bootstrap, not reconstructed from
+        /// disk. Signed repair/migration/rollback are separate, unenrolled paths.
+        func finishFreshInstallation(parents: InstallationParentPreparation,
+                                     registry: RetainedCleanupRegistry) throws -> InstallationControlRecord {
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !failed, pending == nil, !commandsClaimed, stop == nil,
+                  terminalProgress == .notAttempted, completionParents === parents, cleanupProgress == .complete,
+                  cleanupPermit == nil, cleanupRetirement == nil,
+                  current.phase == .committed, current.readinessCommit != nil,
+                  current.step?.action == .cleanupCoordination, current.step?.status == .complete,
+                  current.transaction?.intent == .install, current.transaction?.priorCommitDigest == nil,
+                  let ready = candidateReady, !ready.deadline.hasExpired else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            terminalProgress = .running; terminalRetainedSelf = self; terminalParents = parents; mutex.unlock()
+            do {
+                try parents.revalidate()
+                let permit = try publishFreshFinish(deadline: ready.deadline)
+                // The helper has returned: no stack-held store/lease escapes.
+                // Retire the exact retained temporary store before closing starts.
+                #if SHADOW_SYNC_TESTING
+                try testingTerminalFail(.beforeRetirement)
+                #endif
+                try retireTerminalStore()
+                try owner.validateStagedCommandAliasesRetired()
+                let closed = try admission.closeStarts()
+                let retired = try registry.installationStagedStartRetirement(after: closed)
+                try retired.revalidate(for: owner)
+                try permit.validateOwner(owner)
+                setTerminalProgress(.retiring)
+                try slots.retireAfterFinish(permit)
+                try parents.retireAfterFinish(permit, owner: owner)
+                try retireFinishedMetadata(permit)
+                try retired.revalidate(for: owner)
+                mutex.lock(); terminalResourcesRetired = true; mutex.unlock()
+                try owner.finishInstallation(permit)
+                setTerminalProgress(.complete)
+                mutex.lock(); terminalPermit = nil; terminalParents = nil; terminalRetainedSelf = nil; mutex.unlock()
+                return permit.control
+            } catch {
+                // Restrict only exact known durable evidence while its actual
+                // pins/leases remain available. After retirement starts, no
+                // reopened descriptor or decoded observation can repair a cut.
+                _ = try? fenceReadinessCommitFailure()
+                _ = try? admission.closeStarts()
+                mutex.lock(); failed = true; terminalProgress = .pending; mutex.unlock()
+                throw error
+            }
+        }
+        private func publishFreshFinish(deadline: MonotonicDeadline) throws -> FinishPermit {
+            try owner.validateStagedCommandAliasesRetired()
+            let leases = try owner.retainStagedCommandCompletionLeases(mode: .installationStagedStart)
+            let result = try serialized(deadline: deadline, completionLeases: leases, terminal: true) { store in
+                // Keep the real store and completion family across every action
+                // and publication fault, including post-return validation cuts.
+                terminalStore = store
+                for action in [InstallationAction.cleanupBackups, .cleanupIncoming, .finish] {
+                    _ = try publish(proposal(action, status: .intent), store: store, deadline: deadline)
+                    let permit = FreshCleanupPermit(self, action: action, deadline: deadline)
+                    let after = try slots.completeFreshCleanup(permit)
+                    _ = try publish(proposal(action, status: .complete, postimage: after), store: store, deadline: deadline)
+                    try store.locked { try validateLocked(store, deadline) }
+                }
+                let permit = FinishPermit(self, deadline: deadline)
+                terminalPermit = permit
+                return permit
+            }
+            setTerminalProgress(.durable)
+            return result
+        }
+        private func retireTerminalStore() throws {
+            guard let permit = terminalPermit, let store = terminalStore else { throw CustodyRecordError.fenced }
+            try permit.validateOwner(owner)
+            // This store owns independent observation descriptions only. Its
+            // completion lease is dropped after checked closure, never unlocked.
+            for descriptor in [store.receipts.descriptor, store.guardFile.descriptor,
+                               store.directory.descriptor, store.root] {
+                try permit.retire(descriptor, resource: .temporaryStore)
+            }
+            terminalStore = nil
+        }
+        private func retireFinishedMetadata(_ permit: FinishPermit) throws {
+            try permit.validateOwner(owner)
+            guard intent.mutex.try() else { throw CustodyRecordError.busy }
+            defer { intent.mutex.unlock() }
+            guard !intent.terminalPinsClosing else { throw CustodyRecordError.fenced }
+            intent.terminalPinsClosing = true
+            let descriptors = receiptPins.keys.sorted().map { receiptPins[$0]!.node.descriptor }
+                + intent.receiptFiles.keys.sorted().map { intent.receiptFiles[$0]!.node.descriptor }
+                + [controlPin.descriptor, catalogPin.node.descriptor, intent.control.node.descriptor,
+                   intent.catalog.node.descriptor, receipts.descriptor, guardFile.descriptor,
+                   directory.descriptor, intent.root]
+            var seen = Set<ObjectIdentifier>()
+            for descriptor in descriptors where seen.insert(ObjectIdentifier(descriptor)).inserted {
+                try permit.retire(descriptor, resource: .metadata)
+            }
+        }
+        #if SHADOW_SYNC_TESTING
+        var testingTerminalPermit: FinishPermit? { terminalPermit }
+        var testingTerminalCustodyRetained: Bool { terminalRetainedSelf === self && terminalParents != nil }
+        var testingTerminalUncertainClose: FinishPermit.Resource?
+        var testingTerminalDeadlineAfterSuccessfulClose: FinishPermit.Resource?
+        enum TestingTerminalCut: Equatable { case beforeParentSync, parentSyncFailure(Int), afterParentSync, beforeRetirement }
+        var testingTerminalCut: TestingTerminalCut?
+        func testingTerminalFail(_ point: TestingTerminalCut) throws {
+            if testingTerminalCut == point { testingTerminalCut = nil; throw CustodyRecordError.injectedFailure }
+        }
+        #endif
+
+        private var continuationRecovery: StopDelivery?
+        private var startupStopRequested = false
+        /// Minted only while publishing this owner's exact committed recovery.
+        /// Retained completion aliases permit readback after starts close; no
+        /// command or new admission can be obtained from this object.
+        enum StopRetirementProgress: String { case notAttempted, waiting, joining, retiring, complete, pending }
+        final class StopDelivery {
+            private let journal: InstallationStagedJournal
+            private var store: CustodyCatalogStore?
+            private let lock = NSLock()
+            private var readers = 0
+            private var progress: StopRetirementProgress = .notAttempted
+            private var acknowledgment: InstallationPrecommitSession.Stopped?
+            private var joined: InstallationPrecommitSession.StoppedJoined?
+            private let completionClosure: CustodyAuthorityLeaseSet.CheckedClosure
+            let control: InstallationControlRecord
+            fileprivate let readinessOnly: InstallationPrecommitSession.ReadyObservation?
+            fileprivate init(journal: InstallationStagedJournal, store: CustodyCatalogStore,
+                             control: InstallationControlRecord,
+                             readinessOnly: InstallationPrecommitSession.ReadyObservation? = nil) throws {
+                self.journal = journal; self.store = store; self.control = control; self.readinessOnly = readinessOnly
+                completionClosure = try store.leases.checkedClosure
+            }
+            func matches(journal: InstallationStagedJournal, started: InstallationPrecommitSession.NormalStarted) -> Bool {
+                self.journal === journal && readinessOnly == nil
+                    && (try? InstallationStartupTranscript.recovery(after: started.control)) == control
+            }
+            func matches(journal: InstallationStagedJournal, ready: InstallationPrecommitSession.ReadyObservation) -> Bool {
+                self.journal === journal && readinessOnly === ready
+                    && (try? InstallationReadinessStopBinding.expectedControl(after: ready.control,
+                        validationProfile: journal.owner.validationProfile)) == control
+            }
+            var isReadinessOnly: Bool { readinessOnly != nil }
+            func revalidate() throws {
+                guard lock.try() else { throw CustodyRecordError.busy }
+                guard [.notAttempted, .waiting, .joining].contains(progress), let store else {
+                    lock.unlock(); throw CustodyRecordError.fenced
+                }
+                readers += 1; lock.unlock()
+                defer { lock.lock(); readers -= 1; lock.unlock() }
+                if readinessOnly != nil { try journal.validateReadinessStopDelivery(self, store: store) }
+                else { try journal.validateStartupRecovery(self, store: store) }
+            }
+            fileprivate func begin() throws {
+                guard lock.try() else { throw CustodyRecordError.busy }; defer { lock.unlock() }
+                guard progress == .notAttempted else { throw CustodyRecordError.fenced }
+                progress = .waiting
+            }
+            fileprivate func received(_ acknowledgment: InstallationPrecommitSession.Stopped) {
+                lock.lock(); self.acknowledgment = acknowledgment; progress = .joining; lock.unlock()
+            }
+            fileprivate func fail() {
+                lock.lock(); if progress != .complete { progress = .pending }; lock.unlock()
+            }
+            fileprivate var observation: (InstallationPrecommitSession.Stopped?, StopRetirementProgress) {
+                lock.lock(); defer { lock.unlock() }; return (acknowledgment, progress)
+            }
+            fileprivate func retire(after joined: InstallationPrecommitSession.StoppedJoined) throws {
+                try joined.claim(for: self)
+                guard lock.try() else { throw CustodyRecordError.busy }
+                guard progress == .joining, acknowledgment != nil, readers == 0 else {
+                    progress = .pending; lock.unlock(); throw CustodyRecordError.fenced
+                }
+                self.joined = joined; progress = .retiring; lock.unlock()
+                // This helper's stack must unwind before observing the actual
+                // completion lease destructor. A retained receipt is not a lease.
+                try retireStore(deadline: joined.deadline)
+                guard completionClosure.observation == .succeeded,
+                      !joined.deadline.hasExpired else { throw CustodyRecordError.fenced }
+                try journal.owner.validateStagedCommandAliasesRetired()
+                try journal.owner.validateReadinessOwner()
+                guard !joined.deadline.hasExpired else { throw CustodyRecordError.busy }
+                lock.lock(); progress = .complete; lock.unlock()
+            }
+            func validateStoppedOwner(_ owner: InstallationTransactionOwner,
+                                      acknowledgment: InstallationPrecommitSession.Stopped) throws {
+                guard journal.owner === owner else { throw CustodyRecordError.fenced }
+                try validateCompleted(acknowledgment)
+            }
+            func validateCompleted(_ acknowledgment: InstallationPrecommitSession.Stopped) throws {
+                guard lock.try() else { throw CustodyRecordError.busy }
+                guard progress == .complete, self.acknowledgment === acknowledgment,
+                      store == nil, readers == 0, let joined else {
+                    lock.unlock(); throw CustodyRecordError.fenced
+                }
+                lock.unlock()
+                guard completionClosure.observation == .succeeded else { throw CustodyRecordError.fenced }
+                try joined.revalidate(for: self, acknowledgment: acknowledgment)
+                guard lock.try() else { throw CustodyRecordError.busy }; defer { lock.unlock() }
+                guard progress == .complete, self.joined === joined, self.acknowledgment === acknowledgment,
+                      store == nil, readers == 0 else { throw CustodyRecordError.fenced }
+            }
+            #if SHADOW_SYNC_TESTING
+            enum TestingCloseCut { case store, completion }
+            func testingUncertainClose(_ cut: TestingCloseCut) throws {
+                guard lock.try() else { throw CustodyRecordError.busy }; defer { lock.unlock() }
+                guard progress == .notAttempted, let store else { throw CustodyRecordError.fenced }
+                switch cut {
+                case .store:
+                    store.guardFile.descriptor.testingClose = { raw in
+                        guard Darwin.close(raw) == 0 else { return errno }; return EIO
+                    }
+                case .completion: try store.leases.testingUncertainInstallationClose()
+                }
+            }
+            func testingRetainCompletion() throws -> CustodyAuthorityLeaseSet {
+                guard lock.try() else { throw CustodyRecordError.busy }; defer { lock.unlock() }
+                guard progress == .notAttempted, let store else { throw CustodyRecordError.fenced }
+                return try store.leases
+            }
+            var testingCompletionResult: OwnedFileDescriptor.Retirement { completionClosure.observation }
+            var testingStoreRetained: Bool { lock.lock(); defer { lock.unlock() }; return store != nil }
+            var testingStoreCloseResults: [OwnedFileDescriptor.Retirement] {
+                lock.lock(); defer { lock.unlock() }
+                guard let store else { return [] }
+                return [store.receipts.descriptor, store.guardFile.descriptor, store.directory.descriptor, store.root]
+                    .map { $0.retirementObservation }
+            }
+            @_silgen_name("shadowSyncTesting_testingRefuseRetirementReplay")
+            @inline(never)
+            func testingRefuseRetirementReplay() throws {
+                lock.lock(); let original = joined; lock.unlock()
+                guard let original else { throw CustodyRecordError.fenced }
+                try retire(after: original)
+            }
+            #endif
+            private func retireStore(deadline: MonotonicDeadline) throws {
+                guard !deadline.hasExpired, let store else { throw CustodyRecordError.busy }
+                // All delivery readers and the actual IPC queue are joined.
+                // Poison this exact store before the first close; any retained
+                // alias can no longer perform catalog IO or reopen its guard.
+                guard store.mutex.try() else { throw CustodyRecordError.busy }
+                guard !store.poisoned else { store.mutex.unlock(); throw CustodyRecordError.fenced }
+                store.poisoned = true; store.mutex.unlock()
+                let pins = store.installationCommandPins.keys.sorted().map { store.installationCommandPins[$0]!.descriptor }
+                var seen = Set<ObjectIdentifier>()
+                for descriptor in pins + [store.receipts.descriptor, store.guardFile.descriptor,
+                                          store.directory.descriptor, store.root]
+                    where seen.insert(ObjectIdentifier(descriptor)).inserted {
+                    guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+                    guard descriptor.retireChecked() == .succeeded else { throw CustodyRecordError.fenced }
+                    guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+                }
+                // On partial/uncertain close, the store remains retained. On
+                // success, only its real destructor may release completion
+                // leases; other retained aliases keep the receipt pending.
+                lock.lock(); self.store = nil; lock.unlock()
+            }
+        }
+        #if SHADOW_SYNC_TESTING
+        var testingStopDeliveryProbe: ((StopDelivery) throws -> Void)?
+        #endif
+        func stoppedHostObservation() -> (InstallationPrecommitSession.Stopped?, StopRetirementProgress) {
+            mutex.lock(); let delivery = continuationRecovery; let requested = startupStopRequested; mutex.unlock()
+            let value = delivery?.observation ?? (nil, .notAttempted)
+            // A failed publication/claim can precede delivery construction.
+            // The retained stop attempt remains pending even without a frame.
+            return requested && value.1 == .notAttempted ? (value.0, .pending) : value
+        }
+        func validateNormalStartup(_ started: InstallationPrecommitSession.NormalStarted,
+                                   delivery: CommitDelivery, deadline: MonotonicDeadline) throws {
+            try started.revalidatePeer()
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !failed, pending == nil, current == delivery.control,
+                  current == started.control, let ready = candidateReady,
+                  delivery.matches(journal: self, ready: ready) else { mutex.unlock(); throw CustodyRecordError.fenced }
+            serializing = true; mutex.unlock()
+            do {
+                try slots.observeNormalHost(started, for: owner, deadline: deadline)
+                mutex.lock(); serializing = false; mutex.unlock()
+            } catch { mutex.lock(); serializing = false; failed = true; mutex.unlock(); throw error }
+            try delivery.revalidate()
+            try started.revalidatePeer()
+        }
+        func takeNormalStarted() throws -> InstallationPrecommitSession.NormalStarted {
+            readinessMutex.lock(); let session = readinessSession; readinessMutex.unlock()
+            guard let session else { throw CustodyRecordError.fenced }
+            return try session.takeNormalStarted()
+        }
+        func stopStartedHost(_ started: InstallationPrecommitSession.NormalStarted) throws -> InstallationPrecommitSession.Stopped {
+            readinessMutex.lock(); let session = readinessSession; readinessMutex.unlock()
+            guard let session, started.session === session else { throw CustodyRecordError.fenced }
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !startupStopRequested else { mutex.unlock(); throw CustodyRecordError.fenced }
+            startupStopRequested = true
+            let existing = continuationRecovery
+            mutex.unlock()
+            // A previously restrictive publication may have won a wrapper
+            // postflight failure. Consume only its actual retained capability;
+            // never republish/retry a failed or ambiguous recovery write.
+            if existing == nil { _ = try fenceReadinessCommitFailure() }
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            let delivery = !serializing ? continuationRecovery : nil
+            mutex.unlock()
+            guard let delivery else { throw CustodyRecordError.fenced }
+            do {
+                #if SHADOW_SYNC_TESTING
+                try testingStopDeliveryProbe?(delivery)
+                #endif
+                try delivery.begin()
+                let acknowledgment = try session.stop(delivery)
+                delivery.received(acknowledgment)
+                let joined = try session.joinStopped(acknowledgment, delivery: delivery)
+                try delivery.retire(after: joined)
+                try slots.retainStoppedHost(acknowledgment, delivery: delivery, for: owner)
+                return acknowledgment
+            } catch {
+                // A cancellation/close failure can race the waiting caller
+                // after the final authenticated frame. Keep that exact frame
+                // observation without treating it as a successful queue join.
+                if let acknowledgment = session.stoppedAcknowledgment(for: delivery) {
+                    delivery.received(acknowledgment)
+                }
+                delivery.fail(); throw error
+            }
+        }
+        private func validateStartupRecovery(_ delivery: StopDelivery, store: CustodyCatalogStore) throws {
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, pending == nil, continuationRecovery === delivery,
+                  current == delivery.control, current.phase == .recovery,
+                  current.readinessCommit != nil, metadataGeneration < UInt64.max,
+                  let ready = candidateReady, !ready.deadline.hasExpired else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            serializing = true; metadataGeneration += 1
+            let generation = metadataGeneration, expected = current
+            mutex.unlock()
+            defer { mutex.lock(); serializing = false; mutex.unlock() }
+            try owner.validateReadinessOwner()
+            try slots.revalidate(for: owner, deadline: ready.deadline)
+            try store.locked { try validateLocked(store, ready.deadline) }
+            try owner.validateReadinessOwner()
+            try slots.revalidate(for: owner, deadline: ready.deadline)
+            mutex.lock(); defer { mutex.unlock() }
+            guard serializing, metadataGeneration == generation, current == expected,
+                  continuationRecovery === delivery, pending == nil, !ready.deadline.hasExpired else { throw CustodyRecordError.fenced }
+        }
+        /// Original candidate-ready-complete only. Unknown/partial ready and
+        /// commit publication are separate fenced cuts; no rollback inference.
+        func stopReadinessOnlyHost(admission stop: InstallationStagedStopAdmission) throws -> InstallationStagedCommandObservation {
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !failed, pending == nil, !startupStopRequested,
+                  terminalProgress == .notAttempted, self.stop == nil, !commandsClaimed,
+                  !commitDeliveryReserved, current.phase == .active, current.readinessCommit == nil,
+                  current.step?.action == .candidateReady, current.step?.status == .complete,
+                  let ready = candidateReady, !ready.deadline.hasExpired else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            startupStopRequested = true
+            let generation = metadataGeneration; mutex.unlock()
+            // Actual native peer revalidation precedes closing start admission.
+            // Stop admission was obtained from this owner's real retired starts.
+            try ready.revalidate(for: self)
+            try stop.validateOwner(owner)
+            try lockReadiness(ready.deadline)
+            let session = readinessSession
+            readinessClosed = true
+            readinessMutex.unlock()
+            guard let session else { throw CustodyRecordError.fenced }
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !failed, pending == nil, metadataGeneration == generation,
+                  self.stop == nil, candidateReady === ready, !commitDeliveryReserved else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            self.stop = stop; mutex.unlock()
+            let observed = try serialized(deadline: ready.deadline) { store in
+                guard current.phase == .active, current.step?.action == .candidateReady,
+                      current.step?.status == .complete, current.readinessCommit == nil,
+                      continuationRecovery == nil else { throw CustodyRecordError.fenced }
+                let recovery = InstallationControlRecord(revision: current.revision + 1, phase: .recovery,
+                    state: current.state, transaction: current.transaction, step: current.step,
+                    latestReceiptDigest: current.latestReceiptDigest, readinessCommit: nil, recoveryReason: .readinessFailed)
+                try current.validateReplacement(recovery, receipts: chain, profile: owner.validationProfile)
+                try store.locked { try validateLocked(store, ready.deadline); try replaceControl(recovery, store: store, deadline: ready.deadline) }
+                _ = try publish(proposal(.candidateStop, status: .intent), store: store, deadline: ready.deadline)
+                guard current == (try InstallationReadinessStopBinding.expectedControl(after: ready.control, validationProfile: owner.validationProfile)) else {
+                    throw CustodyRecordError.fenced
+                }
+                let observed = try observation(store, deadline: ready.deadline)
+                continuationRecovery = try StopDelivery(journal: self, store: store, control: current, readinessOnly: ready)
+                return observed
+            }
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            let delivery = continuationRecovery; mutex.unlock()
+            guard let delivery, delivery.matches(journal: self, ready: ready) else { throw CustodyRecordError.fenced }
+            do {
+                try delivery.begin()
+                let acknowledgment = try session.stop(delivery)
+                delivery.received(acknowledgment)
+                let joined = try session.joinStopped(acknowledgment, delivery: delivery)
+                try delivery.retire(after: joined)
+                try slots.retainReadinessStoppedHost(acknowledgment, delivery: delivery, for: owner)
+                return observed
+            } catch {
+                if let acknowledgment = session.stoppedAcknowledgment(for: delivery) { delivery.received(acknowledgment) }
+                delivery.fail()
+                mutex.lock(); failed = true; mutex.unlock()
+                throw error
+            }
+        }
+        private func validateReadinessStopDelivery(_ delivery: StopDelivery, store: CustodyCatalogStore) throws {
+            guard let ready = delivery.readinessOnly, !ready.deadline.hasExpired else { throw CustodyRecordError.fenced }
+            try owner.validateReadinessOwner()
+            try slots.revalidate(for: owner, deadline: ready.deadline)
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !failed, pending == nil, continuationRecovery === delivery,
+                  candidateReady === ready, !commandsClaimed, stop != nil,
+                  current == delivery.control,
+                  current == (try? InstallationReadinessStopBinding.expectedControl(after: ready.control, validationProfile: owner.validationProfile)) else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            let generation = metadataGeneration
+            serializing = true; mutex.unlock()
+            defer { mutex.lock(); serializing = false; mutex.unlock() }
+            // The reservation owns the metadata turn, never a held mutex.
+            try store.locked { try validateLocked(store, ready.deadline) }
+            try owner.validateReadinessOwner()
+            try slots.revalidate(for: owner, deadline: ready.deadline)
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard metadataGeneration == generation, current == delivery.control,
+                  continuationRecovery === delivery, pending == nil, !ready.deadline.hasExpired else { throw CustodyRecordError.fenced }
+        }
         private var reconciledStart = false
         private var recoveryStartMayHaveExecuted = false
         // Independent short custody lock: code verification and metadata turns
@@ -2215,8 +3721,10 @@ extension CustodyCatalogStore {
             let app: PublisherCodeVerifier.Identity
             let uid: uid_t
             let deadline: MonotonicDeadline
+            let validationProfile: InstallationValidationProfile
             fileprivate init(journal: InstallationStagedJournal, endpoint: InstallationReadinessEndpoint,
                 app: PublisherCodeVerifier.Identity, uid: uid_t, deadline: MonotonicDeadline) {
+                self.validationProfile = journal.owner.validationProfile
                 self.journal = journal; self.endpoint = endpoint; self.app = app; self.uid = uid; self.deadline = deadline
             }
         }
@@ -2277,7 +3785,7 @@ extension CustodyCatalogStore {
             try owner.validateStagedCommandAliasesRetired()
             try admission.validateOwner(owner, intent: intent)
             try slots.revalidate(for: owner, deadline: deadline); try owner.revalidate(); try endpoint.revalidate(deadline: deadline)
-            let store = try CustodyCatalogStore(leases: admission.retainStartLeases())
+            let store = try CustodyCatalogStore(leases: admission.retainStartLeases(), validationProfile: owner.validationProfile)
             guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
             do {
                 guard !serializing, metadataGeneration == revision, !failed, pending == nil,
@@ -2396,15 +3904,27 @@ extension CustodyCatalogStore {
             directory = intent.directory; receipts = intent.receipts; guardFile = intent.guardFile
             controlPin = intent.control.node; catalogPin = intent.catalog; receiptPins = intent.receiptFiles
             anchor = File(identity: intent.control.node.identity, acl: intent.control.node.acl, bytes: intent.control.bytes)
-            current = try InstallationControlRecord.decode(anchor.bytes)
+            current = try InstallationControlRecord.decode(anchor.bytes, profile: owner.validationProfile)
             chain = try intent.receiptFiles.filter { $0.key.hasPrefix(InstallationStepReceipt.prefix) }.values.map {
                 try InstallationStepReceipt.decode($0.bytes, uid: intent.uid)
             }.sorted { a, b in a.ordinal == b.ordinal ? a.status == .intent && b.status == .complete : a.ordinal < b.ordinal }
             try admission.validateOwner(owner, intent: intent)
-            try current.validateReceiptChain(chain)
+            try current.validateReceiptChain(chain, profile: owner.validationProfile)
             try withStore(deadline: deadline) { store in try store.locked { try validateLocked(store, deadline) } }
         }
         private func validateSource(_ deadline: MonotonicDeadline) throws {
+            if let restoration = readinessRestoration {
+                try restoration.exclusive.validateRetainedOwner(owner)
+                try owner.revalidate()
+                try slots.revalidateFreshRestoration(restoration.permit, for: owner, deadline: deadline)
+                return
+            }
+            if let repair = stoppedRepair {
+                try repair.exclusive.validateRetainedOwner(owner)
+                try owner.revalidate()
+                try slots.revalidateStoppedRepair(repair.permit, for: owner, deadline: deadline)
+                return
+            }
             #if SHADOW_SYNC_TESTING
             if let barrier = sourceBarrier { sourceBarrier = nil; guard barrier.pause() else { throw CustodyRecordError.busy } }
             #endif
@@ -2417,18 +3937,43 @@ extension CustodyCatalogStore {
         private func withStore<T>(deadline: MonotonicDeadline, completionLeases: CustodyAuthorityLeaseSet? = nil, _ body: (CustodyCatalogStore) throws -> T) throws -> T {
             try validateSource(deadline)
             let leases = try completionLeases ?? stop.map { try $0.retainStopLeases() } ?? admission.retainStartLeases()
-            let store = try CustodyCatalogStore(leases: leases)
-            let result = try body(store)
-            try validateSource(deadline)
-            return result
+            let store = try CustodyCatalogStore(leases: leases, validationProfile: owner.validationProfile)
+            do {
+                let result = try body(store)
+                try validateSource(deadline)
+                return result
+            } catch {
+                let failure = error
+                // Retain the same live store/lease through a postcommit failure.
+                // No new borrowing after serialized closes starts is needed.
+                // Failed/poisoned persistence is never reconciled by assumption.
+                if current.phase == .committed, pending == nil, !postcommitFenceAttempted {
+                    _ = try? recordPostcommitFailure(store: store, deadline: deadline)
+                }
+                throw failure
+            }
         }
         private func serialized<T>(deadline: MonotonicDeadline, completionLeases: CustodyAuthorityLeaseSet? = nil,
                                    requiresOpenReadiness: Bool = false,
+                                   fenceExpiredAdmission: Bool = false, terminal: Bool = false,
                                    _ body: (CustodyCatalogStore) throws -> T) throws -> T {
-            guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
+            guard mutex.try() else { throw CustodyRecordError.busy }
             guard !serializing else { mutex.unlock(); throw CustodyRecordError.busy }
-            guard !failed, pending == nil, metadataGeneration < UInt64.max else {
+            guard !failed, pending == nil, metadataGeneration < UInt64.max,
+                  terminalProgress == .notAttempted || (terminal && terminalProgress == .running) else {
                 mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            if deadline.hasExpired {
+                // An expired opening attempt owns no metadata turn and may
+                // publish nothing. It must still fence this idle continuation
+                // and new starts. Existing aliases remain with their original
+                // owner; closure and any later join run outside this mutex.
+                // A competing active turn refuses above and is never fenced
+                // by this expired-admission branch.
+                if fenceExpiredAdmission { failed = true }
+                mutex.unlock()
+                if fenceExpiredAdmission { _ = try? admission.closeStarts() }
+                throw CustodyRecordError.busy
             }
             if requiresOpenReadiness {
                 // Reserve the metadata turn while checking closure under its
@@ -2449,6 +3994,16 @@ extension CustodyCatalogStore {
             catch {
                 // The turn still exclusively owns metadata, but no mutex spans
                 // source verification, scope closure, IPC or any waiting.
+                // If source preflight failed before withStore could construct
+                // its store, the caller's original completion lease is still
+                // retained here. It can only publish a restrictive failure from
+                // this exact known durable commit; no failed write is adopted.
+                if current.phase == .committed, pending == nil, !postcommitFenceAttempted,
+                   let completionLeases {
+                    if let failureStore = try? CustodyCatalogStore(leases: completionLeases, validationProfile: owner.validationProfile) {
+                        _ = try? recordPostcommitFailure(store: failureStore, deadline: deadline)
+                    }
+                }
                 failed = true
                 if stop == nil { _ = try? admission.closeStarts() }
                 throw error
@@ -2508,8 +4063,8 @@ extension CustodyCatalogStore {
                 slots: postimage ?? transaction.slots)
             let next = InstallationControlRecord(revision: current.revision + 1, phase: commit == nil ? current.phase : .committed,
                 state: current.state, transaction: successor, step: try receipt.step(), latestReceiptDigest: canonical.digest,
-                readinessCommit: commit, recoveryReason: current.recoveryReason)
-            try current.validateReplacement(next, receipts: chain + [receipt])
+                readinessCommit: commit ?? current.readinessCommit, recoveryReason: current.recoveryReason)
+            try current.validateReplacement(next, receipts: chain + [receipt], profile: owner.validationProfile)
             return Pending(control: next, receipt: canonical)
         }
         private func replaceControl(_ next: InstallationControlRecord, store: CustodyCatalogStore,
@@ -2519,12 +4074,21 @@ extension CustodyCatalogStore {
             if cut == .beforeControl { cut = nil; throw CustodyRecordError.injectedFailure }
             store.testingCut = controlFault; controlFault = nil
             #endif
-            try store.write(InstallationControlRecord.filename, bytes: next.encode(), expected: anchor)
+            try store.write(InstallationControlRecord.filename, bytes: next.encode(profile: owner.validationProfile), expected: anchor)
             let after = try store.installationSnapshot()
             let pin = try CustodyCatalogStore.openNode(directory.descriptor.value, InstallationControlRecord.filename,
                 uid: store.uid, directory: false)
             guard after.1 == next, pin.identity == after.0.identity, pin.acl == after.0.acl,
                   fsync(pin.descriptor.value) == 0, fsync(directory.descriptor.value) == 0 else { throw CustodyRecordError.conflict }
+            // The exact readback and both fsyncs have succeeded. Retain this
+            // real outcome BEFORE subsequent identity postflight can throw.
+            if next.phase == .committed, next.step?.action == .readinessCommit,
+               next.step?.status == .complete, next.readinessCommit != nil {
+                retainCommitOutcome { $0.durable = next }
+            }
+            if next.phase == .recovery, next.readinessCommit != nil {
+                retainCommitOutcome { $0.recovery = next }
+            }
             try store.validate(pin, at: directory.descriptor.value, name: InstallationControlRecord.filename, isDirectory: false)
             try store.validateBindings()
             anchor = after.0; current = next; controlPin = pin
@@ -2560,6 +4124,9 @@ extension CustodyCatalogStore {
             #endif
             try store.locked {
                 try validateLocked(store, deadline); pending = proposed
+                if proposed.control.phase == .committed, proposed.control.readinessCommit != nil {
+                    retainCommitOutcome { $0.proposed = proposed.control }
+                }
                 #if SHADOW_SYNC_TESTING
                 store.testingCut = receiptFault; receiptFault = nil
                 #endif
@@ -2592,7 +4159,7 @@ extension CustodyCatalogStore {
                 try validateLocked(store, deadline)
                 guard let pending, let pin = receiptPins[pending.receipt.filename],
                       fsync(pin.node.descriptor.value) == 0, fsync(receipts.descriptor.value) == 0 else { throw CustodyRecordError.fenced }
-                try current.validateReplacement(pending.control, receipts: chain + [pending.receipt.receipt])
+                try current.validateReplacement(pending.control, receipts: chain + [pending.receipt.receipt], profile: owner.validationProfile)
                 try replaceControl(pending.control, store: store, deadline: deadline)
                 chain.append(pending.receipt.receipt); self.pending = nil
                 return current
@@ -2611,7 +4178,7 @@ extension CustodyCatalogStore {
             diagnosticStage = 2
             #endif
             let completed: (InstallationControlRecord, InstallationPrecommitSession) = try serialized(deadline: deadline,
-                requiresOpenReadiness: true) { store in
+                requiresOpenReadiness: true, fenceExpiredAdmission: true) { store in
                 guard stop == nil, current.phase == .active, current.step?.action == .openStagedAdmission,
                       current.step?.ordinal == 12, current.step?.status == .intent,
                       let transaction = current.transaction, let candidate = transaction.candidate else { throw CustodyRecordError.fenced }
@@ -2682,7 +4249,50 @@ extension CustodyCatalogStore {
                 throw original
             }
         }
-        private func observation(_ store: CustodyCatalogStore, deadline: MonotonicDeadline) throws -> InstallationStagedCommandObservation {
+        /// Postflight for the original bootstrap's returned admission completion.
+        /// This validates the exact journal generation and actual service owners,
+        /// never issues a command/ready capability. This postflight checks the
+        /// durable opening generation and retained owners; the running queue
+        /// independently validates its live endpoint. completeAdmission already
+        /// validated the full slot/socket postimage before launching that queue.
+        func validateOpenedAdmission(_ completed: InstallationControlRecord,
+                                     deadline: MonotonicDeadline) throws {
+            guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !failed, pending == nil, stop == nil, !commandsClaimed,
+                  current == completed, current.phase == .active,
+                  current.step?.action == .openStagedAdmission,
+                  current.step?.ordinal == 12, current.step?.status == .complete,
+                  current.readinessCommit == nil else { mutex.unlock(); throw CustodyRecordError.fenced }
+            let revision = metadataGeneration
+            mutex.unlock()
+            try lockReadiness(deadline)
+            let session = readinessSession, endpoint = readinessEndpoint
+            let open = !readinessClosed
+            readinessMutex.unlock()
+            guard open, let session, let endpoint else { throw CustodyRecordError.fenced }
+            try admission.validateOwner(owner, intent: intent)
+            try owner.revalidate()
+            let store = try CustodyCatalogStore(leases: admission.retainStartLeases(), validationProfile: owner.validationProfile)
+            guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
+            do {
+                guard !serializing, !failed, metadataGeneration == revision,
+                      pending == nil, stop == nil, !commandsClaimed, current == completed else {
+                    throw CustodyRecordError.fenced
+                }
+                try store.locked { try validateLocked(store, deadline) }
+                mutex.unlock()
+            } catch { mutex.unlock(); throw error }
+            try admission.validateOwner(owner, intent: intent)
+            try owner.revalidate()
+            guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
+            let unchanged = !serializing && !failed && metadataGeneration == revision && current == completed
+            mutex.unlock()
+            try lockReadiness(deadline)
+            let sameService = !readinessClosed && readinessSession === session && readinessEndpoint === endpoint
+            readinessMutex.unlock()
+            guard unchanged, sameService, !deadline.hasExpired else { throw CustodyRecordError.fenced }
+        }
+        private func observation(_ store: CustodyCatalogStore, deadline: MonotonicDeadline, committedStopDeadline: UInt64? = nil) throws -> InstallationStagedCommandObservation {
             try store.locked {
                 try validateLocked(store, deadline)
                 var nodes: [String: InstallationNodeIdentity] = [:]
@@ -2690,7 +4300,8 @@ extension CustodyCatalogStore {
                     nodes[name] = try store.installationCommandNode(pin.node.identity, acl: pin.node.acl)
                 }
                 let binding = try InstallationCommandBinding(control: current,
-                    controlNode: store.installationCommandNode(anchor.identity, acl: anchor.acl), receiptNodes: nodes)
+                    controlNode: store.installationCommandNode(anchor.identity, acl: anchor.acl), receiptNodes: nodes,
+                    committedStopDeadline: committedStopDeadline, validationProfile: store.validationProfile)
                 try store.validateInstallationCommand(binding)
                 return InstallationStagedCommandObservation(session: self, binding: binding,
                     ready: current.step?.action == .candidateReady ? candidateReady : nil)
@@ -2785,9 +4396,74 @@ extension CustodyCatalogStore {
                 return try publish(proposal(.readinessCommit, status: .complete, commit: commit), store: store, deadline: ready.deadline)
             }
         }
+        /// This original journal may only restrict its OWN fully durable commit.
+        /// It cannot complete an uncertain write, adopt decoded state, restore,
+        /// issue commands, clear the commit, or reopen a failed start gate.
+        /// Expired/poisoned/ambiguous outcomes remain retained for repair-forward.
+        func fenceReadinessCommitFailure() throws -> InstallationControlRecord {
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, terminalProgress == .notAttempted,
+                  current.step?.action != .finish, !postcommitFenceAttempted, pending == nil,
+                  let ready = candidateReady, !ready.deadline.hasExpired,
+                  current.phase == .committed, current.readinessCommit != nil,
+                  !commandsClaimed, stop == nil, metadataGeneration < UInt64.max else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            let deadline = ready.deadline
+            serializing = true; failed = true; metadataGeneration += 1
+            postcommitFenceAttempted = true
+            mutex.unlock()
+            retainCommitOutcome { $0.recoveryAttempted = true }
+            defer {
+                // Permanent closure, never drainage proof. It is safe even if
+                // bounded failure prevented the restrictive control publication.
+                _ = try? admission.closeStarts()
+                mutex.lock(); serializing = false; mutex.unlock()
+            }
+            try owner.validateStagedCommandAliasesRetired()
+            let leases = try owner.retainStagedCommandCompletionLeases(mode: .installationStagedStart)
+            let store = try CustodyCatalogStore(leases: leases, validationProfile: owner.validationProfile)
+            return try publishPostcommitFailure(store: store, deadline: deadline)
+        }
+        private func recordPostcommitFailure(store: CustodyCatalogStore,
+                                            deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            guard !postcommitFenceAttempted else { throw CustodyRecordError.fenced }
+            postcommitFenceAttempted = true
+            retainCommitOutcome { $0.recoveryAttempted = true }
+            return try publishPostcommitFailure(store: store, deadline: deadline)
+        }
+        private func publishPostcommitFailure(store: CustodyCatalogStore,
+                                             deadline: MonotonicDeadline) throws -> InstallationControlRecord {
+            guard !deadline.hasExpired, let ready = candidateReady,
+                  deadline.absoluteUptimeNanoseconds <= ready.deadline.absoluteUptimeNanoseconds,
+                  pending == nil, !commandsClaimed,
+                  current.phase == .committed, current.readinessCommit != nil,
+                  current.readinessCommit == readinessCommitOutcome().durable?.readinessCommit,
+                  current.transaction?.id == readinessCommitOutcome().durable?.transaction?.id,
+                  current.revision < UInt64.max else { throw CustodyRecordError.fenced }
+            // A slot or peer postflight may have failed. Recording that failure
+            // preserves the exact old slot evidence; it grants no convergence.
+            // Live original source/state authority and every metadata pin remain
+            // mandatory. No code verification or wait runs under catalog.lock.
+            try owner.revalidate()
+            let next = InstallationControlRecord(revision: current.revision + 1, phase: .recovery,
+                state: current.state, transaction: current.transaction, step: current.step,
+                latestReceiptDigest: current.latestReceiptDigest, readinessCommit: current.readinessCommit,
+                recoveryReason: .startupUncertain)
+            try current.validateReplacement(next, receipts: chain, profile: owner.validationProfile)
+            retainCommitOutcome { $0.recoveryProposed = next }
+            try store.locked {
+                try validateLocked(store, deadline)
+                try replaceControl(next, store: store, deadline: deadline)
+            }
+            try owner.revalidate()
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            continuationRecovery = try StopDelivery(journal: self, store: store, control: next)
+            return next
+        }
         /// A separate post-publication edge. Never infer delivery from durable
         /// commit, retry a failed send, or turn transport failure into rollback.
-        /// No production caller is enrolled by this source component.
+        /// The retained Bootstrap owns its continuation; CLI remains unenrolled.
         func deliverReadinessCommit() throws -> InstallationPrecommitSession.CommitDelivered {
             // The helper returns only the capability: its temporary completion
             // leases/store have been destroyed before enqueue or any waiting.
@@ -2831,6 +4507,387 @@ extension CustodyCatalogStore {
                 try store.locked { try validateLocked(store, ready.deadline) }
             }
         }
+        /// Mint once from this journal's actual fsynced recovery publication.
+        /// No decoded control, caller Boolean or new owner is accepted. The
+        /// original failed flag stays set, permanently fencing forward methods.
+        func committedCandidateStop(admission stop: InstallationStagedStopAdmission) throws -> InstallationCommittedStop {
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, failed, pending == nil, !commandsClaimed,
+                  terminalProgress == .notAttempted, !committedStopAttempted,
+                  self.stop == nil, let delivery = continuationRecovery,
+                  let ready = candidateReady, !ready.deadline.hasExpired,
+                  postcommitFenceAttempted, current == delivery.control,
+                  current.phase == .recovery, current.readinessCommit != nil,
+                  current.step?.action != .finish, metadataGeneration < UInt64.max else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            committedStopAttempted = true; serializing = true; metadataGeneration += 1
+            mutex.unlock()
+            defer { mutex.lock(); serializing = false; mutex.unlock() }
+            do {
+                try stop.validateOwner(owner)
+                self.stop = stop
+                return try withStore(deadline: ready.deadline) { store in
+                    let observed = try observation(store, deadline: ready.deadline,
+                        committedStopDeadline: ready.deadline.absoluteUptimeNanoseconds)
+                    let capability = InstallationCommittedStop(observation: observed, stop: stop, deadline: ready.deadline)
+                    committedStop = capability
+                    return capability
+                }
+            } catch { committedStopFailed = true; throw error }
+        }
+        /// A distinct restrictive turn, never a reset of serialized/failed.
+        /// It cannot publish installation actions or recover uncertain writes.
+        private func withCommittedStop<T>(_ capability: InstallationCommittedStop,
+            deadline supplied: MonotonicDeadline? = nil,
+            completionLeases: CustodyAuthorityLeaseSet? = nil, _ body: (CustodyCatalogStore) throws -> T) throws -> T {
+            let deadline = supplied.map {
+                $0.absoluteUptimeNanoseconds < capability.deadline.absoluteUptimeNanoseconds ? $0 : capability.deadline
+            } ?? capability.deadline
+            guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, failed, pending == nil, !committedStopFailed,
+                  committedStop === capability, committedStopAttempted, !committedStopRetired,
+                  stop === capability.stop, terminalProgress == .notAttempted,
+                  continuationRecovery?.control == current,
+                  current == capability.observation.binding.control,
+                  current.phase == .recovery, current.readinessCommit != nil,
+                  current.step?.action != .finish, metadataGeneration < UInt64.max else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            serializing = true; metadataGeneration += 1; mutex.unlock()
+            defer { mutex.lock(); serializing = false; mutex.unlock() }
+            do { return try withStore(deadline: deadline, completionLeases: completionLeases, body) }
+            catch { committedStopFailed = true; throw error }
+        }
+        fileprivate func committedStopDeadline(for observation: InstallationStagedCommandObservation) -> MonotonicDeadline? {
+            mutex.lock(); defer { mutex.unlock() }
+            guard !serializing, committedStop?.observation === observation else { return nil }
+            return committedStop?.deadline
+        }
+        fileprivate func committedStopPermit(_ capability: InstallationCommittedStop) throws -> InstallationCommandPermit {
+            try withCommittedStop(capability) { store in
+                guard !commandsClaimed else { throw CustodyRecordError.fenced }
+                try store.locked {
+                    try validateLocked(store, capability.deadline)
+                    try store.validateInstallationCommand(capability.observation.binding)
+                }
+                commandsClaimed = true
+                return InstallationCommandPermit(staged: capability.observation)
+            }
+        }
+        /// Retire a failed/cancelled/timed-out bounded command family without
+        /// converting its outcome to success or granting another command claim.
+        func retireCommittedCandidateStop(_ capability: InstallationCommittedStop,
+            after retired: RetainedCleanupRegistry.StagedRecoveryRetirement) throws {
+            let evidence = try retired.validate()
+            guard evidence.observation === capability.observation else { throw CustodyRecordError.fenced }
+            try owner.validateStagedCommandAliasesRetired()
+            let leases = try owner.retainStagedCommandCompletionLeases(mode: .installationStagedStop)
+            try withCommittedStop(capability, completionLeases: leases) { store in
+                guard commandsClaimed else { throw CustodyRecordError.fenced }
+                try store.locked {
+                    try validateLocked(store, capability.deadline, command: true)
+                    try refreshRecoveryPins(evidence, store: store, deadline: capability.deadline, diagnosticOnly: false)
+                    try validateLocked(store, capability.deadline)
+                }
+                commandsClaimed = false; committedStopRetired = true
+            }
+        }
+        func completeCommittedCandidateStop(_ capability: InstallationCommittedStop,
+            after retired: RetainedCleanupRegistry.StagedCommandCompletion) throws -> InstallationCommittedStopCompletion {
+            let evidence = try retired.validate(operation: .bootout)
+            guard evidence.observation === capability.observation else { throw CustodyRecordError.fenced }
+            try owner.validateStagedCommandAliasesRetired()
+            let leases = try owner.retainStagedCommandCompletionLeases(mode: .installationStagedStop)
+            return try withCommittedStop(capability, completionLeases: leases) { store in
+                guard commandsClaimed else { throw CustodyRecordError.fenced }
+                try store.locked {
+                    try validateLocked(store, capability.deadline, command: true)
+                    try refreshRetiredPins(evidence, store: store, deadline: capability.deadline)
+                    try validateLocked(store, capability.deadline)
+                }
+                let completed = InstallationCommittedStopCompletion(capability, retired)
+                // Command archives advance only the command catalog. No call to
+                // proposal/publish and no candidate-stop installation receipt.
+                commandsClaimed = false; committedStopRetired = true
+                committedStopCompletion = completed
+                return completed
+            }
+        }
+        /// No decoded control or scalar registry observation can create this.
+        /// It retains all four causal owners through exclusive reentry.
+        final class CandidateDrain {
+            fileprivate let journal: InstallationStagedJournal
+            fileprivate let acknowledgment: InstallationPrecommitSession.Stopped
+            fileprivate let delivery: StopDelivery
+            fileprivate let command: InstallationCommittedStopCompletion
+            fileprivate let retirement: RetainedCleanupRegistry.InstallationStagedStopRetirement
+            fileprivate let registry: RetainedCleanupRegistry
+            fileprivate let pins: StoppedPins
+            fileprivate init(_ journal: InstallationStagedJournal,
+                acknowledgment: InstallationPrecommitSession.Stopped, delivery: StopDelivery,
+                command: InstallationCommittedStopCompletion,
+                retirement: RetainedCleanupRegistry.InstallationStagedStopRetirement,
+                registry: RetainedCleanupRegistry, pins: StoppedPins) {
+                self.journal = journal; self.acknowledgment = acknowledgment; self.delivery = delivery
+                self.command = command; self.retirement = retirement; self.registry = registry; self.pins = pins
+            }
+        }
+        final class StoppedRecoveryIntent {
+            private enum Evidence { case committed(CandidateDrain), readiness(ReadinessCandidateDrain) }
+            private let evidence: Evidence
+            private let lock = NSLock()
+            private var claimed = false
+            var deadline: MonotonicDeadline {
+                switch evidence {
+                case .committed(let drain): return drain.acknowledgment.deadline
+                case .readiness(let drain): return drain.acknowledgment.deadline
+                }
+            }
+            fileprivate init(_ drain: CandidateDrain) { evidence = .committed(drain) }
+            fileprivate init(_ drain: ReadinessCandidateDrain) { evidence = .readiness(drain) }
+            func revalidate(for owner: InstallationTransactionOwner) throws {
+                switch evidence {
+                case .committed(let drain):
+                    guard drain.journal.owner === owner else { throw CustodyRecordError.fenced }
+                    try drain.journal.validateCandidateDrain(drain)
+                case .readiness(let drain):
+                    guard drain.journal.owner === owner else { throw CustodyRecordError.fenced }
+                    try drain.journal.validateReadinessCandidateDrain(drain)
+                }
+            }
+            func matchesCommittedDrain(_ drain: CandidateDrain) -> Bool {
+                guard case .committed(let original) = evidence else { return false }
+                return original === drain
+            }
+            func matchesReadinessDrain(_ drain: ReadinessCandidateDrain) -> Bool {
+                guard case .readiness(let original) = evidence else { return false }
+                return original === drain
+            }
+            func claim(for owner: InstallationTransactionOwner) throws {
+                try revalidate(for: owner)
+                guard lock.try() else { throw CustodyRecordError.busy }; defer { lock.unlock() }
+                guard !claimed else { throw CustodyRecordError.fenced }; claimed = true
+            }
+        }
+        private var candidateDrain: CandidateDrain?
+        private var drainAttempted = false
+        private var recoveryIntentIssued = false
+        /// The successful bootout completion is journal-owned, so a caller cannot
+        /// substitute another handle or a failed-command retirement here.
+        func committedCandidateDrain(retirement: RetainedCleanupRegistry.InstallationStagedStopRetirement,
+            registry: RetainedCleanupRegistry) throws -> CandidateDrain {
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            let retainedDelivery = continuationRecovery; mutex.unlock()
+            guard let acknowledgment = retainedDelivery?.observation.0 else { throw CustodyRecordError.fenced }
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, failed, pending == nil, !drainAttempted,
+                  terminalProgress == .notAttempted, committedStopRetired, !commandsClaimed,
+                  !committedStopFailed, let command = committedStopCompletion,
+                  command.capability === committedStop, let delivery = continuationRecovery,
+                  current == delivery.control, acknowledgment.control == current,
+                  current.phase == .recovery, current.readinessCommit != nil,
+                  current.step?.action == .readinessCommit, current.step?.status == .complete,
+                  command.capability.deadline.absoluteUptimeNanoseconds == acknowledgment.deadline.absoluteUptimeNanoseconds else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            // This bounded slice handles the original normal-started stream,
+            // before coordination cleanup. Cleanup cuts need their own retained
+            // causal reconciliation; they cannot be silently adopted here.
+            drainAttempted = true
+            let pins = stoppedPins(); mutex.unlock()
+            let drain = CandidateDrain(self, acknowledgment: acknowledgment, delivery: delivery,
+                command: command, retirement: retirement, registry: registry, pins: pins)
+            try delivery.validateCompleted(acknowledgment)
+            try retirement.revalidate(for: owner, registry: registry)
+            try validateStoppedPins(pins, deadline: acknowledgment.deadline)
+            try slots.revalidateStopped(for: owner, acknowledgment: acknowledgment, delivery: delivery)
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard !serializing, failed, pending == nil, candidateDrain == nil,
+                  metadataGeneration == pins.generation, current == pins.control,
+                  terminalProgress == .notAttempted, committedStopCompletion === command,
+                  continuationRecovery === delivery else { throw CustodyRecordError.fenced }
+            candidateDrain = drain
+            return drain
+        }
+        func stoppedRecoveryIntent(after drain: CandidateDrain) throws -> StoppedRecoveryIntent {
+            try validateCandidateDrain(drain)
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard candidateDrain === drain, !recoveryIntentIssued else { throw CustodyRecordError.fenced }
+            recoveryIntentIssued = true
+            return StoppedRecoveryIntent(drain)
+        }
+        private func validateCandidateDrain(_ drain: CandidateDrain) throws {
+            guard drain.journal === self, !drain.acknowledgment.deadline.hasExpired else { throw CustodyRecordError.fenced }
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            let valid = !serializing && failed && pending == nil && candidateDrain === drain
+                && terminalProgress == .notAttempted && metadataGeneration == drain.pins.generation
+                && current == drain.pins.control && committedStopCompletion === drain.command
+                && continuationRecovery === drain.delivery && committedStopRetired && !commandsClaimed
+            mutex.unlock()
+            guard valid else { throw CustodyRecordError.fenced }
+            try drain.delivery.validateCompleted(drain.acknowledgment)
+            try drain.retirement.revalidate(for: owner, registry: drain.registry)
+            try validateStoppedPins(drain.pins, deadline: drain.acknowledgment.deadline)
+            try slots.revalidateStopped(for: owner, acknowledgment: drain.acknowledgment, delivery: drain.delivery)
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard !serializing, pending == nil, candidateDrain === drain, failed,
+                  metadataGeneration == drain.pins.generation, current == drain.pins.control,
+                  terminalProgress == .notAttempted else { throw CustodyRecordError.fenced }
+        }
+        final class ReadinessCandidateDrain {
+            fileprivate let journal: InstallationStagedJournal
+            fileprivate let acknowledgment: InstallationPrecommitSession.Stopped
+            fileprivate let delivery: StopDelivery
+            fileprivate let command: RetainedCleanupRegistry.StagedCommandCompletion
+            fileprivate let retirement: RetainedCleanupRegistry.InstallationStagedStopRetirement
+            fileprivate let registry: RetainedCleanupRegistry
+            fileprivate let pins: StoppedPins
+            fileprivate init(_ journal: InstallationStagedJournal, acknowledgment: InstallationPrecommitSession.Stopped,
+                delivery: StopDelivery, command: RetainedCleanupRegistry.StagedCommandCompletion,
+                retirement: RetainedCleanupRegistry.InstallationStagedStopRetirement,
+                registry: RetainedCleanupRegistry, pins: StoppedPins) {
+                self.journal = journal; self.acknowledgment = acknowledgment; self.delivery = delivery
+                self.command = command; self.retirement = retirement; self.registry = registry; self.pins = pins
+            }
+        }
+        private var readinessStopCompletion: RetainedCleanupRegistry.StagedCommandCompletion?
+        private var readinessDrain: ReadinessCandidateDrain?
+        func readinessCandidateDrain(retirement: RetainedCleanupRegistry.InstallationStagedStopRetirement,
+            registry: RetainedCleanupRegistry) throws -> ReadinessCandidateDrain {
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            let retainedDelivery = continuationRecovery; mutex.unlock()
+            guard let delivery = retainedDelivery, delivery.isReadinessOnly,
+                  let acknowledgment = delivery.observation.0 else { throw CustodyRecordError.fenced }
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !failed, pending == nil, !drainAttempted,
+                  terminalProgress == .notAttempted, !commandsClaimed, stop != nil,
+                  let command = readinessStopCompletion, continuationRecovery === delivery,
+                  current.phase == .recovery, current.readinessCommit == nil,
+                  current.step?.action == .candidateStop, current.step?.status == .complete,
+                  current.step?.ordinal == 16 else { mutex.unlock(); throw CustodyRecordError.fenced }
+            drainAttempted = true; failed = true
+            let pins = stoppedPins(); mutex.unlock()
+            let drain = ReadinessCandidateDrain(self, acknowledgment: acknowledgment, delivery: delivery,
+                command: command, retirement: retirement, registry: registry, pins: pins)
+            try delivery.validateCompleted(acknowledgment)
+            try retirement.revalidate(for: owner, registry: registry)
+            try validateStoppedPins(pins, deadline: acknowledgment.deadline)
+            try slots.revalidateStopped(for: owner, acknowledgment: acknowledgment, delivery: delivery)
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard !serializing, failed, pending == nil, readinessDrain == nil,
+                  metadataGeneration == pins.generation, current == pins.control,
+                  readinessStopCompletion === command, continuationRecovery === delivery else { throw CustodyRecordError.fenced }
+            readinessDrain = drain
+            return drain
+        }
+        func stoppedRecoveryIntent(after drain: ReadinessCandidateDrain) throws -> StoppedRecoveryIntent {
+            try validateReadinessCandidateDrain(drain)
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard readinessDrain === drain, !recoveryIntentIssued else { throw CustodyRecordError.fenced }
+            recoveryIntentIssued = true
+            return StoppedRecoveryIntent(drain)
+        }
+        private func validateReadinessCandidateDrain(_ drain: ReadinessCandidateDrain) throws {
+            guard drain.journal === self, !drain.acknowledgment.deadline.hasExpired else { throw CustodyRecordError.fenced }
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            let valid = !serializing && failed && pending == nil && readinessDrain === drain
+                && terminalProgress == .notAttempted && metadataGeneration == drain.pins.generation
+                && current == drain.pins.control && readinessStopCompletion === drain.command
+                && continuationRecovery === drain.delivery && !commandsClaimed && stop != nil
+            mutex.unlock()
+            guard valid else { throw CustodyRecordError.fenced }
+            try drain.delivery.validateCompleted(drain.acknowledgment)
+            try drain.retirement.revalidate(for: owner, registry: drain.registry)
+            try validateStoppedPins(drain.pins, deadline: drain.acknowledgment.deadline)
+            try slots.revalidateStopped(for: owner, acknowledgment: drain.acknowledgment, delivery: drain.delivery)
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard !serializing, failed, pending == nil, readinessDrain === drain,
+                  metadataGeneration == drain.pins.generation, current == drain.pins.control,
+                  terminalProgress == .notAttempted else { throw CustodyRecordError.fenced }
+        }
+        fileprivate struct StoppedPins {
+            let generation: UInt64
+            let control: InstallationControlRecord
+            let controlPin: InstallationStagedAdmissionIntent.Evidence
+            let catalog: InstallationStagedAdmissionIntent.Evidence
+            let receipts: [String: InstallationStagedAdmissionIntent.Evidence]
+            let chain: [InstallationStepReceipt]
+        }
+        // Caller takes the short journal mutex solely for this immutable snapshot.
+        private func stoppedPins() -> StoppedPins {
+            StoppedPins(generation: metadataGeneration, control: current,
+                controlPin: .init(node: controlPin, bytes: anchor.bytes), catalog: catalogPin,
+                receipts: receiptPins, chain: chain)
+        }
+        private var stoppedPinsReading = false
+        private func validateStoppedPins(_ pins: StoppedPins, deadline: MonotonicDeadline) throws {
+            guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !stoppedPinsReading, metadataGeneration == pins.generation else {
+                mutex.unlock(); throw CustodyRecordError.busy
+            }
+            // One reader owns this exact catalog guard description. flock on
+            // the same open description is not mutual exclusion between readers.
+            stoppedPinsReading = true; mutex.unlock()
+            defer { mutex.lock(); stoppedPinsReading = false; mutex.unlock() }
+            try owner.revalidate()
+            let uid = directory.identity.owner
+            func validateNode(_ node: Node, parent: Int32, name: String, isDirectory: Bool) throws {
+                guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+                let observed = try CustodyCatalogStore.node(node.descriptor, uid: uid, directory: isDirectory)
+                var named = stat()
+                guard observed.identity.matchesStableNode(node.identity), observed.acl == node.acl,
+                      fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                      FileIdentity(named).matchesStableNode(node.identity), isDirectory || named.st_nlink == 1 else {
+                    throw CustodyRecordError.unsafeMetadata
+                }
+            }
+            func validatePin(_ pin: InstallationStagedAdmissionIntent.Evidence, parent: Int32, name: String) throws {
+                try validateNode(pin.node, parent: parent, name: name, isDirectory: false)
+                var before = stat(), after = stat()
+                guard fstat(pin.node.descriptor.value, &before) == 0, before.st_size == pin.bytes.count,
+                      pin.bytes.count <= InstallationDocumentPreimage.maximumBytes else { throw CustodyRecordError.conflict }
+                var bytes = Data(count: pin.bytes.count)
+                try bytes.withUnsafeMutableBytes { buffer in
+                    var offset = 0
+                    while offset < buffer.count {
+                        guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+                        let count = pread(pin.node.descriptor.value, buffer.baseAddress!.advanced(by: offset), buffer.count - offset, off_t(offset))
+                        if count < 0 && errno == EINTR { continue }
+                        guard count > 0 else { throw CustodyRecordError.persistence(errno) }; offset += count
+                    }
+                }
+                guard fstat(pin.node.descriptor.value, &after) == 0, before.st_size == after.st_size,
+                      before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+                      before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+                      before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+                      before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+                      bytes == pin.bytes else { throw CustodyRecordError.conflict }
+                try validateNode(pin.node, parent: parent, name: name, isDirectory: false)
+            }
+            try validateNode(directory, parent: intent.root.value, name: "custody", isDirectory: true)
+            try validateNode(guardFile, parent: directory.descriptor.value, name: "catalog.lock", isDirectory: false)
+            // This nonblocking catalog turn contains metadata reads only. Owner,
+            // publisher, registry and session checks run outside the catalog lock.
+            guard flock(guardFile.descriptor.value, LOCK_EX | LOCK_NB) == 0 else { throw CustodyRecordError.busy }
+            do {
+                defer { _ = flock(guardFile.descriptor.value, LOCK_UN) }
+                try validateNode(guardFile, parent: directory.descriptor.value, name: "catalog.lock", isDirectory: false)
+                try validateNode(receipts, parent: directory.descriptor.value, name: "receipts", isDirectory: true)
+                try validatePin(pins.controlPin, parent: directory.descriptor.value, name: InstallationControlRecord.filename)
+                try validatePin(pins.catalog, parent: directory.descriptor.value, name: "catalog.json")
+                guard try InstallationControlRecord.decode(pins.controlPin.bytes, profile: owner.validationProfile) == pins.control,
+                      try CustodyCatalog.decode(pins.catalog.bytes).entries.isEmpty,
+                      try InstallationStagedAdmissionIntent.names(receipts.descriptor.value) == Set(pins.receipts.keys) else {
+                    throw CustodyRecordError.conflict
+                }
+                try pins.control.validateReceiptChain(pins.chain, profile: owner.validationProfile)
+                for (name, pin) in pins.receipts { try validatePin(pin, parent: receipts.descriptor.value, name: name) }
+                try validateNode(directory, parent: intent.root.value, name: "custody", isDirectory: true)
+            }
+            try owner.revalidate()
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+        }
         func candidateStopIntent(admission stop: InstallationStagedStopAdmission,
                                  deadline: MonotonicDeadline) throws -> InstallationStagedCommandObservation {
             guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
@@ -2838,7 +4895,10 @@ extension CustodyCatalogStore {
                   (self.stop == nil && current.phase == .active)
                     || (self.stop === stop && current.phase == .recovery && reconciledStart),
                   current.step?.status == .complete,
-                  [.openStagedAdmission, .bootstrapCandidate, .kickstartCandidate].contains(current.step!.action) else {
+                  [.openStagedAdmission, .bootstrapCandidate, .kickstartCandidate, .candidateReady].contains(current.step!.action),
+                  current.step?.action != .candidateReady || (candidateReady != nil
+                    && deadline.absoluteUptimeNanoseconds <= candidateReady!.deadline.absoluteUptimeNanoseconds
+                    && !candidateReady!.deadline.hasExpired) else {
                 mutex.unlock(); throw CustodyRecordError.fenced
             }
             let generation = metadataGeneration; mutex.unlock()
@@ -2855,7 +4915,10 @@ extension CustodyCatalogStore {
                   (self.stop == nil && current.phase == .active)
                     || (self.stop === stop && current.phase == .recovery && reconciledStart),
                   current.step?.status == .complete,
-                  [.openStagedAdmission, .bootstrapCandidate, .kickstartCandidate].contains(current.step!.action) else {
+                  [.openStagedAdmission, .bootstrapCandidate, .kickstartCandidate, .candidateReady].contains(current.step!.action),
+                  current.step?.action != .candidateReady || (candidateReady != nil
+                    && deadline.absoluteUptimeNanoseconds <= candidateReady!.deadline.absoluteUptimeNanoseconds
+                    && !candidateReady!.deadline.hasExpired) else {
                 mutex.unlock(); throw CustodyRecordError.fenced
             }
             self.stop = stop; metadataGeneration += 1; mutex.unlock()
@@ -2864,7 +4927,7 @@ extension CustodyCatalogStore {
                     let recovery = InstallationControlRecord(revision: current.revision + 1, phase: .recovery,
                         state: current.state, transaction: current.transaction, step: current.step,
                         latestReceiptDigest: current.latestReceiptDigest, readinessCommit: nil, recoveryReason: .readinessFailed)
-                    try current.validateReplacement(recovery, receipts: chain)
+                    try current.validateReplacement(recovery, receipts: chain, profile: owner.validationProfile)
                     try store.locked { try validateLocked(store, deadline); try replaceControl(recovery, store: store, deadline: deadline) }
                 }
                 _ = try publish(proposal(.candidateStop, status: .intent), store: store, deadline: deadline)
@@ -2872,6 +4935,19 @@ extension CustodyCatalogStore {
             }
         }
         fileprivate func validate(_ observation: InstallationStagedCommandObservation, deadline: MonotonicDeadline) throws {
+            if observation.binding.isCommittedStop {
+                mutex.lock(); let retained = serializing ? nil : committedStop; mutex.unlock()
+                guard let capability = retained, capability.observation === observation else { throw CustodyRecordError.fenced }
+                let bounded = deadline.absoluteUptimeNanoseconds < capability.deadline.absoluteUptimeNanoseconds
+                    ? deadline : capability.deadline
+                try withCommittedStop(capability, deadline: bounded) { store in
+                    try store.locked {
+                        try validateLocked(store, bounded, command: commandsClaimed)
+                        try store.validateInstallationCommand(observation.binding)
+                    }
+                }
+                return
+            }
             try observation.ready?.revalidate(for: self)
             try serialized(deadline: deadline) { store in
                 guard current == observation.binding.control else { throw CustodyRecordError.fenced }
@@ -2885,7 +4961,7 @@ extension CustodyCatalogStore {
             admission candidate: InstallationStagedAdmission?, stop candidateStop: InstallationStagedStopAdmission?,
             deadline: MonotonicDeadline) throws -> InstallationCommandPermit {
             try serialized(deadline: deadline) { store in
-                guard !commandsClaimed, current == observation.binding.control else { throw CustodyRecordError.fenced }
+                guard !observation.binding.isCommittedStop, !commandsClaimed, current == observation.binding.control else { throw CustodyRecordError.fenced }
                 if let stop {
                     guard candidate == nil, candidateStop === stop, observation.binding.stagedMode == .installationStagedStop else { throw CustodyRecordError.fenced }
                     try stop.validateOwner(owner)
@@ -2931,7 +5007,7 @@ extension CustodyCatalogStore {
                     let next = InstallationControlRecord(revision: current.revision + 1, phase: .recovery,
                         state: current.state, transaction: current.transaction, step: current.step,
                         latestReceiptDigest: current.latestReceiptDigest, readinessCommit: nil, recoveryReason: .interrupted)
-                    try current.validateReplacement(next, receipts: chain)
+                    try current.validateReplacement(next, receipts: chain, profile: owner.validationProfile)
                     try replaceControl(next, store: store, deadline: deadline)
                 }
                 let capability = InstallationStagedRecovery(observation: try observation(store, deadline: deadline), stop: stop)
@@ -3010,6 +5086,31 @@ extension CustodyCatalogStore {
         }
         /// Accept only exact successors from real registry archives. Recovery
         /// preserves all outcomes/reasons; this does not reuse success validation.
+        fileprivate func validateClosedStopArchives(_ evidence: ClosedStopArchiveEvidence,
+            closed: ClosedInstallationStagedStops, request: UnvalidatedCustodyRequest) throws {
+            guard closed.belongs(to: owner), !closed.deadline.hasExpired else { throw CustodyRecordError.fenced }
+            guard mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, terminalProgress == .notAttempted, evidence.session === self,
+                  evidence.commands.contains(where: { $0.request == request }),
+                  !evidence.commands.isEmpty, evidence.commands.count <= 128 else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            let pins = stoppedPins(); mutex.unlock()
+            try validateStoppedPins(pins, deadline: closed.deadline)
+            for command in evidence.commands {
+                guard command.journal.phase == .terminal,
+                      command.journal.binding == (try CustodyRecordBinding(command.request.binding)),
+                      command.request.inputSHA256 == CustodyRecordBinding.digest(try evidence.binding.encode()),
+                      command.request.authority == evidence.binding.stagedMode else { throw CustodyRecordError.fenced }
+                for (name, pin) in command.files {
+                    guard let actual = pins.receipts[name], actual.node.identity == pin.node.identity,
+                          actual.node.acl == pin.node.acl, actual.bytes == pin.bytes else { throw CustodyRecordError.conflict }
+                }
+            }
+            guard mutex.try() else { throw CustodyRecordError.busy }; defer { mutex.unlock() }
+            guard !serializing, terminalProgress == .notAttempted, metadataGeneration == pins.generation,
+                  current == pins.control, !closed.deadline.hasExpired else { throw CustodyRecordError.fenced }
+        }
         private func refreshRecoveryPins(_ evidence: StagedRetirementEvidence,
             store: CustodyCatalogStore, deadline: MonotonicDeadline, diagnosticOnly: Bool) throws {
             guard let last = evidence.commands.last, evidence.commands.count <= 128,
@@ -3053,6 +5154,31 @@ extension CustodyCatalogStore {
                                deadline: MonotonicDeadline) throws -> InstallationControlRecord {
             try completeCommand(.bootstrapCandidate, operation: .bootstrap, after: retired, deadline: deadline)
         }
+        #if SHADOW_SYNC_TESTING
+        func completeKickstart(after retired: RetainedCleanupRegistry.StagedCommandCompletion,
+                               deadline: MonotonicDeadline,
+                               observation: InstallationKickstartFailureObservation? = nil) throws -> InstallationControlRecord {
+            var stage: InstallationKickstartFailureObservation.Stage = .deadlineRead
+            do {
+                let readinessDeadline = try retired.readinessDeadline()
+                stage = .completionCommand
+                let completed = try completeCommand(.kickstartCandidate, operation: .kickstart, after: retired, deadline: deadline)
+                stage = .retirementClock
+                guard !readinessDeadline.hasExpired else { throw CustodyRecordError.busy }
+                stage = .sessionLookup
+                try lockReadiness(deadline); let session = readinessClosed ? nil : readinessSession; readinessMutex.unlock()
+                guard let session else { throw CustodyRecordError.fenced }
+                stage = .sessionAnchor
+                try session.anchorAfterKickstart(completed, deadline: readinessDeadline)
+                return completed
+            } catch {
+                let savedDiagnosticErrno = errno
+                observation?.capture(stage: stage, error: error)
+                errno = savedDiagnosticErrno
+                throw error
+            }
+        }
+        #else
         func completeKickstart(after retired: RetainedCleanupRegistry.StagedCommandCompletion,
                                deadline: MonotonicDeadline) throws -> InstallationControlRecord {
             let readinessDeadline = try retired.readinessDeadline()
@@ -3063,6 +5189,7 @@ extension CustodyCatalogStore {
             try session.anchorAfterKickstart(completed, deadline: readinessDeadline)
             return completed
         }
+        #endif
         func completeCandidateStop(after retired: RetainedCleanupRegistry.StagedCommandCompletion,
                                    deadline: MonotonicDeadline) throws -> InstallationControlRecord {
             try completeCommand(.candidateStop, operation: .bootout, after: retired, deadline: deadline)
@@ -3088,6 +5215,12 @@ extension CustodyCatalogStore {
                 }
                 let completed = try publish(proposal(action, status: .complete), store: store, deadline: deadline)
                 commandsClaimed = false
+                if action == .candidateStop, let delivery = continuationRecovery, delivery.isReadinessOnly {
+                    guard evidence.observation.binding.control == delivery.control,
+                          readinessStopCompletion == nil, let acknowledgment = delivery.observation.0 else { throw CustodyRecordError.fenced }
+                    try delivery.validateCompleted(acknowledgment)
+                    readinessStopCompletion = retired
+                }
                 return completed
             }
         }
@@ -3148,10 +5281,28 @@ extension CustodyCatalogStore {
             self.mayHaveExecuted = mayHaveExecuted
         }
     }
+    /// Actual registry archive custody without retaining the completed journal
+    /// or original operation owner through the process-wide registry forever.
+    /// A live original session is still mandatory whenever the proof is used.
+    final class ClosedStopArchiveEvidence {
+        fileprivate weak var session: InstallationStagedJournal?
+        fileprivate let binding: InstallationCommandBinding
+        fileprivate let commands: [StagedRetiredCommand]
+        private let failure: CommandCustodyPhaseFailure
+        fileprivate init(_ evidence: StagedRetirementEvidence) {
+            session = evidence.observation.session; binding = evidence.observation.binding
+            commands = evidence.commands; failure = evidence.failure
+        }
+        func validateClosedStops(_ closed: ClosedInstallationStagedStops, request: UnvalidatedCustodyRequest) throws {
+            guard let session, !failure.cleanupPending else { throw CustodyRecordError.fenced }
+            try session.validateClosedStopArchives(self, closed: closed, request: request)
+            guard !failure.cleanupPending else { throw CustodyRecordError.fenced }
+        }
+    }
     final class StagedRetirementEvidence {
         fileprivate let observation: InstallationStagedCommandObservation
         fileprivate let commands: [StagedRetiredCommand]
-        private let failure: CommandCustodyPhaseFailure
+        fileprivate let failure: CommandCustodyPhaseFailure
         fileprivate init(observation: InstallationStagedCommandObservation, commands: [StagedRetiredCommand],
                          failure: CommandCustodyPhaseFailure) {
             self.observation = observation; self.commands = commands; self.failure = failure
@@ -3159,6 +5310,10 @@ extension CustodyCatalogStore {
         func validateNoPending() throws {
             guard !failure.cleanupPending else { throw CustodyRecordError.fenced }
         }
+        func validateCommittedRequest(_ request: UnvalidatedCustodyRequest) throws {
+            try observation.binding.validateCommittedRequest(request)
+        }
+        func closedStopArchiveEvidence() -> ClosedStopArchiveEvidence { ClosedStopArchiveEvidence(self) }
     }
     fileprivate func captureStagedRetirement(request: UnvalidatedCustodyRequest,
         journal: CustodyJournal, caller: Data, mayHaveExecuted: Bool) throws -> StagedRetiredCommand {

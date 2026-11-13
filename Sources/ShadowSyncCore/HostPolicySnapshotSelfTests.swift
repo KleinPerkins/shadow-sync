@@ -9,9 +9,11 @@ public enum HostPolicySnapshotSelfTestRunner {
 
     /// Shared synthetic policy bytes for the real discovery transport fixture.
     /// This does not qualify the deployed AWA module or host policy.
-    static func installDiscoveryFixture(home: String) throws -> Data {
+    enum DiscoveryFixtureLayout: Equatable { case products, body3 }
+
+    static func installDiscoveryFixture(home: String, layout: DiscoveryFixtureLayout = .products) throws -> Data {
         _ = try EffectiveAccount.isolated(homeDirectory: home)
-        let fixture = try Fixture()
+        let fixture = try Fixture(layout: layout)
         do {
             for (name, data) in fixture.contents {
                 let target = home + "/" + name
@@ -1906,6 +1908,78 @@ public enum HostPolicySnapshotSelfTestRunner {
                     lock.lock(); defer { lock.unlock() }; return (lines, formats)
                 }
             }
+            // The observation must retain the actual throw, restore nesting,
+            // preserve errno, and emit no diagnostic from successful work.
+            typealias Busy = DiscoveryFixtureDiagnostic.RepositoryBusyObservation
+            final class BusySentinel: Error {}
+            let sentinel = BusySentinel()
+            var observed: [Busy.Snapshot] = []
+            do {
+                try Busy.observe(enabled: true, failure: { observed.append($0) }) {
+                    Busy.transition(.admit)
+                    do {
+                        try Busy.observe(enabled: true, failure: { observed.append($0) }) {
+                            Busy.transition(.executing); Busy.busy(.catalogFileLock)
+                            errno = EBUSY; throw sentinel
+                        }
+                    } catch { try require(error as AnyObject === sentinel && errno == EBUSY,
+                        "busy observation changed nested error or errno") }
+                    Busy.busy(.catalogMutex); errno = EAGAIN; throw sentinel
+                }
+            } catch { try require(error as AnyObject === sentinel && errno == EAGAIN,
+                "busy observation changed original error or errno") }
+            try require(observed == [.init(transition: .executing, site: .catalogFileLock),
+                                     .init(transition: .admit, site: .catalogMutex)],
+                        "busy observation lost scoped throwing boundary")
+            Busy.transition(.executing); Busy.busy(.catalogFileLock) // No stale scope may survive.
+            do {
+                try Busy.observe(enabled: true, failure: { observed.append($0) }) { throw sentinel }
+            } catch { try require(error as AnyObject === sentinel, "busy observation replaced error") }
+            try require(observed.last == Busy.Snapshot(), "busy observation leaked a preceding attempt")
+            Busy.observe(enabled: true, failure: { observed.append($0) }) { Busy.busy(.catalogMutex) }
+            do {
+                try Busy.observe(enabled: false, failure: { observed.append($0) }) { throw sentinel }
+            } catch { try require(error as AnyObject === sentinel, "disabled observer changed error") }
+            try require(observed.count == 3, "success or disabled observer published failure")
+            let frame = "DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE event=spawnTargetFailure error=busy"
+                + " transition=admit busy_site=catalogFileLock\n"
+            let projected = DiscoveryFixtureDiagnostic.repositoryCustodianFailureProjection(Data(frame.utf8))
+            try require(projected?.event == "spawnTargetFailure" && projected?.error == "busy"
+                && projected?.detail == Busy.Snapshot(transition: .admit, site: .catalogFileLock),
+                "closed custody busy frame lost exact fields")
+            for malformed in [String(frame.dropLast()), "prefix" + frame, frame + "tail\n",
+                frame.replacingOccurrences(of: "catalogFileLock", with: "/fixture/untrusted"),
+                frame.replacingOccurrences(of: "transition=admit", with: "transition=admit extra=true"),
+                frame.replacingOccurrences(of: "error=busy", with: "error=fenced")] {
+                try require(DiscoveryFixtureDiagnostic.repositoryCustodianFailureProjection(Data(malformed.utf8)) == nil,
+                            "custody busy projection accepted non-closed output")
+            }
+            try require(DiscoveryFixtureDiagnostic.repositoryCustodianFailureProjection(Data(("target output\n" + frame).utf8)) != nil,
+                        "complete final custody frame was lost after bounded target output")
+            // The expected wrong-origin control runs before the observed
+            // parallel failure. It may consume only ordinary evidence.
+            typealias FailureSelection = DiscoveryFixtureDiagnostic.RepositoryResultFailureSelection
+            let selection = FailureSelection()
+            try require(!selection.take(enabled: false, observeCustodianFailure: false)
+                && !selection.take(enabled: false, observeCustodianFailure: true)
+                && selection.take(enabled: true, observeCustodianFailure: false)
+                && !selection.take(enabled: true, observeCustodianFailure: false)
+                && selection.take(enabled: true, observeCustodianFailure: true)
+                && !selection.take(enabled: true, observeCustodianFailure: true),
+                "earlier refusal consumed observed evidence or disabled selection consumed a slot")
+            let reversed = FailureSelection()
+            try require(reversed.take(enabled: true, observeCustodianFailure: true)
+                && reversed.take(enabled: true, observeCustodianFailure: false),
+                "observed evidence consumed ordinary first-failure slot")
+            let concurrentSelection = FailureSelection(), selectedFailures = TraceProbe()
+            DispatchQueue.concurrentPerform(iterations: 1_000) { index in
+                let observed = index % 2 == 0
+                if concurrentSelection.take(enabled: true, observeCustodianFailure: observed) {
+                    selectedFailures.append(observed ? "observed" : "ordinary")
+                }
+            }
+            try require(selectedFailures.snapshot().0.sorted() == ["observed", "ordinary"],
+                "concurrent repository failure selection exceeded its two closed slots")
             typealias Sink = DiscoveryFixtureDiagnostic.Sink
             typealias Samples = DiscoveryFixtureDiagnostic.SampleBudget
             let sampled = TraceProbe(), unsampled = TraceProbe()
@@ -1997,6 +2071,108 @@ public enum HostPolicySnapshotSelfTestRunner {
                 let checked = Sink(enabled: true, writer: { probe.append($0) })
                 checked.emit(oversized); checked.emit("later diagnostic\n")
                 try require(probe.snapshot().0 == [Sink.suppression], "oversized diagnostic escaped UTF-8 bound")
+            }
+            // A saturated suite trace cannot hide costs from the one exact
+            // selection attempt. Component timings overlap helper timings;
+            // fixed stage rows retain that distinction instead of summing them.
+            let costProbe = TraceProbe()
+            let costs = DiscoveryFixtureDiagnostic.CatalogCostObservation(
+                output: Sink(enabled: true, writer: { costProbe.append($0) }))
+            costs.captureHelper(started: 0, ended: 999) // outside scope: ignored
+            costs.measure(.setup) {
+                costs.captureSetup(started: 0, ended: 100, milestones: [10, 30, 60])
+                costs.captureSession(started: 0, ended: 100, milestones: [10, 30, 60])
+            }
+            enum CostFailure: Error { case expected }
+            do {
+                try costs.measure(.catalog) {
+                    costs.captureHelper(started: 0, ended: 200)
+                    costs.captureHelper(started: 200, ended: 500)
+                    costs.captureSession(started: 0, ended: 10, milestones: [])
+                    throw CostFailure.expected
+                }
+                throw Failure.assertion("cost observation swallowed original failure")
+            } catch CostFailure.expected {}
+            try require(costProbe.snapshot().0.isEmpty, "cost observation emitted during measured work")
+            costs.finish(succeeded: false)
+            costs.finish(succeeded: false)
+            let costLines = costProbe.snapshot().0
+            try require(costLines.count == 6
+                && costLines[0].contains("failed_stage=1 prebudget_ns=10 publisher_ns=20 snapshot_ns=30 session_binder_ns=40")
+                && costLines[1].contains("stage=0 calls=1")
+                && costLines[1].contains("helpers=0 helper_ns=0 sessions=1 scratch_ns=10 snapshot_ns=20 resources_ns=30 postflight_ns=40")
+                && costLines[2].contains("stage=1 calls=1")
+                && costLines[2].contains("helpers=2 helper_ns=500 sessions=1 scratch_ns=10 snapshot_ns=0 resources_ns=0 postflight_ns=0")
+                && costLines[3].contains("stage=2 calls=0 wall_ns=0 helpers=0 helper_ns=0 sessions=0"),
+                "selection costs mixed stages, lost partial failures or emitted more than once")
+            try require(costLines.allSatisfy { $0.utf8.count <= Sink.maximumLineBytes }
+                && costLines.joined().utf8.count <= 6 * Sink.maximumLineBytes,
+                "selection aggregate exceeded its six-line byte ceiling")
+            let successProbe = TraceProbe()
+            let successfulCosts = DiscoveryFixtureDiagnostic.CatalogCostObservation(
+                output: Sink(enabled: true, writer: { successProbe.append($0) }))
+            let returned = successfulCosts.measure(.bind) { 7 }
+            successfulCosts.finish(succeeded: true); successfulCosts.finish(succeeded: false)
+            try require(returned == 7 && successProbe.snapshot().0.isEmpty,
+                "cost observation changed success or emitted after successful closure")
+            let overflowProbe = TraceProbe()
+            let overflowCosts = DiscoveryFixtureDiagnostic.CatalogCostObservation(
+                output: Sink(enabled: true, writer: { overflowProbe.append($0) }))
+            overflowCosts.measure(.catalog) {
+                for _ in 0..<2 {
+                    overflowCosts.captureHelper(started: 0, ended: UInt64.max)
+                    overflowCosts.captureSession(started: 0, ended: UInt64.max, milestones: [])
+                }
+                overflowCosts.captureHelper(started: 2, ended: 1)
+                overflowCosts.captureSession(started: 0, ended: 1, milestones: [2])
+            }
+            overflowCosts.finish(succeeded: false)
+            try require(overflowProbe.snapshot().0.count == 6
+                && overflowProbe.snapshot().0[2].contains("helpers=2 helper_ns=\(UInt64.max) sessions=2 scratch_ns=\(UInt64.max)")
+                && overflowProbe.snapshot().0.allSatisfy { $0.utf8.count <= Sink.maximumLineBytes },
+                "cost aggregation overflowed or accepted nonmonotonic component timing")
+            // The retained failure happened after successful initial binding.
+            // Preserve those totals through pre-body rebind, body, and postflight
+            // failures; a nested failure must not be mislabeled on propagation.
+            for fault in ["rebind", "metadata", "postflight"] {
+                let probe = TraceProbe()
+                let observed = DiscoveryFixtureDiagnostic.CatalogCostObservation(
+                    output: Sink(enabled: true, writer: { probe.append($0) }))
+                observed.measure(.setup) {
+                    observed.captureSetup(started: 0, ended: 100,
+                        milestones: [10, 30, 60], deadline: 1)
+                }
+                observed.measure(.catalog) { observed.captureHelper(started: 0, ended: 200) }
+                observed.measure(.bind) { observed.captureHelper(started: 0, ended: 300) }
+                do {
+                    try observed.measure(.discoveryPolicy) {
+                        observed.captureHelper(started: 0, ended: 400)
+                        if fault == "rebind" { throw CostFailure.expected }
+                        try observed.measure(.metadata) {
+                            observed.captureHelper(started: 0, ended: 500)
+                            if fault == "metadata" { throw CostFailure.expected }
+                        }
+                        observed.captureHelper(started: 0, ended: 600)
+                        throw CostFailure.expected
+                    }
+                } catch CostFailure.expected {}
+                try require(probe.snapshot().0.isEmpty, "extended costs emitted before failure unwound")
+                observed.finish(succeeded: false); observed.finish(succeeded: false)
+                let lines = probe.snapshot().0
+                let expectedStage = fault == "metadata" ? 4 : 3
+                let policyHelpers = fault == "postflight" ? 2 : 1
+                let policyTime = fault == "postflight" ? 1_000 : 400
+                try require(lines.count == 6
+                    && lines[0].contains("failed_stage=\(expectedStage) ")
+                    && lines[2].contains("helpers=1 helper_ns=200")
+                    && lines[3].contains("helpers=1 helper_ns=300")
+                    && lines[4].contains("stage=3 calls=1")
+                    && lines[4].contains("helpers=\(policyHelpers) helper_ns=\(policyTime)")
+                    && lines[4].contains("setup_entry_remaining_ns=0 setup_end_remaining_ns=0")
+                    && lines[5].contains(fault == "rebind" ? "stage=4 calls=0" : "stage=4 calls=1")
+                    && lines[5].contains(fault == "rebind" ? "helpers=0 helper_ns=0" : "helpers=1 helper_ns=500")
+                    && lines.allSatisfy { $0.utf8.count <= Sink.maximumLineBytes },
+                    "extended costs lost initial work, nested attribution or original deadline")
             }
             let absent = DiscoveryFixtureDiagnostic.pendingBits(reason: .ioFailure, owner: nil, state: 0)
             let running = DiscoveryFixtureDiagnostic.pendingBits(reason: .ioFailure, owner: .running, state: 0)
@@ -2868,7 +3044,7 @@ public enum HostPolicySnapshotSelfTestRunner {
         let projection: [String: Any]
         private var removed = false
 
-        init() throws {
+        init(layout: DiscoveryFixtureLayout = .products) throws {
             var template = Array((try RuntimeFixtureSession.fixturePrefix("shadow-sync-policy-authority-") + "XXXXXX").utf8CString)
             guard let result = mkdtemp(&template) else { throw Failure.assertion("snapshot fixture create") }
             path = String(cString: result)
@@ -2881,15 +3057,25 @@ public enum HostPolicySnapshotSelfTestRunner {
             let overlay = Data("{\"fixture\":true}\n".utf8)
             let dispatcher = Data("#!/bin/sh\nexit 0\n".utf8)
             let module = Data("not executable python: fixture bytes only\n".utf8)
+            let governedRoot: [String: Any] = [
+                "components": layout == .products ? ["workspace"] : ["dev"],
+                "display_label": layout == .products ? "~/workspace" : "~/dev",
+                "repository_id": "fixture-owner/root",
+            ]
+            let shelves: [[String]] = layout == .products ? [["products"]] : [["personal"]]
+            let managedLocations: [[String: Any]] = layout == .products ? [] : [
+                ["kind": "awa", "components": [".local", "share", "awa", "worktrees"], "minimum_depth": 1],
+            ]
             projection = [
                 "schema": "shadow-sync-host-policy-projection/v1",
                 "source_inputs": ["worktree_policy": ["path": "owner/policy.yml", "sha256": digest(policy)],
                     "host_overlay": ["path": "owner/overlay.json", "sha256": digest(overlay)],
                     "hook_dispatcher": ["path": "owner/dispatcher", "sha256": digest(dispatcher)]],
-                "governed_root": ["components": ["workspace"], "display_label": "~/workspace", "repository_id": "fixture-owner/root"],
-                "shelves": [["products"]],
+                "governed_root": governedRoot,
+                "shelves": shelves,
                 "path_policy": ["excluded": ["."], "read_only": [String](), "artifacts": [String](), "writable": ["."]],
-                "permanent_no_touch_repository_ids": ["fixture-owner/protected"], "managed_locations": [Any](),
+                "permanent_no_touch_repository_ids": ["fixture-owner/protected"],
+                "managed_locations": managedLocations,
                 "hooks": ["foreign_markers": ["fixture-hook"], "dispatcher_base64": dispatcher.base64EncodedString(), "dispatcher_sha256": digest(dispatcher)],
                 "awa_evidence": NSNull(),
             ]

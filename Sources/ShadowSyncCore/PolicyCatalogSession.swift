@@ -195,10 +195,13 @@ final class PolicyCatalogSession: @unchecked Sendable {
         let diagnosticStart = DispatchTime.now().uptimeNanoseconds
         let diagnosticSample = DiscoveryFixtureDiagnostic.sampleRevalidation()
         let diagnosticAdmission = DiscoveryFixtureDiagnostic.currentAdmission
-        let diagnosticCollect = diagnosticSample || diagnosticAdmission != nil
+        let diagnosticCost = DiscoveryFixtureDiagnostic.currentCatalogCost
+        let diagnosticCollect = diagnosticSample || diagnosticAdmission != nil || diagnosticCost != nil
         var diagnosticMilestones: [UInt64] = []
         var diagnosticStage = DiscoveryFixtureDiagnostic.Stage.entry
         defer {
+            diagnosticCost?.captureSession(started: diagnosticStart,
+                ended: DispatchTime.now().uptimeNanoseconds, milestones: diagnosticMilestones)
             diagnosticAdmission?.capture(.session, stage: diagnosticStage,
                 started: diagnosticStart, passed: validated, milestones: diagnosticMilestones)
             if !validated || diagnosticSample {

@@ -66,6 +66,12 @@ final class CustodyHelperExecutable: @unchecked Sendable {
         try result.revalidate(); return result
     }
     var isLifecycleCoordinator: Bool { lifecyclePublisher != nil }
+    var validationProfile: InstallationValidationProfile { lifecyclePublisher?.validationProfile ?? .production }
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    var signedInheritedParent: SignedInstallationFixtureParentChannel.Inherited? {
+        if case let .signedFixture(profile) = validationProfile { return profile.inheritedParent }; return nil
+    }
+    #endif
     func validateInstallationPublisher(_ transaction: InstallationTransaction) throws {
         try revalidate()
         if let lifecyclePublisher {
@@ -121,12 +127,23 @@ final class CustodyHelperExecutable: @unchecked Sendable {
     }
     func authenticateParent(_ pid: pid_t, generation: String) throws -> ProcessIdentity {
         try revalidate()
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if case .signedFixture = validationProfile {
+            guard let signedInheritedParent else { throw PublisherPolicyError.unavailable }
+            let identity = try signedInheritedParent.authenticateParent(generation: generation, executable: path)
+            guard identity.processID == pid else { throw PublisherPolicyError.unavailable }
+            return identity
+        }
+        #endif
         let identity = try ProcessIdentity.capture(processID: pid, generation: generation, expectedExecutablePath: path)
         guard identity.userID == account.uid else { throw PublisherPolicyError.unavailable }
         if let publisher { try PublisherCodeVerifier.suspendedChild(pid, expected: publisher) }
         return identity
     }
     var arguments: [String] {
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if case .signedFixture = validationProfile { return [path, "--shadow-sync-signed-installation-custodian"] }
+        #endif
         #if SHADOW_SYNC_TESTING
         if discoveryFixture { return [path, "--shadow-sync-discovery-custodian-fixture"] }
         if fixture { return [path, custodianFixture ? "--shadow-sync-custodian-fixture" : "--shadow-sync-custody-registry-fixture"] }
@@ -505,6 +522,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         try validateClosed()
     }
     func installationRetirement(after closed: ClosedInstallationBorrowing) throws -> InstallationRetirement {
+        try closed.bindRegistry(self)
         try validateInstallationRetirement(closed)
         return InstallationRetirement(registry: self, closed: closed)
     }
@@ -531,6 +549,61 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         return InstallationStagedStartRetirement(registry: self, closed: closed)
     }
 
+    private final class InstallationCommandRetirement {
+        weak var owner: InstallationTransactionOwner?
+        let request: UnvalidatedCustodyRequest
+        weak var scope: CustodyMetadataScope?
+        weak var resources: CustodyRequestResources?
+        weak var prepared: PreparedCustodyCommand?
+        var retired = false
+        var resourcesClosedSuccessfully = false
+        var evidence: CustodyCatalogStore.ClosedStopArchiveEvidence?
+        var archiveRequired = false
+        init(owner: InstallationTransactionOwner, resources: CustodyRequestResources, prepared: PreparedCustodyCommand?) {
+            self.owner = owner; request = resources.request; scope = resources.scope
+            self.resources = resources; self.prepared = prepared
+        }
+    }
+    // Reservation lock protects the ledger as well as reservation accounting.
+    // Records survive entry removal and weak scope/resource disappearance.
+    private var installationCommands: [String: InstallationCommandRetirement] = [:]
+    final class InstallationStagedStopRetirement: @unchecked Sendable {
+        private let registry: RetainedCleanupRegistry
+        private let closed: ClosedInstallationStagedStops
+        fileprivate init(registry: RetainedCleanupRegistry, closed: ClosedInstallationStagedStops) {
+            self.registry = registry; self.closed = closed
+        }
+        func revalidate(for owner: InstallationTransactionOwner, registry: RetainedCleanupRegistry) throws {
+            guard self.registry === registry, closed.belongs(to: owner) else { throw CustodyRecordError.fenced }
+            try registry.validateInstallationStagedStopRetirement(closed)
+        }
+    }
+    private func validateInstallationStagedStopRetirement(_ closed: ClosedInstallationStagedStops) throws {
+        try closed.validate(registry: self)
+        reservationMutex.lock()
+        let records = installationCommands.values.filter { $0.owner.map { closed.belongs(to: $0) } ?? false }
+        let empty = reservedIDs.isEmpty && outputReserved == 0
+        let retired = records.allSatisfy { $0.retired && $0.resourcesClosedSuccessfully && $0.scope == nil && $0.resources == nil && $0.prepared == nil
+            && (!$0.archiveRequired || $0.evidence != nil) }
+        reservationMutex.unlock()
+        guard empty, retired else { throw CustodyRecordError.fenced }
+        // Archive I/O and owner validation occur outside the registry lock.
+        for record in records { try record.evidence?.validateClosedStops(closed, request: record.request) }
+        try closed.validate(registry: self)
+        reservationMutex.lock()
+        let unchanged = reservedIDs.isEmpty && outputReserved == 0
+            && records.count == installationCommands.values.filter({ $0.owner.map { closed.belongs(to: $0) } ?? false }).count
+        reservationMutex.unlock()
+        guard unchanged else { throw CustodyRecordError.fenced }
+        try closed.validate(registry: self)
+    }
+    func installationStagedStopRetirement(after closed: ClosedInstallationStagedStops)
+        throws -> InstallationStagedStopRetirement {
+        try closed.claimRetirement(registry: self)
+        try validateInstallationStagedStopRetirement(closed)
+        return InstallationStagedStopRetirement(registry: self, closed: closed)
+    }
+
     func start(_ command: PreparedCustodyCommand, repositoryObserver: RepositoryCommandObserver? = nil) throws -> Handle {
         // One-use claim and reservation are in-memory only. The serial owner
         // performs context/publisher/durable validation before any child exists.
@@ -544,14 +617,23 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     #endif
     private func start(resources: CustodyRequestResources, helper: CustodyHelperExecutable,
                        command: PreparedCustodyCommand?, repositoryObserver: RepositoryCommandObserver? = nil) throws -> Handle {
+        let installationOwner = try resources.scope.registerInstallationRetirement(in: self)
+        guard !resources.request.authority.isInstallationStaged || installationOwner != nil else { throw CustodyRecordError.fenced }
         let entry = try Entry(resources, helper, command: command), key = resources.request.binding.requestID
         let handle = Handle(entry, self)
         reservationMutex.lock()
-        guard reservedIDs.count < 128, !reservedIDs.contains(key),
+        let expiredInstallationRecords = installationCommands.filter { $0.value.owner == nil }
+        // Their archive descriptors are released after the reservation lock.
+        defer { withExtendedLifetime(expiredInstallationRecords) {} }
+        for key in expiredInstallationRecords.keys { installationCommands.removeValue(forKey: key) }
+        guard reservedIDs.count < 128, !reservedIDs.contains(key), installationCommands[key] == nil,
               entry.outputReservation <= 67_108_864 - outputReserved else {
             reservationMutex.unlock(); throw CustodyRecordError.fenced
         }
         reservedIDs.insert(key); outputReserved += entry.outputReservation
+        if let installationOwner {
+            installationCommands[key] = InstallationCommandRetirement(owner: installationOwner, resources: resources, prepared: command)
+        }
         reservationMutex.unlock()
         entry.repositoryObserver = repositoryObserver
         // Resources and the command are already retained and reserved. Consumer
@@ -927,6 +1009,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             guard scope == nil else { throw CustodyRecordError.fenced }
             try evidence.validateNoPending()
             try registry.validateActualInstallationRetirement { guard self.scope == nil else { throw CustodyRecordError.fenced } }
+            try evidence.validateCommittedRequest(request)
             let command = try LifecycleLaunchCommand(arguments: request.arguments, account: account)
             guard command.operation == operation else { throw CustodyRecordError.fenced }
             try command.validateStagedCompletion(result, request: request)
@@ -953,6 +1036,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             guard scope == nil, result.phase == .finished else { throw CustodyRecordError.fenced }
             try evidence.validateNoPending()
             try registry.validateActualInstallationRetirement { guard self.scope == nil else { throw CustodyRecordError.fenced } }
+            try evidence.validateCommittedRequest(request)
             return evidence
         }
         func validateReadyHost(_ host: ProcessIdentity) throws {
@@ -1015,6 +1099,11 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             TestingPolicyHelperWitness.observe(entry.resources.request)
         }
         #endif
+        reservationMutex.lock()
+        if let record = installationCommands[entry.resources.request.binding.requestID] {
+            record.evidence = staged?.closedStopArchiveEvidence(); record.archiveRequired = entry.metadataAttempted
+        }
+        reservationMutex.unlock()
         entry.mapping?.releaseChildCopies(); entry.mapping = nil
         entry.resources.retire(); entry.command?.retireRepositoryResources()
         entry.anchor = nil; entry.owner = nil; entry.metadata = nil
@@ -1024,7 +1113,13 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             journal: entry.resultJournal, stdout: entry.stdout, stderr: entry.stderr, trace: entry.trace)
         let retirementObserver = entry.repositoryObserver
         entry.repositoryObserver = nil
+        let installationKey = entry.resources.request.binding.requestID
+        let installationResourcesClosed = entry.resources.installationRetiredSuccessfully
         entry.releaseCommandAliases()
+        reservationMutex.lock()
+        installationCommands[installationKey]?.retired = true
+        installationCommands[installationKey]?.resourcesClosedSuccessfully = installationResourcesClosed
+        reservationMutex.unlock()
         // Conservative absolute anchor at resource/alias release, BEFORE any
         // following queue turn or delivery barrier. Capability validation still
         // requires the preceding stack aliases to have unwound.
@@ -1206,6 +1301,8 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     enum TestCut { case beforeSpawn, afterAnchor, afterOwner }
     private var nextTestCut: TestCut?
     func testingFault(_ cut: TestCut) { queue.sync { nextTestCut = cut } }
+    // Failure-only fixture observation; never consumes or arms an injection.
+    func testingFaultIsPending(_ cut: TestCut) -> Bool { queue.sync { nextTestCut == cut } }
     private func testFault(_ cut: TestCut) throws {
         if nextTestCut == cut { nextTestCut = nil; throw CustodyRecordError.injectedFailure }
     }

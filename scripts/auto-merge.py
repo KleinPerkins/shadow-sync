@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trusted workflow_run handler for ordinary PRs; dependency PRs have their own policy."""
+"""Trusted-main ordinary PR handler; exclusive owner author, no protected-path bypass."""
 import fnmatch
 import json
 import os
@@ -7,13 +7,18 @@ from pathlib import Path
 import sys
 
 from github_automation import (REPO, SHA, AutomationError, Reporter, api, pages, same_repo_pr,
-                               dependabot_author, reviewer_identity, approve_and_arm, enable_merge)
+                               owner_author, reviewer_identity, approve_and_arm, enable_merge,
+                               trusted_context, verify_run, repository_identity)
+from merge_controls import verify_live_controls
 
 PROTECTED = (
+    'delivery/*', 'docs/*', '.planning/*', '.githooks/*', '.gitignore',
+    '.codex/*', '.cursor/*', '.claude/*', '.agents/*', 'THIRD_PARTY_NOTICES.md',
     '.github/*', '.gitleaks*', '_ops/*', 'Makefile', 'AGENTS.md', 'SECURITY.md',
     'LICENSE*', 'CODEOWNERS', 'scripts/*', 'Configuration/*', 'Package.*',
     'VERSION', 'BUILD_NUMBER', 'release-please*', '.release-please*',
     '*.xcodeproj/*', '*.xcworkspace/*', '*.entitlements',
+    'install.sh', 'Resources/*.plist.template', 'Resources/command-graphs.json',
     'Resources/Info.plist', 'Resources/*contract*.json', 'Resources/*release*.json',
     'Resources/PolicyAdapter.py', 'Resources/*appcast*',
     'Sources/ShadowSyncLifecycleCoordinator/*', 'Sources/ShadowSyncUpdateSupport/*',
@@ -48,6 +53,11 @@ def complete_changed_files(pr, entries):
         if not isinstance(entry, dict):
             raise AutomationError('Malformed changed-file evidence')
         name = entry.get('filename')
+        status = entry.get('status')
+        if status not in ('added', 'removed', 'modified', 'renamed', 'copied', 'changed', 'unchanged'):
+            raise AutomationError('Missing or invalid changed-file status')
+        if status == 'renamed' and 'previous_filename' not in entry:
+            raise AutomationError('Missing renamed-file origin')
         names = [name]
         if 'previous_filename' in entry:
             names.append(entry['previous_filename'])
@@ -63,56 +73,82 @@ def complete_changed_files(pr, entries):
     return files
 
 
-def eligible(pr, run, files):
-    if run.get('event') != 'pull_request' or run.get('conclusion') != 'success':
+def immutable_changed_files(pr, request):
+    if not same_repo_pr(pr):
+        raise AutomationError('Immutable same-repository base/head required')
+    base, head = pr['base']['sha'], pr['head']['sha']
+    # Compare lists at most 300 files. Refuse the boundary and larger PRs rather
+    # than accepting possibly truncated evidence. No author bypass is permitted.
+    count = pr.get('changed_files')
+    if type(count) is not int or not 0 < count < 300:
+        raise AutomationError('Change exceeds immutable comparison coverage')
+    observed = request(f'repos/{REPO}/compare/{base}...{head}')
+    if (not isinstance(observed, dict) or observed.get('base_commit', {}).get('sha') != base
+            or observed.get('merge_base_commit', {}).get('sha') != base
+            or observed.get('status') != 'ahead' or observed.get('behind_by') != 0
+            or type(observed.get('behind_by')) is not int):
+        raise AutomationError('Current-base comparison identity mismatch')
+    entries = observed.get('files')
+    if not isinstance(entries, list):
+        raise AutomationError('Immutable changed-file evidence unavailable')
+    return base, complete_changed_files(pr, entries)
+
+
+def eligible(pr, run, files, *, base_sha):
+    if (run.get('event') != 'pull_request' or run.get('conclusion') != 'success'
+            or run.get('path') != '.github/workflows/ci.yml'
+            or not repository_identity(run.get('head_repository')) or not same_repo_pr(pr)
+            or not owner_author(pr)):
         return False
-    if run.get('head_repository', {}).get('full_name') != REPO or not same_repo_pr(pr):
+    if pr['head']['sha'] != run.get('head_sha') or pr['base']['sha'] != base_sha:
         return False
-    if pr['head']['sha'] != run.get('head_sha'):
+    if pr['head'].get('ref', '').startswith(('release-please--', 'dependabot/')):
         return False
-    if pr['head'].get('ref', '').startswith(('release-please--', 'dependabot/')) or dependabot_author(pr):
-        return False
-    if pr.get('author_association') not in ('OWNER', 'MEMBER', 'COLLABORATOR'):
-        return False
-    return bool(files) and not any(fnmatch.fnmatchcase(path, pattern) for path in files for pattern in PROTECTED)
+    # Git paths are case-sensitive, but the supported Mac filesystem may not be.
+    return bool(files) and not any(fnmatch.fnmatchcase(path.casefold(), pattern.casefold())
+                                  for path in files for pattern in PROTECTED)
 
 
 def main():
     report = Reporter(os.environ.get('GITHUB_STEP_SUMMARY'))
     failures = 0
     try:
+        source_sha = trusted_context(os.environ, mode='ordinary')
         event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
-        run = event['workflow_run']
-        if event['repository']['full_name'] != REPO:
-            raise AutomationError('Unexpected repository')
-        if run.get('event') != 'pull_request' or run.get('conclusion') != 'success':
-            return 0
-        if not SHA.fullmatch(run.get('head_sha', '')):
-            raise AutomationError('Invalid workflow commit SHA')
+        read_token = os.environ.get('CI_READ_TOKEN', '')
+        run = verify_run(event, api, read_token, mode='ordinary')
+        verify_live_controls(api, source_sha)
         candidates = pages(api, f"repos/{REPO}/commits/{run['head_sha']}/pulls?per_page=100")
-        reviewer = None
         for candidate in candidates:
             number = candidate.get('number')
             if type(number) is not int or number <= 0:
                 raise AutomationError('Invalid pull request number')
             try:
-                path = f'repos/{REPO}/pulls/{number}'
-                pr = api(path)
-                # Author identity, not the actor of a synchronize/CI event, routes
-                # Dependabot out of this ordinary-PR policy.
-                if dependabot_author(pr):
-                    report(f'PR #{number}: Dependabot maintenance owns this PR; skipped.')
+                pr = api(f'repos/{REPO}/pulls/{number}')
+                if not same_repo_pr(pr) or not owner_author(pr):
+                    report(f'PR #{number}: outside the exclusive ordinary-author policy; skipped.')
                     continue
-                entries = pages(api, path + '/files?per_page=100')
-                files = complete_changed_files(pr, entries)
-                if not eligible(pr, run, files):
-                    report(f'PR #{number}: manual review, ineligible identity or newer head; skipped.')
+                base_sha, files = immutable_changed_files(pr, api)
+                if base_sha != source_sha or not eligible(pr, run, files, base_sha=base_sha):
+                    report(f'PR #{number}: protected paths, stale source or ineligible state; skipped.')
                     continue
-                if reviewer is None:
-                    reviewer = reviewer_identity(api, os.environ.get('REVIEWER_LOGIN', ''))
+                reviewer = reviewer_identity(api, os.environ.get('REVIEWER_LOGIN', ''),
+                                              os.environ.get('REVIEWER_INSTALLATION_ID', ''))
+
+                def controls():
+                    if trusted_context(os.environ, mode='ordinary') != source_sha:
+                        raise AutomationError('Trusted source changed')
+                    verify_run(event, api, read_token, mode='ordinary')
+                    reviewer_identity(api, os.environ.get('REVIEWER_LOGIN', ''),
+                                      os.environ.get('REVIEWER_INSTALLATION_ID', ''))
+                    verify_live_controls(api, base_sha)
+
                 approve_and_arm(pr, request=api, merge=enable_merge, reviewer=reviewer,
-                                eligible=lambda latest: eligible(latest, run, files),
-                                read_token=os.environ.get('CI_READ_TOKEN', ''), report=report)
+                                eligible=lambda latest: eligible(latest, run, files, base_sha=base_sha)
+                                and type(latest.get('changed_files')) is int
+                                and latest['changed_files'] == pr['changed_files'],
+                                read_token=read_token, report=report, controls=controls,
+                                check_suite_id=run['check_suite_id'])
             except Exception as error:
                 failures += 1
                 reason = str(error) if isinstance(error, AutomationError) else type(error).__name__

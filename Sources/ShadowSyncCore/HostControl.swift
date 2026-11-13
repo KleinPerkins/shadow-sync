@@ -55,7 +55,21 @@ public enum HostControlAction: String, Codable, Equatable, Sendable {
 
 public final class HostControlServer: @unchecked Sendable {
     private static let socketName = "host.sock"
-    private let authority: LauncherAuthority
+    private let authority: LauncherAuthority?
+    private let staged: InstallationPrecommitHost.RetainedOwnership?
+    private var stateDirectory: SecureStateDirectory {
+        if let staged { return staged.stateDirectory }
+        return authority!.stateDirectory
+    }
+    private let serviceGroup = DispatchGroup()
+    private let stagedPeers = StagedPeerRetirement()
+    private var stagedListener: OwnedFileDescriptor?
+    private var stagedSocketObservation: InstallationNamedSocketObservation?
+    private var stagedRegistration: OwnedFileDescriptor?
+    private var stagedRegistrationACL: String?
+    private var stagedJoined = false
+    private let serviceReady = DispatchSemaphore(value: 0)
+    private var serving = false
     private let registration: HostRegistration
     private let onActivation: @Sendable () -> Bool
     private let onLifecycleExit: @Sendable () -> Bool
@@ -86,7 +100,7 @@ public final class HostControlServer: @unchecked Sendable {
         onActivation: @escaping @Sendable () -> Bool,
         onLifecycleExit: @escaping @Sendable () -> Bool = { false }
     ) throws {
-        self.authority = authority
+        self.authority = authority; staged = nil
         registration = HostRegistration(
             identity: try ProcessIdentity.capture(
                 processID: getpid(),
@@ -99,34 +113,176 @@ public final class HostControlServer: @unchecked Sendable {
         self.onLifecycleExit = onLifecycleExit
     }
 
+    init(staged: InstallationPrecommitHost.RetainedOwnership, executablePath: String,
+         releaseIdentity: ReleaseIdentity, onActivation: @escaping @Sendable () -> Bool,
+         onLifecycleExit: @escaping @Sendable () -> Bool) throws {
+        authority = nil; self.staged = staged
+        registration = HostRegistration(identity: try ProcessIdentity.capture(processID: getpid(),
+            generation: staged.generation, expectedExecutablePath: executablePath), release: releaseIdentity)
+        self.onActivation = onActivation; self.onLifecycleExit = onLifecycleExit
+    }
+    final class StartedObservation {
+        private let server: HostControlServer
+        private let owner: InstallationPrecommitHost.RetainedOwnership
+        let registration: HostRegistration
+        fileprivate init(server: HostControlServer, owner: InstallationPrecommitHost.RetainedOwnership) {
+            self.server = server; self.owner = owner; registration = server.registration
+        }
+        func revalidate() throws { try server.requireStarted(staged: owner) }
+    }
+    /// Every accepted staged peer enters a one-shot owner before handling can
+    /// fail. The serving scope retains that owner through checked retirement;
+    /// an uncertain result remains latched after the scope/descriptor is gone.
+    final class StagedPeerRetirement: @unchecked Sendable {
+        private let lock = NSLock()
+        private var outstanding = 0
+        private var uncertain = false
+#if SHADOW_SYNC_TESTING
+        // Fixture-only close cut; installed before accepting a peer.
+        var testingCloseAcceptedPeer: ((Int32) -> Int32)?
+#endif
+        func withAcceptedPeer(_ descriptor: Int32, _ handle: (Int32) throws -> Void) rethrows {
+            let owned = OwnedFileDescriptor(descriptor)
+            lock.lock()
+            outstanding += 1
+#if SHADOW_SYNC_TESTING
+            owned.testingClose = testingCloseAcceptedPeer
+#endif
+            lock.unlock()
+            defer {
+                let result = owned.retireChecked()
+                lock.lock()
+                if result != .succeeded { uncertain = true }
+                outstanding -= 1
+                lock.unlock()
+            }
+            try handle(owned.value)
+        }
+        /// Call only after joining the sole serving loop: there can then be no
+        /// further enrollment. Joining alone does not prove peer retirement.
+        func requireRetired() throws {
+            lock.lock(); defer { lock.unlock() }
+            guard outstanding == 0, !uncertain else { throw CustodyRecordError.fenced }
+        }
+    }
+    func observeStarted(staged owner: InstallationPrecommitHost.RetainedOwnership) throws -> StartedObservation {
+        try requireStarted(staged: owner)
+        return StartedObservation(server: self, owner: owner)
+    }
+    func requireStarted(staged owner: InstallationPrecommitHost.RetainedOwnership) throws {
+        lock.lock(); let running = staged === owner && listener >= 0 && stagedListener?.value == listener && ownsEndpoint && !stopped && serving && thread != nil; lock.unlock()
+        try validateStagedRegistration()
+        guard running, let named = stagedSocketObservation,
+              named.matchesNamedGeneration(try owner.observeCreatedSocket()),
+              registration.identity.generation == owner.generation,
+              try HostRegistrationStore.read(state: stateDirectory) == registration else { throw CustodyRecordError.fenced }
+    }
+    /// The installation owner alone calls this after actual app drain. Named
+    /// nodes remain intact for the later recovery/cleanup owner; this method
+    /// proves only that the normal server and its actual descriptor retired.
+    func stopAndJoin(staged owner: InstallationPrecommitHost.RetainedOwnership,
+                     deadline: MonotonicDeadline) throws {
+        lock.lock()
+        guard staged === owner else { lock.unlock(); throw CustodyRecordError.fenced }
+        if stagedJoined { lock.unlock(); return }
+        stopped = true
+        let owned = stagedListener
+        lock.unlock()
+        owned?.interruptSocket()
+        guard serviceGroup.wait(timeout: DispatchTime(uptimeNanoseconds: deadline.absoluteUptimeNanoseconds)) == .success else {
+            throw CustodyRecordError.busy
+        }
+        try stagedPeers.requireRetired()
+        guard !deadline.hasExpired, owned?.retireChecked() == .succeeded,
+              stagedRegistration?.retireChecked() == .succeeded else { throw CustodyRecordError.fenced }
+        lock.lock(); listener = -1; thread = nil; stagedJoined = true; lock.unlock()
+    }
+    private func writeStagedRegistration() throws {
+        let state = stateDirectory
+        let raw = try state.openRegularFile(named: "host-owner.json", flags: O_RDWR | O_EXCL,
+            create: true, repairPermissions: false)
+        let owned = OwnedFileDescriptor(raw)
+        stagedRegistration = owned
+        stagedRegistrationACL = try PolicyAuthorityFile.privateStateACL(raw)
+        var bytes = try JSONEncoder().encode(registration); bytes.append(0x0a)
+        try bytes.withUnsafeBytes { buffer in
+            var offset = 0
+            while offset < buffer.count {
+                let n = Darwin.write(raw, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+                if n < 0 && errno == EINTR { continue }
+                guard n > 0 else { throw CustodyRecordError.persistence(errno) }
+                offset += n
+            }
+        }
+        guard fsync(raw) == 0, fsync(state.descriptor.value) == 0 else { throw CustodyRecordError.persistence(errno) }
+        try validateStagedRegistration()
+    }
+    private func validateStagedRegistration() throws {
+        guard let owned = stagedRegistration, owned.value >= 0, let acl = stagedRegistrationACL else { throw CustodyRecordError.fenced }
+        var held = stat(), named = stat()
+        guard fstat(owned.value, &held) == 0,
+              fstatat(stateDirectory.descriptor.value, "host-owner.json", &named, AT_SYMLINK_NOFOLLOW) == 0,
+              held.st_dev == named.st_dev, held.st_ino == named.st_ino,
+              held.st_mode == S_IFREG | 0o600, named.st_mode == held.st_mode,
+              held.st_uid == stateDirectory.uid, named.st_uid == held.st_uid,
+              held.st_nlink == 1, named.st_nlink == 1, held.st_flags == 0, named.st_flags == 0,
+              try PolicyAuthorityFile.privateStateACL(owned.value) == acl,
+              try HostRegistrationStore.read(state: stateDirectory) == registration else { throw CustodyRecordError.fenced }
+    }
     public func start() throws {
-        let state = authority.stateDirectory
-        try removeStaleSocket(state: state)
+        let state = stateDirectory
+        if let staged {
+            try staged.validateBeforeStartup()
+            var node = stat()
+            guard fstatat(state.descriptor.value, Self.socketName, &node, AT_SYMLINK_NOFOLLOW) != 0,
+                  errno == ENOENT else { throw ProcessOwnershipError.unsafeSocket }
+        } else { try removeStaleSocket(state: state) }
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
             throw SecureStateError.systemCall("socket host control", errno)
         }
+        if staged != nil { stagedListener = OwnedFileDescriptor(descriptor) }
         do {
+            if staged != nil { try InstallationPrecommitTransport.configure(descriptor) }
             try bindSocket(descriptor, path: socketPath(state: state))
+            if let staged { stagedSocketObservation = try staged.observeCreatedSocket() }
             guard listen(descriptor, 4) == 0 else {
                 throw SecureStateError.systemCall("listen host control", errno)
             }
-            try HostRegistrationStore.write(registration, state: state)
+            if staged != nil { try writeStagedRegistration() }
+            else { try HostRegistrationStore.write(registration, state: state) }
         } catch {
-            close(descriptor)
-            _ = unlink(socketPath(state: state))
+            if let stagedListener { _ = stagedListener.retireChecked() }
+            else { close(descriptor); _ = unlink(socketPath(state: state)) }
             throw error
         }
         lock.lock()
         listener = descriptor
         ownsEndpoint = true
-        let thread = Thread { [weak self] in self?.serve() }
+        serviceGroup.enter()
+        let thread = Thread { [self] in
+            defer { serviceGroup.leave() }
+            serve()
+        }
         self.thread = thread
         lock.unlock()
         thread.start()
+        if let staged {
+            guard serviceReady.wait(timeout: DispatchTime(uptimeNanoseconds: staged.deadline.absoluteUptimeNanoseconds)) == .success else {
+                throw CustodyRecordError.busy
+            }
+            try requireStarted(staged: staged)
+        }
     }
 
     public func stop() {
+        if staged != nil {
+            // Unqualified stop cannot release the installation's actual locks
+            // or fabricate a joined result. Its owner retains pending work.
+            lock.lock(); stopped = true; let socket = stagedListener; lock.unlock()
+            socket?.interruptSocket()
+            return
+        }
         lock.lock()
         guard !stopped else {
             lock.unlock()
@@ -143,13 +299,16 @@ public final class HostControlServer: @unchecked Sendable {
             close(descriptor)
         }
         if removeEndpoint {
-            _ = unlink(socketPath(state: authority.stateDirectory))
-            try? HostRegistrationStore.remove(state: authority.stateDirectory)
+            _ = unlink(socketPath(state: stateDirectory))
+            try? HostRegistrationStore.remove(state: stateDirectory)
         }
-        authority.release()
+        authority?.release()
     }
 
     private func serve() {
+        lock.lock(); serving = !stopped; lock.unlock()
+        serviceReady.signal()
+        defer { lock.lock(); serving = false; lock.unlock() }
         while true {
             lock.lock()
             let descriptor = listener
@@ -161,17 +320,30 @@ public final class HostControlServer: @unchecked Sendable {
             let peer = accept(descriptor, nil, nil)
             if peer < 0 {
                 if errno == EINTR { continue }
+                if staged != nil && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    var item = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+                    let result = poll(&item, 1, 20)
+                    if result >= 0 || errno == EINTR { continue }
+                }
                 return
             }
-#if SHADOW_SYNC_TESTING
-            let observedConnection = rejectionObservation?.acceptedConnection()
-#endif
-            handle(peer)
-#if SHADOW_SYNC_TESTING
-            rejectionObservation?.completedConnection(observedConnection)
-#endif
-            close(peer)
+            if staged != nil {
+                stagedPeers.withAcceptedPeer(peer) { handleAcceptedPeer($0) }
+            } else {
+                handleAcceptedPeer(peer)
+                close(peer)
+            }
         }
+    }
+
+    private func handleAcceptedPeer(_ peer: Int32) {
+#if SHADOW_SYNC_TESTING
+        let observedConnection = rejectionObservation?.acceptedConnection()
+#endif
+        handle(peer)
+#if SHADOW_SYNC_TESTING
+        rejectionObservation?.completedConnection(observedConnection)
+#endif
     }
 
     private func handle(_ peer: Int32) {

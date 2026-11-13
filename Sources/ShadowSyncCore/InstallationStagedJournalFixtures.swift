@@ -625,11 +625,19 @@ enum InstallationStagedJournalFixtures {
         }
         try fixture { _, location, _, _, admission, journal, _ in
             let before = try persistenceSnapshot(location), control = try record(location)
+            var alias: CustodyAuthorityLeaseSet? = try admission.retainStartLeases()
+            weak var releasedAlias = alias
             try InstallationOwnershipFixtures.excluded(location)
             try H.refuses { _ = try journal.completeAdmission(deadline: .init(seconds: 0)) }
+            // Closing new starts must not discard an existing original lease
+            // or release the installation exclusion to make this refusal pass.
+            try alias!.validate()
             let after = try assertPersistenceState(location, before: before,
                 expectedControl: control, controlPublished: false, receipt: nil, retainedPreimage: false)
             try assertStickyPersistence(location, admission: admission, journal: journal, expected: after, pending: false)
+            alias = nil
+            try H.check(releasedAlias == nil, "expired admission retained a released staged alias")
+            try InstallationOwnershipFixtures.excluded(location)
         }
     }
 }

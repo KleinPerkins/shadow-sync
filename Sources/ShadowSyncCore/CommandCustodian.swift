@@ -25,6 +25,14 @@ public enum CommandCustodian {
         catch { return 70 }
         #endif
     }
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    static func dispatchSignedInstallation(_ arguments: [String]) -> Int32? {
+        guard arguments.dropFirst().contains("--shadow-sync-signed-installation-custodian") else { return nil }
+        guard arguments.count == 2, arguments[1] == "--shadow-sync-signed-installation-custodian" else { return 64 }
+        do { return try CustodianLoop(inherited: CustodyInheritedCommand.signedInstallation()).run() }
+        catch { return 70 }
+    }
+    #endif
     #if SHADOW_SYNC_TESTING
     public static func testingDispatch(_ arguments: [String]) -> Int32? {
         if arguments.count == 4, arguments[1] == "--shadow-sync-repository-git-worker-fixture" {
@@ -295,7 +303,8 @@ private final class CustodianTarget {
                 case .command:
                     targetMode = mode == "serial-command-cancel" ? "resist" : "complete"
                 }
-            } else { targetMode = mode == "deadline-before-control" ? "resist" : mode }
+            } else if ["state-capture-named", "state-capture-unlinked"].contains(mode) { targetMode = "complete" }
+            else { targetMode = mode == "deadline-before-control" ? "resist" : mode }
             arguments = [path, "--shadow-sync-custodian-target-fixture", targetMode]
             fixtureSnapshot = try PublisherExecutableSnapshot.capture(path: path, owner: geteuid())
             graph = nil; environment = inherited.request.environment; return
@@ -400,7 +409,27 @@ private final class CustodianTarget {
             #endif
             environment = values
         }
-        graph = qualified; path = qualified.entryPath; arguments = [path] + args
+        graph = qualified; path = qualified.entryPath
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if case .signedFixture = inherited.helper.validationProfile {
+            guard inherited.signedAdapter != nil else { throw CustodyRecordError.fenced }
+            let operation: SignedInstallationFixtureAdapterChannel.Operation
+            switch stage {
+            case .lifecyclePreflight, .lifecyclePostflight: operation = .printState
+            case .lifecycleMutation:
+                guard let command = inherited.lifecycleCommand,
+                      let value = SignedInstallationFixtureAdapterChannel.Operation(rawValue: command.operation.rawValue) else { throw CustodyRecordError.fenced }
+                operation = value
+            case .command:
+                guard inherited.request.kind == .launchctlRead || inherited.request.kind == .signatureCheck else { throw CustodyRecordError.fenced }
+                operation = inherited.request.kind == .launchctlRead ? .printState : .signature
+            default: throw CustodyRecordError.fenced
+            }
+            arguments = [path, "--shadow-sync-signed-installation-adapter", operation.rawValue]
+        } else { arguments = [path] + args }
+        #else
+        arguments = [path] + args
+        #endif
         fixtureSnapshot = nil
     }
     func validate(_ anchor: OwnedSpawnAnchor) throws {
@@ -519,6 +548,7 @@ private final class CustodianLoop {
     }
     #if SHADOW_SYNC_TESTING
     private var testingExpiredControlObserved = false
+    private var testingRepositoryBusy = DiscoveryFixtureDiagnostic.RepositoryBusyObservation.Snapshot()
     private func testingObserveFailure(_ event: TestingCustodianFailureWitness.Event, error: Error?) {
         let savedErrno = errno
         defer { errno = savedErrno }
@@ -531,7 +561,10 @@ private final class CustodianLoop {
             .repositoryPostflightFailure].contains(event) {
             testingRepositoryFailureEmitted = true
             let family = TestingCustodianFailureWitness.errorFields(error)["error"] as? String ?? "other"
-            fputs("DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE event=\(event.rawValue) error=\(family)\n", stderr)
+            let detail = event == .spawnTargetFailure && family == "busy"
+                ? testingRepositoryBusy : DiscoveryFixtureDiagnostic.RepositoryBusyObservation.Snapshot()
+            fputs("DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE event=\(event.rawValue) error=\(family)"
+                + " transition=\(detail.transition.rawValue) busy_site=\(detail.site.rawValue)\n", stderr)
             fflush(stderr)
         }
         guard let witness = testingFailureWitness else { return }
@@ -681,7 +714,23 @@ private final class CustodianLoop {
         #if SHADOW_SYNC_TESTING
         if stageIndex == 1, ["serial-next-before-spawn", "serial-system-missing-next-before-spawn", "lifecycle-next-before-spawn"].contains(inherited.fixtureMode ?? "") { throw CustodyResourceError.invalidResource }
         #endif
-        if journal.current.phase == .prepared { try journal.admit() }
+        if journal.current.phase == .prepared {
+            #if SHADOW_SYNC_TESTING
+            DiscoveryFixtureDiagnostic.RepositoryBusyObservation.transition(.admit)
+            #endif
+            try journal.admit(deadline: min(state.budget.work, stageBudget.work)) { [self] in
+                consumeControl()
+                // The original full resource validation above remains intact.
+                // Recheck persistence/lease claims without recursively acquiring
+                // the catalog guard while another helper owns it.
+                try inherited.revalidatePersistenceResources(); try journal.leases.validate()
+                guard reason == .none, try state.permitsResume(now: now), controlQuiescent(),
+                      now < stageBudget.work else { throw CustodyRecordError.fenced }
+            }
+            #if SHADOW_SYNC_TESTING
+            DiscoveryFixtureDiagnostic.RepositoryBusyObservation.transition(.none)
+            #endif
+        }
         #if SHADOW_SYNC_TESTING
         if inherited.fixtureMode == "after-admit" { usleep(200_000) }
         #endif
@@ -749,6 +798,9 @@ private final class CustodianLoop {
                 throw CustodyResourceError.invalidResource
             }
         }
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        try inherited.signedAdapter?.appendTargetMapping(&actions)
+        #endif
         let flags = Int16(POSIX_SPAWN_START_SUSPENDED | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
         var empty = sigset_t(), defaults = sigset_t(); sigemptyset(&empty); sigemptyset(&defaults)
         sigaddset(&defaults,SIGTERM); sigaddset(&defaults,SIGINT); sigaddset(&defaults,SIGPIPE)
@@ -771,7 +823,13 @@ private final class CustodianLoop {
         #if SHADOW_SYNC_TESTING
         if stageIndex == 1, ["serial-next-before-record", "serial-system-missing-next-before-record", "lifecycle-next-before-record"].contains(inherited.fixtureMode ?? "") { throw CustodyResourceError.invalidResource }
         #endif
+        #if SHADOW_SYNC_TESTING
+        DiscoveryFixtureDiagnostic.RepositoryBusyObservation.transition(.executing)
+        #endif
         try journal.executing(owner!)
+        #if SHADOW_SYNC_TESTING
+        DiscoveryFixtureDiagnostic.RepositoryBusyObservation.transition(.none)
+        #endif
         if stage == .lifecycleMutation {
             guard let command = inherited.lifecycleCommand, let preflight = lifecyclePreflightState else { throw CustodyRecordError.fenced }
             try command.validatePreflight(preflight)
@@ -1199,7 +1257,14 @@ private final class CustodianLoop {
                 if now >= min(state.budget.work, stageBudget.work) && state.phase != .draining { beginDrain(.timeout) }
                 if state.phase == .admitted && !spawned && reason == .none {
                     do {
+                        #if SHADOW_SYNC_TESTING
+                        try DiscoveryFixtureDiagnostic.RepositoryBusyObservation.observe(
+                            enabled: inherited.testingDiscovery && inherited.request.kind == .repositoryGit
+                                && inherited.repository?.input.testingPausePhase == "observe",
+                            failure: { self.testingRepositoryBusy = $0 }) { try spawnTarget() }
+                        #else
                         try spawnTarget()
+                        #endif
                         consumeControl()
                     }
                     catch {
@@ -1938,7 +2003,73 @@ private extension TestingCustodianFailureWitness {
             }
         }
     }
+    /// Exercise the real publication helper against the real retained witness.
+    /// Synthetic event fields test persistence only, never native EOF or drainage.
+    static func fixtureMarkerPublication() throws {
+        for mutation in ["none", "late-root-entry", "root-replacement", "root-mode", "root-acl", "witness-unlink"] {
+            try fixture { root, home, binding, owned in
+                let probe = Probe()
+                let markers: RepositoryWorkerMarkerDirectory
+                let witness: TestingCustodianFailureWitness
+                if mutation == "late-root-entry" {
+                    witness = try owned.witness(binding, probe: probe)
+                    // Negative control: a real new directory changes the pinned
+                    // root link count on both entry-counting and POSIX filesystems.
+                    markers = try RepositoryWorkerMarkerDirectory(root: root, create: true)
+                } else {
+                    markers = try RepositoryWorkerMarkerDirectory(root: root, create: true)
+                    witness = try owned.witness(binding, probe: probe)
+                }
+                let ready = Data("{\"fixture_ready\":true}\n".utf8)
+                try markers.publish(ready)
+                try check(try markers.read() == ready, "witness marker publication readback")
+                if mutation == "root-replacement" {
+                    try owned.substitute(root) { emit(witness, .controlEOF) }
+                } else if mutation == "root-mode" {
+                    try check(fchmod(owned.rootFD.value, 0o750) == 0, "marker witness root mode change")
+                    emit(witness, .controlEOF)
+                    try check(fchmod(owned.rootFD.value, 0o700) == 0, "marker witness root mode restoration")
+                } else if mutation == "root-acl" {
+                    try InstallationOwnershipFixtures.withACLGrant(root) { emit(witness, .controlEOF) }
+                } else if mutation == "witness-unlink" {
+                    let target = path(home, binding)
+                    guard let node = owned.nodes[target] else { throw FixtureFailure(message: "marker witness file pin") }
+                    try owned.remove(target, expected: node)
+                    emit(witness, .controlEOF)
+                } else { emit(witness, .controlEOF) }
+                emit(witness, .terminalPublication)
+                emit(witness, .pendingBoundary)
+                if mutation == "none" {
+                    var held = stat(), named = stat()
+                    try check(fstat(witness.rootFD, &held) == 0 && lstat(root, &named) == 0
+                        && same(witness.rootNode, held) && same(witness.rootNode, named), "marker changed pinned witness root")
+                    let data = try bytes(home, binding)
+                    let records = try data.split(separator: 10).map { try JSONSerialization.jsonObject(with: Data($0)) as? [String: Any] }
+                    try check(!witness.poisoned && probe.firstRejection == nil && probe.writeAttempts == 3
+                        && records.count == 3 && witness.written == data.count && data.count <= 6144,
+                        "readiness publication suppressed actual witness persistence")
+                    try check(records.compactMap { $0?["event"] as? String }
+                        == ["controlEOF", "terminalPublication", "pendingBoundary"], "marker witness slots changed")
+                    try check(records.allSatisfy { $0?["request"] as? String == binding.requestID
+                        && $0?["generation"] as? String == binding.generation
+                        && $0?["nonce_sha256"] as? String == binding.nonceSHA256 }, "marker witness binding drift")
+                } else {
+                    var held = stat()
+                    try check(witness.poisoned && witness.written == 0 && probe.writeAttempts == 0
+                        && probe.firstRejection != nil && fstat(witness.fileFD, &held) == 0 && held.st_size == 0,
+                        "marker publication weakened witness mutation refusal")
+                    if mutation == "late-root-entry" {
+                        try check(probe.firstRejection?.stage == .rootHeld, "late root entry did not exercise root pin")
+                    }
+                }
+                // Only this fixture's known marker bytes/directory are removed;
+                // the existing witness owner still validates its full cleanup roster.
+                try markers.remove()
+            }
+        }
+    }
     static func fixtureSlots() throws {
+        try fixtureMarkerPublication()
         try fixture { _, home, binding, owned in
             try fixtureTimingCodec(binding)
             let probe = Probe(), witness = try owned.witness(binding, probe: probe)

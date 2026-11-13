@@ -248,30 +248,35 @@ struct PublisherExecutableSnapshot: Equatable {
         func append(_ fd: Int32) throws {
             guard fd >= 0 else { throw PublisherPolicyError.unavailable }
             descriptors.append(fd)
-            var info = stat()
-            guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+            let observed = try PolicyAuthorityFile.safeACLObservation(fd)
+            let info = observed.info
+            guard info.st_mode & S_IFMT == S_IFDIR,
                   info.st_uid == 0 || info.st_uid == owner,
                   info.st_mode & 0o022 == 0 || (info.st_uid == 0 && info.st_mode & S_ISVTX != 0) else {
                 throw PublisherPolicyError.unavailable
             }
-            parents.append(Parent(info, try PolicyAuthorityFile.safeACL(fd)))
+            parents.append(Parent(info, observed.acl))
         }
         try append(Darwin.open("/", flags | O_DIRECTORY))
         for name in names.dropFirst().dropLast() { try append(openat(descriptors.last!, name, flags | O_DIRECTORY)) }
         file = openat(descriptors.last!, names.last!, flags)
-        var before = stat(), after = stat(), named = stat()
-        guard file >= 0, fstat(file, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
+        guard file >= 0 else { throw PublisherPolicyError.unavailable }
+        let observed = try PolicyAuthorityFile.safeACLObservation(file)
+        let before = observed.info
+        var named = stat()
+        guard before.st_mode & S_IFMT == S_IFREG,
               before.st_uid == owner, before.st_mode & 0o7777 == 0o755,
               before.st_nlink == 1 || (systemGitLauncher && path == "/usr/bin/git" && owner == 0 && before.st_nlink > 0),
               (1...536_870_912).contains(before.st_size) else { throw PublisherPolicyError.unavailable }
-        let node = PolicyRuntimeTree.Node(before, acl: try PolicyAuthorityFile.safeACL(file))
-        guard fstat(file, &after) == 0, fstatat(descriptors.last!, names.last!, &named, AT_SYMLINK_NOFOLLOW) == 0,
-              node == PolicyRuntimeTree.Node(after, acl: try PolicyAuthorityFile.safeACL(file)),
+        let node = PolicyRuntimeTree.Node(before, acl: observed.acl)
+        let after = try PolicyAuthorityFile.safeACLObservation(file)
+        guard fstatat(descriptors.last!, names.last!, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              node == PolicyRuntimeTree.Node(after.info, acl: after.acl),
               node == PolicyRuntimeTree.Node(named, acl: node.acl) else { throw PublisherPolicyError.unavailable }
         for index in descriptors.indices {
+            let observed = try PolicyAuthorityFile.safeACLObservation(descriptors[index])
             var info = stat()
-            guard fstat(descriptors[index], &info) == 0,
-                  Parent(info, try PolicyAuthorityFile.safeACL(descriptors[index])) == parents[index] else {
+            guard Parent(observed.info, observed.acl) == parents[index] else {
                 throw PublisherPolicyError.unavailable
             }
             if index > 0 {

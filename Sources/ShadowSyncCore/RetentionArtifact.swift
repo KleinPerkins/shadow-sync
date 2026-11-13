@@ -2656,6 +2656,44 @@ public final class RetentionArtifactStore:
             return true
         }
     }
+    // One opt-in, failure-only T12 observation. Values are closed booleans,
+    // masked modes/flags and fixed codes; no names, identities or owners escape.
+    // This collector never participates in cleanup admission or retry.
+    private final class MixedCleanupObservation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var active = false, emitted = false
+        private var preflight: String?
+        func begin() {
+            lock.lock(); defer { lock.unlock() }
+            active = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS"] == "1"
+            preflight = nil
+        }
+        func end() {
+            lock.lock(); defer { lock.unlock() }
+            active = false; preflight = nil
+        }
+        func record(_ value: String) {
+            lock.lock(); defer { lock.unlock() }
+            guard active, !emitted, preflight == nil else { return }
+            preflight = value
+        }
+        func failure(_ outcomes: [Bool]) {
+            lock.lock(); defer { lock.unlock() }
+            guard active, !emitted, outcomes.count == 13 else { return }
+            emitted = true
+            let labels = ["confirmation", "cancelled", "terminal", "source_present", "clean_present",
+                          "one_artifact", "restore_proven", "no_incomplete", "no_awa_log", "no_host_socket",
+                          "recovered_plan", "recovered_report", "requires_review"]
+            let result = zip(labels, outcomes).map { "\($0.0)=\($0.1)" }.joined(separator: " ")
+            let line = "BODY3 MIXED RECOVERY FAILURE preflight_observed=\(preflight != nil) \(preflight ?? "") outcome_observation=post_assertion \(result)\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+    }
+    private static let mixedCleanupObservation = MixedCleanupObservation()
+    static func testingBeginMixedCleanupObservation() { mixedCleanupObservation.begin() }
+    static func testingEndMixedCleanupObservation() { mixedCleanupObservation.end() }
+    static func testingEmitMixedCleanupFailure(_ outcomes: [Bool]) { mixedCleanupObservation.failure(outcomes) }
+
     private static let cleanupDiagnosticOnce = CleanupDiagnosticOnce()
     private static let maximumPayloadDiagnosticOnce = CleanupDiagnosticOnce()
     private func emitCleanupDiagnostic(_ owner: Attempt, deadline: MonotonicDeadline?, started: UInt64) {
@@ -2947,18 +2985,35 @@ public final class RetentionArtifactStore:
         guard index >= 0, index < plan.nodeCount else { throw SelectedRepositoryScopeError.cleanupPending }
         let bytes = try readCleanupBytes(plan.nodes, offset: cleanupRecordOffset(index), count: Self.cleanupRecordBytes,
             deadline: deadline, sealed: plan.preflightComplete)
-        var parent: Int64 = 0, depth: UInt32 = 0, length: UInt32 = 0, before = stat()
-        withUnsafeMutableBytes(of: &parent) { $0.copyBytes(from: bytes[0..<8]) }
-        withUnsafeMutableBytes(of: &depth) { $0.copyBytes(from: bytes[8..<12]) }
-        withUnsafeMutableBytes(of: &length) { $0.copyBytes(from: bytes[12..<16]) }
-        withUnsafeMutableBytes(of: &before) { $0.copyBytes(from: bytes[16..<(16 + MemoryLayout<stat>.size)]) }
-        let start = 16 + MemoryLayout<stat>.size
-        guard length > 0, length <= UInt32(MAXNAMLEN), depth < UInt32(Self.maximumCleanupDepth),
-              (index == 0 ? parent == -1 && depth == 0 : parent >= 0 && parent < index && depth > 0),
-              let name = String(data: bytes.subdata(in: start..<(start + Int(length))), encoding: .utf8),
-              RetentionPath.isComponent(name) else { throw SelectedRepositoryScopeError.cleanupPending }
-        return CleanupNode(name: name, before: before, parentIndex: parent, depth: Int(depth))
+        return try Self.decodeCleanupNode(index, bytes: bytes)
     }
+    private static func decodeCleanupNode(_ index: Int64, bytes: Data) throws -> CleanupNode {
+        // Borrow this freshly checked record once. Header loads support unaligned
+        // Data storage; the name is decoded strictly without a copied subdata.
+        // No decoded value outlives or substitutes for a later live spill check.
+        guard index >= 0, bytes.count == cleanupRecordBytes else {
+            throw SelectedRepositoryScopeError.cleanupPending
+        }
+        return try bytes.withUnsafeBytes { raw in
+            let parent = raw.loadUnaligned(fromByteOffset: 0, as: Int64.self)
+            let depth = raw.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
+            let length = raw.loadUnaligned(fromByteOffset: 12, as: UInt32.self)
+            let start = 16 + MemoryLayout<stat>.size
+            guard length > 0, length <= UInt32(MAXNAMLEN), depth < UInt32(maximumCleanupDepth),
+                  (index == 0 ? parent == -1 && depth == 0 : parent >= 0 && parent < index && depth > 0),
+                  let name = String(bytes: raw[start..<(start + Int(length))], encoding: .utf8),
+                  RetentionPath.isComponent(name) else { throw SelectedRepositoryScopeError.cleanupPending }
+            let before = raw.loadUnaligned(fromByteOffset: 16, as: stat.self)
+            return CleanupNode(name: name, before: before, parentIndex: parent, depth: Int(depth))
+        }
+    }
+    #if SHADOW_SYNC_TESTING
+    static func testingDecodeCleanupRecord(_ bytes: Data, index: Int64)
+        throws -> (name: String, before: stat, parent: Int64, depth: Int) {
+        let node = try decodeCleanupNode(index, bytes: bytes)
+        return (node.name, node.before, node.parentIndex, node.depth)
+    }
+    #endif
     private func appendCleanupOrder(_ index: Int64, plan: CleanupPlan, deadline: MonotonicDeadline) throws {
         guard plan.orderCount < Int64.max / 8 else { throw SelectedRepositoryScopeError.cleanupPending }
         var value = index
@@ -3009,6 +3064,52 @@ public final class RetentionArtifactStore:
         #if SHADOW_SYNC_TESTING
         owner.recordCleanupStage(102)
         #endif
+        #if SHADOW_SYNC_TESTING
+        // device: 0=not reached, 1=match, 2=mismatch, 3=lookup threw.
+        var observedDevice = 0
+        func observedParentDeviceMatches() throws -> Bool {
+            do {
+                let matches = UInt64(before.st_dev) == (try cleanupIdentity(parent)).device
+                observedDevice = matches ? 1 : 2
+                return matches
+            } catch {
+                observedDevice = 3
+                throw error
+            }
+        }
+        do {
+            guard before.st_uid == account.uid, try observedParentDeviceMatches(),
+                  kind == S_IFDIR || kind == S_IFREG || kind == S_IFLNK,
+                  kind == S_IFDIR || before.st_nlink == 1,
+                  acceptedPayloadMode || ((kind == S_IFLNK || (before.st_mode & 0o022) == 0) && (before.st_mode & 0o7000) == 0),
+                  Self.cleanupFlagsAllowed(before.st_flags) else {
+                throw GitSafetyError.unsafeRepository("retention cleanup type, links, flags or mode is unsafe")
+            }
+        } catch {
+            let entry = owner.payloadEntries[relativePath]
+            let entryKindMatches = entry.map {
+                ($0.kind == .directory && kind == S_IFDIR)
+                    || ($0.kind == .regular && kind == S_IFREG)
+                    || ($0.kind == .symbolicLink && kind == S_IFLNK)
+            } ?? false
+            let kindCode = kind == S_IFDIR ? 1 : (kind == S_IFREG ? 2 : (kind == S_IFLNK ? 3 : 0))
+            // component: 0=other, 1=slot root, 2=worktree archive, 3=index,
+            // 4=bundle, 5=proof root, 6=proof repository, 7=accepted payload.
+            let component: Int
+            switch relativePath {
+            case "": component = 1
+            case "worktree.tar": component = 2
+            case "index.snapshot": component = 3
+            case "branch.bundle": component = 4
+            case ".restore-proof": component = 5
+            case ".restore-proof/repository": component = 6
+            default: component = entry == nil ? 0 : 7
+            }
+            let observation = "uid_match=\(before.st_uid == account.uid) device=\(observedDevice) kind=\(kindCode) links_safe=\(kind == S_IFDIR || before.st_nlink == 1) mode=\(UInt16(before.st_mode & 0o7777)) group_other_write_clear=\((before.st_mode & 0o022) == 0) special_mode_clear=\((before.st_mode & 0o7000) == 0) accepted_payload=\(acceptedPayloadMode) entry_present=\(entry != nil) entry_kind_match=\(entryKindMatches) entry_mode=\(entry.map { Int($0.mode) } ?? -1) flags=\(before.st_flags) flags_safe=\(Self.cleanupFlagsAllowed(before.st_flags)) component=\(component)"
+            Self.mixedCleanupObservation.record(observation)
+            throw error
+        }
+        #else
         guard before.st_uid == account.uid, UInt64(before.st_dev) == (try cleanupIdentity(parent)).device,
               kind == S_IFDIR || kind == S_IFREG || kind == S_IFLNK,
               kind == S_IFDIR || before.st_nlink == 1,
@@ -3016,6 +3117,7 @@ public final class RetentionArtifactStore:
               Self.cleanupFlagsAllowed(before.st_flags) else {
             throw GitSafetyError.unsafeRepository("retention cleanup type, links, flags or mode is unsafe")
         }
+        #endif
         #if SHADOW_SYNC_TESTING
         owner.recordCleanupStage(103)
         #endif

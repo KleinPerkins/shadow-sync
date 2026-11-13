@@ -9,8 +9,10 @@ deployment, signed release, supported-host qualification or installation.
 Public source and GitHub Actions remain separate from private binary delivery.
 No binary, access file, account identifier, deployment origin, recipient data or
 owner credential belongs in this repository or a public Actions artifact.
-The staged candidate-release workflow still requires private-channel adaptation
-before it can execute publication; this component does not enable that route.
+The public release workflow verifies synthetic source contracts only. The explicit
+[owner-local release command](../docs/runbooks/private-release.md) composes the
+existing signing, notarization and private qualification publisher. Its source
+implementation establishes no live publication or acceptance.
 
 ## Delivery and access
 
@@ -75,10 +77,85 @@ migration and explicit operator acceptance. A JSON assertion alone proves none
 of these outcomes. Sparkle installed-update proof and feed/Latest promotion remain
 separate post-MVP work.
 
-The CLI supports guarded deployment/privacy readback, grant creation/revocation
+The CLI supports guarded deployment/privacy readback, access lifecycle commands
 and immutable qualification publication followed by identical-byte friend-channel
 promotion. Every operation retains the copied Free, source/configuration, route,
 version and artifact checks. No provider command runs merely by importing source.
+
+### Owner access lifecycle
+
+Run `python3 scripts/delivery.py --config /absolute/private/config.json COMMAND`.
+The config remains owner-private and outside Git. Create a separate owner-owned
+mode-0700 directory for access files; the CLI creates mode-0600 regular files
+exclusively, refuses symlinks/hard links, and never overwrites an existing file.
+All labels must be opaque non-personal identifiers. Tokens and hashes are omitted
+from command output. These commands send no messages or email.
+
+| Command | Required arguments and behavior |
+| --- | --- |
+| `create-grant` | `--label`, `--output`, `--expires-at` (finite future Unix seconds); defaults to non-owner `stable` access. |
+| `list-grants` | Lists this application's grant IDs, original channel/owner flag, expiry, revocation and observed state. |
+| `grant-status` | `--grant-id`; an empty result means no entitlement for this application was observed. |
+| `expire-grant` | `--grant-id --expires-at`; shortens expiry only. A past positive timestamp expires access now. |
+| `revoke-grant` | `--grant-id`; denies future authorization without deleting credentials or downloaded bytes. |
+| `replace-grant` | `--grant-id --label --output --expires-at`; creates a new private file and grant, verifies them, then revokes the original. Expiry cannot exceed the original. |
+| `recover-grant` | `--attempt`; observes retained custody and actual D1 state. Add `--complete` explicitly to perform only never-attempted remaining steps. |
+
+Creation accepts `--channel qualification --owner` only for owner access. For
+expiry, revocation and replacement, supply the original `--channel` and `--owner`
+flag. These commands require exactly one entitlement for this application and
+channel. Foreign-app, extra-entitlement, changed-owner and widened-expiry cases
+refuse; a list may report `scope-conflict` for such a grant.
+
+Creation durably retains the access file before any provider write and binds its
+exact filesystem identity, token digest, provider resource identity, finite grant
+and optional original grant in `OUTPUT.attempt.json`. Retain that private sidecar
+and its immutable `.grant`, `.entitlement` and `.revoke` write-intent markers with
+the access file. Share only the access file with the intended recipient after the
+command reports complete. The sidecar contains private resource metadata and is
+owner-only. Do not move, replace, edit or delete these records to force a retry.
+The command serializes recovery for one retained attempt using a local file lock;
+all independent grant mutations must still have one owner. Before reporting
+completion, one final database observation checks the exact new grant and sole
+application/channel entitlement together with the original grant's exact identity,
+scope and confirmed revocation for a replacement. Recovery then rechecks the
+original private access, attempt and observed write-intent marker bytes, modes,
+named inodes and held attempt lock. Marker presence is retained for the whole
+recovery: a marker that disappears never becomes permission to retry its write.
+An unexpected new marker, changed marker, or replacement during exclusive marker
+creation refuses completion before the next provider write. Only failure to open a marker
+inside an unchanged private parent counts as initial absence. A marker that
+disappears after its descriptor is acquired causes refusal, never a new attempt. Observed changes
+refuse completion, including changes that preserve parsed JSON but alter stored
+bytes. These bounded observations do not make the remote
+database and local filesystem atomic or prevent a later independent owner action.
+
+Recovery checks actual D1 and local file state. If a response was lost but the
+exact effect is visible, explicit completion can advance the next untouched
+step. If an attempted write has no visible effect, recovery returns `pending`
+(exit 2) and never replays that request. Preserve evidence and reconcile the
+provider's outcome privately before any separate operator action; this tool has
+no forced replay or intent-deletion escape hatch. Missing/malformed files,
+changed identities and altered scope refuse. An access file left by a failure
+before sidecar creation has caused no provider write; preserve it and use a new
+output path for a separately authorized creation. Partial sidecars/markers are
+retained and require private diagnosis. Never share a pending file.
+
+Replacement leaves the original file untouched. Its old grant is revoked only
+after the new finite grant, entitlement and file are verified. An interruption
+may temporarily leave both grants active; recovery reports pending until the
+old revocation is confirmed. Expired replacement access cannot trigger old-grant
+revocation. Expiry/revoke are single conditional scoped writes with readback; if
+transport or postflight fails, inspect `grant-status` before issuing another
+operation. An already-revoked grant returns its observed state without another
+write. Missing entitlement is distinct from an unavailable/denied provider read,
+which reports failure rather than inferring revocation. Read-only inspection
+never changes a grant. Provider API calls retain
+the existing fresh account-bound Free-proof requirement.
+
+Revocation and expiry cannot retract previously downloaded or in-flight bytes.
+No source test establishes provider deployment, recipient acceptance, release,
+installation, or that an access file was privately delivered to a person.
 
 [Workers Free limits](https://developers.cloudflare.com/workers/platform/limits/)
 and [Static Assets billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)

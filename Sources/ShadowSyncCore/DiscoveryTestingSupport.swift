@@ -7,6 +7,47 @@ import ShadowSyncCatalog
 /// Closed, testing-only failure observations: no path, input, child output or
 /// arbitrary error text is admitted. These observations never alter a budget.
 enum DiscoveryFixtureDiagnostic {
+    /// A thread-scoped value observes only the actual throwing spawn attempt.
+    /// It never owns a descriptor, changes an error, retries work or emits output.
+    enum RepositoryBusyObservation {
+        enum Transition: String, CaseIterable { case none, admit, executing }
+        enum Site: String, CaseIterable { case none, catalogMutex, catalogFileLock }
+        struct Snapshot: Equatable {
+            var transition: Transition = .none
+            var site: Site = .none
+        }
+        private final class Scope { var snapshot = Snapshot() }
+        private static let key = "shadow-sync-testing-repository-catalog-busy"
+        private static var current: Scope? { Thread.current.threadDictionary[key] as? Scope }
+        static func transition(_ value: Transition) {
+            let saved = errno; defer { errno = saved }
+            current?.snapshot.transition = value
+        }
+        static func busy(_ value: Site) {
+            let saved = errno; defer { errno = saved }
+            current?.snapshot.site = value
+        }
+        static func observe<T>(enabled: Bool, failure: (Snapshot) -> Void,
+                               _ body: () throws -> T) rethrows -> T {
+            guard enabled else { return try body() }
+            let saved = errno
+            let previous = Thread.current.threadDictionary[key]
+            let scope = Scope()
+            Thread.current.threadDictionary[key] = scope
+            errno = saved
+            defer {
+                let saved = errno; defer { errno = saved }
+                if let previous { Thread.current.threadDictionary[key] = previous }
+                else { Thread.current.threadDictionary.removeObject(forKey: key) }
+            }
+            do { return try body() }
+            catch {
+                let saved = errno; defer { errno = saved }
+                failure(scope.snapshot); throw error
+            }
+        }
+    }
+
     /// This budget applies only to optional fixture traces. Assertion/failure
     /// reporting and the guardian's stream limits are separate and unchanged.
     final class Sink: @unchecked Sendable {
@@ -130,6 +171,117 @@ enum DiscoveryFixtureDiagnostic {
 
     static func sampleRevalidation() -> Bool { revalidationSamples.take() }
     static func samplePublisherRevalidation() -> Bool { publisherSamples.take() }
+
+    // One exact synchronous Store selection attempt, independent of earlier
+    // expected refusals and trace saturation. Fixed slots accumulate costs;
+    // nothing records paths, input, child output or arbitrary error text.
+    enum CatalogCostStage: Int, CaseIterable { case setup, catalog, bind, discoveryPolicy, metadata }
+    final class CatalogCostObservation {
+        struct Totals {
+            var calls: UInt64 = 0, wall: UInt64 = 0
+            var entryRemaining: UInt64?, endRemaining: UInt64?
+            var helpers: UInt64 = 0, helperTime: UInt64 = 0
+            var sessions: UInt64 = 0, scratch: UInt64 = 0, snapshot: UInt64 = 0
+            var resources: UInt64 = 0, postflight: UInt64 = 0
+        }
+        private var totals = Array(repeating: Totals(), count: CatalogCostStage.allCases.count)
+        private var current: CatalogCostStage?
+        private var last = CatalogCostStage.setup
+        private var failedStage: CatalogCostStage?
+        private var originalDeadline: UInt64?
+        private var setup = [UInt64](repeating: 0, count: 4)
+        private var finished = false
+        private let output: Sink
+        init(output: Sink) { self.output = output }
+        private static func add(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+            let sum = lhs.addingReportingOverflow(rhs)
+            return sum.overflow ? UInt64.max : sum.partialValue
+        }
+        func measure<Value>(_ stage: CatalogCostStage, _ body: () throws -> Value) rethrows -> Value {
+            let previous = current, started = DispatchTime.now().uptimeNanoseconds
+            current = stage; last = stage
+            let index = stage.rawValue
+            totals[index].entryRemaining = originalDeadline.map { $0 > started ? $0 - started : 0 }
+            defer {
+                let ended = DispatchTime.now().uptimeNanoseconds
+                totals[index].calls = Self.add(totals[index].calls, 1)
+                // Outer policy wall time includes the nested metadata body;
+                // helper/session costs belong only to the innermost stage.
+                totals[index].wall = Self.add(totals[index].wall, ended - started)
+                totals[index].endRemaining = originalDeadline.map { $0 > ended ? $0 - ended : 0 }
+                current = previous
+            }
+            do { return try body() }
+            catch {
+                // A nested throw retains its inner stage. A postflight throw
+                // after a successful metadata return belongs to the outer call.
+                if failedStage == nil { failedStage = stage }
+                throw error
+            }
+        }
+        func captureHelper(started: UInt64, ended: UInt64) {
+            guard !finished, let current, ended >= started else { return }
+            let index = current.rawValue
+            totals[index].helpers = Self.add(totals[index].helpers, 1)
+            totals[index].helperTime = Self.add(totals[index].helperTime, ended - started)
+        }
+        func captureSession(started: UInt64, ended: UInt64, milestones: [UInt64]) {
+            guard !finished, let current, ended >= started else { return }
+            let points = [started] + Array(milestones.prefix(3)) + [ended]
+            guard zip(points, points.dropFirst()).allSatisfy({ $0 <= $1 }) else { return }
+            let intervals = zip(points, points.dropFirst()).map { $1 - $0 }
+            let index = current.rawValue
+            totals[index].sessions = Self.add(totals[index].sessions, 1)
+            // On refusal, the incomplete component receives its elapsed time;
+            // later unentered components remain zero.
+            totals[index].scratch = Self.add(totals[index].scratch, intervals[0])
+            if intervals.count > 1 { totals[index].snapshot = Self.add(totals[index].snapshot, intervals[1]) }
+            if intervals.count > 2 { totals[index].resources = Self.add(totals[index].resources, intervals[2]) }
+            if intervals.count > 3 { totals[index].postflight = Self.add(totals[index].postflight, intervals[3]) }
+        }
+        func captureSetup(started: UInt64, ended: UInt64, milestones: [UInt64], deadline: UInt64? = nil) {
+            guard !finished, current == .setup, ended >= started else { return }
+            let points = [started] + Array(milestones.prefix(3)) + [ended]
+            guard zip(points, points.dropFirst()).allSatisfy({ $0 <= $1 }) else { return }
+            for (index, pair) in zip(points, points.dropFirst()).enumerated() { setup[index] = pair.1 - pair.0 }
+            originalDeadline = deadline
+        }
+        func finish(succeeded: Bool) {
+            guard !finished else { return }; finished = true
+            guard !succeeded else { return }
+            output.emit("DISCOVERY CATALOG COST context=retentionStoreInitial failed_stage=\((failedStage ?? last).rawValue) prebudget_ns=\(setup[0]) publisher_ns=\(setup[1]) snapshot_ns=\(setup[2]) session_binder_ns=\(setup[3])\n")
+            for stage in CatalogCostStage.allCases {
+                let value = totals[stage.rawValue]
+                output.emit("DISCOVERY CATALOG COST stage=\(stage.rawValue) calls=\(value.calls) wall_ns=\(value.wall) helpers=\(value.helpers) helper_ns=\(value.helperTime) sessions=\(value.sessions) scratch_ns=\(value.scratch) snapshot_ns=\(value.snapshot) resources_ns=\(value.resources) postflight_ns=\(value.postflight) setup_entry_remaining_ns=\(value.entryRemaining.map { String($0) } ?? "absent") setup_end_remaining_ns=\(value.endRemaining.map { String($0) } ?? "absent")\n")
+            }
+        }
+    }
+    private static let catalogCostKey = "ShadowSync.DiscoveryFixtureDiagnostic.catalogCost"
+    private static let firstCatalogCost = FirstAdmissionFailure()
+    static var currentCatalogCost: CatalogCostObservation? {
+        guard isEnabled else { return nil }
+        return Thread.current.threadDictionary[catalogCostKey] as? CatalogCostObservation
+    }
+    static func withCatalogCost<Value>(observing: Bool, _ body: () throws -> Value) rethrows -> Value {
+        guard observing, isEnabled, firstCatalogCost.take() else { return try body() }
+        let previous = currentCatalogCost
+        let observation = CatalogCostObservation(output: Sink(enabled: true,
+            writer: { fputs($0, stderr); fflush(stderr) }))
+        Thread.current.threadDictionary[catalogCostKey] = observation
+        var succeeded = false
+        defer {
+            // Emit at most six bounded lines, after the measured call throws.
+            // Restore the original thread scope on every return and failure.
+            if let previous { Thread.current.threadDictionary[catalogCostKey] = previous }
+            else { Thread.current.threadDictionary.removeObject(forKey: catalogCostKey) }
+            observation.finish(succeeded: succeeded)
+        }
+        let result = try body(); succeeded = true; return result
+    }
+    static func measureCatalogCost<Value>(_ stage: CatalogCostStage, _ body: () throws -> Value) rethrows -> Value {
+        if let observation = currentCatalogCost { return try observation.measure(stage, body) }
+        return try body()
+    }
 
     enum Component: String { case catalog, transport, custody, registry, admission, binder, selection, rebind, discovery, session, publisher, policyPreparation, publication, helperPreparation, phase }
     enum Stage: String {
@@ -402,7 +554,8 @@ enum DiscoveryFixtureDiagnostic {
     // The helper's diagnostic shares the captured stderr carrier with target
     // output. Project only a complete, final, LF-delimited closed frame; never
     // forward raw bytes or treat this observation as authenticated authority.
-    private static let repositoryCustodianFailureProjections: [(bytes: Data, event: String, error: String)] = {
+    private static let repositoryCustodianFailureProjections: [(bytes: Data, event: String, error: String,
+                                                               detail: RepositoryBusyObservation.Snapshot)] = {
         let events = ["spawnTargetFailure", "advanceStageFailure", "repositoryPostflightFailure"]
         let families = [
             "busy", "committed-cleanup", "conflict", "fenced", "git-busy",
@@ -416,26 +569,47 @@ enum DiscoveryFixtureDiagnostic {
             "resource-system-call", "unsafe-metadata",
         ]
         return events.flatMap { event in
-            families.map { error in
-                let line = "DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE event=\(event) error=\(error)\n"
-                return (bytes: Data(line.utf8), event: event, error: error)
+            families.flatMap { error in
+                let details: [RepositoryBusyObservation.Snapshot]
+                if event == "spawnTargetFailure", error == "busy" {
+                    details = RepositoryBusyObservation.Transition.allCases.flatMap { transition in
+                        RepositoryBusyObservation.Site.allCases.map { .init(transition: transition, site: $0) }
+                    }
+                } else { details = [.init()] }
+                return details.map { detail in
+                    let line = "DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE event=\(event) error=\(error)"
+                        + " transition=\(detail.transition.rawValue) busy_site=\(detail.site.rawValue)\n"
+                    return (bytes: Data(line.utf8), event: event, error: error, detail: detail)
+                }
             }
         }
     }()
-    private static func repositoryCustodianFailureProjection(_ bytes: Data) -> (event: String, error: String)? {
+    static func repositoryCustodianFailureProjection(_ bytes: Data)
+        -> (event: String, error: String, detail: RepositoryBusyObservation.Snapshot)? {
         for row in repositoryCustodianFailureProjections {
             guard bytes.count >= row.bytes.count,
                   bytes.suffix(row.bytes.count).elementsEqual(row.bytes),
                   bytes.count == row.bytes.count || bytes[bytes.endIndex - row.bytes.count - 1] == 10 else { continue }
-            return (event: row.event, error: row.error)
+            return (event: row.event, error: row.error, detail: row.detail)
         }
         return nil
     }
-    private static let firstRepositoryResultFailure = FirstAdmissionFailure()
+    /// An earlier expected refusal must not consume the explicitly observed
+    /// command's evidence. Each closed lane remains process-wide and one-shot.
+    final class RepositoryResultFailureSelection: @unchecked Sendable {
+        private let ordinary = FirstAdmissionFailure()
+        private let observed = FirstAdmissionFailure()
+        func take(enabled: Bool, observeCustodianFailure: Bool) -> Bool {
+            guard enabled else { return false }
+            return (observeCustodianFailure ? observed : ordinary).take()
+        }
+    }
+    private static let repositoryResultFailureSelection = RepositoryResultFailureSelection()
     static func recordRepositoryResult(_ result: CustodyRegistryResult, observeCustodianFailure: Bool = false) {
         let savedErrno = errno
         defer { errno = savedErrno }
-        guard isEnabled, firstRepositoryResultFailure.take() else { return }
+        guard repositoryResultFailureSelection.take(enabled: isEnabled,
+            observeCustodianFailure: observeCustodianFailure) else { return }
         let phase: String
         switch result.phase {
         case .starting: phase = "starting"
@@ -445,6 +619,7 @@ enum DiscoveryFixtureDiagnostic {
         case .finished: phase = "finished"
         }
         failureSink.emit("DISCOVERY REPOSITORY WAIT FIRST FAILURE phase=\(phase)"
+            + " observed=\(observeCustodianFailure)"
             + " reason=\(result.reason?.rawValue ?? "absent")"
             + " journal_present=\(result.journal != nil)"
             + " journal_phase=\(result.journal?.phase.rawValue ?? "absent")"
@@ -455,7 +630,8 @@ enum DiscoveryFixtureDiagnostic {
         if observeCustodianFailure, result.phase == .finished, result.journal?.kind == .repositoryGit {
             if let projection = repositoryCustodianFailureProjection(result.stderr) {
                 failureSink.emit("DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE carrier=stderr present=true"
-                    + " event=\(projection.event) error=\(projection.error)\n")
+                    + " event=\(projection.event) error=\(projection.error)"
+                    + " transition=\(projection.detail.transition.rawValue) busy_site=\(projection.detail.site.rawValue)\n")
             } else {
                 failureSink.emit("DISCOVERY REPOSITORY CUSTODIAN FIRST FAILURE carrier=stderr present=false\n")
             }

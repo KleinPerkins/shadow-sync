@@ -5,6 +5,12 @@ import Foundation
 /// migration and update transactions retain their separate admission gates.
 public enum LifecycleCoordinatorMain {
     public static func run(arguments: [String]) -> Int32 {
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if let result = SignedInstallationFixtureAdapterEntrypoint.dispatch(arguments) { return result }
+        if let result = CommandCustodian.dispatchSignedInstallation(arguments) { return result }
+        if let result = SignedInstallationFixtureEntrypoint.dispatch(arguments) { return result }
+        if let result = SignedInstallationFixtureSourceEntrypoint.dispatch(arguments) { return result }
+        #endif
         if let result = CommandCustodian.dispatchLifecycle(arguments) { return result }
         guard arguments.count == 2 else { return usage() }
         switch arguments[1] {

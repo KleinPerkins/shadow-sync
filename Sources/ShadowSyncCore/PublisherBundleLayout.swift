@@ -30,13 +30,14 @@ final class PublisherBundleLayout {
     private let files: [PolicyAuthorityFile]
     private let publisher: PublisherCodeVerifier.Identity?
     private let owner: uid_t
+    private let validationProfile: InstallationValidationProfile
     private var ticket: PolicyAuthorityFile?
     private var outerNodes: [String: PolicyRuntimeTree.Node] = [:]
 
     private init(bundlePath: String, layout: PolicyRuntimeLayout, files: [PolicyAuthorityFile],
-                 publisher: PublisherCodeVerifier.Identity?) throws {
+                 publisher: PublisherCodeVerifier.Identity?, validationProfile: InstallationValidationProfile = .production) throws {
         self.bundlePath = bundlePath; self.layout = layout; self.files = files
-        self.publisher = publisher; owner = geteuid()
+        self.publisher = publisher; owner = geteuid(); self.validationProfile = validationProfile
         tree = try PolicyRuntimeTree.capture(root: bundlePath + "/" + Self.frameworkRelative,
                                             owner: owner, layout: layout)
         outerNodes = try captureOuterNodes()
@@ -47,7 +48,9 @@ final class PublisherBundleLayout {
         guard try captureOuterNodes() == outerNodes else { throw PublisherPolicyError.unavailable }
     }
 
-    static func captureIfPresent(_ bundlePath: String) throws -> PublisherBundleLayout? {
+    static func captureIfPresent(_ bundlePath: String,
+                                 validationProfile: InstallationValidationProfile = .production) throws -> PublisherBundleLayout? {
+        try validationProfile.validateBundlePath(bundlePath)
         // Check each parent physically before examining the runtime. A malformed
         // or aliased component is never interpreted as a development bundle.
         var current = bundlePath
@@ -84,9 +87,9 @@ final class PublisherBundleLayout {
             throw PublisherPolicyError.unavailable
         }
         let release = try ReleaseIdentity(infoDictionary: values)
-        try release.validate(requireProduction: true)
+        try validationProfile.validate(release)
         guard release.releaseContractSHA256 == contract.sha256 else { throw PublisherPolicyError.unavailable }
-        let result = try Self(bundlePath: bundlePath, layout: layout, files: [info, source, contract, manifest], publisher: publisher)
+        let result = try Self(bundlePath: bundlePath, layout: layout, files: [info, source, contract, manifest], publisher: publisher, validationProfile: validationProfile)
         for relative in result.tree.machOFiles {
             _ = try PublisherCodeVerifier.verifiedStatic(path: framework + "/" + relative,
                 identifier: relative == PolicyRuntimeLayout.interpreter ? "com.kleinperkins.shadow-sync.policy-helper" : nil,
@@ -99,7 +102,7 @@ final class PublisherBundleLayout {
     private func entry(_ relative: String) throws -> PolicyRuntimeLayout.Entry {
         if Self.directories.contains(relative) { return .init(kind: .directory, mode: 0o755, target: nil) }
         if Self.executables.contains(relative) { return .init(kind: .file, mode: 0o755, target: nil) }
-        if Self.resources.contains(relative) || relative == Self.ticketRelative { return .init(kind: .file, mode: 0o644, target: nil) }
+        if Self.resources.union(validationProfile.additionalBundleResources).contains(relative) || relative == Self.ticketRelative { return .init(kind: .file, mode: 0o644, target: nil) }
         let prefix = Self.frameworkRelative + "/"
         guard relative.hasPrefix(prefix), let entry = layout.entries[String(relative.dropFirst(prefix.count))] else {
             throw PublisherPolicyError.unavailable
@@ -168,7 +171,7 @@ final class PublisherBundleLayout {
                     if name == "." || name == ".." { continue }
                     let child = relative.isEmpty ? name : relative + "/" + name
                     guard Self.directories.contains(child) || Self.executables.contains(child)
-                        || Self.resources.contains(child) || child == Self.ticketRelative else { throw PublisherPolicyError.unavailable }
+                        || Self.resources.union(validationProfile.additionalBundleResources).contains(child) || child == Self.ticketRelative else { throw PublisherPolicyError.unavailable }
                     let fd = openat(descriptor, name, flags)
                     guard fd >= 0 else { throw PublisherPolicyError.unavailable }
                     defer { close(fd) }
@@ -182,7 +185,7 @@ final class PublisherBundleLayout {
             nodes[relative] = initial
         }
         try visit("", root)
-        let required = Self.directories.union(Self.executables).union(Self.resources)
+        let required = Self.directories.union(Self.executables).union(Self.resources).union(validationProfile.additionalBundleResources)
         guard Set(nodes.keys) == required || Set(nodes.keys) == required.union([Self.ticketRelative]) else {
             throw PublisherPolicyError.unavailable
         }
@@ -190,6 +193,7 @@ final class PublisherBundleLayout {
     }
 
     func revalidate() throws {
+        try validationProfile.revalidate()
         guard try captureOuterNodes() == outerNodes else { throw PublisherPolicyError.unavailable }
         for file in files { try file.revalidate() }
         try ticket?.revalidate()

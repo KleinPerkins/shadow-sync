@@ -1,137 +1,26 @@
-name: MVP release candidate
+name: Private release source contracts
 on:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency:
-  group: shadow-sync-release-candidate
-  cancel-in-progress: false
 jobs:
-  candidate:
+  contracts:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.repository == 'KleinPerkins/shadow-sync' &&
       github.repository_id == '1442961455' &&
       github.ref == 'refs/heads/main' &&
-      github.sha == github.workflow_sha &&
-      github.run_attempt == 1
-    environment: release
+      github.sha == github.workflow_sha
     runs-on: macos-26
-    timeout-minutes: 120
-    permissions:
-      contents: write
-      actions: read
-      checks: read
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-      TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
-      PYTHONDONTWRITEBYTECODE: '1'
+    timeout-minutes: 10
     steps:
-      - name: Check out the trusted main workflow and source revision
+      - name: Check out trusted main source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
-          fetch-depth: 0
           persist-credentials: false
-      - name: Verify candidate refusal and publication contracts with fixtures
+      - name: Verify synthetic private release contracts
         run: python3 -I -B -m unittest discover -s Tests/Tooling -p 'test_release_candidate.py' -v
-      # This is a reduced capability request, never an App permission grant.
-      - name: Mint repository-only immutability read token (prepare)
-        id: admin_prepare
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUTOMERGE_APP_ID }}
-          private-key: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
-          owner: KleinPerkins
-          repositories: shadow-sync
-          permission-administration: read
-          skip-token-revoke: false
-      - name: Admit exact CI, build source, fetch pinned dependency, and reserve allocation
-        id: prepare
-        env:
-          APP_TOKEN: ${{ steps.admin_prepare.outputs.token }}
-          APP_SLUG: ${{ steps.admin_prepare.outputs.app-slug }}
-          GH_TOKEN: ${{ github.token }}
-        run: python3 -I -B scripts/release-candidate.py prepare
-      - name: Revoke immutability token and observe rejection (prepare)
-        id: revoke_prepare
-        if: ${{ always() && steps.admin_prepare.outputs.token != '' }}
-        env:
-          REVOCATION_PHASE: prepare
-          APP_TOKEN: ${{ steps.admin_prepare.outputs.token }}
-          APP_SLUG: ${{ steps.admin_prepare.outputs.app-slug }}
-        run: python3 -I -B scripts/release-candidate.py admin-revoke
-      # This is a reduced capability request, never an App permission grant.
-      - name: Mint repository-only immutability read token (sign)
-        id: admin_sign
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUTOMERGE_APP_ID }}
-          private-key: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
-          owner: KleinPerkins
-          repositories: shadow-sync
-          permission-administration: read
-          skip-token-revoke: false
-      - name: Sign, notarize, and staple using the existing release helpers
-        id: sign
-        env:
-          APP_TOKEN: ${{ steps.admin_sign.outputs.token }}
-          APP_SLUG: ${{ steps.admin_sign.outputs.app-slug }}
-          GH_TOKEN: ${{ github.token }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: python3 -I -B scripts/release-candidate.py sign
-      - name: Revoke immutability token and observe rejection (sign)
-        id: revoke_sign
-        if: ${{ always() && steps.admin_sign.outputs.token != '' }}
-        env:
-          REVOCATION_PHASE: sign
-          APP_TOKEN: ${{ steps.admin_sign.outputs.token }}
-          APP_SLUG: ${{ steps.admin_sign.outputs.app-slug }}
-        run: python3 -I -B scripts/release-candidate.py admin-revoke
-      - name: Confirm temporary signing credentials are removed
-        id: cleanup
-        if: always()
-        run: python3 -I -B scripts/release-candidate.py cleanup
-      # This is a reduced capability request, never an App permission grant.
-      - name: Mint repository-only immutability read token (publish)
-        id: admin_publish
-        if: ${{ success() && steps.sign.outcome == 'success' && steps.cleanup.outcome == 'success' }}
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUTOMERGE_APP_ID }}
-          private-key: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
-          owner: KleinPerkins
-          repositories: shadow-sync
-          permission-administration: read
-          skip-token-revoke: false
-      - name: Publish immutable non-Latest candidate and verify downloaded bytes
-        if: ${{ success() && steps.sign.outcome == 'success' && steps.cleanup.outcome == 'success' }}
-        env:
-          APP_TOKEN: ${{ steps.admin_publish.outputs.token }}
-          APP_SLUG: ${{ steps.admin_publish.outputs.app-slug }}
-          GH_TOKEN: ${{ github.token }}
-        run: python3 -I -B scripts/release-candidate.py publish
-      - name: Revoke immutability token and observe rejection (publish)
-        id: revoke_publish
-        if: ${{ always() && steps.admin_publish.outputs.token != '' }}
-        env:
-          REVOCATION_PHASE: publish
-          APP_TOKEN: ${{ steps.admin_publish.outputs.token }}
-          APP_SLUG: ${{ steps.admin_publish.outputs.app-slug }}
-        run: python3 -I -B scripts/release-candidate.py admin-revoke
-      - name: Collect only allowlisted source and submission evidence
-        if: always()
-        run: python3 -I -B scripts/release-candidate.py evidence
-      - name: Retain bounded reconciliation evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: candidate-attempt-${{ github.run_id }}
-          path: outputs/release-candidate/attempt.json
-          if-no-files-found: warn
-          retention-days: 14
+      # This workflow proves source contracts only. The explicit owner-local
+      # release-candidate command owns private signing and qualification delivery.
+      # No credentials, private outputs, binary uploads or evidence artifacts.

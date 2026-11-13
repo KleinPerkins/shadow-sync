@@ -12,7 +12,7 @@ The snapshot has fresh public history and [per-file provenance](Resources/source
 
 ## Development
 
-The package requires Swift tools 6.2 or newer and a macOS 26 SDK. The intended hosted release toolchain remains Xcode 26.6; local compilation evidence records the toolchain actually used.
+The package requires Swift tools 6.2 or newer and a macOS 26 SDK. The intended CI and owner-local release toolchain remains Xcode 26.6; local compilation evidence records the toolchain actually used.
 
 Source and Python tooling checks use disposable fixtures:
 
@@ -33,6 +33,8 @@ This produces a development bundle, not a distribution or an installation. `inst
 ## Verification and delivery gates
 
 The source inventory includes mandatory runtime cases and sharding/evidence validators. Full current-source runtime coverage and hosted application CI are still being qualified. The existing `CI tooling qualification` workflow tests Python tooling only. The privileged reviewer-App workflow is staged with both jobs disabled until full CI provenance, dependency-content policy and exact-head delivery tests pass.
+
+The [private release command](docs/runbooks/private-release.md) automates owner-local candidate preparation and qualification publication; the public release workflow verifies only synthetic source contracts. Neither route establishes a qualified release until its live gates pass.
 
 The next product milestone requires Developer ID signing, hardened runtime, notarization, stapling, downloaded-byte verification, deployed policy compatibility, source-free installation and preserved-state migration. Startup remains explicit opt-in through normal macOS Login Items.
 

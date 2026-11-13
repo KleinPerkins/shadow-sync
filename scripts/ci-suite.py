@@ -70,6 +70,18 @@ def package_contract(build, work, record):
         build.require(not any(value.encode() in data for value in markers['markers']), 'Testing string in production')
         build.require(not any(pattern.search(line) or '.writeFixtureAtomically(to:' in line for line in fields(path)),
                       'Testing implementation in production')
+    # Signed-source preflight is absent from BOTH ordinary testing and production
+    # products. Its positive controls belong to its distinct signed package.
+    signed = json.loads((ROOT / 'Tests/Fixtures/signed-installation-source-markers.json').read_bytes())
+    build.require(signed['schema'] == 'shadow-sync-signed-installation-source-markers/v1'
+                  and signed['qualification'] == 'connected-startup-stop-source-only'
+                  and len(signed['markers']) == len(set(signed['markers'])) > 0,
+                  'Invalid signed fixture exclusion roster')
+    for mode in ('testing', 'production'):
+        for name in build.PRODUCTS:
+            data = (Path(record['builds'][mode]['products']) / name).read_bytes()
+            build.require(not any(value.encode() in data for value in signed['markers']),
+                          'Signed fixture route in ordinary product')
     print('PASS package/production-seam-exclusion', flush=True)
     build.require('Sparkle' not in (ROOT / 'Package.swift').read_text()
         and not any('Sparkle' in name for item in record['builds'].values() for name in item['package']),

@@ -176,6 +176,9 @@ public enum M6SelfTestRunner {
         try run("m6-installation-staged-journal-substitution-refusals") { try InstallationStagedJournalFixtures.substitutionRefusals() }
         try run("m6-installation-staged-journal-persistence-cuts") { try InstallationStagedJournalFixtures.persistenceCuts() }
         try run("m6-installation-staged-command-transport-closure") { try InstallationStagedCommandFixtures.transportAndClosure() }
+        try run("m6-installation-committed-stop-binding-closure") { try InstallationStagedCommandFixtures.committedBindingClosure() }
+        try run("m6-installation-candidate-ready-stop-ordinal") { try InstallationStagedCommandFixtures.candidateReadyStopOrdinal() }
+        try run("m6-installation-committed-stop-owner-refusal") { try InstallationStagedCommandFixtures.committedOwnerRefusal() }
         try run("m6-installation-staged-command-stop-transport") { try InstallationStagedCommandFixtures.stopTransport() }
         try run("m6-installation-staged-command-owner-candidate-refusals") { try InstallationStagedCommandFixtures.ownersAndCandidate() }
         try run("m6-installation-staged-command-changed-evidence") { try InstallationStagedCommandFixtures.changedEvidence() }
@@ -195,6 +198,36 @@ public enum M6SelfTestRunner {
         try run("m6-installation-staged-reconciliation-aliases-eof") { try InstallationStagedReconciliationFixtures.aliasesAndEOF() }
         try run("m6-installation-staged-reconciliation-substitutions") { try InstallationStagedReconciliationFixtures.substitutions() }
         try run("m6-installation-staged-reconciliation-receipt-cuts") { try InstallationStagedReconciliationFixtures.receiptCuts() }
+        try run("m6-installation-cleanup-before-startup") { try InstallationBootstrapFixtures.cleanupBeforeStartup() }
+        try run("m6-installation-terminal-before-cleanup") { try InstallationTerminalFixtures.beforeCleanup() }
+        try run("m6-installation-terminal-uncertain-alias") { try InstallationTerminalFixtures.uncertainAlias() }
+        try run("m6-installation-stop-completion-positive-receipt") { try InstallationStoppedCustodyFixtures.completionClosureReceipt() }
+        try run("m6-installation-stop-completion-uncertain-receipt") { try InstallationStoppedCustodyFixtures.completionClosureUncertain() }
+        try run("m6-installation-stop-completion-partial-copy") { try InstallationStoppedCustodyFixtures.completionClosurePartialCopy() }
+        try run("m6-installation-stop-closed-session-no-delivery") { try InstallationStoppedCustodyFixtures.closedSessionHasNoStopDelivery() }
+        try run("m6-installation-stopped-custody-closed-proof") { try InstallationStoppedCustodyFixtures.closedProof() }
+        try run("m6-installation-stopped-custody-wrong-binding") { try InstallationStoppedCustodyFixtures.wrongBinding() }
+        try run("m6-installation-stopped-custody-completion-alias") { try InstallationStoppedCustodyFixtures.completionAlias() }
+        try run("m6-installation-stopped-custody-uncertain-alias") { try InstallationStoppedCustodyFixtures.uncertainAlias() }
+        try run("m6-installation-stopped-custody-partial-duplicates") { try InstallationStoppedCustodyFixtures.partialDuplicates() }
+        try run("m6-installation-stopped-custody-original-deadline") { try InstallationStoppedCustodyFixtures.originalDeadline() }
+        try run("m6-installation-stopped-custody-actual-registry-archives") { try InstallationStoppedCustodyFixtures.actualRegistryArchives() }
+        try run("m6-installation-stopped-custody-uncertain-resource") { try InstallationStoppedCustodyFixtures.uncertainResource() }
+        try run("m6-installation-stopped-custody-pending-cancellation") { try InstallationStoppedCustodyFixtures.pendingCancellation() }
+        try run("m6-installation-cleanup-closed-session-refuses") { try InstallationCoordinationCleanupFixtures.closedSessionIsNotPermission() }
+        try run("m6-installation-cleanup-causal-prerequisite-refusal") { try InstallationCoordinationCleanupFixtures.causalPrerequisiteRefusal() }
+        try run("m6-installation-cleanup-read-child-custody") { try InstallationNormalHostFiles.testingDetachedReadCustody() }
+        try run("m6-installation-cleanup-name-unwind-custody") { try InstallationCoordinationCleanupFixtures.namedMutationUnwind() }
+        try run("m6-installation-startup-order") { try InstallationStartupFixtures.ordering() }
+        try run("m6-installation-startup-bindings") { try InstallationStartupFixtures.bindings() }
+        try run("m6-installation-startup-original-deadline") { try InstallationStartupFixtures.originalDeadline() }
+        try run("m6-installation-startup-cancelled-session") { try InstallationStartupFixtures.cancelledActualSession() }
+        try run("m6-installation-startup-session-deadline") { try InstallationStartupFixtures.deadlineActualSession() }
+        try run("m6-installation-startup-before-commit") { try InstallationBootstrapFixtures.startupBeforeCommit() }
+        try run("m6-installation-startup-native-prerequisites") { try InstallationStartupFixtures.startupNativeHarnessPrerequisites() }
+        try run("m6-installation-startup-accepted-peer-drain") { try InstallationStartupFixtures.acceptedPeerDrain() }
+        try run("m6-installation-startup-accepted-peer-uncertain") { try InstallationStartupFixtures.acceptedPeerCloseUncertain() }
+        try run("m6-installation-startup-accepted-peer-reuse") { try InstallationStartupFixtures.acceptedPeerCloseReuse() }
         try run("m6-installation-commit-delivery-ordering") { try InstallationPrecommitFixtures.deliveryOrdering() }
         try run("m6-installation-commit-delivery-binding") { try InstallationPrecommitFixtures.deliveryBinding() }
         try run("m6-installation-commit-delivery-unready") { try InstallationPrecommitFixtures.deliveryUnready() }
@@ -224,6 +257,9 @@ public enum M6SelfTestRunner {
         try run("m6-installation-precommit-bindings") { try InstallationPrecommitFixtures.bindings() }
         try run("m6-installation-precommit-deadline-eof-backpressure") { try InstallationPrecommitFixtures.deadlineAndEOF() }
         try run("m6-installation-precommit-endpoint-postimage") { try InstallationPrecommitFixtures.endpoint() }
+        try run("m6-installation-precommit-concurrent-endpoint-readers") { try InstallationPrecommitFixtures.concurrentEndpointReaders() }
+        try run("m6-installation-precommit-endpoint-getter-overlap") { try InstallationPrecommitFixtures.endpointGetterOverlap() }
+        try run("m6-installation-precommit-endpoint-reader-closure") { try InstallationPrecommitFixtures.endpointReaderClosure() }
         try run("m6-installation-precommit-endpoint-unknown") { try InstallationPrecommitFixtures.unknownEndpoint() }
         try run("m6-installation-precommit-endpoint-substitution") { try InstallationPrecommitFixtures.substitution() }
         try run("m6-installation-precommit-endpoint-partial-publication") { try InstallationPrecommitFixtures.partialPublication() }
@@ -697,6 +733,11 @@ public enum M6SelfTestRunner {
         try run("m6-helper-native-deadline-before-control") { try CustodyHelperSelfTests.native("deadline-before-control",expected:.timedOutDrained,reason:.timeout,work:0.2) }
         try run("m6-helper-native-output-failure") { try CustodyHelperSelfTests.native("overflow",expected:.commandFailed,reason:.outputLimit,output:1024) }
         try run("m6-helper-native-trace-complete") { try CustodyHelperSelfTests.native("trace-complete",expected:.completed,reason:.none) }
+        try run("m6-helper-state-import-named") { try CustodyHelperSelfTests.stateImport(unlinking: false) }
+        try run("m6-helper-state-import-unlinked") { try CustodyHelperSelfTests.stateImport(unlinking: true) }
+        try run("m6-helper-state-capture-named") { try CustodyHelperSelfTests.native("state-capture-named", expected: .completed, reason: .none) }
+        try run("m6-helper-state-capture-unlinked") { try CustodyHelperSelfTests.native("state-capture-unlinked", expected: .completed, reason: .none) }
+        try run("m6-helper-state-capture-refusals") { try CustodyCatalogSelfTests.stateCaptureRefusals() }
         try run("m6-helper-native-trace-overflow") { try CustodyHelperSelfTests.native("trace-overflow",expected:.commandFailed,reason:.outputLimit) }
         try run("m6-helper-native-trace-eof-drain") { try CustodyHelperSelfTests.native("trace-resist",eof:true,expected:.cancelledDrained,reason:.cancelled) }
         try run("m6-helper-trace-command-boundary") { try CustodyHelperSelfTests.traceCommandBoundary() }
@@ -843,6 +884,35 @@ public enum M6SelfTestRunner {
         try run("m6-installation-bootstrap-journal-durable-drift") { try InstallationBootstrapFixtures.journalDurableDrift() }
         try run("m6-installation-bootstrap-journal-claim-failure") { try InstallationBootstrapFixtures.journalClaimFailure() }
         try run("m6-installation-bootstrap-journal-returned-failure") { try InstallationBootstrapFixtures.journalReturnedFailure() }
+        try run("m6-installation-bootstrap-readiness-before-journal") { try InstallationBootstrapFixtures.readinessBeforeJournal() }
+        try run("m6-installation-bootstrap-readiness-positive") { try InstallationBootstrapFixtures.readinessPositive() }
+        try run("m6-installation-bootstrap-readiness-reentrant-replay") { try InstallationBootstrapFixtures.readinessReentrantReplay() }
+        try run("m6-installation-bootstrap-readiness-original-deadline") { try InstallationBootstrapFixtures.readinessOriginalDeadline() }
+        try run("m6-installation-bootstrap-readiness-partial-publication") { try InstallationBootstrapFixtures.readinessPartialPublication() }
+        try run("m6-installation-bootstrap-readiness-returned-failure") { try InstallationBootstrapFixtures.readinessReturnedFailure() }
+        try run("m6-installation-bootstrap-readiness-publication-cancellation") { try InstallationBootstrapFixtures.readinessPublicationCancellation() }
+        try run("m6-installation-bootstrap-readiness-failed-join-custody") { try InstallationBootstrapFixtures.readinessFailedJoinCustody() }
+        try run("m6-installation-bootstrap-readiness-concurrent-session") { try InstallationBootstrapFixtures.readinessConcurrentSession() }
+        try run("m6-installation-bootstrap-start-before-readiness") { try InstallationBootstrapFixtures.startBeforeReadiness() }
+        try run("m6-installation-bootstrap-start-sequence") { try InstallationBootstrapFixtures.startSequence() }
+        try run("m6-installation-bootstrap-start-concurrent") { try InstallationBootstrapFixtures.startConcurrent() }
+        try run("m6-installation-bootstrap-start-original-deadline") { try InstallationBootstrapFixtures.startOriginalDeadline() }
+        try run("m6-installation-bootstrap-start-pending-eof") { try InstallationBootstrapFixtures.startPendingEOF() }
+        try run("m6-installation-bootstrap-start-failure-alias") { try InstallationBootstrapFixtures.startFailureAndAlias() }
+        try run("m6-installation-bootstrap-start-publication-failure") { try InstallationBootstrapFixtures.startPublicationFailure() }
+        try run("m6-installation-bootstrap-start-returned-failure") { try InstallationBootstrapFixtures.startReturnedFailure() }
+        try run("m6-installation-bootstrap-start-retirement-clock") { try InstallationBootstrapFixtures.startRetirementClock() }
+        try run("m6-installation-bootstrap-start-scope-closure-deadline") { try InstallationBootstrapFixtures.startScopeClosureDeadline() }
+        try run("m6-installation-bootstrap-start-budget-ceilings") { try InstallationBootstrapFixtures.startBudgetCeilings() }
+        try run("m6-installation-bootstrap-ready-before-kickstart") { try InstallationBootstrapFixtures.readyBeforeKickstart() }
+        try run("m6-installation-bootstrap-ready-claim-failure") { try InstallationBootstrapFixtures.readyClaimFailure() }
+        try run("m6-installation-bootstrap-ready-concurrent") { try InstallationBootstrapFixtures.readyConcurrent() }
+        try run("m6-installation-bootstrap-ready-requires-authenticated-peer") { try InstallationBootstrapFixtures.readyRequiresAuthenticatedPeer() }
+        try run("m6-installation-bootstrap-ready-retirement-deadline") { try InstallationBootstrapFixtures.readyRetirementDeadline() }
+        try run("m6-installation-bootstrap-ready-invocation-ceiling") { try InstallationBootstrapFixtures.readyInvocationCeiling() }
+        try run("m6-installation-bootstrap-commit-before-ready") { try InstallationBootstrapFixtures.commitBeforeReady() }
+        try run("m6-installation-bootstrap-native-prerequisites") { try InstallationBootstrapFixtures.bootstrapNativeHarnessPrerequisites() }
+        try run("m6-installation-bootstrap-commit-recovery-metadata") { try InstallationBootstrapFixtures.commitRecoveryMetadata() }
         return passed
     }
 
@@ -951,6 +1021,78 @@ private enum CustodyLeaseSelfTests {
                 && stateClaim.access == .read, "state claim differs from fresh original descriptor")
             try check(refreshed.filter { $0.role != .state } == claims.filter { $0.role != .state },
                 "state child creation changed lock claims")
+            // Exercise the production inherited capture/comparison boundary
+            // at the real sibling sealed-resource create/unlink cuts. No helper,
+            // target, replacement lease or synthetic descriptor grants authority.
+            let stateFD = OwnedFileDescriptor(try authority.stateDirectory.descriptor.duplicate(minimum: 201))
+            defer { stateFD.closeNow() }
+            var cuts: [CustodyResourceTesting.Point] = []
+            var namedClaim: CustodyDescriptorClaim?
+            try CustodyResourceTesting.withObservation({ point in
+                guard point == .named || point == .unlinked else { return }
+                cuts.append(point)
+                let live = try leases.descriptorClaims().first { $0.role == .state }!
+                if point == .named {
+                    // The original exact-equality implementation rejects this
+                    // real APFS child-count change despite an unchanged inode.
+                    try check(live != stateClaim && live.links > stateClaim.links,
+                        "sealed sibling did not exercise original exact-link refusal")
+                    namedClaim = live
+                    try CustodyInheritedCommand.testingValidateInheritedClaim(stateClaim, descriptor: stateFD.value)
+                } else {
+                    guard let namedClaim else { throw Failure(message: "missing named sibling claim") }
+                    try check(live == stateClaim, "sibling unlink did not restore original state observation")
+                    try CustodyInheritedCommand.testingValidateInheritedClaim(namedClaim, descriptor: stateFD.value)
+                }
+                try leases.validate()
+            }, {
+                let sibling = try CustodySealedResource.bytes(Data("fixture-input".utf8), role: .input, leases: leases)
+                try sibling.validate()
+            })
+            try check(cuts == [.named, .unlinked], "sealed-resource boundary not exercised exactly once")
+            func changed(_ original: CustodyDescriptorClaim, role: CustodyDescriptorClaim.Role? = nil,
+                         device: UInt64? = nil, inode: UInt64? = nil, uid: UInt32? = nil,
+                         mode: UInt32? = nil, links: UInt64? = nil,
+                         access: CustodyDescriptorClaim.Access? = nil) -> CustodyDescriptorClaim {
+                CustodyDescriptorClaim(role: role ?? original.role, device: device ?? original.device,
+                    inode: inode ?? original.inode, uid: uid ?? original.uid, mode: mode ?? original.mode,
+                    links: links ?? original.links, access: access ?? original.access)
+            }
+            let refused = [changed(stateClaim, role: .namespace), changed(stateClaim, device: stateClaim.device + 1),
+                changed(stateClaim, inode: stateClaim.inode + 1), changed(stateClaim, uid: stateClaim.uid + 1),
+                changed(stateClaim, mode: UInt32(S_IFREG | 0o700)), changed(stateClaim, mode: UInt32(S_IFDIR | 0o755)),
+                changed(stateClaim, links: 0), changed(stateClaim, access: .readWrite)]
+            for claim in refused {
+                do {
+                    try CustodyInheritedCommand.testingValidateInheritedClaim(claim, descriptor: stateFD.value)
+                    throw Failure(message: "inherited state claim accepted changed binding")
+                } catch CustodyResourceError.invalidResource {}
+            }
+            guard let operation = refreshed.first(where: { $0.role == .operation }) else {
+                throw Failure(message: "operation claim missing")
+            }
+            try CustodyInheritedCommand.testingValidateInheritedClaim(operation, descriptor: ordinary)
+            do {
+                try CustodyInheritedCommand.testingValidateInheritedClaim(changed(operation, links: 2), descriptor: ordinary)
+                throw Failure(message: "regular lease link drift accepted")
+            } catch CustodyResourceError.invalidResource {}
+            try check(fcntl(stateFD.value, F_SETFD, 0) == 0, "state descriptor flag fixture")
+            do {
+                defer { _ = fcntl(stateFD.value, F_SETFD, FD_CLOEXEC) }
+                do {
+                    try CustodyInheritedCommand.testingValidateInheritedClaim(stateClaim, descriptor: stateFD.value)
+                    throw Failure(message: "inherited state accepted missing CLOEXEC")
+                } catch CustodyResourceError.invalidResource {}
+            }
+            try CustodyInheritedCommand.testingValidateInheritedClaim(stateClaim, descriptor: stateFD.value)
+            let diagnosticCodes = CustodyDescriptorClaim.Role.allCases.flatMap { role in
+                [CustodyInheritedCommand.TestingClaimStep.snapshot, .comparison, .duplicate].map {
+                    CustodyInheritedCommand.testingClaimFailureCode(role, $0)
+                }
+            }
+            try check(Set(diagnosticCodes).count == CustodyDescriptorClaim.Role.allCases.count * 3
+                && diagnosticCodes.allSatisfy { (110...254).contains($0) },
+                "claim failure attribution collided or escaped process exit status")
             for name in ["latest.log", "lifecycle.lock", "operation.lock", "run.lock"] {
                 try exclusiveBusy(location, name)
             }
@@ -1752,13 +1894,179 @@ private enum CustodyCatalogSelfTests {
             try refuses { _ = try CustodyCatalog.decode(unsorted) }
         }
     }
+    /// Contend on a separate real description of this fixture's catalog guard.
+    /// Release/cancel at a synchronous validation cut, with no thread or child.
+    static func admissionAcquisition() throws {
+        for scenario in ["released", "expired", "cancelled", "after-swap"] {
+            try fixture { location, _ in
+                let s = try scope(location), r = try request(s, kind: .repositoryGit), ticket = try s.prepare(r)
+                let before = ticket.testingJournal
+                let process = ProcessIdentity(processID: 10, processGroupID: 10, userID: geteuid(), startSeconds: 1,
+                    startMicroseconds: 1, executablePath: "/fixture/never-execute", generation: UUID().uuidString.lowercased())
+                let next = try before.advancing(to: .admitted, custodian: CustodyProcessObservation(process))
+                let store = try CustodyCatalogStore(leases: s.leases)
+                let image = try bytes(location, ticket.requestID + ".json"), catalog = try bytes(location, "catalog.json")
+                let guardFD = open(location.path + "/custody/catalog.lock", O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                try check(guardFD >= 0, "admission guard open"); defer { close(guardFD) }
+                try check(flock(guardFD, LOCK_EX | LOCK_NB) == 0, "admission guard contention setup")
+                defer { _ = flock(guardFD, LOCK_UN) }
+                if scenario == "after-swap" { store.testingFault(.afterSwap) }
+                // This is one fixture-owned absolute deadline, never refreshed by
+                // the acquisition callback or a failed attempt.
+                let deadline = min(r.budget.work, MonotonicDeadline(seconds: 0.050).absoluteUptimeNanoseconds)
+                var validations = 0, returned = false
+                do {
+                    try store.testingAdmitJournal(before, with: next, deadline: deadline) {
+                        validations += 1
+                        try check(try bytes(location, ticket.requestID + ".json") == image,
+                            "admission mutated before guard acquisition")
+                        if scenario == "cancelled", validations == 3 { throw CustodyRecordError.fenced }
+                        if scenario != "expired", validations == 3 {
+                            try check(flock(guardFD, LOCK_UN) == 0, "admission guard release")
+                        }
+                    }
+                    returned = true
+                } catch let error as CustodyRecordError {
+                    switch (scenario, error) {
+                    case ("expired", .busy), ("cancelled", .fenced), ("after-swap", .injectedFailure): break
+                    default: throw error
+                    }
+                }
+                let persisted = try CustodyJournal.decode(bytes(location, ticket.requestID + ".json"))
+                try check(try bytes(location, "catalog.json") == catalog, "admission changed catalog reservation")
+                try check(persisted.target == nil, "admission created target observation")
+                if scenario == "released" || scenario == "after-swap" {
+                    try check(validations == 3 && persisted == next && next.ordinal == before.ordinal + 1,
+                        "admission was replayed or skipped after contention/write failure")
+                    try check(returned == (scenario == "released"), "uncertain write was reported accepted")
+                } else {
+                    try check(!returned && persisted == before && (try persisted.encode()) == image,
+                        "refused admission changed prepared journal")
+                    if scenario == "expired" {
+                        try check(DispatchTime.now().uptimeNanoseconds >= deadline, "admission reset its deadline")
+                    } else { try check(validations == 3, "cancelled admission was retried") }
+                }
+            }
+        }
+    }
     static func durablePreparation() throws {
+        try admissionAcquisition()
         try fixture { location, _ in
             let s = try scope(location), r = try request(s), ticket = try s.prepare(r)
             let catalog = try CustodyCatalog.decode(bytes(location, "catalog.json"))
             let j = try CustodyJournal.decode(bytes(location, ticket.requestID + ".json"))
             try check(catalog.revision == 2 && catalog.entries == [CustodyCatalogEntry(j)] && j == ticket.testingJournal,
                       "durable preparation binding")
+            let store = try CustodyCatalogStore(leases: s.leases)
+            let before = try bytes(location, ticket.requestID + ".json")
+            let catalogBefore = try bytes(location, "catalog.json")
+            var cuts: [CustodyResourceTesting.Point] = []
+            try CustodyResourceTesting.withObservation({ point in
+                guard point == .named || point == .unlinked else { return }
+                cuts.append(point)
+                let reconstructed = try CustodyJournal(prepared: r, leases: s.leases.descriptorClaims())
+                try check((reconstructed == j) == (point == .unlinked),
+                    "prepared fixture missed old fresh-link reconstruction failure")
+                let observed = try store.testingClaimPrepared(r)
+                try check(observed == j && (try observed.encode()) == before,
+                    "helper claim changed exact prepared preimage")
+                try check(try bytes(location, ticket.requestID + ".json") == before
+                    && bytes(location, "catalog.json") == catalogBefore,
+                    "read-only helper claim rewrote durable evidence")
+            }, {
+                let sibling = try CustodySealedResource.bytes(Data("fixture-input".utf8), role: .input, leases: s.leases)
+                try sibling.validate()
+            })
+            try check(cuts == [.named, .unlinked], "prepared claim missed sibling resource boundaries")
+            // An otherwise valid request with a different binding cannot claim
+            // this transaction, and an actual terminal successor stays rejected.
+            try refuses { _ = try store.testingClaimPrepared(request(s)) }
+            let terminal = try j.advancing(to: .terminal, outcome: .admissionRefused, reason: .startFailure)
+            try s.testingAdvance(ticket, to: terminal)
+            try refuses { _ = try store.testingClaimPrepared(r) }
+            try check(try bytes(location, ticket.requestID + ".json") == terminal.encode(),
+                "refused helper claim changed terminal successor")
+            s.close(); _ = try s.testingRetire(ticket)
+            try check(s.observation == .terminal && (try s.testingRead()).entries.isEmpty,
+                "prepared claim fixture retained its transaction")
+        }
+    }
+    static func stateCaptureRefusals() throws {
+        for scenario in ["state-mode", "regular-link", "regular-substitution"] {
+            try fixture { location, _ in
+                let s = try scope(location), r = try request(s), ticket = try s.prepare(r)
+                let store = try CustodyCatalogStore(leases: s.leases)
+                let state = try s.leases.duplicateStateDirectory().0
+                let journalBefore = try bytes(location, ticket.requestID + ".json")
+                let catalogBefore = try bytes(location, "catalog.json")
+                let installationBefore = try bytes(location, InstallationControlRecord.filename)
+                let name = "operation.lock", saved = "fixture-operation-retained"
+                var originalLock = stat()
+                try check(fstatat(state.value, name, &originalLock, AT_SYMLINK_NOFOLLOW) == 0,
+                    "original lock identity")
+                let originalIdentity = FileIdentity(originalLock)
+                var changed = false, replacement: FileIdentity?
+                var failure: Error?
+                do {
+                    try InstallationStateCaptureTesting.withObservation({ point, _ in
+                        guard point == .initial else { return }
+                        try check(!changed, "negative capture repeated initial cut")
+                        switch scenario {
+                        case "state-mode":
+                            try check(fchmod(state.value, 0o755) == 0, "state mode fixture")
+                            changed = true
+                        case "regular-link":
+                            try check(linkat(state.value, name, state.value, saved, 0) == 0, "regular link fixture")
+                            changed = true
+                        default:
+                            try check(renameat(state.value, name, state.value, saved) == 0, "retained lock rename")
+                            changed = true
+                            let fd = openat(state.value, name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                            try check(fd >= 0, "replacement lock fixture")
+                            let owner = OwnedFileDescriptor(fd)
+                            var info = stat()
+                            try check(fstat(owner.value, &info) == 0, "replacement lock identity")
+                            replacement = FileIdentity(info)
+                        }
+                    }, {
+                        try refuses { _ = try store.testingClaimPrepared(r) }
+                    })
+                } catch { failure = error }
+                if changed {
+                    switch scenario {
+                    case "state-mode": try check(fchmod(state.value, 0o700) == 0, "state mode restoration")
+                    case "regular-link":
+                        var named = stat(), held = stat()
+                        try check(fstatat(state.value, name, &held, AT_SYMLINK_NOFOLLOW) == 0
+                            && fstatat(state.value, saved, &named, AT_SYMLINK_NOFOLLOW) == 0
+                            && FileIdentity(named) == FileIdentity(held) && unlinkat(state.value, saved, 0) == 0,
+                            "regular link restoration")
+                    default:
+                        if let replacement {
+                            var named = stat()
+                            try check(fstatat(state.value, name, &named, AT_SYMLINK_NOFOLLOW) == 0
+                                && FileIdentity(named) == replacement && unlinkat(state.value, name, 0) == 0,
+                                "replacement identity restoration")
+                        }
+                        var retained = stat(), absent = stat()
+                        try check(fstatat(state.value, saved, &retained, AT_SYMLINK_NOFOLLOW) == 0
+                            && FileIdentity(retained) == originalIdentity
+                            && fstatat(state.value, name, &absent, AT_SYMLINK_NOFOLLOW) == -1 && errno == ENOENT
+                            && renameat(state.value, saved, state.value, name) == 0, "original lock restoration")
+                    }
+                }
+                if let failure { throw failure }
+                try check(changed && (try bytes(location, ticket.requestID + ".json")) == journalBefore
+                    && (try bytes(location, "catalog.json")) == catalogBefore
+                    && (try bytes(location, InstallationControlRecord.filename)) == installationBefore,
+                    "capture refusal changed durable bytes")
+                try s.leases.validate()
+                let terminal = try ticket.testingJournal.advancing(to: .terminal, outcome: .admissionRefused, reason: .startFailure)
+                try s.testingAdvance(ticket, to: terminal)
+                s.close(); _ = try s.testingRetire(ticket)
+                try check(s.observation == .terminal && (try s.testingRead()).entries.isEmpty,
+                    "negative capture fixture retained metadata")
+            }
         }
     }
     static func staleEmptyScopes() throws {
@@ -3822,6 +4130,81 @@ private enum CustodyContextSelfTests {
     }
 }
 
+/// Runs only from the authenticated disposable helper's actual begin path,
+/// after real inherited leases have been imported. No owner is synthesized.
+enum CustodyStateCaptureFixtures {
+    private final class Sibling: @unchecked Sendable {
+        let leases: CustodyAuthorityLeaseSet
+        let barrier = CustodyLeaseTestingBarrier()
+        let group = DispatchGroup()
+        private let mutex = NSLock()
+        private var failure: Error?
+        private var cuts: [CustodyResourceTesting.Point] = []
+        private var started = false
+        init(_ leases: CustodyAuthorityLeaseSet) { self.leases = leases }
+        func start() throws {
+            guard !started else { throw CustodyRecordError.injectedFailure }
+            started = true; group.enter()
+            DispatchQueue.global().async {
+                defer { self.group.leave() }
+                do {
+                    try CustodyResourceTesting.withObservation({ point in
+                        guard point == .named || point == .unlinked else { return }
+                        self.mutex.lock(); self.cuts.append(point); self.mutex.unlock()
+                        if point == .named, !self.barrier.pause() { throw CustodyRecordError.injectedFailure }
+                    }, {
+                        let resource = try CustodySealedResource.bytes(Data("fixture-sibling".utf8), role: .input, leases: self.leases)
+                        try resource.validate()
+                    })
+                } catch { self.mutex.lock(); self.failure = error; self.mutex.unlock() }
+            }
+        }
+        func waitNamed() throws {
+            guard barrier.waitUntilEntered() else { throw CustodyRecordError.injectedFailure }
+        }
+        func finish() throws {
+            barrier.release()
+            guard group.wait(timeout: .now() + .seconds(3)) == .success else { throw CustodyRecordError.injectedFailure }
+            mutex.lock(); defer { mutex.unlock() }
+            if let failure { throw failure }
+            guard !started || cuts == [.named, .unlinked] else { throw CustodyRecordError.injectedFailure }
+        }
+    }
+    static func claimHelper(leases: CustodyAuthorityLeaseSet, unlinking: Bool,
+                            _ body: () throws -> CustodyJournal) throws -> CustodyJournal {
+        let sibling = Sibling(leases)
+        var observations: [InstallationNodeIdentity] = []
+        var result: CustodyJournal?, failure: Error?
+        do {
+            if unlinking { try sibling.start(); try sibling.waitNamed() }
+            result = try InstallationStateCaptureTesting.withObservation({ point, observed in
+                if point == .initial {
+                    guard observations.isEmpty else { throw CustodyRecordError.injectedFailure }
+                    observations.append(observed)
+                    if unlinking { try sibling.finish() }
+                    else { try sibling.start(); try sibling.waitNamed() }
+                } else {
+                    guard observations.count == 1, let initial = observations.first else { throw CustodyRecordError.injectedFailure }
+                    // A strict old first/final equality must fail at this actual
+                    // capture. Every field except positive state links is equal.
+                    guard initial != observed, initial.device == observed.device, initial.inode == observed.inode,
+                          initial.type == observed.type, initial.uid == observed.uid, initial.mode == observed.mode,
+                          initial.aclDigest == observed.aclDigest, initial.links > 0, observed.links > 0,
+                          unlinking ? initial.links > observed.links : initial.links < observed.links else {
+                        throw CustodyRecordError.injectedFailure
+                    }
+                    observations.append(observed)
+                }
+            }, body)
+        } catch { failure = error }
+        // Join the actual resource creator on every path, including refusal.
+        try sibling.finish()
+        if let failure { throw failure }
+        guard observations.count == 2, let result else { throw CustodyRecordError.injectedFailure }
+        return result
+    }
+}
+
 private enum CustodyHelperSelfTests {
     struct Failure: Error { let message: String }
     static func check(_ value: Bool,_ message: String) throws { if !value { throw Failure(message:message) } }
@@ -3852,6 +4235,71 @@ private enum CustodyHelperSelfTests {
             budget:CustodyBudget.make(kind:kind,workSeconds:work,termSeconds:term,killSeconds:0.2,receiptSeconds:0.2),
             stdoutLimit:output,stderrLimit:output,workingDirectory:OwnedFileDescriptor(fd),
             input:policy ? policyInput : nil,code:policy ? policyCode : nil,captureDiscoveryTrace:tracing)
+    }
+    static func stateImport(unlinking: Bool) throws {
+        try CustodyRegistrySelfTests.fixture { location, registry in
+            let leases = try CustodyAuthorityLeaseSet.retainReadLeases(at: location)
+            var command: CustodyRequestResources?
+            var cuts: [CustodyResourceTesting.Point] = []
+            var completed = false
+            if !unlinking { command = try resources(location, mode: "complete") }
+            try CustodyResourceTesting.withObservation({ point in
+                guard point == .named || point == .unlinked else { return }
+                cuts.append(point)
+                if unlinking, point == .named {
+                    // Avoid observing the command's own sealed request as the
+                    // sibling; it is created and unlinked by its real factory.
+                    try CustodyResourceTesting.withObservation({ _ in }, {
+                        command = try resources(location, mode: "complete")
+                    })
+                }
+                guard point == (unlinking ? .unlinked : .named), let command else { return }
+                let live = try command.scope.leases.descriptorClaims()
+                let recorded = command.request.descriptors.filter { claim in live.contains { $0.role == claim.role } }
+                // The old exact-array importer rejects these actual held
+                // descriptions. Both constructor and begin must now accept.
+                guard let freshState = live.first(where: { $0.role == .state }),
+                      let requestState = recorded.first(where: { $0.role == .state }) else {
+                    throw Failure(message: "native import state observation missing")
+                }
+                try check(live != recorded && live.filter { $0.role != .state } == recorded.filter { $0.role != .state }
+                    && freshState.links > 0 && requestState.links > 0
+                    && (unlinking ? freshState.links < requestState.links : freshState.links > requestState.links),
+                    "native import missed old exact-link refusal")
+                let prepared = try CustodyJournal(prepared: command.request, leases: live)
+                let requestBytes = try command.request.encode()
+                let installationBefore = try CustodyCatalogSelfTests.bytes(location, InstallationControlRecord.filename)
+                let handle = try registry.start(resources: command, helper: CustodyHelperExecutable.testingCustodian())
+                try until { handle.snapshot().phase == .finished && !registry.hasRetainedWork }
+                let result = handle.snapshot()
+                guard let journal = result.journal, let helper = journal.custodian, let target = journal.target else {
+                    throw Failure(message: "native import/admission did not reach owned helper and target")
+                }
+                try check(journal.phase == .terminal && journal.outcome == .completed && journal.reason == CustodyReason.none
+                    && journal.waitStatus == 0 && helper.pid != UInt32(getpid()) && target.pid != helper.pid,
+                    "native import/admission did not durably complete actual target")
+                try check(journal.leases == prepared.leases && journal.binding == prepared.binding
+                    && (try command.request.encode()) == requestBytes
+                    && (try CustodyCatalogSelfTests.bytes(location, InstallationControlRecord.filename)) == installationBefore,
+                    "import normalized immutable request, prepared leases or installation bytes")
+                try check(String(decoding: result.stdout, as: UTF8.self).hasPrefix("target-started:")
+                    && result.stderr.isEmpty && registry.testingCount == 0,
+                    "native import target or registry retirement missing")
+                let receipt = try CustodyCatalogSelfTests.bytes(location, "receipts/" + command.request.binding.requestID + ".caller.json")
+                let value = try JSONSerialization.jsonObject(with: receipt) as! [String: Any]
+                try check(value["event"] as? String == "custodian-reaped"
+                    && (try CustodyCatalog.decode(CustodyCatalogSelfTests.bytes(location, "catalog.json"))).entries.isEmpty,
+                    "native import did not retire original helper/catalog")
+                try command.scope.leases.validate()
+                completed = true
+            }, {
+                let sibling = try CustodySealedResource.bytes(Data("fixture-input".utf8), role: .input, leases: leases)
+                try sibling.validate()
+            })
+            try check(completed && cuts == [.named, .unlinked], "native import missed original sealed-resource cuts")
+            try check(!FileManager.default.contentsOfDirectory(atPath: location.path).contains { $0.hasPrefix(".shadow-sync-custody-input-") },
+                "native import retained a named sibling")
+        }
     }
     static func native(_ mode: String, cancel: Bool = false, eof: Bool = false,
                        tokenCancel: Bool = false, tokenAlreadyCancelled: Bool = false, expected: CustodyOutcome,
@@ -5505,10 +5953,28 @@ private enum SystemConfigCommandSelfTests {
         }
         if scenario == "custody-flags" {
             let retained = try CustodyFrozenGitResources(frozen!, uid: geteuid())
+            let claims = try retained.descriptorClaims()
+            for claim in claims {
+                let fd = claim.role == .gitFile ? retained.file.value : retained.directory.value
+                try CustodyInheritedCommand.testingValidateInheritedClaim(claim, descriptor: fd)
+                // The state-root exception never applies to an immutable Git
+                // directory or file, even when only its recorded links differ.
+                let changed = CustodyDescriptorClaim(role: claim.role, device: claim.device, inode: claim.inode,
+                    uid: claim.uid, mode: claim.mode, links: claim.links + 1, access: claim.access)
+                do {
+                    try CustodyInheritedCommand.testingValidateInheritedClaim(changed, descriptor: fd)
+                    throw Failure(message: "immutable configuration accepted claim link drift")
+                } catch CustodyResourceError.invalidResource {}
+            }
             try check(fchflags(frozen!.descriptor, 0) == 0, "could not exercise flags drift")
             defer { _ = fchflags(frozen!.descriptor, UInt32(UF_IMMUTABLE)) }
             do { try retained.validate(); throw Failure(message: "unsealed config accepted") }
             catch CustodyResourceError.invalidResource {}
+            guard let fileClaim = claims.first(where: { $0.role == .gitFile }) else { throw Failure(message: "missing file claim") }
+            do {
+                try CustodyInheritedCommand.testingValidateInheritedClaim(fileClaim, descriptor: retained.file.value)
+                throw Failure(message: "inherited configuration accepted removed immutable flag")
+            } catch CustodyResourceError.invalidResource {}
             return
         }
         if scenario == "custody-offset" || scenario == "custody-view" {

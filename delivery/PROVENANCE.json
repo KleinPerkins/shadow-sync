@@ -2,51 +2,61 @@
   "files": {
     "Tests/Fixtures/private_delivery_worker.mjs": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "sha256": "fef7755f6ea05b074d077d81f6e4efb4761acd297234353910a2848f7d49c3c0",
       "source_path": "tests/helpers/update_worker.mjs",
       "source_sha256": "485c50f7c406ded7aec3acda10a375b8cbcc71ba4fdab11644e6e82560efc805"
     },
     "Tests/Tooling/test_private_delivery.py": {
-      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Extend copied grant commands with scoped expiry/status/revocation and private durable creation/replacement recovery; isolated actual-SQL fault coverage. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures. Retain every write-intent marker observation through recovery; refuse disappeared, replaced, rewritten or unexpectedly new markers, and bind newly created marker identity before provider effects. Preserve ambiguous prior attempts without replay. Distinguish verified initial-open absence from disappearance after marker descriptor acquisition; initial-read identity failure cannot permit replay.",
+      "sha256": "6ed855b64f4eea5e98c3eab844ed470b372f051031302a5d1965a8beb20b10d0",
       "source_path": "tests/test_update_channel.py",
       "source_sha256": "98bcb666e6ef6d4547be98bd4656788e873a2061ff1eacf5f05bc4c102448272"
     },
     "delivery/contract.mjs": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "sha256": "e65a4fc320cb30849606d0183f036506ac1092ba3ea8b8cb7b48f55e5f3e4ca5",
       "source_path": "delivery/contract.mjs",
       "source_sha256": "92a49cd1d5638f47cb3a40463395660b42cfa33fec978101679e23026bf691bd"
     },
     "delivery/owner-config.example.json": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "sha256": "fa91f94cba86799434a603a088a217b394fde22062208ed194062422b80c8f65",
       "source_path": "delivery/owner-config.example.json",
       "source_sha256": "fa91f94cba86799434a603a088a217b394fde22062208ed194062422b80c8f65"
     },
     "delivery/schema.sql": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "sha256": "80ba73edd474d3fb20a6dc0a9ef3cda19d195fa821b29b7483f6c40851ac899d",
       "source_path": "delivery/schema.sql",
       "source_sha256": "1d11e29896fef68ad2ae07fd5082ed6fea5712dbcda3b9967e2116bbedaef3f6"
     },
     "delivery/web.mjs": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "sha256": "03b4837c270427a0ef0ec28b5ac9452acf2c2913b30da4bb2fc050ae8fa26d5f",
       "source_path": "delivery/web.mjs",
       "source_sha256": "d0cc91cafc03ebaef2dc818799c1e190158ab912f884010a8e8d2130e1f03eb5"
     },
     "delivery/worker.mjs": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "sha256": "4369d7b14d1a3e3a5464e3be3618cd283db24ccf6f85322147cdf4186209eeb5",
       "source_path": "delivery/worker.mjs",
       "source_sha256": "63cbb28c59736f6f9fb506717c89f83a4e24bdf0df856dc4e31c5e11b529847c"
     },
     "delivery/wrangler.template.json": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "sha256": "26a71ecb3667c601cede5d84efb9e3c5956c8b0d756729b53ee8c4e0d04055fe",
       "source_path": "delivery/wrangler.template.json",
       "source_sha256": "5dfc2fb6667843adf293a3aadde4f71c6a9147afa5cdb7e6c8c011f76045a781"
     },
     "scripts/delivery-toolchain.py": {
       "adaptation": "Same official Node26.4.0 archive/hash/cache verification, product env name and explicit task-owned test cache; no global installation.",
+      "sha256": "4a86e003707ce0cd36a1c99d1c2bc4f59c5cf7f1911def302a44ca5bb8878071",
       "source_path": "scripts/toolchain.py",
       "source_sha256": "dfa946a7289fcaee644b4855da8c9e3cb1345ca4fcf589291427b51c06b19636"
     },
     "scripts/delivery.py": {
-      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation.",
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Add an optional source/CI revalidation callback after authenticated artifact readback and immediately before channel advancement; retain all provider, Free, privacy, immutable-part and readback gates. Extend copied grant commands with scoped expiry/status/revocation and private durable creation/replacement recovery; isolated actual-SQL fault coverage. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures. Retain every write-intent marker observation through recovery; refuse disappeared, replaced, rewritten or unexpectedly new markers, and bind newly created marker identity before provider effects. Preserve ambiguous prior attempts without replay. Distinguish verified initial-open absence from disappearance after marker descriptor acquisition; initial-read identity failure cannot permit replay.",
+      "sha256": "0f9fa380b6955d2e02dbc4b368fe819ccfc8e1f5c0219ee85c0801bc94028e73",
       "source_path": "scripts/delivery.py",
       "source_sha256": "9c11d28ab1d722519bd01d50964e826ce59ee55735da383a2a1d12c33cd63af2"
     }
@@ -56,7 +66,12 @@
     "Browser copy reflects signed coordinator installation and no automatic updates",
     "Friend-channel qualification requires standalone install/recovery/migration/operator acceptance; separate Sparkle installed-update proof remains post-MVP",
     "Existing signed artifact descriptor and private Free-only publication protections retained",
-    "Synthetic test-root paths and isolated Git configuration; no real user Git config"
+    "Synthetic test-root paths and isolated Git configuration; no real user Git config",
+    "Release orchestration revalidates exact source/CI/allocation/private configuration before qualification-channel advancement through a narrow optional callback.",
+    "Owner-only app/channel-scoped access lifecycle with durable private token custody, finite replacement authority, observed non-replaying recovery and real-SQL fault fixtures; no shared platform or provider activation.",
+    "Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures.",
+    "Retain every write-intent marker observation through recovery; refuse disappeared, replaced, rewritten or unexpectedly new markers, and bind newly created marker identity before provider effects. Preserve ambiguous prior attempts without replay.",
+    "Distinguish verified initial-open absence from disappearance after marker descriptor acquisition; initial-read identity failure cannot permit replay."
   ],
   "schema": "shadow-sync-delivery-provenance/v1",
   "scope": "Copied private delivery/access component only. No native updater, Recovery app, account/resource/origin settings, grants, access files or credentials copied.",

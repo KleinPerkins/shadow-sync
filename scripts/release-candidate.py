@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Protected first MVP candidate orchestration; never installs or promotes.
+"""Owner-local first MVP candidate automation; never installs or activates updates.
 
-A tag and draft reserve the version/build before Apple effects. Every ambiguous
-failure leaves that allocation intact. Reruns and existing allocations refuse:
-use recorded submission IDs for owner reconciliation, never blind resubmission.
-The existing notarization helper owns explicit local resume of retained bytes.
-Only the distribution DMG and the constructed public receipt are release assets.
+Public tags/drafts reserve version/build before Apple effects, with no assets.
+Private retained attempt state and existing delivery own qualification publication.
+Ambiguous effects never trigger automatic retries or allocation reuse.
 """
+import argparse
+import fcntl
+import io
+import tarfile
 import base64
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
+from functools import wraps
 import hashlib
 import importlib.util
 import json
@@ -45,21 +48,30 @@ app_credentials = load('app-credential-readiness')
 execution = load('release-credential-readiness')
 assembly = load('assemble-release-bundle')
 notary = load('notarize-release-bundle')
+delivery = load('delivery')
+load('github_automation')
+controls = load('merge_controls')
 require, Refusal, sha = execution.require, execution.Refusal, assembly.sha
 
 
 def context(env):
-    revision = execution.context(env)
-    require(env.get('GITHUB_WORKFLOW_REF') == REPO + '/' + WORKFLOW + '@refs/heads/main'
-            and env.get('RUNNER_ENVIRONMENT') == 'github-hosted'
-            and env.get('RUNNER_ARCH') == 'ARM64' and env.get('GITHUB_RUN_ATTEMPT') == '1', 'release-context')
+    # This is an explicitly invoked owner command. Hosted or self-hosted Actions
+    # cannot impersonate the original owner configuration/authentication context.
+    require(not env.get('GITHUB_ACTIONS') and sys.platform == 'darwin' and os.getuid() != 0,
+            'owner-local-context')
+    revision = env.get('RELEASE_SOURCE_REVISION', '')
+    require(re.fullmatch('[0-9a-f]{40}', revision) and revision != '0' * 40
+            and re.fullmatch('[1-9][0-9]{0,19}', env.get('RELEASE_ATTEMPT_ID', '')), 'release-identity')
     return revision
 
 
 def work_directory(env):
     context(env)
-    # ci-build's accepted root is /private/tmp, never a source-tree build cache.
-    return Path('/private/tmp') / ('shadow-sync-candidate-' + env['GITHUB_RUN_ID'])
+    path = Path(env['RELEASE_WORK_DIRECTORY'])
+    delivery.outside_git(path)
+    require(str(path).startswith('/private/tmp/') and path != Path('/private/tmp'), 'private-build-root')
+    delivery.private_directory(path.parent)
+    return path
 
 
 def metadata():
@@ -75,19 +87,37 @@ def read(path):
 
 
 def write(path, value):
+    # Exclusive file creation and its directory entry must both be durable before
+    # allocation, signing or publication can start. Keep the intent on any error.
     execution.write_json(path, value)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 @contextmanager
 def closed_environment(env):
     original = dict(os.environ)
-    os.environ.clear()
-    os.environ.update(execution.child_environment(env))
+    allowed = execution.child_environment(env)
+    if 'SHADOW_SYNC_DELIVERY_NODE' in env:
+        allowed['SHADOW_SYNC_DELIVERY_NODE'] = env['SHADOW_SYNC_DELIVERY_NODE']
     try:
+        os.environ.clear()
+        os.environ.update(allowed)
         yield
     finally:
         os.environ.clear()
         os.environ.update(original)
+
+
+def isolated_stage(function):
+    @wraps(function)
+    def invoke(api, env):
+        with closed_environment(env):
+            return function(api, env)
+    return invoke
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -96,21 +126,21 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class GitHub:
-    def __init__(self, token):
+    def __init__(self, token, *, read_only=False):
         require(isinstance(token, str) and token and '\n' not in token, 'github-token')
         self.token = token
+        self.read_only = read_only
 
-    def request(self, path, *, method='GET', data=None, missing=False, asset=None):
+    def request(self, path, *, method='GET', data=None, missing=False):
         require(path == '' or path.startswith('/') and not path.startswith('//'), 'api-path')
+        require(not self.read_only or method == 'GET', 'owner-read-capability')
+        require(method == 'GET' or (method == 'POST' and path in ('/git/refs', '/releases')), 'allocation-only-write')
         url = API + path
         body, content_type = None, 'application/json'
-        if asset is not None:
-            require(method == 'POST' and re.fullmatch(r'/releases/[1-9][0-9]*/assets\?name=[A-Za-z0-9._-]+', path), 'upload-path')
-            url = 'https://uploads.github.com/repos/' + REPO + path
-            notary.regular(asset)
-            require(asset.stat().st_size <= 512 * 1024 * 1024, 'asset-size')
-            body, content_type = asset.read_bytes(), 'application/octet-stream'
-        elif data is not None:
+        if path == '/owner-principal':
+            require(method == 'GET', 'principal-read-only')
+            url = 'https://api.github.com/user'
+        if data is not None:
             body = json.dumps(data, sort_keys=True).encode()
         request = urllib.request.Request(url, data=body, method=method, headers={
             'Authorization': 'Bearer ' + self.token, 'Accept': 'application/vnd.github+json',
@@ -146,33 +176,53 @@ def source(revision):
 
 
 def immutable_enabled(env):
-    # This token is never supplied to the release-write client. No admin mutator
-    # exists here. The pinned mint action requests administration:read only.
-    client = app_credentials.GitHubReadClient(env.get('APP_TOKEN', ''))
-    app_credentials.qualify(env, client)
-    path = '/repos/' + REPO + '/immutable-releases'
-    request = urllib.request.Request('https://api.github.com' + path, method='GET', headers={
-        'Authorization': 'Bearer ' + client.token, 'Accept': 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2026-03-10', 'User-Agent': 'shadow-sync-release-candidate'})
-    try:
-        with client.opener.open(request, timeout=20) as response:
-            require(response.status == 200 and response.geturl() == request.full_url, 'immutability-readback')
-            value = app_credentials.decode(response.read(app_credentials.MAX_RESPONSE + 1))
-    except (OSError, urllib.error.URLError):
-        raise Refusal('immutability-capability-unavailable') from None
-    require(isinstance(value, dict) and value.get('enabled') is True, 'immutable-releases-required')
+    # Explicit owner read capability, never the reviewer App or write client.
+    client = GitHub(env.get('OWNER_GITHUB_READ_TOKEN', ''), read_only=True)
+    principal = client.request('/owner-principal')
+    repo = client.request('')
+    require(principal.get('login') == 'KleinPerkins' and principal.get('id') == 49759187
+            and principal.get('type') == 'User' and repo.get('id') == REPO_ID
+            and repo.get('full_name') == REPO and repo.get('permissions', {}).get('admin') is True,
+            'owner-read-principal')
+    controls.verify_controls(repo, client.pages('/rules/branches/main'))
+    require(client.request('/immutable-releases').get('enabled') is True, 'immutable-releases-required')
+    # A closed tag-protection profile: creation remains possible, while update
+    # and deletion have no bypass. Unknown conditions do not count as protection.
+    protected_ids = []
+    for item in client.pages('/rulesets?includes_parents=true'):
+        row = client.request('/rulesets/' + str(item['id']))
+        if (row.get('target') == 'tag' and row.get('enforcement') == 'active'
+                and row.get('bypass_actors') == []
+                and set(row.get('conditions', {})) == {'ref_name'}
+                and row['conditions']['ref_name'].get('exclude') == []
+                and any(name in ('~ALL', 'refs/tags/candidate-v*', 'refs/tags/' + metadata()['tag'])
+                        for name in row['conditions']['ref_name'].get('include', []))
+                and {'update', 'deletion'} <= {rule['type'] for rule in row.get('rules', [])}):
+            require(type(row.get('id')) is int and row['id'] == item['id'], 'tag-ruleset-identity')
+            protected_ids.append(row['id'])
+    require(protected_ids, 'protected-candidate-tags-required')
+    return dict(schema='shadow-sync-owner-release-controls/v1', repository_id=REPO_ID,
+                owner_user_id=principal['id'], main_controls_verified=True, immutable_releases=True,
+                protected_tag_ruleset_ids=sorted(protected_ids))
 
 
 def admission(api, env, expected=None):
     revision = context(env)
     digest = source(revision)
     require(expected is None or expected == digest, 'source-changed')
+    principal = api.request('/owner-principal')
+    require(principal.get('login') == 'KleinPerkins' and principal.get('id') == 49759187
+            and principal.get('type') == 'User', 'owner-allocation-principal')
     repo = api.request('')
     require(repo['id'] == REPO_ID and repo['full_name'] == REPO and repo['private'] is False
             and repo['default_branch'] == 'main' and repo.get('archived') is False, 'repository-identity')
     head = api.request('/git/ref/heads/main')['object']
     require(head['type'] == 'commit' and head['sha'] == revision, 'main-changed')
-    immutable_enabled(env)
+    owner_controls = immutable_enabled(env)
+    prs = api.pages('/commits/' + revision + '/pulls')
+    require(any(row.get('merged_at') and row.get('merge_commit_sha') == revision
+                and row.get('base', {}).get('ref') == 'main'
+                and row.get('base', {}).get('repo', {}).get('id') == REPO_ID for row in prs), 'merged-main-source')
     runs = api.pages('/actions/workflows/ci.yml/runs?head_sha=' + revision + '&branch=main&event=push', 'workflow_runs')
     require(runs, 'ci-run-missing')
     run = max(runs, key=lambda row: (row['run_number'], row['run_attempt']))
@@ -193,7 +243,7 @@ def admission(api, env, expected=None):
             and checks[0]['head_sha'] == revision and checks[0]['status'] == 'completed'
             and checks[0]['conclusion'] == 'success', 'ci-required-integration')
     return dict(revision=revision, source_sha256=digest, ci_run_id=run['id'], ci_run_attempt=run['run_attempt'],
-                ci_check_id=checks[0]['id'])
+                ci_check_id=checks[0]['id'], owner_controls=owner_controls)
 
 
 def unallocated(api, release):
@@ -209,14 +259,14 @@ def unallocated(api, release):
 
 
 def reservation_body(prepared):
-    return ('MVP candidate allocation; incomplete until immutable publication.\n'
+    return ('Private MVP candidate allocation; this draft has no distribution assets.\n'
             'No installation, migration, update, or operator acceptance is implied.\n'
             'Source: ' + prepared['revision'] + '\n'
             'Source input SHA-256: ' + prepared['source_sha256'] + '\n'
-            'Workflow run: ' + str(prepared['run_id']) + '\n')
+            'Owner attempt: ' + str(prepared['run_id']) + '\n')
 
 
-def reserved(api, prepared, *, published=False):
+def reserved(api, prepared):
     tag = api.request('/git/ref/tags/' + prepared['tag'])
     require(tag['ref'] == 'refs/tags/' + prepared['tag'] and tag['object']['type'] == 'commit'
             and tag['object']['sha'] == prepared['revision'], 'reserved-tag-changed')
@@ -224,14 +274,14 @@ def reserved(api, prepared, *, published=False):
     require(release['id'] == prepared['release_id'] and release['tag_name'] == prepared['tag']
             and release['target_commitish'] == prepared['revision']
             and release['body'] == reservation_body(prepared) and release['prerelease'] is True
-            and release['draft'] is (not published), 'reserved-release-changed')
-    if published:
-        require(release.get('immutable') is True, 'release-not-immutable')
+            and release['draft'] is True, 'reserved-release-changed')
     return release
 
 
+@isolated_stage
 def prepare(api, env):
     require(not any(env.get(key) for key in execution.CONFIG), 'credentials-before-preparation')
+    private_configuration(env)
     admitted = admission(api, env)
     release = metadata()
     unallocated(api, release)
@@ -249,12 +299,15 @@ def prepare(api, env):
                 require(total <= pin['package_bytes'], 'dependency-size')
                 target.write(chunk)
         require(total == pin['package_bytes'] and sha(work / 'python.pkg') == pin['package_sha256'], 'dependency-integrity')
+    with closed_environment(env):
+        prepare_signer(work)
     # Preparation is complete before allocation and before any Apple credential.
     require(admission(api, env, admitted['source_sha256']) == admitted, 'admission-changed')
     unallocated(api, release)
-    prepared = dict(admitted, **release, run_id=int(env['GITHUB_RUN_ID']),
+    prepared = dict(admitted, **release, run_id=int(env['RELEASE_ATTEMPT_ID']),
                     package_sha256=sha(work / 'python.pkg'), build_sha256=sha(work / 'build/build.json'),
-                    orchestrator_sha256=sha(Path(__file__)))
+                    orchestrator_sha256=sha(Path(__file__)), signer_sha256=sha(work / 'sign_update'),
+                    delivery_config_sha256=sha(Path(env['RELEASE_DELIVERY_CONFIG'])))
     write(work / 'allocation-intent.json', prepared)
     api.request('/git/refs', method='POST', data={'ref': 'refs/tags/' + release['tag'], 'sha': admitted['revision']})
     draft = api.request('/releases', method='POST', data={'tag_name': release['tag'],
@@ -271,11 +324,13 @@ def prepared_attempt(env):
     require(work.is_dir() and not work.is_symlink() and work.stat().st_uid == os.getuid()
             and stat.S_IMODE(work.stat().st_mode) == 0o700, 'private-attempt')
     prepared = read(work / 'prepared.json')
-    require(prepared['revision'] == context(env) and prepared['run_id'] == int(env['GITHUB_RUN_ID'])
+    require(prepared['revision'] == context(env) and prepared['run_id'] == int(env['RELEASE_ATTEMPT_ID'])
             and {k: prepared[k] for k in metadata()} == metadata()
             and prepared['orchestrator_sha256'] == sha(Path(__file__))
             and prepared['package_sha256'] == sha(work / 'python.pkg')
-            and prepared['build_sha256'] == sha(work / 'build/build.json'), 'prepared-inputs-changed')
+            and prepared['build_sha256'] == sha(work / 'build/build.json')
+            and prepared['signer_sha256'] == sha(work / 'sign_update') == execution.SIGNER_SHA256
+            and prepared['delivery_config_sha256'] == sha(Path(env['RELEASE_DELIVERY_CONFIG'])), 'prepared-inputs-changed')
     return work, prepared
 
 
@@ -290,12 +345,14 @@ def apple_configuration(env):
     return certificate
 
 
+@isolated_stage
 def sign(api, env):
     work, prepared = prepared_attempt(env)
     require(admission(api, env, prepared['source_sha256']) == {k: prepared[k] for k in
-            ('revision', 'source_sha256', 'ci_run_id', 'ci_run_attempt', 'ci_check_id')}, 'signing-admission-changed')
+            ('revision', 'source_sha256', 'ci_run_id', 'ci_run_attempt', 'ci_check_id', 'owner_controls')}, 'signing-admission-changed')
     require(reserved(api, prepared)['assets'] == [], 'premature-release-assets')
     certificate = apple_configuration(env)
+    execution.configuration(env)
     # Retained signing intent prevents a second invocation even before notary IDs exist.
     write(work / 'signing-intent.json', {'revision': prepared['revision'], 'run_id': prepared['run_id']})
     with closed_environment(env):
@@ -310,8 +367,9 @@ def sign(api, env):
             execution.command('store-notary-profile', '/usr/bin/xcrun', 'notarytool', 'store-credentials',
                 'shadow-sync-candidate', '--keychain', keychain, '--apple-id', env['APPLE_ID'],
                 '--password', env['APPLE_PASSWORD'], '--team-id', env['APPLE_TEAM_ID'], '--validate')
-            assembly.runtime.build(SimpleNamespace(package=str(work / 'python.pkg'), output=str(work / 'runtime'),
-                signing_identity=fingerprint, publisher_team=env['APPLE_TEAM_ID'], allow_ad_hoc_fixture=False))
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                assembly.runtime.build(SimpleNamespace(package=str(work / 'python.pkg'), output=str(work / 'runtime'),
+                    signing_identity=fingerprint, publisher_team=env['APPLE_TEAM_ID'], allow_ad_hoc_fixture=False))
             args = SimpleNamespace(app=str(work / 'build/production/package/ShadowSync.app'),
                 build_record=str(work / 'build/build.json'), runtime_output=str(work / 'runtime'),
                 output=str(work / 'assembly'), signing_identity=fingerprint, keychain=str(keychain),
@@ -321,6 +379,7 @@ def sign(api, env):
             args.notary_profile, args.resume = 'shadow-sync-candidate', False
             notary.package(args)
         execution.cleanup(work)
+        detached_assets(work, prepared, env)
     write(work / 'credentials-removed.json', {'revision': prepared['revision'], 'temporary_credentials_removed': True})
 
 
@@ -338,178 +397,210 @@ def package_assets(work, prepared):
     artifact = work / 'notary' / name
     notary.regular(artifact)
     require(package['artifact'] == {'name': name, 'bytes': artifact.stat().st_size, 'sha256': sha(artifact)}, 'distribution-bytes')
-    # Construct, never forward a raw producer record or arbitrary extra keys.
-    public = {k: prepared[k] for k in ('revision', 'source_sha256', 'version', 'build', 'tag', 'run_id',
-                                       'ci_run_id', 'ci_run_attempt', 'ci_check_id', 'orchestrator_sha256')}
-    public.update(schema='shadow-sync-candidate/v1', repository=REPO, repository_id=REPO_ID,
-        artifact=package['artifact'], architecture='arm64', publisher_team=expected['publisher_team'],
-        package_receipt_sha256=sha(work / 'notary/release-package.json'),
-        release_contract_sha256=sha(ROOT / 'Resources/release-contract.json'),
-        notarized=True, stapled=True, downloaded_bytes_verified=False, installed=False, product_accepted=False)
-    for key in ('app_notary_id', 'dmg_notary_id'):
-        require(str(notary.uuid.UUID(package[key])) == package[key], 'public-notary-id')
-        public[key] = package[key]
-    receipt = work / 'candidate.json'
-    write(receipt, public)
-    return [artifact, receipt]
+    return artifact
 
 
-def asset_inventory(api, prepared, paths, expected):
-    assets = api.pages('/releases/' + str(prepared['release_id']) + '/assets')
-    require(len(assets) == len(paths) and {a['name'] for a in assets} == {p.name for p in paths}, 'release-asset-inventory')
-    for path in paths:
-        notary.regular(path)
-        item = next(a for a in assets if a['name'] == path.name)
-        require(item['state'] == 'uploaded' and item['size'] == path.stat().st_size
-                and sha(path) == expected[path.name]
-                and item['digest'] == 'sha256:' + expected[path.name], 'uploaded-asset-binding')
-    return assets
+def private_configuration(env):
+    config = delivery.load_config(env['RELEASE_DELIVERY_CONFIG'])
+    delivery.require_free(config)
+    return config
 
 
-def download_digest(url, expected_size):
-    # Unauthenticated public readback. No token follows the CDN redirect.
-    with urllib.request.urlopen(url, timeout=180) as response:
-        digest, count = hashlib.sha256(), 0
-        while chunk := response.read(1024 * 1024):
-            count += len(chunk)
-            require(count <= expected_size, 'download-size')
-            digest.update(chunk)
-    require(count == expected_size, 'download-size')
-    return digest.hexdigest()
+def prepare_signer(work):
+    # Use the already qualified standalone signing utility; no updater is added.
+    with urllib.request.urlopen(execution.ARCHIVE_URL, timeout=60) as response:
+        raw = response.read(64 * 1024 * 1024 + 1)
+    require(len(raw) <= 64 * 1024 * 1024 and hashlib.sha256(raw).hexdigest() == execution.ARCHIVE_SHA256,
+            'detached-tool-archive')
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        member = archive.getmember('./bin/sign_update')
+        require(member.isfile() and 0 < member.size < 10_000_000, 'detached-tool-layout')
+        data = archive.extractfile(member).read()
+    require(hashlib.sha256(data).hexdigest() == execution.SIGNER_SHA256, 'detached-tool-integrity')
+    path = work / 'sign_update'
+    with path.open('xb') as stream:
+        stream.write(data)
+    path.chmod(0o700)
+    execution.command('detached-tool-signature', '/usr/bin/codesign', '--verify', '--strict', path)
 
 
+def verify_detached(path, public, signature):
+    raw = base64.b64decode(public, validate=True)
+    sig = base64.b64decode(signature, validate=True)
+    require(len(raw) == 32 and hashlib.sha256(raw).hexdigest() == execution.PUBLIC_KEY_SHA256
+            and len(sig) == 64 and base64.b64encode(sig).decode() == signature, 'detached-key-and-signature')
+    # Independent pinned Node crypto verification, including a tamper control.
+    js = """const fs=require('node:fs'),c=require('node:crypto');
+const [p,k,s]=process.argv.slice(1),b=fs.readFileSync(p),sig=Buffer.from(s,'base64');
+const key=c.createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),Buffer.from(k,'base64')]),format:'der',type:'spki'});
+if(!c.verify(null,b,key,sig))process.exit(1);b[0]^=1;if(c.verify(null,b,key,sig))process.exit(1);"""
+    execution.command('detached-verify', delivery.pinned_node(), '-e', js, path, public, signature)
+
+
+def detached_assets(work, prepared, env):
+    artifact = package_assets(work, prepared)
+    app = work / 'notary/payload/ShadowSync.app'
+    record = read(work / 'notary/app-stapled.json')
+    require(notary.app_tree(app) == record['entries'], 'final-stapled-app-bytes')
+    team = assembly.json_file(ROOT / 'Resources/release-contract.json')['publisher_team_identifier']
+    assembly.verify_code(app, team, assembly.APP_ID)
+    assembly.verify_code(app / 'Contents/Helpers/ShadowSyncLifecycleCoordinator', team, assembly.HELPER_ID)
+    execution.command('final-app-ticket', '/usr/bin/xcrun', 'stapler', 'validate', app)
+    archive = work / 'ShadowSync.zip'
+    require(not os.path.lexists(archive), 'existing-final-archive')
+    execution.command('final-stapled-archive', '/usr/bin/ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app, archive)
+    require(notary.app_tree(app) == record['entries'], 'archived-app-changed')
+    descriptors = []
+    for kind, path in (('archive', archive), ('package', artifact)):
+        notary.regular(path, delivery.MAX_ARCHIVE)
+        require(0 < path.stat().st_size <= delivery.MAX_ARCHIVE, 'empty-or-large-artifact')
+        before = sha(path)
+        signature = execution.command('detached-sign', work / 'sign_update', '--ed-key-file', '-', '-p', path,
+                                      input=env['SPARKLE_PRIVATE_ED_KEY'] + '\n').stdout.strip()
+        verify_detached(path, env['SPARKLE_PUBLIC_ED_KEY'], signature)
+        require(sha(path) == before, 'signed-artifact-changed')
+        descriptors.append(dict(path=f"/v1/apps/{delivery.APP}/releases/{prepared['tag']}/{kind}",
+            size=path.stat().st_size, sha256=before, ed25519_signature=signature))
+    value = dict(schema='shadow-sync/release/v1', app_id=delivery.APP, bundle_id=delivery.APP,
+        team_id=team, channel='qualification', qualified=False, version=prepared['version'], build=int(prepared['build']),
+        minimum_macos='26.0', architecture='arm64', data_schema_version=1, source_revision=prepared['revision'],
+        qualification_id=prepared['tag'], archive=descriptors[0], first_install=descriptors[1])
+    delivery.validate_manifest(value)
+    receipt = dict(schema='shadow-sync/qualification/v1', app_id=delivery.APP,
+        qualification_id=value['qualification_id'], source_revision=prepared['revision'], build=value['build'],
+        archive_sha256=value['archive']['sha256'], archive_size=value['archive']['size'],
+        first_install_sha256=value['first_install']['sha256'], first_install_size=value['first_install']['size'],
+        checks={key: True for key in delivery.CHECKS})
+    # This producer reached every check above; never accepts caller-supplied gates.
+    delivery.validate_receipt(value, receipt)
+    write(work / 'manifest.json', value)
+    write(work / 'qualification.json', receipt)
+    write(work / 'detached.json', dict(public_key=env['SPARKLE_PUBLIC_ED_KEY'],
+        manifest_sha256=sha(work / 'manifest.json'), receipt_sha256=sha(work / 'qualification.json')))
+
+
+def publication_inputs(work, prepared):
+    artifact = package_assets(work, prepared)
+    value, receipt, detached = (read(work / name) for name in ('manifest.json', 'qualification.json', 'detached.json'))
+    require(detached['manifest_sha256'] == sha(work / 'manifest.json')
+            and detached['receipt_sha256'] == sha(work / 'qualification.json'), 'private-record-binding')
+    delivery.validate_manifest(value)
+    delivery.validate_receipt(value, receipt)
+    require(value['channel'] == 'qualification' and value['qualified'] is False
+            and value['source_revision'] == prepared['revision'] and value['version'] == prepared['version']
+            and value['build'] == int(prepared['build']) and value['qualification_id'] == prepared['tag'], 'qualification-only')
+    for kind, path, descriptor in (('archive', work / 'ShadowSync.zip', value['archive']),
+                                    ('package', artifact, value['first_install'])):
+        notary.regular(path, delivery.MAX_ARCHIVE)
+        require(descriptor['path'] == f"/v1/apps/{delivery.APP}/releases/{prepared['tag']}/{kind}"
+                and (sha(path), path.stat().st_size) == (descriptor['sha256'], descriptor['size']), 'publication-input-changed')
+        verify_detached(path, detached['public_key'], descriptor['ed25519_signature'])
+    return value, receipt, work / 'ShadowSync.zip', artifact
+
+
+@isolated_stage
 def publish(api, env):
     require(not any(env.get(key) for key in execution.CONFIG), 'credentials-during-publication')
+    config = private_configuration(env)
     work, prepared = prepared_attempt(env)
     require(read(work / 'credentials-removed.json') == {'revision': prepared['revision'],
             'temporary_credentials_removed': True}, 'cleanup-unproven')
     execution.cleanup(work)
-    admission(api, env, prepared['source_sha256'])
-    require(reserved(api, prepared)['assets'] == [], 'release-already-started')
-    paths = package_assets(work, prepared)
-    public = read(paths[1])
-    expected = {paths[0].name: public['artifact']['sha256'], paths[1].name: sha(paths[1])}
-    require(sha(paths[0]) == expected[paths[0].name], 'publication-input-changed')
-    write(work / 'publication-intent.json', {'release_id': prepared['release_id'], 'assets': expected})
-    for path in paths:
-        api.request('/releases/' + str(prepared['release_id']) + '/assets?name=' + path.name, method='POST', asset=path)
-    asset_inventory(api, prepared, paths, expected)
-    admission(api, env, prepared['source_sha256'])
-    reserved(api, prepared)
-    api.request('/releases/' + str(prepared['release_id']), method='PATCH',
-                data={'draft': False, 'prerelease': True, 'make_latest': 'false'})
-    reserved(api, prepared, published=True)
-    assets = asset_inventory(api, prepared, paths, expected)
-    latest = api.request('/releases/latest', missing=True)
-    require(latest is None or latest['id'] != prepared['release_id'], 'candidate-is-latest')
-    for path in paths:
-        item = next(row for row in assets if row['name'] == path.name)
-        url = 'https://github.com/' + REPO + '/releases/download/' + prepared['tag'] + '/' + path.name
-        require(item['browser_download_url'] == url and download_digest(url, path.stat().st_size) == expected[path.name], 'downloaded-asset-binding')
-    write(work / 'published.json', {'schema': 'shadow-sync-candidate-publication/v1',
-        'revision': prepared['revision'], 'release_id': prepared['release_id'], 'tag': prepared['tag'],
-        'immutable': True, 'latest': False, 'downloaded_bytes_verified': True,
-        'assets': expected, 'installed': False, 'product_accepted': False})
-
-
-def evidence(env):
-    """Allowlisted reconciliation data only; no recursive upload of attempt state."""
-    work = work_directory(env)
-    if work.exists():
-        require(work.is_dir() and not work.is_symlink() and work.stat().st_uid == os.getuid()
-                and stat.S_IMODE(work.stat().st_mode) == 0o700, 'evidence-directory')
-    result = {'schema': 'shadow-sync-candidate-attempt/v1', 'revision': context(env),
-              'run_id': int(env['GITHUB_RUN_ID']), **metadata(), 'submissions': {}}
-    for label in ('app', 'dmg'):
-        rows = {}
-        for kind in ('intent', 'submitted', 'accepted'):
-            path = work / 'notary' / (label + '-' + kind + '.json')
-            if path.exists():
-                record = read(path)
-                expected_name = 'submission.zip' if label == 'app' else 'submission.dmg'
-                require(record['filename'] == expected_name and re.fullmatch('[0-9a-f]{64}', record['sha256']), 'evidence-binding')
-                row = {'filename': expected_name, 'sha256': record['sha256']}
-                if kind != 'intent':
-                    require(str(notary.uuid.UUID(record['id'])) == record['id'], 'evidence-id')
-                    row['id'] = record['id']
-                if kind == 'accepted':
-                    require(record['status'] == 'Accepted' and re.fullmatch('[0-9a-f]{64}', record['log_sha256']), 'evidence-accepted')
-                    row.update(status='Accepted', log_sha256=record['log_sha256'])
-                rows[kind] = row
-        result['submissions'][label] = rows
-    for name, fields in {'prepared': ('release_id', 'source_sha256'),
-                         'allocation-intent': ('source_sha256',),
-                         'published': ('release_id', 'immutable', 'latest', 'downloaded_bytes_verified', 'assets')}.items():
-        path = work / (name + '.json')
-        if path.exists():
-            value = read(path)
-            require(value['revision'] == context(env), 'evidence-source')
-            if 'source_sha256' in fields:
-                require(re.fullmatch('[0-9a-f]{64}', value['source_sha256']), 'evidence-source-digest')
-            if 'release_id' in fields:
-                require(type(value['release_id']) is int and value['release_id'] > 0, 'evidence-release-id')
-            if name == 'published':
-                require(value['immutable'] is True and value['latest'] is False
-                        and value['downloaded_bytes_verified'] is True
-                        and set(value['assets']) == {'candidate.json', 'ShadowSync-0.10.0-build15-macos-arm64.dmg'}
-                        and all(re.fullmatch('[0-9a-f]{64}', v) for v in value['assets'].values()), 'evidence-publication')
-            result[name] = {key: value[key] for key in fields}
-    destination = evidence_directory()
-    result['read_token_revocations'] = {}
-    for phase in ('prepare', 'sign', 'publish'):
-        path = destination / ('read-token-' + phase + '.json')
-        expected = dict(revision=context(env), run_id=int(env['GITHUB_RUN_ID']), phase=phase,
-                        token_revoked=True, subsequent_request_rejected=True)
-        result['read_token_revocations'][phase] = path.exists() and read(path) == expected
-    result['reconciliation_required'] = not ((work / 'published.json').exists()
-        and all(result['read_token_revocations'].values()))
-    write(destination / 'attempt.json', result)
-
-
-def evidence_directory():
-    parent = ROOT
-    for name in ('outputs', 'release-candidate'):
-        parent = parent / name
-        if not os.path.lexists(parent):
-            parent.mkdir(mode=0o700)
-        require(parent.is_dir() and not parent.is_symlink() and parent.stat().st_uid == os.getuid()
-                and not parent.stat().st_mode & 0o022, 'public-evidence-directory')
-    return parent
-
-
-def revoke_admin(env):
-    app_credentials.context(env)
-    phase = env.get('REVOCATION_PHASE')
-    require(phase in ('prepare', 'sign', 'publish'), 'revocation-phase')
-    app_credentials.GitHubReadClient(env.get('APP_TOKEN', '')).revoke_and_confirm()
-    write(evidence_directory() / ('read-token-' + phase + '.json'), dict(revision=context(env),
-        run_id=int(env['GITHUB_RUN_ID']), phase=phase, token_revoked=True, subsequent_request_rejected=True))
+    require(admission(api, env, prepared['source_sha256']) == {k: prepared[k] for k in
+            ('revision', 'source_sha256', 'ci_run_id', 'ci_run_attempt', 'ci_check_id', 'owner_controls')}, 'publication-admission-changed')
+    require(reserved(api, prepared)['assets'] == [], 'public-release-assets-forbidden')
+    value, receipt, archive, package = publication_inputs(work, prepared)
+    intent = dict(revision=prepared['revision'], manifest_sha256=sha(work / 'manifest.json'),
+                  receipt_sha256=sha(work / 'qualification.json'), config_sha256=sha(Path(env['RELEASE_DELIVERY_CONFIG'])))
+    # Exclusive durable intent precedes every provider effect. On ambiguity,
+    # retain it and use the existing delivery reconciliation interface explicitly.
+    notary.record(work / 'publication-inputs.json', intent)
+    write(work / 'publication-intent.json', intent)
+    def before_promote():
+        require(sha(Path(env['RELEASE_DELIVERY_CONFIG'])) == intent['config_sha256'], 'delivery-config-changed')
+        private_configuration(env)
+        require(admission(api, env, prepared['source_sha256']) == {k: prepared[k] for k in
+                ('revision', 'source_sha256', 'ci_run_id', 'ci_run_attempt', 'ci_check_id', 'owner_controls')}, 'promotion-admission-changed')
+        require(reserved(api, prepared)['assets'] == [], 'public-release-assets-forbidden')
+    with closed_environment(env):
+        # Original HOME preserves owner OAuth. An explicit API token belongs only
+        # to Wrangler's child environment, never Git, Node validation or signing.
+        authentication = {key: env[key] for key in ('CLOUDFLARE_API_TOKEN',) if key in env}
+        provider = delivery.Cloudflare(config, wrangler_auth=authentication)
+        delivery.publish(provider, value, receipt, archive, package, before_promote=before_promote)
+    # Existing delivery has authenticated both downloaded artifacts and revoked
+    # readback grants before its verified qualification pointer can advance.
+    require(admission(api, env, prepared['source_sha256']) == {k: prepared[k] for k in
+            ('revision', 'source_sha256', 'ci_run_id', 'ci_run_attempt', 'ci_check_id', 'owner_controls')}, 'publication-postflight-changed')
+    require(reserved(api, prepared)['assets'] == [], 'public-release-assets-forbidden')
+    write(work / 'published.json', dict(schema='shadow-sync-private-candidate-publication/v1',
+        revision=prepared['revision'], tag=prepared['tag'], channel='qualification',
+        manifest_sha256=intent['manifest_sha256'], downloaded_bytes_verified=True,
+        installed=False, product_accepted=False))
 
 
 def main():
-    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('stage', choices=('run', 'prepare', 'sign', 'publish', 'cleanup'))
+    parser.add_argument('--source-revision', required=True)
+    parser.add_argument('--attempt-id', required=True)
+    parser.add_argument('--work-directory', required=True, type=Path)
+    parser.add_argument('--delivery-config', required=True, type=Path)
+    parser.add_argument('--credentials', type=Path, help='Private mode-0600 eight-key signing JSON; run or sign only')
+    args = parser.parse_args()
+    old_mask = os.umask(0o077)
+    old_handler = signal.getsignal(signal.SIGTERM)
     try:
-        env = dict(os.environ)
-        context(env)
-        require(len(sys.argv) == 2 and sys.argv[1] in ('prepare', 'sign', 'publish', 'cleanup', 'evidence', 'admin-revoke'), 'mode')
-        signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(Refusal('interrupted')))
-        stage = sys.argv[1]
-        if stage == 'admin-revoke':
-            revoke_admin(env)
-        elif stage == 'cleanup':
+        env = dict(os.environ, RELEASE_SOURCE_REVISION=args.source_revision, RELEASE_ATTEMPT_ID=args.attempt_id,
+                   RELEASE_WORK_DIRECTORY=str(args.work_directory), RELEASE_DELIVERY_CONFIG=str(args.delivery_config))
+        with closed_environment(env):
+            context(env)
+            require(not any(env.get(key) for key in execution.CONFIG), 'ambient-signing-credentials')
+            require((args.stage in ('run', 'sign')) == (args.credentials is not None), 'explicit-signing-configuration')
             work = work_directory(env)
-            if work.exists():
-                execution.cleanup(work)
-        elif stage == 'evidence':
-            evidence(env)
-        else:
-            globals()[stage](GitHub(env.get('GH_TOKEN')), env)
-        print('Candidate stage completed; installation and acceptance remain separate.')
+            # Parent must already be owner-private; serialize the whole attempt,
+            # including prepare before its output exists. Never remove the lock.
+            lock = work.with_name(work.name + '.lock')
+            descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+            try:
+                info = os.fstat(descriptor)
+                require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
+                        and info.st_size == 0 and stat.S_IMODE(info.st_mode) == 0o600, 'attempt-lock')
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(Refusal('interrupted')))
+                if args.stage == 'cleanup':
+                    if work.exists(): execution.cleanup(work)
+                else:
+                    private_configuration(env)
+                    api = GitHub(env.get('GH_TOKEN'))
+                    stages = ('prepare', 'sign', 'publish') if args.stage == 'run' else (args.stage,)
+                    try:
+                        for stage in stages:
+                            if stage == 'sign':
+                                credentials = delivery.private_json(args.credentials)
+                                require(set(credentials) == set(execution.CONFIG), 'closed-signing-config')
+                                env.update(credentials)
+                                credentials.clear()
+                            try:
+                                globals()[stage](api, env)
+                            finally:
+                                for name in execution.CONFIG:
+                                    env.pop(name, None)
+                    finally:
+                        if work.exists():
+                            with closed_environment(env):
+                                execution.cleanup(work)
+
+            finally:
+                os.close(descriptor)
+        print('Private candidate stage completed; installation and acceptance remain separate.')
         return 0
     except BaseException:
-        # Never expose subprocess output, credential values, network bodies or paths.
-        print('Candidate stage refused. Preserve the allocation and reconcile recorded submission IDs; do not blindly rerun.', file=sys.stderr)
+        print('Private candidate stage refused. Retain the attempt and allocation; reconcile privately before retry.', file=sys.stderr)
         return 1
+    finally:
+        os.umask(old_mask)
+        signal.signal(signal.SIGTERM, old_handler)
 
 
 if __name__ == '__main__':
