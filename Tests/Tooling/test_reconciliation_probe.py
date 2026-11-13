@@ -251,9 +251,27 @@ class ReconciliationProbeTests(unittest.TestCase):
         self.assertIn('mode: "installation-loaded", resumedMode: failureMode)', resumed)
 
     def test_resumed_deadline_decorations_preserve_every_original_fixture_byte(self):
-        # Strip ONLY the approved closed-value failure decoration. The digest pins
-        # all prior operations, predicates, cleanup, assertions and fixed budgets.
+        # Strip only exact reviewed additions, requiring each to remain present.
+        # The unchanged digest pins every prior operation, predicate, cleanup,
+        # assertion and fixed budget after those additions are projected out.
         source = (CORE / 'InstallationStagedReconciliationFixtures.swift').read_text()
+        recovery_owner_capture = '''                    guard let originalSession = journal.testingSession, let endpoint = journal.testingEndpoint else {
+                        throw H.Failure(message: "missing recovery readiness owners")
+                    }
+                    let endpointImage = try endpoint.image
+'''
+        recovery_retirement_assertions = '''                    // The original queue must be joined even if its invocation
+                    // deadline has not fired. A later close cannot race recovery
+                    // postflight; joining never removes the named socket fence.
+                    try H.check(journal.testingSession == nil && !originalSession.start(),
+                                "start recovery did not join original readiness session")
+                    try endpoint.requireServiceClosed()
+                    try H.check(journal.testingEndpoint === endpoint && (try endpoint.image) == endpointImage,
+                                "start recovery retired the named readiness fence")
+'''
+        for addition in (recovery_owner_capture, recovery_retirement_assertions):
+            self.assertEqual(source.count(addition), 1)
+            source = source.replace(addition, '', 1)
         source = source.replace('                if failureMode == .mutationCancel { try registry.testingArmCancellationObservation(command!) }\n', '', 1)
         observed = '''                do {
                     try until(failure: .init(mode: failureMode, wait: .commandFinished)) { handle.snapshot().phase == .finished }

@@ -132,6 +132,10 @@ enum InstallationStagedReconciliationFixtures {
                 try InstallationStagedJournalFixtures.fixture(observation: probe.observe) { root, location, _, _, admission, journal, registry in
                     probe.mark(.completeAdmission)
                     _ = try journal.completeAdmission(deadline: .init(seconds: 3))
+                    guard let originalSession = journal.testingSession, let endpoint = journal.testingEndpoint else {
+                        throw H.Failure(message: "missing recovery readiness owners")
+                    }
+                    let endpointImage = try endpoint.image
                     probe.mark(.bootstrapIntent)
                     let intent = try journal.bootstrapCandidateIntent(deadline: .init(seconds: 3))
                     probe.mark(.context)
@@ -160,6 +164,14 @@ enum InstallationStagedReconciliationFixtures {
                     let stop = try admission.stopOnly(after: registry.installationStagedStartRetirement(after: admission.closeStarts()))
                     probe.mark(.beginRecovery)
                     let recovery = try journal.beginStartRecovery(admission: stop, after: retired, deadline: .init(seconds: 3))
+                    // The original queue must be joined even if its invocation
+                    // deadline has not fired. A later close cannot race recovery
+                    // postflight; joining never removes the named socket fence.
+                    try H.check(journal.testingSession == nil && !originalSession.start(),
+                                "start recovery did not join original readiness session")
+                    try endpoint.requireServiceClosed()
+                    try H.check(journal.testingEndpoint === endpoint && (try endpoint.image) == endpointImage,
+                                "start recovery retired the named readiness fence")
                     probe.mark(.observation)
                     let observed = try observe(recovery, root: root, registry: registry, probe: probe)
                     probe.mark(.reconcile)

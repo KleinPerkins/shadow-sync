@@ -2247,41 +2247,80 @@ enum TestingPolicyHelperWitness {
     static func shouldObserve(parentReason: CustodyReason?, terminalReason: CustodyReason?) -> Bool {
         parentReason.map({ $0 != CustodyReason.none }) == true || terminalReason == .timeout
     }
+    /// Value-only diagnostic identity. No command, owner, resource, descriptor or
+    /// cleanup capability survives the original synchronous catalog attempt.
+    struct TimingRequest {
+        let home: String?
+        let binding: CustodyRecordBinding
+        let budget: CustodyBudget
+        init?(_ request: UnvalidatedCustodyRequest) {
+            guard request.kind == .policyClassify,
+                  let binding = try? CustodyRecordBinding(request.binding) else { return nil }
+            self.home = request.environment["HOME"]; self.binding = binding; budget = request.budget
+        }
+        init(home: String?, binding: CustodyRecordBinding, budget: CustodyBudget) {
+            self.home = home; self.binding = binding; self.budget = budget
+        }
+    }
+    enum ReadRejection: String {
+        case request, rootOpen, homeOpen, fileOpen, fileAbsent, metadata, empty
+        case acl, preflight, read, postflight, parse, close
+    }
+    struct TimingRead {
+        let snapshot: TestingPolicyHelperTiming.Snapshot?
+        let rejection: ReadRejection?
+    }
+    static func readAfterDrain(_ request: TimingRequest) -> TimingRead {
+        let savedErrno = errno; defer { errno = savedErrno }
+        return TestingCustodianFailureWitness.readTiming(request)
+    }
     static func observe(_ request: UnvalidatedCustodyRequest) {
         let savedErrno = errno
         defer { errno = savedErrno }
         guard request.kind == .policyClassify, DiscoveryFixtureDiagnostic.takePolicyTimingRead() else { return }
-        let snapshot = TestingCustodianFailureWitness.readTiming(request)
+        let snapshot = TimingRequest(request).flatMap { TestingCustodianFailureWitness.readTiming($0).snapshot }
         DiscoveryFixtureDiagnostic.recordPolicyTiming(snapshot, issued: request.budget.issued)
     }
 }
 private extension TestingCustodianFailureWitness {
-    static func readTiming(_ request: UnvalidatedCustodyRequest) -> TestingPolicyHelperTiming.Snapshot? {
+    static func readTiming(_ request: TestingPolicyHelperWitness.TimingRequest) -> TestingPolicyHelperWitness.TimingRead {
         // Bounded lexical owners: at most root/home/file, one read, no retry,
         // wait, pathname polling, descriptor probe or asynchronous continuation.
         var descriptors: [Int32] = []
         var result: TestingPolicyHelperTiming.Snapshot?
+        var rejection = TestingPolicyHelperWitness.ReadRejection.request
         do {
-            guard let home = request.environment["HOME"], home.hasSuffix("/home") else { throw CustodyRecordError.fenced }
+            guard let home = request.home, home.hasSuffix("/home") else { throw CustodyRecordError.fenced }
             let root = String(home.dropLast(5))
             let prefix = try RuntimeFixtureSession.fixturePrefix("shadow-sync-policy-authority-")
             guard root.hasPrefix(prefix), root.utf8.count == prefix.utf8.count + 6,
                   root.dropFirst(prefix.count).utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) }),
                   try TestIsolation.validateRoot(root) == root else { throw CustodyRecordError.fenced }
-            let binding = try CustodyRecordBinding(request.binding)
+            let binding = request.binding
             let filename = ".shadow-sync-custodian-observation-" + binding.requestID + ".jsonl"
             let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
             func owned(_ fd: Int32) throws -> Int32 {
                 guard fd >= 0 else { throw CustodyRecordError.fenced }
                 descriptors.append(fd); return fd
             }
+            rejection = .rootOpen
             let rootFD = try owned(open(root, flags | O_DIRECTORY))
+            rejection = .homeOpen
             let homeFD = try owned(openat(rootFD, "home", flags | O_DIRECTORY))
-            let fileFD = try owned(openat(homeFD, filename, flags))
+            rejection = .fileOpen
+            let rawFile = openat(homeFD, filename, flags)
+            // This reports only ENOENT at the exact lexical open, not a proof
+            // of safe absence or authority over the unvalidated parent nodes.
+            if rawFile < 0, errno == ENOENT { rejection = .fileAbsent }
+            let fileFD = try owned(rawFile)
+            rejection = .metadata
             var rootNode = stat(), homeNode = stat(), fileNode = stat()
             guard fstat(rootFD, &rootNode) == 0, fstat(homeFD, &homeNode) == 0, fstat(fileFD, &fileNode) == 0,
                   safe(rootNode, directory: true), safe(homeNode, directory: true), safe(fileNode, directory: false),
-                  fileNode.st_size > 0, fileNode.st_size <= 6144 else { throw CustodyRecordError.fenced }
+                  fileNode.st_size >= 0, fileNode.st_size <= 6144 else { throw CustodyRecordError.fenced }
+            rejection = .empty
+            guard fileNode.st_size > 0 else { throw CustodyRecordError.fenced }
+            rejection = .acl
             let rootACL = try PolicyAuthorityFile.privateStateACL(rootFD)
             let homeACL = try PolicyAuthorityFile.privateStateACL(homeFD)
             let fileACL = try PolicyAuthorityFile.privateStateACL(fileFD)
@@ -2302,18 +2341,22 @@ private extension TestingCustodianFailureWitness {
                       try PolicyAuthorityFile.privateStateACL(homeFD) == homeACL,
                       try PolicyAuthorityFile.privateStateACL(fileFD) == fileACL else { throw CustodyRecordError.fenced }
             }
+            rejection = .preflight
             try validate()
             var bytes = [UInt8](repeating: 0, count: Int(fileNode.st_size))
+            rejection = .read
             let count = bytes.withUnsafeMutableBytes { pread(fileFD, $0.baseAddress, $0.count, 0) }
             guard count == Int(fileNode.st_size) else { throw CustodyRecordError.fenced }
+            rejection = .postflight
             try validate()
+            rejection = .parse
             result = try parseTiming(Data(bytes.prefix(count)), binding: binding,
                 budget: request.budget, observedBefore: DispatchTime.now().uptimeNanoseconds)
         } catch { result = nil }
         // These are scoped close attempts, not kernel retirement capabilities.
         // Any observed error suppresses the observation. Never retry detached FDs.
-        for fd in descriptors.reversed() { if close(fd) != 0 { result = nil } }
-        return result
+        for fd in descriptors.reversed() { if close(fd) != 0 { result = nil; rejection = .close } }
+        return TestingPolicyHelperWitness.TimingRead(snapshot: result, rejection: result == nil ? rejection : nil)
     }
 
     static func parseTiming(_ bytes: Data, binding: CustodyRecordBinding, budget: CustodyBudget,
@@ -2381,7 +2424,13 @@ private extension TestingCustodianFailureWitness {
 
 #if SHADOW_SYNC_TESTING
 private extension TestingCustodianFailureWitness {
-    /// Pure codec/activation checks; invoked by the existing witness-slot case.
+    final class TimingReadProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lines: [String] = []
+        func append(_ line: String) { lock.lock(); defer { lock.unlock() }; lines.append(line) }
+        func snapshot() -> [String] { lock.lock(); defer { lock.unlock() }; return lines }
+    }
+    /// Bounded codec/observer fixtures; invoked by the existing witness-slot case.
     /// No synthetic timestamp is passed to the live timing recorder.
     static func fixtureTimingCodec(_ binding: CustodyRecordBinding) throws {
         try check(TestingPolicyHelperWitness.shouldObserve(parentReason: nil, terminalReason: .timeout),
@@ -2412,6 +2461,71 @@ private extension TestingCustodianFailureWitness {
         func parse(_ data: Data) throws -> TestingPolicyHelperTiming.Snapshot {
             try parseTiming(data, binding: binding, budget: budget, observedBefore: 120)
         }
+        // The immediate read remains an immutable unavailable observation even
+        // when a later request-bound record becomes readable. These fixture
+        // bytes exercise only the observer; they never stand in for helper work.
+        for variant in ["valid", "empty", "malformed", "stale"] {
+            try fixture { _, home, ownedBinding, owned in
+                let request = TestingPolicyHelperWitness.TimingRequest(home: home,
+                    binding: ownedBinding, budget: budget)
+                let immediate = readTiming(request)
+                try check(immediate.snapshot == nil && immediate.rejection == .fileAbsent,
+                    "timing immediate absence projection")
+                var record = fields
+                record["request"] = ownedBinding.requestID; record["generation"] = ownedBinding.generation
+                record["nonce_sha256"] = ownedBinding.nonceSHA256
+                if variant == "stale" { record["request"] = binding.requestID }
+                let data: Data
+                if variant == "empty" { data = Data() }
+                else if variant == "malformed" { data = Data([0xff, 10]) }
+                else { data = try encode(record) }
+                try owned.file(path(home, ownedBinding), data: data)
+                let later = readTiming(request)
+                if variant == "valid" {
+                    try check(later.rejection == nil && later.snapshot?.values == snapshot.values
+                        && immediate.snapshot == nil && immediate.rejection == .fileAbsent,
+                        "timing late read replaced immediate observation")
+                    let probe = TimingReadProbe()
+                    let cost = DiscoveryFixtureDiagnostic.CatalogCostObservation(output:
+                        DiscoveryFixtureDiagnostic.Sink(enabled: true, writer: { probe.append($0) }))
+                    let foreign = TestingPolicyHelperWitness.TimingRequest(home: home,
+                        binding: binding, budget: budget)
+                    do {
+                        try cost.measure(.catalog) {
+                            // First-call and third-call failures cannot replace
+                            // this exact second-request identity.
+                            cost.captureFailedPolicyRequest(foreign)
+                            cost.captureHelper(started: 10, ended: 20)
+                            cost.captureFailedPolicyRequest(request)
+                            cost.captureHelper(started: 20, ended: 30)
+                            cost.captureFailedPolicyRequest(foreign)
+                            throw CustodyRecordError.fenced
+                        }
+                    } catch { /* original synthetic failure remains a failure */ }
+                    cost.observePolicyTimingAfterDrain(home: home)
+                    try check(probe.snapshot().isEmpty, "timing read escaped failed scope finish")
+                    cost.finish(succeeded: false)
+                    let before = probe.snapshot().count
+                    cost.observePolicyTimingAfterDrain(home: home)
+                    let lines = probe.snapshot()
+                    try check(lines.count == before + 2
+                        && lines[before] == "DISCOVERY CATALOG POLICY HELPER TIMING observation=postDrain helper=2 rejection=none\n"
+                        && lines[before + 1] == snapshot.line(issued: budget.issued),
+                        "timing late read lost second request or fixed fields")
+                    cost.observePolicyTimingAfterDrain(home: home)
+                    try check(probe.snapshot().count == before + 2, "timing late read retried")
+                } else {
+                    try check(later.snapshot == nil && later.rejection == (variant == "empty" ? .empty : .parse),
+                        "timing closed rejection projection")
+                }
+            }
+        }
+        // Root/home mismatch is rejected before any path open. This is not
+        // authorization to read a different fixture's record.
+        let invalid = readTiming(TestingPolicyHelperWitness.TimingRequest(home: nil,
+            binding: binding, budget: budget))
+        try check(invalid.snapshot == nil && invalid.rejection == .request,
+            "timing missing home projection")
         let good = try encode(fields), decoded = try parse(good)
         try check(decoded.presence == 63 && decoded.values == snapshot.values, "timing codec changed presence")
         try check(decoded.line(issued: 10) == "DISCOVERY POLICY HELPER TIMING presence=63 elapsed_ns=10,20,30,40,50,60,absent,absent\n",

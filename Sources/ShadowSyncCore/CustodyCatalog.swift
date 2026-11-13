@@ -5313,11 +5313,30 @@ extension CustodyCatalogStore {
             if let evidence { guard evidence.observation.session === self else { throw CustodyRecordError.fenced } }
             try stop.validateOwner(owner)
             try owner.validateStagedCommandAliasesRetired()
+            guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
+            guard !serializing, !stoppedPinsReading, metadataGeneration < UInt64.max,
+                  !failed, pending == nil, self.stop == nil, recovery == nil,
+                  current.phase == .active, current.step?.status == .intent,
+                  current.step?.action == .bootstrapCandidate || current.step?.action == .kickstartCandidate,
+                  commandsClaimed == (evidence != nil),
+                  evidence == nil || evidence!.observation.binding.control == current else {
+                mutex.unlock(); throw CustodyRecordError.fenced
+            }
+            let generation = metadataGeneration; mutex.unlock()
+            // Starts are already permanently closed and their actual commands
+            // retired. Join this original readiness queue before recovery slot
+            // validation: its deadline/exit closes the service independently of
+            // journal serialization and would invalidate a crossing reader.
+            // Use the caller's same absolute budget, with no catalog, registry,
+            // authority or journal mutex held and no completion lease borrowed.
+            try closeReadiness(deadline: deadline)
+            try stop.validateOwner(owner)
+            try owner.validateStagedCommandAliasesRetired()
             let leases = try owner.retainStagedCommandCompletionLeases(mode: .installationStagedStop)
             guard !deadline.hasExpired, mutex.try() else { throw CustodyRecordError.busy }
             do {
-                guard !serializing, !stoppedPinsReading, metadataGeneration < UInt64.max,
-                      !failed, pending == nil, self.stop == nil, recovery == nil,
+                guard !serializing, !stoppedPinsReading, metadataGeneration == generation,
+                      metadataGeneration < UInt64.max, !failed, pending == nil, self.stop == nil, recovery == nil,
                       current.phase == .active, current.step?.status == .intent,
                       current.step?.action == .bootstrapCandidate || current.step?.action == .kickstartCandidate,
                       commandsClaimed == (evidence != nil),

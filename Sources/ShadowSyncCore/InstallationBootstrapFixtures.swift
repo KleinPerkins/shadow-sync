@@ -3972,10 +3972,48 @@ extension InstallationBootstrapFixtures {
                 try H.check(cause == .policy && phase == cut && attempt.firstFailure == .policy,
                     "driver phase cut lost primary classification")
                 try InstallationOwnershipFixtures.excluded(location)
-                let before = try H.snapshot(root), trace = attempt.testingTrace
+                // A cut after readiness owns a named UNIX socket, not an
+                // openable file. Join the original service before observing its
+                // retained named generation; no new cleanup budget or owner.
+                let session = bootstrap.testingReadinessSession()
+                let endpoint = bootstrap.testingReadinessEndpoint()
+                let endpointImage = try endpoint?.image
+                if cut == .bootstrap {
+                    try H.check(bootstrap.stagedReadinessObservation() == .complete
+                        && session != nil && endpointImage?.node?.type == .socket,
+                        "driver phase cut missed original readiness publication")
+                }
+                try bootstrap.testingCloseReadiness(deadline: attempt.deadline)
+                try H.check(bootstrap.testingReadinessSession() == nil,
+                    "driver phase snapshot kept original service work")
+                if let session { try H.check(!session.start(), "driver phase snapshot restarted joined service") }
+                if let endpoint {
+                    try endpoint.requireServiceClosed()
+                    // The existing named-socket reader validates the actual ACL
+                    // and original parents; readinessDisk retains ordinary ACLs.
+                    try endpoint.revalidate(deadline: attempt.deadline)
+                    try H.check(try endpoint.image == endpointImage,
+                        "driver phase snapshot changed original socket generation")
+                }
+                let before = try readinessDisk(root), trace = attempt.testingTrace
+                let socketPaths = before.filter { mode_t($0.value.identity.mode) & S_IFMT == S_IFSOCK }.map(\.key).sorted()
+                try H.check(socketPaths == (endpoint == nil ? [] : [location.path + "/installation.sock"]),
+                    "driver phase snapshot contains an unowned socket")
+                if let node = endpointImage?.node, let socket = before[location.path + "/installation.sock"]?.identity {
+                    try H.check(socket.device == node.device && socket.inode == node.inode
+                        && socket.owner == node.uid && UInt32(socket.mode) == node.mode
+                        && UInt64(socket.linkCount) == node.links,
+                        "driver phase snapshot differs from original named socket")
+                }
                 guard case .retained = attempt.runOnce() else { throw CustodyRecordError.fenced }
-                try H.check(try H.snapshot(root) == before && attempt.testingTrace == trace,
+                try H.check(try readinessDisk(root) == before && attempt.testingTrace == trace,
                     "driver phase cut replayed a completed lower-level effect")
+                if let endpoint {
+                    try endpoint.requireServiceClosed()
+                    try endpoint.revalidate(deadline: attempt.deadline)
+                    try H.check(try endpoint.image == endpointImage,
+                        "driver phase replay changed original socket ACL or generation")
+                }
             }
         }
     }

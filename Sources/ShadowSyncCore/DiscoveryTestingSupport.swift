@@ -191,6 +191,8 @@ enum DiscoveryFixtureDiagnostic {
         private var originalDeadline: UInt64?
         private var setup = [UInt64](repeating: 0, count: 4)
         private var finished = false
+        private var failedSecondPolicyRequest: TestingPolicyHelperWitness.TimingRequest?
+        private var postDrainRead = false
         private let output: Sink
         init(output: Sink) { self.output = output }
         private static func add(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
@@ -224,6 +226,25 @@ enum DiscoveryFixtureDiagnostic {
             let index = current.rawValue
             totals[index].helpers = Self.add(totals[index].helpers, 1)
             totals[index].helperTime = Self.add(totals[index].helperTime, ended - started)
+        }
+        func captureFailedPolicyRequest(_ request: TestingPolicyHelperWitness.TimingRequest?) {
+            let savedErrno = errno; defer { errno = savedErrno }
+            // The fixed first Store catalog has one completed helper before the
+            // failing second call. No other stage, ordinal or later request wins.
+            guard !finished, current == .catalog, totals[CatalogCostStage.catalog.rawValue].helpers == 1,
+                  failedSecondPolicyRequest == nil else { return }
+            failedSecondPolicyRequest = request
+        }
+        func observePolicyTimingAfterDrain(home: String) {
+            let savedErrno = errno; defer { errno = savedErrno }
+            guard finished, failedStage != nil, !postDrainRead else { return }
+            postDrainRead = true
+            let request = failedSecondPolicyRequest; failedSecondPolicyRequest = nil
+            guard let request else { return }
+            let read = request.home == home ? TestingPolicyHelperWitness.readAfterDrain(request)
+                : TestingPolicyHelperWitness.TimingRead(snapshot: nil, rejection: .request)
+            output.emit("DISCOVERY CATALOG POLICY HELPER TIMING observation=postDrain helper=2 rejection=\(read.rejection?.rawValue ?? "none")\n")
+            if let snapshot = read.snapshot { output.emit(snapshot.line(issued: request.budget.issued)) }
         }
         func captureSession(started: UInt64, ended: UInt64, milestones: [UInt64]) {
             guard !finished, let current, ended >= started else { return }
@@ -262,7 +283,8 @@ enum DiscoveryFixtureDiagnostic {
         guard isEnabled else { return nil }
         return Thread.current.threadDictionary[catalogCostKey] as? CatalogCostObservation
     }
-    static func withCatalogCost<Value>(observing: Bool, _ body: () throws -> Value) rethrows -> Value {
+    static func withCatalogCost<Value>(observing: Bool,
+        failed: ((CatalogCostObservation) -> Void)? = nil, _ body: () throws -> Value) rethrows -> Value {
         guard observing, isEnabled, firstCatalogCost.take() else { return try body() }
         let previous = currentCatalogCost
         let observation = CatalogCostObservation(output: Sink(enabled: true,
@@ -275,6 +297,7 @@ enum DiscoveryFixtureDiagnostic {
             if let previous { Thread.current.threadDictionary[catalogCostKey] = previous }
             else { Thread.current.threadDictionary.removeObject(forKey: catalogCostKey) }
             observation.finish(succeeded: succeeded)
+            if !succeeded { failed?(observation) }
         }
         let result = try body(); succeeded = true; return result
     }

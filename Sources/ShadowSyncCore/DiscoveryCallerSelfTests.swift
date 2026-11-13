@@ -531,9 +531,10 @@ public enum DiscoveryCallerSelfTestRunner {
     }
 
     private static func retentionSelection(root: String, context: CommandCustodyContext,
-        observeCatalogCost: Bool = false)
+        observeCatalogCost: Bool = false,
+        catalogCostFailure: ((DiscoveryFixtureDiagnostic.CatalogCostObservation) -> Void)? = nil)
         throws -> (RemovalSelection, RepositoryInventory, ValidatedSelectedRepositoryScope) {
-        let (scope, candidates) = try DiscoveryFixtureDiagnostic.withCatalogCost(observing: observeCatalogCost) {
+        let (scope, candidates) = try DiscoveryFixtureDiagnostic.withCatalogCost(observing: observeCatalogCost, failed: catalogCostFailure) {
             let binder = try DiscoveryFixtureDiagnostic.measureCatalogCost(.setup) {
                 try context.currentPolicyBinder(cancellation: CancellationToken())
             }
@@ -756,7 +757,8 @@ public enum DiscoveryCallerSelfTestRunner {
                 var failure: Error?
                 do {
                     let selected = try retentionSelection(root: fixture.root, context: fixture.context,
-                        observeCatalogCost: test == "store-success" && variant == "normal")
+                        observeCatalogCost: test == "store-success" && variant == "normal",
+                        catalogCostFailure: { fixture.failedCatalogCost = $0 })
                     var hooks = RetentionArtifactStore.TestingCustodyHooks()
                     let barrier = CustodyLeaseTestingBarrier()
                     defer { barrier.release() }
@@ -2046,6 +2048,7 @@ public enum DiscoveryCallerSelfTestRunner {
         let root: String, home: String, repository: String
         let account: EffectiveAccount
         private var retainedContext: CommandCustodyContext?
+        var failedCatalogCost: DiscoveryFixtureDiagnostic.CatalogCostObservation?
         var context: CommandCustodyContext { retainedContext! }
         private let initialScopeID: String
         func releaseReadPhase() { retainedContext?.close(); retainedContext = nil }
@@ -2365,6 +2368,11 @@ public enum DiscoveryCallerSelfTestRunner {
                     || (allowUnsubmitted && retainedContext!.isClosed))
                 && (try CustodyCatalog.decode(repositoryCustodyBytes(StateLocation.isolated(root: root), "catalog.json"))).entries.isEmpty,
                 "discovery cleanup unresolved; fixture and transaction evidence retained at \(root)")
+            // Optional exact second-request read follows the original helper
+            // join AND strict resource/catalog retirement assertion. It cannot
+            // grant cleanup, extend admission, or replace the original failure.
+            failedCatalogCost?.observePolicyTimingAfterDrain(home: home)
+            failedCatalogCost = nil
             let custody = try StateLocation.isolated(root: root).path + "/custody"
             let control = try PolicyAuthorityFile.read(path: custody + "/" + InstallationControlRecord.filename,
                 owner: account.uid, maximumBytes: InstallationControlRecord.maximumBytes)

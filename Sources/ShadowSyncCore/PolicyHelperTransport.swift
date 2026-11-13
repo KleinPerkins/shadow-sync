@@ -234,6 +234,11 @@ private final class PolicyCustodyExecution {
         diagnosticResultBits |= (!cancellation.isCancelled && !cancellation.areFutureChildAdmissionsClosed ? 64 : 0)
         diagnosticResultBits |= (result.reason == nil || result.reason == CustodyReason.none ? 128 : 0)
         DiscoveryFixtureDiagnostic.recordCustodyResult(result)
+        if result.phase == .cleanupPending
+            || TestingPolicyHelperWitness.shouldObserve(parentReason: result.reason, terminalReason: result.journal?.reason) {
+            DiscoveryFixtureDiagnostic.currentCatalogCost?.captureFailedPolicyRequest(
+                TestingPolicyHelperWitness.TimingRequest(command.resources.request))
+        }
         #endif
         if result.phase == .cleanupPending {
             context.close(); cancellation.closeFutureChildAdmissions()
