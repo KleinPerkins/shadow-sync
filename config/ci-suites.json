@@ -728,6 +728,18 @@
       ],
       "timeout_seconds": 3600
     },
+    "runtime-m6-staged-reconciliation": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "runtime",
+        "--suite",
+        "m6-staged-reconciliation"
+      ],
+      "timeout_seconds": 3600
+    },
     "runtime-policy-authority": {
       "argv": [
         "python3",
@@ -869,6 +881,18 @@
         "runtime",
         "--suite",
         "publisher-policy"
+      ],
+      "timeout_seconds": 3600
+    },
+    "runtime-reconciliation-observer": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "runtime",
+        "--suite",
+        "reconciliation-observer"
       ],
       "timeout_seconds": 3600
     },
@@ -1086,6 +1110,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-coordinator-policy-prerequisite": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_coordinator_policy_prerequisite"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-custody-capture-suite": {
       "argv": [
         "python3",
@@ -1230,6 +1266,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-policy-catalog-prefetch": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_policy_catalog_prefetch"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-policy-entry": {
       "argv": [
         "python3",
@@ -1275,6 +1323,18 @@
         "tooling",
         "--suite",
         "test_python_test_suites"
+      ],
+      "timeout_seconds": 300
+    },
+    "tooling-test-reconciliation-probe": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_reconciliation_probe"
       ],
       "timeout_seconds": 300
     },
@@ -1371,6 +1431,18 @@
         "tooling",
         "--suite",
         "test_signed_fixture_isolation"
+      ],
+      "timeout_seconds": 300
+    },
+    "tooling-test-signed-fixture-negative-report": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_signed_fixture_negative_report"
       ],
       "timeout_seconds": 300
     },
@@ -1504,6 +1576,7 @@
         "tooling-test-ci-runtime",
         "tooling-test-ci-shards",
         "tooling-test-coordinator-entry",
+        "tooling-test-coordinator-policy-prerequisite",
         "tooling-test-custody-capture-suite",
         "tooling-test-dependency-maintenance",
         "tooling-test-guardian-executor",
@@ -1516,10 +1589,12 @@
         "tooling-test-ordinary-app-policy",
         "tooling-test-policy-adapter",
         "tooling-test-policy-batch",
+        "tooling-test-policy-catalog-prefetch",
         "tooling-test-policy-entry",
         "tooling-test-policy-runtime-build",
         "tooling-test-private-delivery",
         "tooling-test-python-test-suites",
+        "tooling-test-reconciliation-probe",
         "tooling-test-release-assembly",
         "tooling-test-release-candidate",
         "tooling-test-release-credential-readiness",
@@ -1528,6 +1603,7 @@
         "tooling-test-runtime-suite-inventory",
         "tooling-test-signed-bootstrap-source",
         "tooling-test-signed-fixture-isolation",
+        "tooling-test-signed-fixture-negative-report",
         "tooling-test-signed-fixture-package",
         "tooling-test-signed-fixture-source",
         "tooling-test-source-export",
@@ -1548,6 +1624,8 @@
         "runtime-m3",
         "runtime-m4",
         "runtime-m6-custody-capture",
+        "runtime-reconciliation-observer",
+        "runtime-m6-staged-reconciliation",
         "runtime-m6",
         "runtime-body1",
         "runtime-body2",
@@ -2296,6 +2374,18 @@
       },
       "runtime-m6": {
         "cases": [
+          "m6-fresh-driver-exclusive-diagnostic-cancellation",
+          "m6-fresh-driver-early-effect-cuts",
+          "m6-fresh-driver-transfer-cuts",
+          "m6-fresh-driver-start-cuts",
+          "m6-fresh-driver-before-reserve",
+          "m6-fresh-driver-grammar",
+          "m6-fresh-driver-reserve-cuts",
+          "m6-fresh-driver-phase-cuts",
+          "m6-fresh-driver-cancellation-after-validation",
+          "m6-fresh-driver-primary-before-cleanup-failure",
+          "m6-fresh-driver-actual-retirement-notices",
+          "m6-fresh-driver-session-work-notice",
           "m6-installation-committed-stop-binding-closure",
           "m6-installation-candidate-ready-stop-ordinal",
           "m6-installation-committed-stop-owner-refusal",
@@ -3038,6 +3128,19 @@
         ],
         "kind": "runtime"
       },
+      "runtime-m6-staged-reconciliation": {
+        "cases": [
+          "m6-installation-staged-reconciliation-unclaimed-absent-stop",
+          "m6-installation-staged-reconciliation-retired-starts",
+          "m6-installation-staged-reconciliation-resumed-outcomes",
+          "m6-installation-staged-reconciliation-semantic-states",
+          "m6-installation-staged-reconciliation-action-classifier",
+          "m6-installation-staged-reconciliation-aliases-eof",
+          "m6-installation-staged-reconciliation-substitutions",
+          "m6-installation-staged-reconciliation-receipt-cuts"
+        ],
+        "kind": "runtime"
+      },
       "runtime-policy-authority": {
         "cases": [
           "POLICY-AUTHORITY-T01-stable-bounded-snapshot",
@@ -3214,7 +3317,11 @@
           "POLICY-SNAPSHOT-T12-identical-bytes-new-inode-changes-handoff",
           "POLICY-SNAPSHOT-T13-retained-file-new-ancestor-changes-handoff",
           "POLICY-SNAPSHOT-T14-bounded-batch-shared-ancestors-and-exact-bytes",
-          "POLICY-SNAPSHOT-T15-batch-postflight-rejects-earlier-file-and-parent-drift"
+          "POLICY-SNAPSHOT-T15-batch-postflight-rejects-earlier-file-and-parent-drift",
+          "POLICY-SNAPSHOT-T16-coordinator-retained-handoff-refusal-before-effects",
+          "POLICY-SNAPSHOT-T17-coordinator-retained-handoff-unavailable-inputs",
+          "POLICY-SNAPSHOT-T18-coordinator-overlap-refuses-inflight-commit",
+          "POLICY-SNAPSHOT-T19-coordinator-refusal-survives-restored-policy"
         ],
         "kind": "runtime"
       },
@@ -3299,6 +3406,12 @@
           "PUBLISHER-POLICY-T21-bulk-throw-unwind-clears-scratch-and-descriptors",
           "PUBLISHER-POLICY-T22-bulk-recursive-multibatch-physical-drift-refusals",
           "PUBLISHER-POLICY-T23-ancestor-sibling-stability-and-policy-drift-refusals"
+        ],
+        "kind": "runtime"
+      },
+      "runtime-reconciliation-observer": {
+        "cases": [
+          "reconciliation-observer-capped-exclusion-unwind"
         ],
         "kind": "runtime"
       },
@@ -3695,7 +3808,30 @@
       "tooling-test-coordinator-entry": {
         "cases": [
           "test_coordinator_entry.CoordinatorEntryTests.test_owned_contained_executable_accepts_and_alias_refuses",
-          "test_coordinator_entry.CoordinatorEntryTests.test_parent_escape_refuses_before_executing_any_binary"
+          "test_coordinator_entry.CoordinatorEntryTests.test_parent_escape_refuses_before_executing_any_binary",
+          "test_coordinator_entry.FreshInstallationDriverSourceTests.test_actual_driver_uncertainty_covers_closed_checkpoint_and_publication_matrix",
+          "test_coordinator_entry.FreshInstallationDriverSourceTests.test_actual_publication_notice_is_separate_from_pending",
+          "test_coordinator_entry.FreshInstallationDriverSourceTests.test_exclusive_diagnostic_rechecks_same_gate_immediately_before_submission",
+          "test_coordinator_entry.FreshInstallationDriverSourceTests.test_fresh_runtime_has_no_unconditional_integer_exit",
+          "test_coordinator_entry.FreshInstallationDriverSourceTests.test_normal_frame_fault_is_after_authentication_and_testing_only",
+          "test_coordinator_entry.FreshInstallationDriverSourceTests.test_primary_error_precedes_cleanup_and_settlement_is_policy_free",
+          "test_coordinator_entry.FreshInstallationDriverSourceTests.test_real_driver_sequence_and_original_ceiling",
+          "test_coordinator_entry.FreshInstallationDriverSourceTests.test_terminal_receipt_is_exact_owner_and_one_use",
+          "test_coordinator_entry.FreshInstallationDriverSourceTests.test_testing_fresh_entry_refuses_before_resolution"
+        ],
+        "kind": "static"
+      },
+      "tooling-test-coordinator-policy-prerequisite": {
+        "cases": [
+          "test_coordinator_policy_prerequisite.CoordinatorPolicyPrerequisiteTests.test_actual_state_fixtures_include_overlap_and_restored_input",
+          "test_coordinator_policy_prerequisite.CoordinatorPolicyPrerequisiteTests.test_canonical_app_path_and_readonly_cli_stay_separate",
+          "test_coordinator_policy_prerequisite.CoordinatorPolicyPrerequisiteTests.test_closed_production_handoff_and_test_build_exclusion",
+          "test_coordinator_policy_prerequisite.CoordinatorPolicyPrerequisiteTests.test_each_side_of_handoff_and_sticky_revocation_are_required",
+          "test_coordinator_policy_prerequisite.CoordinatorPolicyPrerequisiteTests.test_non_authoritative_configuration_helper_cannot_create_prerequisite",
+          "test_coordinator_policy_prerequisite.CoordinatorPolicyPrerequisiteTests.test_policy_load_cannot_precede_publisher_resource_validation",
+          "test_coordinator_policy_prerequisite.CoordinatorPolicyPrerequisiteTests.test_resource_omission_and_substitution_checks_are_required",
+          "test_coordinator_policy_prerequisite.CoordinatorPolicyPrerequisiteTests.test_state_lock_and_out_of_lock_commit_obligations",
+          "test_coordinator_policy_prerequisite.CoordinatorPolicyPrerequisiteTests.test_wrong_publisher_candidate_or_account_cannot_weaken_binding"
         ],
         "kind": "static"
       },
@@ -3885,6 +4021,15 @@
         ],
         "kind": "static"
       },
+      "tooling-test-policy-catalog-prefetch": {
+        "cases": [
+          "test_policy_catalog_prefetch.RootShelfPrefetchTests.test_exact_root_parent_is_the_only_prefetch_semantic_delta",
+          "test_policy_catalog_prefetch.RootShelfPrefetchTests.test_original_omission_and_order_bound_byte_mutants_refuse",
+          "test_policy_catalog_prefetch.RootShelfPrefetchTests.test_real_fixture_adapter_discriminates_child_only_and_invalid_optional_batches",
+          "test_policy_catalog_prefetch.RootShelfPrefetchTests.test_registered_native_fixture_retains_original_controls_and_adds_root_cuts"
+        ],
+        "kind": "static"
+      },
       "tooling-test-policy-entry": {
         "cases": [
           "test_policy_entry.PolicyEntryTests.test_bad_contract_or_isolation_refuses_before_identity_or_dispatch",
@@ -4009,6 +4154,17 @@
           "test_python_test_suites.PythonSuiteTests.test_linked_module_and_linked_ancestor_refuse",
           "test_python_test_suites.PythonSuiteTests.test_skip_expected_failure_unexpected_success_and_setup_errors_refuse",
           "test_python_test_suites.PythonSuiteTests.test_success_reports_exact_actual_case_ids"
+        ],
+        "kind": "static"
+      },
+      "tooling-test-reconciliation-probe": {
+        "cases": [
+          "test_reconciliation_probe.ReconciliationProbeTests.test_cleanup_observation_keeps_original_failure_precedence",
+          "test_reconciliation_probe.ReconciliationProbeTests.test_closed_record_parser_rejects_private_or_unbounded_evidence",
+          "test_reconciliation_probe.ReconciliationProbeTests.test_fixed_suite_rejects_missing_reordered_substituted_or_selected_bodies",
+          "test_reconciliation_probe.ReconciliationProbeTests.test_probe_is_bounded_opt_in_errno_preserving_and_ownership_free",
+          "test_reconciliation_probe.ReconciliationProbeTests.test_resumed_deadline_decorations_preserve_every_original_fixture_byte",
+          "test_reconciliation_probe.ReconciliationProbeTests.test_resumed_deadline_labels_cover_closed_modes_and_all_waits"
         ],
         "kind": "static"
       },
@@ -4173,13 +4329,37 @@
         ],
         "kind": "static"
       },
+      "tooling-test-signed-fixture-negative-report": {
+        "cases": [
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_actual_serializer_maximum_32_rows_and_uint64_fields_fit_4096",
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_after_ack_cancellation_cap_miss_or_disposal_never_qualifies",
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_both_H_actual_failure_results_and_no_early_owner_release_required",
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_closed_fields_duplicate_nonfinite_overflow_and_extra_report_refuse",
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_cut_and_original_cap_mutations_refuse",
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_exit_pass_reap_eof_deadline_transport_and_preparation_mutations_refuse",
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_failed_exit_without_reached_report_and_wrong_bindings_never_qualifies",
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_guardian_skipped_replayed_wrong_reason_and_no_terminal_refuse",
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_measured_union_events_disposal_and_missing_real_join_refuse",
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_normal_positive_parser_still_rejects_negative_terminal_as_success",
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_read_only_file_seal_rejects_digest_mode_symlink_and_replacement",
+          "test_signed_fixture_negative_report.SignedFixtureNegativeReportTests.test_six_allowed_measured_products_preserve_failed_raw_receipts"
+        ],
+        "kind": "static"
+      },
       "tooling-test-signed-fixture-package": {
         "cases": [
+          "test_signed_fixture_package.FreshDriverBuildMarkerTests.test_actual_signed_helper_bytes_require_each_moved_marker",
+          "test_signed_fixture_package.FreshDriverBuildMarkerTests.test_dual_flag_source_and_three_build_classification",
+          "test_signed_fixture_package.FreshDriverBuildMarkerTests.test_each_wrong_roster_or_omitted_signed_positive_refuses",
+          "test_signed_fixture_package.SignedFixtureControlPackageTests.test_five_negative_rows_and_markers_are_required_without_changing_positives",
+          "test_signed_fixture_package.SignedFixtureControlPackageTests.test_missing_duplicate_misclassified_control_and_marker_refuse",
           "test_signed_fixture_package.SignedFixturePackageTests.test_canonical_inventory_matches_public_swift_record_encoding",
           "test_signed_fixture_package.SignedFixturePackageTests.test_discovery_is_closed_and_does_not_run_native_tools",
           "test_signed_fixture_package.SignedFixturePackageTests.test_duplicate_fields_and_missing_binary_routes_refuse",
           "test_signed_fixture_package.SignedFixturePackageTests.test_fixture_mode_is_explicit_testing_and_ordinary_exclusion_agrees",
           "test_signed_fixture_package.SignedFixturePackageTests.test_isolated_policy_documents_are_coherent_and_fake_module_refuses",
+          "test_signed_fixture_package.SignedFixturePackageTests.test_join_missing_row_and_wrong_positive_classification_refuse",
+          "test_signed_fixture_package.SignedFixturePackageTests.test_join_roster_preserves_lifecycle_positives_and_unavailable_pending_cut",
           "test_signed_fixture_package.SignedFixturePackageTests.test_source_binding_rejects_changed_mode_content_and_alias",
           "test_signed_fixture_package.SignedFixturePackageTests.test_undiscovered_required_case_is_not_a_passing_skip"
         ],
@@ -4187,8 +4367,19 @@
       },
       "tooling-test-signed-fixture-source": {
         "cases": [
+          "test_signed_fixture_source.SignedFixtureControlSourceTests.test_control_fault_prerequisite_and_one_use_certificate_mutations_refuse",
+          "test_signed_fixture_source.SignedFixtureControlSourceTests.test_control_no_generic_H_success_swallow_or_timeout_fabrication",
+          "test_signed_fixture_source.SignedFixtureControlSourceTests.test_control_report_transport_deadline_and_accounting_mutations_refuse",
+          "test_signed_fixture_source.SignedFixtureControlSourceTests.test_control_source_connected_and_dual_fenced",
+          "test_signed_fixture_source.SignedFixtureControlSourceTests.test_control_teardown_disposal_or_normal_success_shortcuts_refuse",
           "test_signed_fixture_source.SignedFixtureSourceTests.test_commit_profile_cannot_fall_back_on_reachable_paths",
           "test_signed_fixture_source.SignedFixtureSourceTests.test_component_has_reachable_signed_only_source_entry",
+          "test_signed_fixture_source.SignedFixtureSourceTests.test_join_early_dispatch_cannot_fall_through_full_startup",
+          "test_signed_fixture_source.SignedFixtureSourceTests.test_join_exact_foreign_and_duplicate_match_controls_are_connected",
+          "test_signed_fixture_source.SignedFixtureSourceTests.test_join_hold_must_follow_final_ack_and_cancel_cannot_release_it",
+          "test_signed_fixture_source.SignedFixtureSourceTests.test_join_production_and_ordinary_testing_exclusion",
+          "test_signed_fixture_source.SignedFixtureSourceTests.test_join_real_wait_and_checked_disposal_cannot_be_replaced_by_success",
+          "test_signed_fixture_source.SignedFixtureSourceTests.test_join_throwing_unwind_and_finite_hold_source_obligations",
           "test_signed_fixture_source.SignedFixtureSourceTests.test_missing_production_decode_default_refuses",
           "test_signed_fixture_source.SignedFixtureSourceTests.test_other_workspace_open_sink_is_detected",
           "test_signed_fixture_source.SignedFixtureSourceTests.test_record_profile_must_not_reenter_source_verification",

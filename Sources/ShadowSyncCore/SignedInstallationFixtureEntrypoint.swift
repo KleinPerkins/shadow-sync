@@ -11,6 +11,9 @@ enum SignedInstallationFixtureEntrypoint {
             try SignedInstallationFixtureSourceEntrypoint.requireInheritedManifest()
             let request = try SignedInstallationFixtureContext.Request.consume()
             guard let scenario = SignedInstallationFixtureCase(rawValue: request.caseID) else { throw CustodyRecordError.fenced }
+            if scenario.isStartAdapterJoinControl {
+                try SignedInstallationFixtureJoinControlFixtures.requireControlReportTransport()
+            }
             let guardian = try RuntimeSuiteGuardian(suite: SignedInstallationFixtureContext.installationSuite,
                 cases: [request.caseID], nonce: request.nonce, deadline: request.deadline,
                 source: request.source, executable: request.executable, app: request.app, probeTarget: nil)
@@ -22,6 +25,19 @@ enum SignedInstallationFixtureEntrypoint {
                     let custody = try context.retainRootCustody()
                     let service = try SignedInstallationFixtureService(context: context, custody: custody)
                     let bootstrap = try InstallationBootstrap.signedFixture(context, service: service, custody: custody)
+                    if scenario.rawValue.hasPrefix("signed-installation/fresh-driver/") {
+                        try SignedFreshInstallationDriverFixture.run(scenario, bootstrap: bootstrap, context: context, custody: custody)
+                        return
+                    }
+                    if scenario.isStartAdapterJoinControl {
+                        try SignedInstallationFixtureJoinControlFixtures.runSubject(scenario, bootstrap: bootstrap,
+                            context: context, service: service, custody: custody)
+                    }
+                    if scenario.isStartAdapterJoin {
+                        try SignedInstallationFixtureJoinFixtures.run(scenario, bootstrap: bootstrap,
+                            context: context, service: service, custody: custody)
+                        return
+                    }
                     try bootstrap.reserve(deadline: context.deadline)
                     try bootstrap.prepareExclusive()
                     try bootstrap.transferToStagedAdmission()

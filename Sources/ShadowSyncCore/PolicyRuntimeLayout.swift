@@ -150,6 +150,7 @@ struct PolicyRuntimeTree: Equatable, Sendable {
         var afterAncestorRead: ((String) throws -> Void)? = nil
         var beforeDirectoryRead: ((String) throws -> Void)? = nil
         var afterEntryRead: ((String, String, Bool) throws -> Void)? = nil
+        var substituteEntry: ((String, String, stat?, Bool) throws -> (String, stat?))? = nil
         #endif
     }
     let nodes: [String: Node]
@@ -160,6 +161,7 @@ struct PolicyRuntimeTree: Equatable, Sendable {
     // freshly enumerated name to that exact authenticated entry.
     private struct InspectionEntry: Equatable, Sendable {
         let path: String
+        let ordinal: Int
         let layout: PolicyRuntimeLayout.Entry
         let node: Node
     }
@@ -168,14 +170,17 @@ struct PolicyRuntimeTree: Equatable, Sendable {
 
     private init(nodes: [String: Node], machOFiles: [String], layout: PolicyRuntimeLayout) throws {
         var children: [String: [String: InspectionEntry]] = [:]
-        for (path, entry) in layout.entries {
+        // Stable ordering makes each directory-local ordinal independent of
+        // Dictionary insertion order, including independent full captures.
+        for (path, entry) in layout.entries.sorted(by: { $0.key < $1.key }) {
             guard PolicyRuntimeLayout.validPath(path), let node = nodes[path] else {
                 throw PublisherPolicyError.unavailable
             }
             let slash = path.lastIndex(of: "/")
             let parent = slash.map { String(path[..<$0]) } ?? ""
             let name = slash.map { String(path[path.index(after: $0)...]) } ?? path
-            children[parent, default: [:]][name] = InspectionEntry(path: path, layout: entry, node: node)
+            let ordinal = children[parent]?.count ?? 0
+            children[parent, default: [:]][name] = InspectionEntry(path: path, ordinal: ordinal, layout: entry, node: node)
         }
         self.nodes = nodes; self.machOFiles = machOFiles
         self.capturedLayout = layout; self.children = children
@@ -200,13 +205,17 @@ struct PolicyRuntimeTree: Equatable, Sendable {
         }
     }
     /// Observe the actual production enumeration route. Hooks run only after
-    /// the directory's initial identity check and never supply accepted data.
+    /// the directory's initial identity check. The optional substitution is
+    /// testing-only fault injection for malformed enumeration records.
+    // Keep this testing-only entry visible to compiled symbol verification.
+    @inline(never)
     func testingRevalidateScan(root: String, owner: uid_t, layout: PolicyRuntimeLayout,
                                beforeDirectoryRead: ((String) throws -> Void)? = nil,
-                               afterEntryRead: ((String, String, Bool) throws -> Void)? = nil) throws {
+                               afterEntryRead: ((String, String, Bool) throws -> Void)? = nil,
+                               substituteEntry: ((String, String, stat?, Bool) throws -> (String, stat?))? = nil) throws {
         guard try Self.inspect(root: root, owner: owner, layout: layout, expected: self,
             observer: InspectionObserver(beforeDirectoryRead: beforeDirectoryRead,
-                                         afterEntryRead: afterEntryRead)) == self else {
+                                         afterEntryRead: afterEntryRead, substituteEntry: substituteEntry)) == self else {
             throw PublisherPolicyError.unavailable
         }
     }
@@ -282,8 +291,11 @@ struct PolicyRuntimeTree: Equatable, Sendable {
             var bulk: PolicyRuntimeBulkDirectory? = useBulk ? bulkReaders.take() : nil
             defer { if useBulk { bulkReaders.put(&bulk) } }
             var seen: Set<String> = []
+            // Fresh visitation state belongs to this recursive directory frame;
+            // immutable ordinals replace a second hash of each observed name.
+            var visited = [Bool](repeating: false, count: expectedChildren.count)
             while true {
-                let name: String
+                var name: String
                 var batched: stat?
                 if let stream {
                     errno = 0
@@ -309,14 +321,20 @@ struct PolicyRuntimeTree: Equatable, Sendable {
                     name = entry.name; batched = entry.regularFile
                 }
                 #if SHADOW_SYNC_TESTING
+                if let substitute = observer.substituteEntry {
+                    (name, batched) = try substitute(prefix, name, batched, useBulk)
+                }
                 try observer.afterEntryRead?(prefix, name, useBulk)
                 #endif
-                guard seen.insert(name).inserted, observedCount <= 4096 else { throw PublisherPolicyError.unavailable }
                 let path: String, entryLayout: PolicyRuntimeLayout.Entry, retained: Node?
                 if expected != nil {
-                    guard let entry = expectedChildren[name] else { throw PublisherPolicyError.unavailable }
+                    guard observedCount <= 4096, let entry = expectedChildren[name], !visited[entry.ordinal] else {
+                        throw PublisherPolicyError.unavailable
+                    }
+                    visited[entry.ordinal] = true
                     path = entry.path; entryLayout = entry.layout; retained = entry.node
                 } else {
+                    guard seen.insert(name).inserted, observedCount <= 4096 else { throw PublisherPolicyError.unavailable }
                     path = prefix.isEmpty ? name : prefix + "/" + name
                     guard PolicyRuntimeLayout.validPath(path), let entry = layout.entries[path] else {
                         throw PublisherPolicyError.unavailable

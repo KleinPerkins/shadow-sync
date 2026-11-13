@@ -1343,6 +1343,935 @@ enum InstallationBootstrapFixtures {
             catch CustodyRecordError.busy { Thread.sleep(forTimeInterval: 0.001) }
         }
     }
+    // Observes real registry events/candidates; it cannot construct a proof or
+    // replace an outcome. Synchronization does not retain command resources.
+    private final class RetirementProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var attempts = 0
+        private var archives = 0
+        private var candidate: RetainedCleanupRegistry.StagedRecoveryRetirement?
+        func observe(_ point: RetainedCleanupRegistry.TestFinalizationPoint) {
+            lock.lock(); defer { lock.unlock() }
+            if point == .beforeArchive { attempts += 1 } else { archives += 1 }
+        }
+        func capture(_ token: RetainedCleanupRegistry.StagedRecoveryRetirement) {
+            lock.lock(); candidate = token; lock.unlock()
+        }
+        var counts: [Int] { lock.lock(); defer { lock.unlock() }; return [attempts, archives] }
+        var token: RetainedCleanupRegistry.StagedRecoveryRetirement? {
+            lock.lock(); defer { lock.unlock() }; return candidate
+        }
+    }
+    private static func waitForOriginalReap(_ registry: RetainedCleanupRegistry, deadline: MonotonicDeadline) throws {
+        while !registry.testingOriginalHelpersReaped {
+            guard !deadline.hasExpired else { throw H.Failure(message: "original fixture reap exceeded its bound") }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+    }
+    private static func refusedOriginalPoison() throws {
+        for cut in [RetainedCleanupRegistry.TestCut.beforeSpawn, .afterAnchor, .afterOwner] {
+            try exclusiveFixture { root, location, bootstrap, registry in
+                let original = MonotonicDeadline(seconds: 30), probe = RetirementProbe()
+                try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                    guard operation == .bootstrap, point == .commandRetained,
+                          let context = bootstrap?.testingStartContext(kickstart: false) else { return }
+                    registry.testingFault(cut)
+                    registry.testingObserveFinalization { [weak context] point in
+                        probe.observe(point)
+                        if point == .beforeArchive {
+                            guard let context else { throw H.Failure(message: "original poison context disappeared") }
+                            context.testingScope.markPending()
+                            throw CustodyRecordError.injectedFailure
+                        }
+                    }
+                })
+                try startPrepared(root, bootstrap, deadline: original)
+                try H.refuses { try bootstrap.bootstrapCandidate() }
+                guard let handle = bootstrap.testingStartHandle(kickstart: false) else { throw H.Failure(message: "original poison handle missing") }
+                let control = try stored(location)
+                for _ in 0..<3 {
+                    registry.testingRevisitFinalization(handle)
+                    try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                    try H.refuses { try bootstrap.retireFailedStartCommands() }
+                    try H.check(probe.counts == [1, 0] && registry.hasRetainedWork
+                        && handle.snapshot().phase == .cleanupPending
+                        && bootstrap.failedStartRetirementObservation() == .pending
+                        && (try stored(location)) == control,
+                        "real original poison was cleared or archival retried")
+                }
+                try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+                try waitForOriginalReap(registry, deadline: original)
+                // Only the fixture's reaped originals are disposed; pending is
+                // never reported as a production retirement receipt.
+                try registry.testingDispose()
+            }
+        }
+    }
+    private static func stagedArchiveAttemptIsSingle() throws {
+        // Refusal, resumed/open and resumed/ordinary-close all claim before the
+        // same actual archive fault. No counter supplies custody evidence.
+        for route in 0..<3 {
+            try exclusiveFixture { root, location, bootstrap, registry in
+                let original = MonotonicDeadline(seconds: 30), probe = RetirementProbe()
+                try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                    guard operation == .bootstrap, point == .commandRetained,
+                          let context = bootstrap?.testingStartContext(kickstart: false) else { return }
+                    if route == 0 { registry.testingFault(.beforeSpawn) }
+                    context.testingScope.testingFault(.afterArchive)
+                    registry.testingObserveFinalization { [weak context] point in
+                        probe.observe(point)
+                        if point == .beforeArchive && route == 2 { context?.testingScope.close() }
+                    }
+                })
+                try startPrepared(root, bootstrap, deadline: original)
+                try H.refuses { try bootstrap.bootstrapCandidate() }
+                guard let handle = bootstrap.testingStartHandle(kickstart: false) else { throw H.Failure(message: "archive fault original handle missing") }
+                let control = try stored(location)
+                for _ in 0..<3 {
+                    registry.testingRevisitFinalization(handle)
+                    try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                    try H.check(probe.counts == [1, 0] && registry.hasRetainedWork
+                        && handle.snapshot().phase == .cleanupPending && (try stored(location)) == control,
+                        "partial archive was replayed or treated as retirement")
+                }
+                try H.refuses { try bootstrap.retireFailedStartCommands() }
+                try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+                try waitForOriginalReap(registry, deadline: original)
+                try registry.testingDispose()
+            }
+        }
+    }
+    private static func stagedProspectiveCloseFailure() throws {
+        for closed in [false, true] {
+            try exclusiveFixture { root, location, bootstrap, registry in
+                let original = MonotonicDeadline(seconds: 30), probe = RetirementProbe()
+                try bootstrap.testingConfigureStarts(checkpoint: { operation, point in
+                    guard operation == .bootstrap else { return }
+                    if point == .commandRetained {
+                        if closed { registry.testingFault(.beforeSpawn) }
+                        registry.testingObserveProspectiveRecovery { token, resources in
+                            probe.capture(token)
+                            if !closed { resources.scope.close() }
+                            try resources.testingUncertainStagedResourceClose()
+                        }
+                    }
+                })
+                try startPrepared(root, bootstrap, deadline: original)
+                try H.refuses { try bootstrap.bootstrapCandidate() }
+                guard let handle = bootstrap.testingStartHandle(kickstart: false), let candidate = probe.token else {
+                    throw H.Failure(message: "actual prospective recovery candidate was not observed")
+                }
+                try H.check(handle.snapshot().phase == .cleanupPending && handle.snapshot().reason == .ioFailure
+                    && !registry.hasRetainedWork && registry.testingOriginalHelpersReaped,
+                    "uncertain resource close lost removal facts or delivered success")
+                let control = try stored(location)
+                try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                try H.refuses { _ = try handle.stagedCompletion() }
+                try H.refuses { _ = try candidate.validate() }
+                // Dispose caller aliases only in this fixture, proving the exact
+                // false checked-close record cannot become true by weak expiry.
+                try bootstrap.testingReleaseFailedStartAliases()
+                for _ in 0..<2 {
+                    try H.refuses { _ = try candidate.validate() }
+                    try H.refuses { try bootstrap.retireFailedStartCommands() }
+                    try H.check((try stored(location)) == control && bootstrap.observation().failedClosed,
+                        "vanishing aliases repaired a false checked-close seal")
+                }
+                try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+            }
+        }
+    }
+    private static func retiredBootstrapOutlivesCommandReceipt() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            let original = MonotonicDeadline(seconds: 30)
+            var firstReceipt: UInt64?
+            var firstToken: RetainedCleanupRegistry.StagedRecoveryRetirement?
+            try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                guard let bootstrap else { throw H.Failure(message: "old token original bootstrap lost") }
+                if operation == .bootstrap && point == .commandRetained {
+                    firstReceipt = bootstrap.testingStartBudget(kickstart: false)?.receipt
+                }
+                if operation == .bootstrap && point == .retired {
+                    firstToken = try bootstrap.testingStartHandle(kickstart: false)?.stagedRecoveryRetirement()
+                }
+                if operation == .kickstart && point == .commandRetained { registry.testingFault(.beforeSpawn) }
+            })
+            try startPrepared(root, bootstrap, deadline: original)
+            try bootstrap.bootstrapCandidate()
+            guard let firstReceipt, let firstToken else { throw H.Failure(message: "old token exact original evidence missing") }
+            while DispatchTime.now().uptimeNanoseconds <= firstReceipt {
+                guard !original.hasExpired else { throw H.Failure(message: "old token fixture exhausted invocation") }
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+            try H.refuses { try bootstrap.kickstartCandidate() }
+            let control = try stored(location)
+            try collectFailedStarts(bootstrap, deadline: original)
+            guard let firstHandle = bootstrap.testingStartHandle(kickstart: false) else { throw H.Failure(message: "old token handle replaced") }
+            try H.check(try firstHandle.stagedRecoveryRetirement() === firstToken,
+                        "collector replaced earlier genuine bootstrap token")
+            _ = try firstToken.validate()
+            try H.check(!original.hasExpired && bootstrap.failedStartRetirementObservation() == .retired
+                && bootstrap.bootstrapStartObservation() == .complete && bootstrap.kickstartStartObservation() == .failed
+                && (try stored(location)) == control, "old command receipt became a new token-expiry cutoff")
+            try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    private final class StagedObserverProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [RepositoryCommandObservation.Phase] = []
+        func accept(_ event: RepositoryCommandObservation) -> Bool {
+            lock.lock(); values.append(event.phase); lock.unlock(); return true
+        }
+        var observed: [RepositoryCommandObservation.Phase] {
+            lock.lock(); defer { lock.unlock() }; return values
+        }
+    }
+    private static func stagedTimedOutDrainedRetires() throws {
+        for closed in [false, true] {
+            try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
+                let operation = MonotonicDeadline(seconds: 30)
+                _ = try journal.completeAdmission(deadline: operation)
+                let intent = try journal.bootstrapCandidateIntent(deadline: operation)
+                var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
+                let budget = try CustodyBudget.make(kind: .launchctlRead, workSeconds: 1,
+                    termSeconds: 0.2, killSeconds: 0.2, receiptSeconds: 1)
+                var command: PreparedCustodyCommand? = try context!.testingInstallationDiagnostic("resist", budget: budget)
+                let probe = RetirementProbe(), observerProbe = StagedObserverProbe()
+                registry.testingObserveProspectiveRecovery { token, _ in probe.capture(token) }
+                registry.testingDeferNextRead(.outputUntilReleased)
+                let observer = RepositoryCommandObserver(requestID: command!.resources.request.binding.requestID) {
+                    observerProbe.accept($0)
+                }
+                let scheduling = RetainedCleanupRegistry.StagedTickSchedulingProbe()
+                defer { scheduling.barrier.release() }
+                let handle = try registry.start(command!, repositoryObserver: observer)
+                var failure: Error?
+                do {
+                    try registry.testingPauseStagedTick(handle, scheduling)
+                    try H.check(scheduling.barrier.waitUntilEntered(), "staged timeout did not reach actual pre-consume cut")
+                    guard let captured = scheduling.bounds else { throw H.Failure(message: "staged timeout missing cut bounds") }
+                    try H.check(captured.sampled < captured.work && captured.work == budget.work
+                        && captured.receipt == budget.receipt && captured.operation == operation.absoluteUptimeNanoseconds,
+                        "staged timeout pause changed original bounds or missed pre-work tick")
+                    // Read only the original durable record while its queue is
+                    // paused. On release only normal poll/consume/finish may
+                    // establish terminal/EOF/reap; this file is not custody proof.
+                    let journalPath = location.path + "/custody/" + command!.resources.request.binding.requestID + ".json"
+                    while true {
+                        if let bytes = try? Data(contentsOf: URL(fileURLWithPath: journalPath)),
+                           let terminal = try? CustodyJournal.decode(bytes), terminal.phase == .terminal {
+                            try H.check(terminal.outcome == .timedOutDrained && terminal.reason == .timeout
+                                && terminal.budget == budget, "staged timeout helper did not produce original timed-out terminal")
+                            break
+                        }
+                        guard DispatchTime.now().uptimeNanoseconds < captured.receipt else {
+                            throw H.Failure(message: "staged timeout original terminal not durable inside receipt")
+                        }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    // Same original owner, non-consuming WNOWAIT scheduling
+                    // signal only. Normal registry poll/consume establishes all
+                    // actual reap, terminal, EOF and retirement evidence.
+                    while !scheduling.originalTerminationAvailable {
+                        guard DispatchTime.now().uptimeNanoseconds < captured.receipt else {
+                            throw H.Failure(message: "staged timeout original termination not observable inside receipt")
+                        }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    scheduling.barrier.release()
+                    while registry.testingReadObservation(handle)?.terminalReceived != true {
+                        guard DispatchTime.now().uptimeNanoseconds < budget.receipt else {
+                            throw H.Failure(message: "staged timeout lacked original terminal inside receipt")
+                        }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    guard let before = registry.testingStagedExpiryObservation(handle) else {
+                        throw H.Failure(message: "staged timeout lost original resumed entry")
+                    }
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    guard let read = registry.testingReadObservation(handle) else {
+                        throw H.Failure(message: "staged timeout lost actual original stream observations")
+                    }
+                    try H.check(registry.testingPoll(handle) == .reaped(0)
+                        && read.terminalReceived && read.statusEOF && !read.outputEOF && !read.traceEOF,
+                        "staged timeout lacked original helper-zero/status EOF or released held output prematurely")
+                    try H.check(before.resumed && before.request.budget == budget
+                        && now >= budget.work && now < before.effectiveReceipt
+                        && before.effectiveReceipt <= budget.receipt
+                        && before.operation == operation.absoluteUptimeNanoseconds && !operation.hasExpired
+                        && !before.cleanupEntered && !before.archiveAttempted,
+                        "staged timeout changed W0/Re/Dop or entered expired cleanup")
+                    if closed { context!.close() }
+                    try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                    registry.testingReleaseDeferredRead(handle)
+                    let result = handle.wait()
+                    try H.check(result.phase == .finished && result.journal?.outcome == .timedOutDrained
+                        && result.journal?.reason == .timeout && result.journal?.budget == budget
+                        && DispatchTime.now().uptimeNanoseconds < before.effectiveReceipt
+                        && !operation.hasExpired && !registry.hasRetainedWork,
+                        "actual staged timeout was refused, relabelled completed, or retired after its cap")
+                    let token = try handle.stagedRecoveryRetirement()
+                    try H.check(token === probe.token && observerProbe.observed == [.admission, .retired],
+                        "staged timeout bypassed genuine observer delivery or replaced prospective evidence")
+                    guard let seal = token.testingIssuanceObservation() else {
+                        throw H.Failure(message: "staged timeout lacked actual checked seal")
+                    }
+                    try H.check(seal.closedArchive == closed && seal.checkedClose && seal.exactRemoval && seal.validBounds
+                        && seal.originalWork == budget.work && seal.retiredAt >= budget.work
+                        && seal.effectiveReceipt == before.effectiveReceipt && seal.operation == before.operation
+                        && seal.retiredAt < before.effectiveReceipt && seal.retiredAt < before.operation,
+                        "staged timeout used the wrong archive or lacked bounded original checked retirement")
+                    command = nil; context!.close(); context = nil
+                    while (try? token.validate()) == nil {
+                        guard !operation.hasExpired else { throw H.Failure(message: "staged timeout genuine token invalid") }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    try H.refuses { _ = try token.serviceState() }
+                    try H.refuses { _ = try handle.stagedCompletion() }
+                    try H.check((try stored(location)) == intent.binding.control
+                        && registry.testingOriginalHelpersReaped,
+                        "staged timeout recovery changed installation intent or lost original reap")
+                    try InstallationOwnershipFixtures.excluded(location)
+                } catch { failure = error }
+                // Failure paths also release only this original read hold and
+                // drain the original owner. Unknown ownership stops handback.
+                scheduling.barrier.release()
+                registry.testingReleaseDeferredRead(handle)
+                if registry.hasRetainedWork {
+                    registry.testingRequestCancellation()
+                    let teardown = MonotonicDeadline(seconds: 8)
+                    while registry.hasRetainedWork {
+                        if let read = registry.testingReadObservation(handle), read.statusEOF,
+                           read.outputEOF, read.traceEOF, registry.testingOriginalHelpersReaped {
+                            try registry.testingDispose(); break
+                        }
+                        guard !teardown.hasExpired else { throw H.Failure(message: "staged timeout original teardown unresolved") }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                }
+                command = nil; context?.close(); context = nil
+                try H.check(!registry.hasRetainedWork && registry.testingOriginalHelpersReaped,
+                    "staged timeout handback retained an original helper")
+                if let failure { throw failure }
+            }
+        }
+    }
+    private static func stagedExpiredTransportNegatives() throws {
+        for fault in ["malformed-status", "nonzero-helper", "poisoned-output"] {
+            try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
+                _ = try TestIsolation.validateRoot(root)
+                let markerPath = root + "/home/.staged-expired-transport-fault"
+                let marker = OwnedFileDescriptor(open(markerPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600))
+                guard marker.value >= 0 else { throw H.Failure(message: "staged negative marker create") }
+                let bytes = Data(fault.utf8)
+                try H.check(bytes.withUnsafeBytes { Darwin.write(marker.value, $0.baseAddress, $0.count) } == bytes.count
+                    && fsync(marker.value) == 0 && marker.retireChecked() == .succeeded,
+                    "staged negative marker durability/close")
+                let operation = MonotonicDeadline(seconds: 3), probe = ExpiryCleanupProbe(), observerProbe = StagedObserverProbe()
+                _ = try journal.completeAdmission(deadline: operation)
+                let intent = try journal.bootstrapCandidateIntent(deadline: operation)
+                var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
+                let budget = try CustodyBudget.make(kind: .launchctlRead, workSeconds: 10)
+                var command: PreparedCustodyCommand? = try context!.testingInstallationDiagnostic("complete", budget: budget)
+                let resources = command!.resources, scope = context!.testingScope
+                let requestID = resources.request.binding.requestID
+                let catalogPath = location.path + "/custody/catalog.json"
+                let journalPath = location.path + "/custody/" + requestID + ".json"
+                let archivePath = location.path + "/custody/receipts/" + requestID + ".json"
+                let callerPath = location.path + "/custody/receipts/" + requestID + ".caller.json"
+                registry.testingDeferNextRead(.outputUntilReleased)
+                registry.testingObserveExpiredCleanup { probe.capture($0) }
+                let observer = RepositoryCommandObserver(requestID: requestID) { observerProbe.accept($0) }
+                let handle = try registry.start(command!, repositoryObserver: observer)
+                var failure: Error?
+                do {
+                    while registry.testingReadObservation(handle)?.terminalReceived != true {
+                        guard !operation.hasExpired else { throw H.Failure(message: "staged negative lacked original on-time terminal") }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    guard let original = registry.testingStagedExpiryObservation(handle),
+                          let ticket = registry.testingTicket(handle) else {
+                        throw H.Failure(message: "staged negative lost original staged custody")
+                    }
+                    try H.check(original.resumed && !original.cleanupEntered && !original.statusPoisoned
+                        && !original.outputPoisoned && !original.archiveAttempted
+                        && original.request == resources.request && original.request.budget == budget
+                        && original.operation == operation.absoluteUptimeNanoseconds,
+                        "negative began with synthetic, poisoned, or replaced original evidence")
+                    let catalogBefore = try Data(contentsOf: URL(fileURLWithPath: catalogPath))
+                    let journalBefore = try Data(contentsOf: URL(fileURLWithPath: journalPath))
+                    let terminal = try CustodyJournal.decode(journalBefore)
+                    try H.check(terminal.phase == .terminal && terminal.outcome == .completed,
+                        "negative fixture did not first obtain real target drainage and durable terminal")
+                    while !operation.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+                    registry.testingRevisitFinalization(handle)
+                    guard let expired = registry.testingStagedExpiryObservation(handle) else {
+                        throw H.Failure(message: "staged negative disappeared at original expiry")
+                    }
+                    try H.check(expired.cleanupEntered && !expired.archiveAttempted
+                        && handle.snapshot().phase == .cleanupPending && registry.hasRetainedWork
+                        && expired.effectiveReceipt <= original.effectiveReceipt
+                        && expired.operation == original.operation,
+                        "staged negative bypassed actual unissued-expiry entry or renewed its bounds")
+                    registry.testingReleaseDeferredRead(handle)
+                    let observation = MonotonicDeadline(seconds: 8) // fixture observation/handback only
+                    while true {
+                        if let read = registry.testingReadObservation(handle), read.statusEOF,
+                           read.outputEOF, read.traceEOF, registry.testingOriginalHelpersReaped { break }
+                        guard !observation.hasExpired else { throw H.Failure(message: "staged negative original streams/reap unresolved") }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    registry.testingRevisitFinalization(handle)
+                    guard let rejected = registry.testingStagedExpiryObservation(handle),
+                          case .reaped(let raw)? = registry.testingPoll(handle) else {
+                        throw H.Failure(message: "staged negative lost original reap/entry")
+                    }
+                    try H.check(rejected.cleanupEntered && rejected.cleanupUncertain
+                        && !rejected.archiveAttempted && probe.observed.isEmpty
+                        && rejected.statusPoisoned == (fault == "malformed-status")
+                        && rejected.outputPoisoned == (fault == "poisoned-output")
+                        && raw == (fault == "nonzero-helper" ? 77 << 8 : 0)
+                        && rejected.request == original.request && rejected.operation == original.operation
+                        && rejected.effectiveReceipt <= original.effectiveReceipt
+                        && registry.hasRetainedWork && !registry.testingCleanupOnlyRemoved(handle)
+                        && !resources.installationRetiredSuccessfully && scope.observation == .pending
+                        && ticket.testingJournal.phase == .prepared,
+                        "staged negative cleared poison, forged cleanup, changed owner/budget, or reached metadata read")
+                    try H.check((try stored(location)) == intent.binding.control
+                        && (try Data(contentsOf: URL(fileURLWithPath: catalogPath))) == catalogBefore
+                        && (try Data(contentsOf: URL(fileURLWithPath: journalPath))) == journalBefore
+                        && !FileManager.default.fileExists(atPath: archivePath)
+                        && !FileManager.default.fileExists(atPath: callerPath)
+                        && observerProbe.observed == [.admission],
+                        "staged negative mutated durable fence or delivered successful observer")
+                    for _ in 0..<2 {
+                        registry.testingRevisitFinalization(handle)
+                        try H.refuses { _ = try handle.stagedCompletion() }
+                        try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                        try H.check(probe.observed.isEmpty && registry.hasRetainedWork
+                            && handle.snapshot().phase == .cleanupPending,
+                            "staged negative retry removed custody or started archival/read")
+                    }
+                    try InstallationOwnershipFixtures.excluded(location)
+                } catch { failure = error }
+                // Teardown is a separate fixture operation. It grants no
+                // production cleanup witness and never signals an unknown owner.
+                registry.testingReleaseDeferredRead(handle)
+                registry.testingCloseControl(handle)
+                let teardown = MonotonicDeadline(seconds: 8)
+                while true {
+                    if let read = registry.testingReadObservation(handle), read.statusEOF,
+                       read.outputEOF, read.traceEOF, registry.testingOriginalHelpersReaped { break }
+                    guard !teardown.hasExpired else { throw H.Failure(message: "staged negative exact original teardown unresolved") }
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                try H.check(registry.hasRetainedWork && !registry.testingCleanupOnlyRemoved(handle),
+                    "negative fixture teardown was mislabeled production cleanup")
+                try registry.testingDispose()
+                resources.retire()
+                try H.check(resources.installationRetiredSuccessfully
+                    && !registry.hasRetainedWork && registry.testingOriginalHelpersReaped,
+                    "negative original checked resource teardown failed")
+                try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                try InstallationOwnershipFixtures.excluded(location)
+                command = nil; context!.close(); context = nil
+                if let failure { throw failure }
+            }
+        }
+    }
+    private static func resumedRetirementAfterWork() throws {
+        for closed in [false, true] {
+            try exclusiveFixture { root, location, bootstrap, registry in
+                let original = MonotonicDeadline(seconds: 30)
+                var work: UInt64?, receipt: UInt64?
+                try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                    guard operation == .bootstrap, let bootstrap else { return }
+                    if point == .commandRetained {
+                        guard let budget = bootstrap.testingStartBudget(kickstart: false) else { throw H.Failure(message: "after-work original budget missing") }
+                        work = budget.work; receipt = budget.receipt
+                        registry.testingDeferNextRead(.outputUntilReleased)
+                    }
+                    if point == .submitted {
+                        guard let handle = bootstrap.testingStartHandle(kickstart: false), let work, let receipt else {
+                            throw H.Failure(message: "after-work original command missing")
+                        }
+                        while registry.testingReadObservation(handle)?.terminalReceived != true {
+                            guard DispatchTime.now().uptimeNanoseconds < work else { throw H.Failure(message: "target did not complete during original work") }
+                            Thread.sleep(forTimeInterval: 0.001)
+                        }
+                        if closed { bootstrap.testingStartContext(kickstart: false)?.close() }
+                        while DispatchTime.now().uptimeNanoseconds <= work {
+                            guard !original.hasExpired else { throw H.Failure(message: "after-work invocation expired") }
+                            Thread.sleep(forTimeInterval: 0.001)
+                        }
+                        try H.check(DispatchTime.now().uptimeNanoseconds < receipt && registry.hasRetainedWork,
+                                    "after-work fixture lost its original receipt window")
+                        try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                        registry.testingReleaseDeferredRead(handle)
+                        let result = handle.wait()
+                        try H.check(result.phase == .finished && result.journal?.outcome == .completed
+                            && result.journal?.reason == CustodyReason.none
+                            && DispatchTime.now().uptimeNanoseconds < receipt,
+                            "lawful original terminal/EOF/reap after work was refused or reclassified")
+                        throw CustodyRecordError.injectedFailure
+                    }
+                })
+                try startPrepared(root, bootstrap, deadline: original)
+                try H.refuses { try bootstrap.bootstrapCandidate() }
+                let control = try stored(location)
+                try collectFailedStarts(bootstrap, deadline: original)
+                try H.check(bootstrap.failedStartRetirementObservation() == .retired
+                    && bootstrap.bootstrapStartObservation() == .failed && bootstrap.observation().failedClosed
+                    && !registry.hasRetainedWork && registry.testingOriginalHelpersReaped
+                    && (try stored(location)) == control, "after-work recovery changed failed start/control")
+                try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+            }
+        }
+    }
+    private static func genuineDeliveryAfterReceipt() throws {
+        try exclusiveFixture { root, location, bootstrap, registry in
+            let original = MonotonicDeadline(seconds: 30), barrier = CustodyLeaseTestingBarrier()
+            defer { barrier.release() }
+            var receipt: UInt64?
+            try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                guard operation == .bootstrap else { return }
+                if point == .commandRetained {
+                    receipt = bootstrap?.testingStartBudget(kickstart: false)?.receipt
+                    registry.testingPauseNextRetirement(barrier)
+                }
+                if point == .submitted {
+                    try H.check(barrier.waitUntilEntered(), "late delivery did not reach real removed-entry boundary")
+                    // No queue.sync while its callback barrier is held.
+                    try H.check(!registry.hasRetainedWork, "late delivery paused before actual removal")
+                    throw CustodyRecordError.injectedFailure
+                }
+            })
+            try startPrepared(root, bootstrap, deadline: original)
+            try H.refuses { try bootstrap.bootstrapCandidate() }
+            guard let handle = bootstrap.testingStartHandle(kickstart: false), let receipt else { throw H.Failure(message: "late delivery original handle/budget missing") }
+            let control = try stored(location)
+            while DispatchTime.now().uptimeNanoseconds <= receipt {
+                guard !original.hasExpired else { throw H.Failure(message: "late delivery consumed invocation") }
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+            try H.check(handle.wait().phase == .cleanupPending, "late callback renewed Handle.wait receipt")
+            try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+            barrier.release()
+            try collectFailedStarts(bootstrap, deadline: original)
+            let token = try handle.stagedRecoveryRetirement()
+            _ = try token.validate()
+            try H.check(handle.snapshot().phase == .finished && !registry.hasRetainedWork
+                && bootstrap.failedStartRetirementObservation() == .retired && !original.hasExpired
+                && (try stored(location)) == control && bootstrap.observation().failedClosed,
+                "genuine in-budget retirement was poisoned by later callback delivery")
+            try startReplayRefuses(bootstrap); try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+    private final class OriginalChildProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var originalAnchor: OwnedSpawnAnchor?
+        private var originalOwner: OwnedDirectChild?
+        func capture(_ anchor: OwnedSpawnAnchor?, _ owner: OwnedDirectChild?) {
+            lock.lock(); originalAnchor = anchor; originalOwner = owner; lock.unlock()
+        }
+        var objects: (OwnedSpawnAnchor?, OwnedDirectChild?) {
+            lock.lock(); defer { lock.unlock() }; return (originalAnchor, originalOwner)
+        }
+    }
+    private static func originalRefusalHoldAndCancellation() throws {
+        for cut in [RetainedCleanupRegistry.TestCut.afterAnchor, .afterOwner] {
+            for expire in [false, true] {
+                try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
+                    let operation = MonotonicDeadline(seconds: 30), probe = OriginalChildProbe()
+                    _ = try journal.completeAdmission(deadline: operation)
+                    let intent = try journal.bootstrapCandidateIntent(deadline: operation)
+                    var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
+                    let budget = try CustodyBudget.make(kind: .launchctlMutation, workSeconds: 10,
+                        termSeconds: 0.2, killSeconds: 0.2, receiptSeconds: 0.2)
+                    var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.bootstrap, budget: budget)
+                    registry.testingFault(cut)
+                    registry.testingHoldNextOriginalRefusal { anchor, owner in probe.capture(anchor, owner) }
+                    let handle = try registry.start(command!)
+                    guard let before = registry.testingRefusalBounds(handle), let anchor = probe.objects.0 else {
+                        throw H.Failure(message: "held refusal lost exact original spawn")
+                    }
+                    try H.check(anchor.unexecutedProof() == nil && handle.snapshot().phase == .starting
+                        && registry.hasRetainedWork && before.effectiveReceipt == before.originalReceipt,
+                        "held suspended original fabricated reap or terminal delivery")
+                    try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                    try InstallationOwnershipFixtures.excluded(location)
+                    handle.cancel()
+                    guard let shortened = registry.testingRefusalBounds(handle) else { throw H.Failure(message: "original cancellation lost refusal route") }
+                    try H.check(shortened.effectiveReceipt < shortened.originalReceipt
+                        && shortened.effectiveReceipt < shortened.work && shortened.work == before.work
+                        && shortened.operation == before.operation,
+                        "original cancellation renewed receipt or replaced original work/invocation")
+                    if expire {
+                        while DispatchTime.now().uptimeNanoseconds < shortened.effectiveReceipt {
+                            Thread.sleep(forTimeInterval: 0.001)
+                        }
+                    }
+                    registry.testingReleaseOriginalRefusal(handle)
+                    if expire {
+                        try H.check(DispatchTime.now().uptimeNanoseconds >= shortened.effectiveReceipt
+                            && DispatchTime.now().uptimeNanoseconds < shortened.originalReceipt,
+                            "shortened receipt negative did not precede original receipt")
+                        try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                        registry.testingRevisitFinalization(handle)
+                        try H.check(handle.snapshot().phase == .cleanupPending && registry.hasRetainedWork,
+                            "expired shortened receipt admitted original refusal archive")
+                        try waitForOriginalReap(registry, deadline: operation)
+                        try registry.testingDispose()
+                    } else {
+                        let result = handle.wait()
+                        try H.check(result.phase == .finished && result.journal?.outcome == .admissionRefused
+                            && DispatchTime.now().uptimeNanoseconds < shortened.effectiveReceipt
+                            && anchor.unexecutedProof() != nil,
+                            "cancelled original refusal lacked actual in-budget original reap")
+                        let token = try handle.stagedRecoveryRetirement()
+                        command = nil; context!.close(); context = nil
+                        while (try? token.validate()) == nil {
+                            guard !operation.hasExpired else { throw H.Failure(message: "original refusal token did not validate") }
+                            Thread.sleep(forTimeInterval: 0.001)
+                        }
+                    }
+                    try H.check((try stored(location)) == intent.binding.control,
+                        "refusal cancellation changed original installation control")
+                    command = nil; context?.close(); context = nil
+                    try InstallationOwnershipFixtures.excluded(location)
+                }
+            }
+        }
+    }
+    private static func originalWaitAndSignalFailures() throws {
+        // Inject at the existing actual wait syscall seam. EINTR then ECHILD
+        // reaches the wait inside the original owner's SIGKILL call, exercising
+        // a real false signal return without forging a successful child exit.
+        let waitErrors: [[Int32]] = [[ECHILD], [EINTR, ECHILD]]
+        for errors in waitErrors {
+            try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
+                let operation = MonotonicDeadline(seconds: 30), probe = OriginalChildProbe()
+                _ = try journal.completeAdmission(deadline: operation)
+                let intent = try journal.bootstrapCandidateIntent(deadline: operation)
+                var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
+                var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.bootstrap)
+                registry.testingFault(.afterOwner)
+                registry.testingObserveOriginalRefusal { anchor, owner in
+                    probe.capture(anchor, owner); owner?.testingInjectWaitErrors(errors)
+                }
+                let handle = try registry.start(command!)
+                _ = handle.wait()
+                guard let owner = probe.objects.1, let anchor = probe.objects.0 else { throw H.Failure(message: "wait fault original owner missing") }
+                try H.check(owner.observation == .ownershipFailure(ECHILD) && anchor.unexecutedProof() == nil
+                    && handle.snapshot().phase == .cleanupPending && registry.hasRetainedWork,
+                    "actual ECHILD/failed signal became original refusal proof")
+                try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                // The pre-existing testing-only owner seam cleans only this
+                // injected original suspended child; it is not production recovery.
+                while owner.testingRuntimeStep(.init(reason: .assertion, escalate: true), streamsDrained: true) != .reaped {
+                    guard !operation.hasExpired else { throw H.Failure(message: "injected original wait-fault teardown") }
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                registry.testingRevisitFinalization(handle)
+                try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                try H.check(registry.hasRetainedWork && handle.snapshot().phase == .cleanupPending
+                    && (try stored(location)) == intent.binding.control,
+                    "later fixture-only original reap cleared sticky custody failure")
+                try InstallationOwnershipFixtures.excluded(location)
+                try registry.testingDispose(); command = nil; context!.close(); context = nil
+            }
+        }
+    }
+    private static func actualObserverDeliveryDisposition() throws {
+        for accept in [false, true] {
+            try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
+                let operation = MonotonicDeadline(seconds: 30), barrier = CustodyLeaseTestingBarrier(), probe = RetirementProbe()
+                defer { barrier.release() }
+                _ = try journal.completeAdmission(deadline: operation)
+                let intent = try journal.bootstrapCandidateIntent(deadline: operation)
+                var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
+                let budget = try CustodyBudget.make(kind: .launchctlMutation, workSeconds: 2,
+                    termSeconds: 0.2, killSeconds: 0.2, receiptSeconds: 0.2)
+                var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.bootstrap, budget: budget)
+                registry.testingObserveProspectiveRecovery { token, _ in probe.capture(token) }
+                let observer = RepositoryCommandObserver(requestID: command!.resources.request.binding.requestID) { event in
+                    if event.phase == .admission { return true }
+                    return barrier.pause() && accept
+                }
+                let handle = try registry.start(command!, repositoryObserver: observer)
+                try H.check(barrier.waitUntilEntered() && !registry.hasRetainedWork,
+                    "observer callback did not follow actual checked removal")
+                guard let candidate = probe.token else { throw H.Failure(message: "observer original prospective token missing") }
+                try H.refuses { _ = try candidate.validate() }
+                while DispatchTime.now().uptimeNanoseconds <= budget.receipt {
+                    guard !operation.hasExpired else { throw H.Failure(message: "observer fixture invocation expired") }
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                try H.check(handle.wait().phase == .cleanupPending, "observer renewed original receipt wait")
+                barrier.release()
+                command = nil; context!.close(); context = nil
+                while handle.snapshot().phase != .finished {
+                    guard !operation.hasExpired else { throw H.Failure(message: "actual observer return not delivered") }
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                if accept {
+                    let token = try handle.stagedRecoveryRetirement()
+                    try H.check(token === candidate, "observer replaced original candidate token")
+                    while (try? token.validate()) == nil {
+                        guard !operation.hasExpired else { throw H.Failure(message: "accepted late observer token invalid") }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                } else {
+                    try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                    try H.refuses { _ = try candidate.validate() }
+                    try H.check(handle.snapshot().reason == .ioFailure, "observer rejection lost original ioFailure")
+                }
+                try H.check((try stored(location)) == intent.binding.control, "observer retirement completed installation action")
+                try InstallationOwnershipFixtures.excluded(location)
+            }
+        }
+    }
+    private static func closedArchivePinIntegrity() throws {
+        for suffix in [".json", ".caller.json"] {
+            try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
+                let operation = MonotonicDeadline(seconds: 30)
+                _ = try journal.completeAdmission(deadline: operation)
+                let intent = try journal.bootstrapCandidateIntent(deadline: operation)
+                var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
+                var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.bootstrap)
+                registry.testingFault(.beforeSpawn)
+                let handle = try registry.start(command!), result = handle.wait()
+                guard let journalRecord = result.journal else { throw H.Failure(message: "closed archive original journal missing") }
+                let token = try handle.stagedRecoveryRetirement()
+                command = nil; context!.close(); context = nil
+                while (try? token.validate()) == nil {
+                    guard !operation.hasExpired else { throw H.Failure(message: "closed archive positive token failed") }
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                let path = location.path + "/custody/receipts/" + journalRecord.binding.requestID + suffix
+                let descriptor = OwnedFileDescriptor(open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC))
+                guard descriptor.value >= 0 else { throw H.Failure(message: "closed archive pin fixture open") }
+                var original: UInt8 = 0
+                try H.check(pread(descriptor.value, &original, 1, 0) == 1, "closed archive pin fixture read")
+                var changed = original ^ 1
+                try H.check(pwrite(descriptor.value, &changed, 1, 0) == 1 && fsync(descriptor.value) == 0,
+                    "closed archive pin fault did not persist")
+                try H.refuses { _ = try token.validate() }
+                try H.check(pwrite(descriptor.value, &original, 1, 0) == 1 && fsync(descriptor.value) == 0,
+                    "closed archive creator restoration failed")
+                try H.check(descriptor.retireChecked() == .succeeded, "closed archive fixture descriptor close failed")
+                _ = try token.validate()
+                // Current names and inode identity are required even when a
+                // replacement has the exact archived bytes.
+                let saved = path + ".fixture-held"
+                var originalNode = stat(), currentName = stat()
+                try H.check(lstat(path, &originalNode) == 0 && originalNode.st_nlink == 1
+                    && lstat(saved, &currentName) == -1 && errno == ENOENT,
+                    "closed archive replacement fixture did not own its names")
+                let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+                try H.check(rename(path, saved) == 0, "closed archive original pin move failed")
+                let replacement = OwnedFileDescriptor(open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600))
+                guard replacement.value >= 0 else { throw H.Failure(message: "closed archive replacement create failed") }
+                let wrote = bytes.withUnsafeBytes { Darwin.write(replacement.value, $0.baseAddress, $0.count) }
+                try H.check(wrote == bytes.count && fsync(replacement.value) == 0,
+                    "closed archive replacement bytes not durable")
+                try H.refuses { _ = try token.validate() }
+                var replacementNode = stat()
+                try H.check(fstat(replacement.value, &replacementNode) == 0
+                    && lstat(path, &currentName) == 0 && FileIdentity(currentName) == FileIdentity(replacementNode)
+                    && lstat(saved, &currentName) == 0 && FileIdentity(currentName) == FileIdentity(originalNode),
+                    "closed archive fixture replacement identity drifted")
+                try H.check(unlink(path) == 0 && rename(saved, path) == 0
+                    && replacement.retireChecked() == .succeeded, "closed archive fixture restore failed")
+                _ = try token.validate()
+                let extraPath = location.path + "/custody/receipts/fixture-extra.json"
+                let extra = OwnedFileDescriptor(open(extraPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600))
+                guard extra.value >= 0 else { throw H.Failure(message: "extra archive receipt fixture create failed") }
+                try H.refuses { _ = try token.validate() }
+                var extraNode = stat()
+                try H.check(fstat(extra.value, &extraNode) == 0 && lstat(extraPath, &currentName) == 0
+                    && FileIdentity(extraNode) == FileIdentity(currentName) && unlink(extraPath) == 0
+                    && extra.retireChecked() == .succeeded, "extra archive receipt fixture cleanup failed")
+                _ = try token.validate()
+                try H.check((try stored(location)) == intent.binding.control,
+                    "closed archive validation mutated installation control")
+                try InstallationOwnershipFixtures.excluded(location)
+            }
+        }
+    }
+    private final class ExpiryCleanupProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var points: [RetainedCleanupRegistry.TestExpiredCleanupPoint] = []
+        func capture(_ point: RetainedCleanupRegistry.TestExpiredCleanupPoint) { lock.lock(); points.append(point); lock.unlock() }
+        var observed: [RetainedCleanupRegistry.TestExpiredCleanupPoint] { lock.lock(); defer { lock.unlock() }; return points }
+    }
+    private static func expiredCleanupRejectsForeignOriginals() throws {
+        for kind in [RetainedCleanupRegistry.TestExpiredSubstitution.ticket, .record, .helper, .message] {
+            try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
+                try InstallationStagedJournalFixtures.fixture { otherRoot, otherLocation, _, _, otherAdmission, otherJournal, otherRegistry in
+                    let operation = MonotonicDeadline(seconds: 3), otherOperation = MonotonicDeadline(seconds: 30)
+                    let probe = ExpiryCleanupProbe()
+                    _ = try journal.completeAdmission(deadline: operation)
+                    _ = try otherJournal.completeAdmission(deadline: otherOperation)
+                    let intent = try journal.bootstrapCandidateIntent(deadline: operation)
+                    let otherIntent = try otherJournal.bootstrapCandidateIntent(deadline: otherOperation)
+                    var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
+                    var otherContext: CommandCustodyContext? = try .testingStaged(otherAdmission, intent: otherIntent, root: otherRoot)
+                    let budget = try CustodyBudget.make(kind: .launchctlMutation, workSeconds: 10)
+                        .clipped(to: operation, kind: .launchctlMutation, permittedWorkSeconds: 10)
+                    var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.bootstrap, budget: budget)
+                    var otherCommand: PreparedCustodyCommand? = try otherContext!.testingStagedLifecycle(.bootstrap)
+                    registry.testingDeferNextRead(.outputUntilReleased)
+                    otherRegistry.testingDeferNextRead(.outputUntilReleased)
+                    registry.testingObserveExpiredCleanup { probe.capture($0) }
+                    let handle = try registry.start(command!), other = try otherRegistry.start(otherCommand!)
+                    while registry.testingReadObservation(handle)?.terminalReceived != true
+                        || otherRegistry.testingReadObservation(other)?.terminalReceived != true {
+                        guard !operation.hasExpired else { throw H.Failure(message: "substitution lacked two actual on-time terminals") }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    let before = try stored(location), otherBefore = try stored(otherLocation)
+                    try waitForOriginalReap(registry, deadline: operation)
+                    try waitForOriginalReap(otherRegistry, deadline: operation)
+                    while !operation.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+                    registry.testingRevisitFinalization(handle)
+                    try registry.testingRejectExpiredSubstitution(handle, from: other, kind: kind)
+                    registry.testingRevisitFinalization(handle)
+                    let expected: [RetainedCleanupRegistry.TestExpiredCleanupPoint] = kind == .message ? [.beforeRead] : []
+                    try H.check(probe.observed == expected && registry.hasRetainedWork
+                        && handle.snapshot().phase == .cleanupPending && !registry.testingCleanupOnlyRemoved(handle)
+                        && (try stored(location)) == before && (try stored(otherLocation)) == otherBefore,
+                        "foreign original evidence retired expiry custody or retried its failed read")
+                    try H.refuses { _ = try handle.stagedCompletion() }
+                    try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                    try InstallationOwnershipFixtures.excluded(location)
+                    try InstallationOwnershipFixtures.excluded(otherLocation)
+                    // Restore only the fixture's original references, then use
+                    // the existing original-owner teardown for this negative.
+                    try registry.testingDispose()
+                    otherRegistry.testingReleaseDeferredRead(other)
+                    try H.check(other.wait().phase == .finished, "untampered second original failed retirement")
+                    command = nil; otherCommand = nil
+                    context!.close(); context = nil; otherContext!.close(); otherContext = nil
+                }
+            }
+        }
+    }
+    private static func unissuedExpiryCleansOnlyOriginalResources() throws {
+        // These are additional negatives, not replacements for the unchanged
+        // original 750ms / eight-second Bootstrap cleanup acceptance.
+        for fault in ["none", "before-poison", "later-poison", "journal", "catalog-busy", "close", "before-archive", "partial-archive"] {
+            try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
+                let operation = MonotonicDeadline(seconds: 3), probe = ExpiryCleanupProbe()
+                _ = try journal.completeAdmission(deadline: operation)
+                let intent = try journal.bootstrapCandidateIntent(deadline: operation)
+                var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
+                let budget = try CustodyBudget.make(kind: .launchctlMutation, workSeconds: 10)
+                    .clipped(to: operation, kind: .launchctlMutation, permittedWorkSeconds: 10)
+                var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.bootstrap, budget: budget)
+                let scope = context!.testingScope
+                if fault == "close" { try command!.resources.testingUncertainStagedResourceClose() }
+                if fault == "partial-archive" { scope.testingFault(.afterArchive) }
+                else if fault == "before-archive" {
+                    registry.testingObserveFinalization { point in
+                        if point == .beforeArchive { throw CustodyRecordError.injectedFailure }
+                    }
+                } else { registry.testingDeferNextRead(.outputUntilReleased) }
+                registry.testingObserveExpiredCleanup { probe.capture($0) }
+                let handle = try registry.start(command!)
+                if fault == "partial-archive" || fault == "before-archive" { _ = handle.wait() }
+                else {
+                    while registry.testingReadObservation(handle)?.terminalReceived != true {
+                        guard !operation.hasExpired else { throw H.Failure(message: "expiry fixture lacked on-time original terminal") }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                }
+                guard let ticket = registry.testingTicket(handle) else { throw H.Failure(message: "expiry original ticket disappeared") }
+                try H.refuses { _ = try command!.resources.takeSpawnResources() }
+                try H.check(command!.resources.installationReadyForCheckedRetirement,
+                    "resumed expiry command allowed a new transfer or lost original resource ownership")
+                let requestID = command!.resources.request.binding.requestID
+                let catalogPath = location.path + "/custody/catalog.json"
+                let journalPath = location.path + "/custody/" + requestID + ".json"
+                let controlBefore = try stored(location)
+                let catalogBefore = try Data(contentsOf: URL(fileURLWithPath: catalogPath))
+                let journalBefore = try Data(contentsOf: URL(fileURLWithPath: journalPath))
+                let archivePath = location.path + "/custody/receipts/" + requestID + ".json"
+                let callerPath = location.path + "/custody/receipts/" + requestID + ".caller.json"
+                let archiveBefore = FileManager.default.fileExists(atPath: archivePath)
+                let callerBefore = FileManager.default.fileExists(atPath: callerPath)
+                if fault == "before-poison" { scope.markPending() }
+                while !operation.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+                _ = handle.wait()
+                registry.testingRevisitFinalization(handle)
+                try H.check(registry.hasRetainedWork && handle.snapshot().phase == .cleanupPending,
+                    "expiry released original custody before complete proof")
+                try H.refuses { _ = try handle.stagedCompletion() }
+                try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                try InstallationOwnershipFixtures.excluded(location)
+                var guardOwner: OwnedFileDescriptor?
+                var changedJournal: OwnedFileDescriptor?
+                if fault == "later-poison" { scope.markPending() }
+                if fault == "catalog-busy" {
+                    guardOwner = OwnedFileDescriptor(open(location.path + "/custody/catalog.lock", O_RDWR | O_NOFOLLOW | O_CLOEXEC))
+                    try H.check(guardOwner!.value >= 0 && flock(guardOwner!.value, LOCK_EX | LOCK_NB) == 0,
+                        "expiry contention fixture did not hold independent catalog description")
+                }
+                if fault == "journal" {
+                    changedJournal = OwnedFileDescriptor(open(journalPath, O_RDWR | O_NOFOLLOW | O_CLOEXEC))
+                    guard changedJournal!.value >= 0 else { throw H.Failure(message: "expiry original journal fault open") }
+                    var bad = journalBefore[0] ^ 1
+                    try H.check(pwrite(changedJournal!.value, &bad, 1, 0) == 1 && fsync(changedJournal!.value) == 0,
+                        "expiry actual journal fault was not durable")
+                }
+                if fault != "partial-archive" && fault != "before-archive" { registry.testingReleaseDeferredRead(handle) }
+                let cleanup = MonotonicDeadline(seconds: 8) // fixture observation only
+                try waitForOriginalReap(registry, deadline: cleanup)
+                registry.testingRevisitFinalization(handle)
+                if let guardOwner {
+                    try H.check(flock(guardOwner.value, LOCK_UN) == 0 && guardOwner.retireChecked() == .succeeded,
+                        "expiry contention fixture release failed")
+                }
+                if let changedJournal {
+                    var first = journalBefore[0]
+                    try H.check(pwrite(changedJournal.value, &first, 1, 0) == 1 && fsync(changedJournal.value) == 0
+                        && changedJournal.retireChecked() == .succeeded, "expiry original journal fixture restoration failed")
+                }
+                registry.testingRevisitFinalization(handle)
+                if fault == "none" {
+                    while registry.hasRetainedWork {
+                        guard !cleanup.hasExpired else { throw H.Failure(message: "positive expiry original physical cleanup did not settle") }
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    try H.check(probe.observed == [.beforeRead, .afterRead, .checkedClose, .removed]
+                        && registry.testingCleanupOnlyRemoved(handle) && scope.observation == .pending
+                        && ticket.testingJournal.phase == .prepared
+                        && !(try scope.testingRead()).entries.isEmpty,
+                        "expiry cleanup changed durable/live reservation or issued retirement")
+                } else {
+                    let expected: [RetainedCleanupRegistry.TestExpiredCleanupPoint]
+                    if ["before-poison", "later-poison", "before-archive", "partial-archive"].contains(fault) { expected = [] }
+                    else if fault == "close" { expected = [.beforeRead, .afterRead] }
+                    else { expected = [.beforeRead] }
+                    try H.check(probe.observed == expected && registry.hasRetainedWork
+                        && !registry.testingCleanupOnlyRemoved(handle),
+                        "uncertain expiry cleanup retried read/close or removed original evidence")
+                }
+                try H.check(handle.snapshot().phase == .cleanupPending
+                    && (try stored(location)) == controlBefore
+                    && (try Data(contentsOf: URL(fileURLWithPath: catalogPath))) == catalogBefore
+                    && (try Data(contentsOf: URL(fileURLWithPath: journalPath))) == journalBefore
+                    && FileManager.default.fileExists(atPath: archivePath) == archiveBefore
+                    && FileManager.default.fileExists(atPath: callerPath) == callerBefore,
+                    "cleanup-only expiry archived, rewrote a durable fence or changed failed control")
+                try H.refuses { _ = try handle.stagedCompletion() }
+                try H.refuses { _ = try handle.stagedRecoveryRetirement() }
+                try InstallationOwnershipFixtures.excluded(location)
+                if fault != "none" { try registry.testingDispose() }
+                command = nil; context!.close(); context = nil
+            }
+        }
+    }
     private static func failedStartDelayedRetirement() throws {
         try exclusiveFixture { root, location, bootstrap, registry in
             let original = MonotonicDeadline(seconds: 30)
@@ -1717,6 +2646,11 @@ enum InstallationBootstrapFixtures {
         }
     }
     static func startPendingEOF() throws {
+        try expiredCleanupRejectsForeignOriginals()
+        try stagedTimedOutDrainedRetires()
+        try stagedExpiredTransportNegatives()
+        try unissuedExpiryCleansOnlyOriginalResources()
+        try resumedRetirementAfterWork()
         try failedStartDelayedRetirement()
         try failedStartDelayedToken()
         try exclusiveFixture { root, location, bootstrap, registry in
@@ -1776,6 +2710,9 @@ enum InstallationBootstrapFixtures {
         }
     }
     static func startFailureAndAlias() throws {
+        try originalRefusalHoldAndCancellation()
+        try originalWaitAndSignalFailures()
+        try refusedOriginalPoison()
         try failedStartPartialAndPoison()
         for alias in [false, true] {
             try exclusiveFixture { root, location, bootstrap, registry in
@@ -1812,6 +2749,7 @@ enum InstallationBootstrapFixtures {
         }
     }
     static func startPublicationFailure() throws {
+        try stagedArchiveAttemptIsSingle()
         for kickstart in [false, true] {
             for completion in [false, true] {
                 try exclusiveFixture { root, location, bootstrap, _ in
@@ -1839,6 +2777,11 @@ enum InstallationBootstrapFixtures {
         }
     }
     static func startReturnedFailure() throws {
+        try actualObserverDeliveryDisposition()
+        try closedArchivePinIntegrity()
+        try genuineDeliveryAfterReceipt()
+        try stagedProspectiveCloseFailure()
+        try retiredBootstrapOutlivesCommandReceipt()
         try failedStartTokenAndConcurrentTurns()
         for kickstart in [false, true] {
             try exclusiveFixture { root, location, bootstrap, _ in
@@ -2957,4 +3900,290 @@ enum InstallationBootstrapCommitTransitionHarness {
         try InstallationOwnershipFixtures.excluded(location)
     }
 }
+
+// Actual driver coverage uses the same retained Bootstrap and fixture owners.
+// Existing fixture cleanup remains distinct from production settlement.
+extension InstallationBootstrapFixtures {
+    static func driverGrammar() throws {
+        for (arguments, expected): ([String], Int32) in [
+            (["coordinator", "--install-fresh"], 78),
+            (["coordinator", "--install-fresh", "--force"], 64),
+            (["coordinator", "--install-fresh=/fixture.invalid"], 64),
+            (["coordinator", "--install-fresh", "30"], 64)] {
+            guard case let .exit(permit) = LifecycleCoordinatorMain.start(arguments: arguments) else {
+                throw H.Failure(message: "testing production route retained an installer")
+            }
+            try H.check(permit.status == expected, "closed fresh grammar or testing refusal changed")
+        }
+        try H.refuses { _ = try CoordinatorInstallationAdmission.current() }
+    }
+    static func driverBeforeReserve() throws {
+        for cancel in [false, true] {
+            try fixture { root, _, bootstrap in
+                let before = try H.snapshot(root)
+                let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap,
+                    deadline: .init(seconds: cancel ? 3 : 0))
+                if cancel { attempt.requestCancellation() }
+                guard case let .failedBeforeReserve(permit, cause) = attempt.runOnce() else {
+                    throw H.Failure(message: "no-effect driver refusal retained or installed")
+                }
+                try H.check(permit.status == 1 && cause == (cancel ? .cancelled : .deadline)
+                    && !bootstrap.observation().attempted && bootstrap.testingRetained().allSatisfy { !$0 }
+                    && attempt.testingTrace.isEmpty && (try H.snapshot(root)) == before,
+                    "pre-reserve refusal created an installation effect")
+            }
+        }
+    }
+    static func driverReserveCuts() throws {
+        for (index, cut) in B.Stage.allCases.enumerated() {
+            try fixture { root, location, bootstrap in
+                try bootstrap.testingConfigure(cut: cut)
+                let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap, deadline: .init(seconds: 3))
+                let lifetime = CoordinatorInvocationLifetime(attempt: attempt)
+                guard case let .retained(cause, phase) = attempt.runOnce() else {
+                    throw H.Failure(message: "partial reserve minted an exit receipt")
+                }
+                try H.check(cause == .custody && phase == .reserve && attempt.firstFailure == cause,
+                    "driver reserve cut lost original failure")
+                let expected = [index >= 1, index >= 3, index >= 5, index >= 6, index >= 7, index >= 8]
+                try H.check(lifetime.attempt.bootstrap === bootstrap && bootstrap.testingRetained() == expected,
+                    "driver lifetime discarded partial original owners")
+                if index >= 4 { try InstallationOwnershipFixtures.excluded(location) }
+                let before = try H.snapshot(root), trace = attempt.testingTrace
+                guard case .retained = attempt.runOnce() else { throw CustodyRecordError.fenced }
+                attempt.observeRetirement()
+                try H.check(try H.snapshot(root) == before && attempt.testingTrace == trace && attempt.firstFailure == cause,
+                    "driver replay or notice changed failed reserve")
+                withExtendedLifetime(lifetime) {}
+            }
+        }
+    }
+    static func driverPhaseCuts() throws {
+        for cut: FreshInstallationAttempt.Phase in [.exclusive, .transfer, .journal, .readiness, .bootstrap, .kickstart, .ready] {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap, deadline: .init(seconds: 30))
+                attempt.testingBeforePhase = { phase in if phase == cut { throw InstallationFailure.policy } }
+                guard case let .retained(cause, phase) = attempt.runOnce() else {
+                    throw H.Failure(message: "driver phase cut invented settlement")
+                }
+                try H.check(cause == .policy && phase == cut && attempt.firstFailure == .policy,
+                    "driver phase cut lost primary classification")
+                try InstallationOwnershipFixtures.excluded(location)
+                let before = try H.snapshot(root), trace = attempt.testingTrace
+                guard case .retained = attempt.runOnce() else { throw CustodyRecordError.fenced }
+                try H.check(try H.snapshot(root) == before && attempt.testingTrace == trace,
+                    "driver phase cut replayed a completed lower-level effect")
+            }
+        }
+    }
+    static func driverCancellationAfterValidation() throws {
+        try fixture { root, _, bootstrap in
+            try bootstrap.testingConfigure(mutation: { [weak bootstrap] stage in
+                if stage == .parentsRetained { bootstrap?.cancellationGate.request() }
+            })
+            let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap, deadline: .init(seconds: 3))
+            guard case let .retained(cause, phase) = attempt.runOnce() else { throw CustodyRecordError.fenced }
+            try H.check(cause == .cancelled && phase == .reserve && bootstrap.observation().stage == .parentsRetained
+                && bootstrap.testingRetained() == [true, false, false, false, false, false]
+                && !FileManager.default.fileExists(atPath: root + "/home/.local"),
+                "cancellation during validation admitted parent preparation")
+            attempt.requestCancellation(); attempt.requestCancellation()
+            guard case .retained = attempt.runOnce() else { throw CustodyRecordError.fenced }
+        }
+    }
+    static func driverPrimaryBeforeCleanupFailure() throws {
+        try exclusiveFixture { _, location, bootstrap, _ in
+            let original = MonotonicDeadline(seconds: 30)
+            try bootstrap.testingConfigureStagedReadiness(afterReturn: {
+                // Real forward failure, followed by real expired join validation.
+                while !original.hasExpired { Thread.sleep(forTimeInterval: 0.001) }
+                throw InstallationFailure.policy
+            })
+            let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap, deadline: original)
+            guard case let .retained(cause, phase) = attempt.runOnce() else { throw CustodyRecordError.fenced }
+            let failures = bootstrap.failureObservation()
+            try H.check(cause == .policy && phase == .readiness && failures.primary == .policy
+                && failures.settlement != nil && bootstrap.stagedReadinessClosureObservation() == .pending,
+                "cleanup error replaced the original forward error")
+            try InstallationOwnershipFixtures.excluded(location)
+            attempt.observeRetirement()
+            try H.check(attempt.firstFailure == .policy && attempt.phase == .failed,
+                "late work became successful installation")
+        }
+    }
+    private final class DriverNotices: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        let received = DispatchSemaphore(value: 0)
+        func record() { lock.lock(); count += 1; lock.unlock(); received.signal() }
+        var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+    }
+    static func driverActualRetirementNotices() throws {
+        try exclusiveFixture { _, location, bootstrap, registry in
+            let original = MonotonicDeadline(seconds: 1)
+            let notices = DriverNotices(), queue = DispatchQueue(label: "shadow-sync.fixture.driver-notice")
+            var subscriptions: [InstallationObservationSubscription] = []
+            try bootstrap.testingConfigureStarts(checkpoint: { [weak bootstrap] operation, point in
+                if operation == .bootstrap && point == .commandRetained { registry.testingDeferNextRead(.outputUntilReleased) }
+                if operation == .bootstrap && point == .submitted {
+                    guard let handle = bootstrap?.testingStartHandle(kickstart: false) else { throw CustodyRecordError.fenced }
+                    subscriptions.append(handle.observeActualRetirement(on: queue) { notices.record() })
+                }
+            })
+            let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap, deadline: original)
+            guard case .retained = attempt.runOnce(), let handle = bootstrap.testingStartHandle(kickstart: false) else {
+                throw H.Failure(message: "driver did not retain actual pending start")
+            }
+            defer { registry.testingReleaseDeferredRead(handle); subscriptions.forEach { $0.cancel() } }
+            try H.check(original.hasExpired && notices.value == 0 && registry.hasRetainedWork,
+                "pending result published actual retirement")
+            try InstallationOwnershipFixtures.excluded(location)
+            let before = try stored(location), failure = attempt.firstFailure
+            registry.testingReleaseDeferredRead(handle)
+            try H.check(notices.received.wait(timeout: .now() + 8) == .success && notices.value == 1,
+                "actual registry publication did not notify once")
+            subscriptions.append(handle.observeActualRetirement(on: queue) { notices.record() })
+            try H.check(notices.received.wait(timeout: .now() + 1) == .success && notices.value == 2,
+                "subscribe-after-publication lost retirement")
+            attempt.observeRetirement()
+            try H.check(try stored(location) == before && attempt.firstFailure == failure && attempt.phase == .failed
+                && !registry.hasRetainedWork && registry.testingOriginalHelpersReaped,
+                "late notice renewed budget or became successful installation")
+        }
+    }
+    static func driverSessionWorkNotice() throws {
+        try exclusiveFixture { _, location, bootstrap, _ in
+            let notice = DriverNotices(), queue = DispatchQueue(label: "shadow-sync.fixture.session-notice")
+            var subscription: InstallationObservationSubscription?
+            try bootstrap.testingConfigureStagedReadiness(afterReturn: { [weak bootstrap] in
+                guard let session = bootstrap?.testingReadinessSession() else { throw CustodyRecordError.fenced }
+                subscription = session.observeWorkFinished(on: queue) { notice.record() }
+                throw InstallationFailure.policy
+            })
+            defer { subscription?.cancel() }
+            let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap, deadline: .init(seconds: 30))
+            guard case .retained = attempt.runOnce() else { throw CustodyRecordError.fenced }
+            try H.check(notice.received.wait(timeout: .now() + 1) == .success && notice.value == 1
+                && bootstrap.testingReadinessEndpoint() != nil && bootstrap.completionObservation() == .notAttempted,
+                "session work notice invented endpoint/transaction retirement")
+            try InstallationOwnershipFixtures.excluded(location)
+        }
+    }
+}
+
+
+extension InstallationBootstrapFixtures {
+    static func driverEarlyEffectCuts() throws {
+        for cut in 0..<6 {
+            try fixture { root, location, bootstrap in
+                switch cut {
+                case 0: try bootstrap.testingConfigure(parentCut: .afterCreate(.local))
+                case 1: try bootstrap.testingConfigure(initializationFault: .afterManifest)
+                case 2: try bootstrap.testingConfigure(initializationFault: .afterReady)
+                case 3: try bootstrap.testingConfigure(initializationFault: .afterPublication)
+                case 4: try bootstrap.testingConfigure(journalCut: .afterReceipt)
+                default: try bootstrap.testingConfigure(journalCut: .afterReceipt, cutCompletion: true)
+                }
+                let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap, deadline: .init(seconds: 3))
+                guard case let .retained(_, phase) = attempt.runOnce() else { throw CustodyRecordError.fenced }
+                try H.check(phase == .reserve && bootstrap.observation().attempted && attempt.firstFailure != nil,
+                    "partial parent/publication/journal effect escaped retention")
+                if cut >= 3 { try InstallationOwnershipFixtures.excluded(location) }
+                let before = try H.snapshot(root), retained = bootstrap.testingRetained()
+                guard case .retained = attempt.runOnce() else { throw CustodyRecordError.fenced }
+                try H.check(try H.snapshot(root) == before && bootstrap.testingRetained() == retained,
+                    "partial reserve replay changed original owners or durable preimages")
+            }
+        }
+    }
+    static func driverTransferCuts() throws {
+        for cut: B.TransferCheckpoint in [.claimed, .intentRetained, .aliasesReleased, .borrowingClosed, .retired] {
+            try exclusiveFixture { root, location, bootstrap, _ in
+                var reached = false
+                try bootstrap.testingConfigureStagedTransfer(checkpoint: { point in
+                    if point == cut { reached = true; throw InstallationFailure.policy }
+                })
+                let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap, deadline: .init(seconds: 30))
+                guard case let .retained(cause, phase) = attempt.runOnce() else { throw CustodyRecordError.fenced }
+                try H.check(reached && cause == .policy && phase == .transfer && bootstrap.stagedObservation() == .failed,
+                    "driver failed transfer cut was bypassed")
+                try InstallationOwnershipFixtures.excluded(location)
+                let before = try H.snapshot(root), retained = bootstrap.testingStagedRetention()
+                attempt.observeRetirement()
+                guard case .retained = attempt.runOnce() else { throw CustodyRecordError.fenced }
+                try H.check(try H.snapshot(root) == before && bootstrap.testingStagedRetention() == retained,
+                    "driver reconstructed transfer or released original operation")
+            }
+        }
+    }
+    static func driverStartCuts() throws {
+        for operation: LifecycleLaunchCommand.Operation in [.bootstrap, .kickstart] {
+            for cut: B.StartCheckpoint in [.claimed, .intentRetained, .contextRetained, .commandRetained,
+                                          .submitted, .retirementReceived, .aliasesReleased, .retired, .completed] {
+                try exclusiveFixture { _, location, bootstrap, _ in
+                    var reached = false
+                    try bootstrap.testingConfigureStarts(checkpoint: { actual, point in
+                        if actual == operation && point == cut { reached = true; throw InstallationFailure.policy }
+                    })
+                    let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap, deadline: .init(seconds: 30))
+                    guard case let .retained(cause, phase) = attempt.runOnce() else { throw CustodyRecordError.fenced }
+                    try H.check(reached && cause == .policy && phase == (operation == .bootstrap ? .bootstrap : .kickstart)
+                        && bootstrap.observation().failedClosed && attempt.firstFailure == .policy,
+                        "driver uncertain start cut lost original failure or minted settlement")
+                    try InstallationOwnershipFixtures.excluded(location)
+                    let before = try stored(location), trace = attempt.testingTrace
+                    attempt.observeRetirement()
+                    guard case .retained = attempt.runOnce() else { throw CustodyRecordError.fenced }
+                    try H.check(try stored(location) == before && attempt.testingTrace == trace,
+                        "driver retirement replayed interrupted start")
+                }
+            }
+        }
+    }
+}
+
+// Observe cancellation during the real fallible diagnostic preparation. This
+// helper retains only the original latch, never a command or owner capability.
+extension InstallationBootstrapFixtures {
+    private final class DiagnosticCancellation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var gate: InstallationCancellationGate?
+        private var events: [String] = []
+        func bind(_ gate: InstallationCancellationGate) { lock.lock(); self.gate = gate; lock.unlock() }
+        func visit(_ event: String) {
+            lock.lock(); events.append(event); let gate = self.gate; lock.unlock()
+            if event == "exclusive-diagnostic-prepared" { gate?.request() }
+        }
+        var observed: [String] { lock.lock(); defer { lock.unlock() }; return events }
+    }
+    static func driverExclusiveDiagnosticCancellation() throws {
+        let cut = DiagnosticCancellation()
+        try exclusiveFixture(fault: { cut.visit($0) }) { root, location, bootstrap, registry in
+            cut.bind(bootstrap.cancellationGate)
+            let original = MonotonicDeadline(seconds: 30)
+            let attempt = FreshInstallationAttempt.testing(bootstrap: bootstrap, deadline: original)
+            guard case let .retained(cause, phase) = attempt.runOnce() else { throw CustodyRecordError.fenced }
+            let control = try stored(location)
+            try H.check(cut.observed.contains("exclusive-diagnostic-prepared") && cause == .cancelled
+                && phase == .exclusive && attempt.firstFailure == .cancelled && !original.hasExpired
+                && registry.testingPreparedStartCount == 0 && registry.testingCount == 0 && !registry.hasRetainedWork
+                && registry.testingOriginalHelpersReaped, "cancelled preparation submitted a diagnostic")
+            try H.check(!cut.observed.contains(where: { $0.hasPrefix("exclusive-after-action-") })
+                && control.step?.action == .drainPrior && control.step?.status == .intent
+                && control.transaction?.slots.images[.applicationIncoming]?.node == nil
+                && control.transaction?.slots.images[.plistIncoming]?.node == nil
+                && bootstrap.exclusiveObservation() == .failed && bootstrap.stagedObservation() == .notAttempted
+                && attempt.testingTrace == [.reserve, .exclusive], "cancelled diagnostic admitted later preparation")
+            try InstallationOwnershipFixtures.excluded(location)
+            try InstallationOwnershipFixtures.excluded(location, name: "lifecycle.lock")
+            let retained = bootstrap.testingRetained(), disk = try H.snapshot(root)
+            attempt.observeRetirement()
+            guard case let .retained(late, latePhase) = attempt.runOnce() else { throw CustodyRecordError.fenced }
+            try H.check(late == cause && latePhase == phase && bootstrap.testingRetained() == retained
+                && registry.testingPreparedStartCount == 0 && (try H.snapshot(root)) == disk,
+                "cancelled diagnostic replayed or discarded original owners")
+        }
+    }
+}
+
 #endif

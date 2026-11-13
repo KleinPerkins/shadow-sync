@@ -38,6 +38,28 @@ public enum M6SelfTestRunner {
         return passed
     }
 
+    // Fixed existing reconciliation coverage; full M6 remains mandatory.
+    public static func runStagedReconciliation(
+        record: (String) -> Void
+    ) throws -> [String] {
+        var passed: [String] = []
+        func run(_ name: String, _ body: () throws -> Void) throws {
+            try RuntimeFixtureSession.withCase(name) { try body() }
+            passed.append(name)
+            record(name)
+        }
+
+        try run("m6-installation-staged-reconciliation-unclaimed-absent-stop") { try InstallationStagedReconciliationFixtures.unclaimedAndAbsentStop() }
+        try run("m6-installation-staged-reconciliation-retired-starts") { try InstallationStagedReconciliationFixtures.retiredStarts() }
+        try run("m6-installation-staged-reconciliation-resumed-outcomes") { try InstallationStagedReconciliationFixtures.resumedOutcomes() }
+        try run("m6-installation-staged-reconciliation-semantic-states") { try InstallationStagedReconciliationFixtures.semanticStates() }
+        try run("m6-installation-staged-reconciliation-action-classifier") { try InstallationStagedReconciliationFixtures.actionClassifier() }
+        try run("m6-installation-staged-reconciliation-aliases-eof") { try InstallationStagedReconciliationFixtures.aliasesAndEOF() }
+        try run("m6-installation-staged-reconciliation-substitutions") { try InstallationStagedReconciliationFixtures.substitutions() }
+        try run("m6-installation-staged-reconciliation-receipt-cuts") { try InstallationStagedReconciliationFixtures.receiptCuts() }
+        return passed
+    }
+
     public static func runAll(
         record: (String) -> Void
     ) throws -> [String] {
@@ -48,6 +70,18 @@ public enum M6SelfTestRunner {
             record(name)
         }
 
+        try run("m6-fresh-driver-exclusive-diagnostic-cancellation") { try InstallationBootstrapFixtures.driverExclusiveDiagnosticCancellation() }
+        try run("m6-fresh-driver-early-effect-cuts") { try InstallationBootstrapFixtures.driverEarlyEffectCuts() }
+        try run("m6-fresh-driver-transfer-cuts") { try InstallationBootstrapFixtures.driverTransferCuts() }
+        try run("m6-fresh-driver-start-cuts") { try InstallationBootstrapFixtures.driverStartCuts() }
+        try run("m6-fresh-driver-before-reserve") { try InstallationBootstrapFixtures.driverBeforeReserve() }
+        try run("m6-fresh-driver-grammar") { try InstallationBootstrapFixtures.driverGrammar() }
+        try run("m6-fresh-driver-reserve-cuts") { try InstallationBootstrapFixtures.driverReserveCuts() }
+        try run("m6-fresh-driver-phase-cuts") { try InstallationBootstrapFixtures.driverPhaseCuts() }
+        try run("m6-fresh-driver-cancellation-after-validation") { try InstallationBootstrapFixtures.driverCancellationAfterValidation() }
+        try run("m6-fresh-driver-primary-before-cleanup-failure") { try InstallationBootstrapFixtures.driverPrimaryBeforeCleanupFailure() }
+        try run("m6-fresh-driver-actual-retirement-notices") { try InstallationBootstrapFixtures.driverActualRetirementNotices() }
+        try run("m6-fresh-driver-session-work-notice") { try InstallationBootstrapFixtures.driverSessionWorkNotice() }
         try run("m6-selected-root-generation") { try SelectedRootGenerationFixtures.run() }
         try run("m6-legacy-state-observation-authority-values") { try LegacyStateDocumentFixtures.authorityValues() }
         try run("m6-legacy-state-observation-selection-values") { try LegacyStateDocumentFixtures.selectionValues() }

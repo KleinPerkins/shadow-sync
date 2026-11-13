@@ -227,10 +227,10 @@ enum InstallationExclusivePreparationFixtures {
     }
     /// Shared by the separate admission-transfer fixtures. Real preparation and
     /// intent publication run before dropping the sole journal and its leases.
-    static func withPreparedIntent(bindingSource: ((InstallationBindingTestingSource) -> Void)? = nil,
+    static func withPreparedIntent(observation: InstallationReconciliationDiagnostic.Observer? = nil, bindingSource: ((InstallationBindingTestingSource) -> Void)? = nil,
         _ body: (String, StateLocation, InstallationTransactionOwner,
         CustodyCatalogStore.InstallationStagedAdmissionIntent, RetainedCleanupRegistry) throws -> Void) throws {
-        try InstallationOwnershipFixtures.fixture { root, location, original in
+        try InstallationOwnershipFixtures.fixture(observation: observation) { root, location, original in
             for suffix in ["/home", "/home/Applications", "/home/Library", "/home/Library/LaunchAgents"] {
                 try H.check(mkdir(root + suffix, 0o700) == 0, "prepared intent fixture parent")
             }
@@ -259,16 +259,29 @@ enum InstallationExclusivePreparationFixtures {
                 try intent.revalidate(for: owner, deadline: .init(seconds: 3))
                 bindingSource?(source)
                 try body(root, location, owner, intent, registry)
-            } catch { failure = error }
-            journal = nil; lifecycle = nil
-            if registry.hasRetainedWork { registry.testingRequestCancellation() }
-            let cleanup = MonotonicDeadline(seconds: 8)
-            while registry.testingCount != 0 || !registry.testingOriginalHelpersReaped {
-                guard !cleanup.hasExpired else { throw H.Failure(message: "prepared intent owned cleanup pending") }
-                Thread.sleep(forTimeInterval: 0.005)
+            } catch {
+                observation?(.preparationCaught, .init(error))
+                failure = error
             }
-            try registry.testingDispose()
-            if let failure { throw failure }
+            observation?(.preparationCleanupEntry, .none)
+            do {
+                journal = nil; lifecycle = nil
+                if registry.hasRetainedWork { registry.testingRequestCancellation() }
+                let cleanup = MonotonicDeadline(seconds: 8)
+                while registry.testingCount != 0 || !registry.testingOriginalHelpersReaped {
+                    guard !cleanup.hasExpired else { throw H.Failure(message: "prepared intent owned cleanup pending") }
+                    Thread.sleep(forTimeInterval: 0.005)
+                }
+                try registry.testingDispose()
+            } catch {
+                observation?(.preparationCleanupFailed, .init(error))
+                throw error
+            }
+            observation?(.preparationCleanupReturned, .none)
+            if let failure {
+                observation?(.preparationRethrow, .init(failure))
+                throw failure
+            }
         }
     }
     static func stagedIntentReleaseAndSubstitution() throws {

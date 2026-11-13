@@ -15,7 +15,7 @@ public enum LifecycleCoordinatorMain {
         guard arguments.count == 2 else { return usage() }
         switch arguments[1] {
         case "--help":
-            print("ShadowSyncLifecycleCoordinator --verify-distribution")
+            print("ShadowSyncLifecycleCoordinator --verify-distribution | --install-fresh")
             return 0
         case "--verify-distribution": break
         default: return usage()

@@ -147,6 +147,69 @@ final class LifecyclePublisher {
         }
         #endif
     }
+    /// A resource handoff can originate only in this exact running distribution.
+    /// Paths, accounts, decoded contracts and candidate observations cannot mint
+    /// one. The retained installation identity also binds the whole bundle.
+    struct PolicyResourcesSource {
+        private let publisher: LifecyclePublisher
+        let installation: InstallationIdentity
+        let account: EffectiveAccount
+
+        private init(publisher: LifecyclePublisher, installation: InstallationIdentity) {
+            self.publisher = publisher; self.installation = installation; account = publisher.account
+        }
+        fileprivate static func capture(_ publisher: LifecyclePublisher) throws -> Self {
+            #if SHADOW_SYNC_TESTING
+            // Even a signed fixture cannot acquire production policy authority.
+            throw PublisherPolicyError.unavailable
+            #else
+            try publisher.revalidate()
+            let installation = try publisher.installationIdentity()
+            let source = Self(publisher: publisher, installation: installation)
+            try source.revalidate()
+            return source
+            #endif
+        }
+        fileprivate static func capture(_ publisher: LifecyclePublisher, installation: InstallationIdentity) throws -> Self {
+            #if SHADOW_SYNC_TESTING
+            throw PublisherPolicyError.unavailable
+            #else
+            guard try publisher.installationIdentity() == installation else { throw PublisherPolicyError.unavailable }
+            let source = Self(publisher: publisher, installation: installation)
+            try source.revalidate()
+            return source
+            #endif
+        }
+        func revalidate() throws {
+            #if SHADOW_SYNC_TESTING
+            throw PublisherPolicyError.unavailable
+            #else
+            guard publisher.validationProfile == .production,
+                  account == publisher.account, account == (try EffectiveAccount.current()),
+                  getuid() == account.uid else { throw PublisherPolicyError.unavailable }
+            try publisher.revalidate()
+            try installation.revalidate()
+            try publisher.revalidate()
+            #endif
+        }
+        func requireInstallation(_ expected: InstallationIdentity) throws {
+            // Object identity in InstallationIdentity equality excludes a new
+            // publisher capture, even for byte-identical candidate metadata.
+            guard expected == installation else { throw PublisherPolicyError.unavailable }
+            try revalidate()
+        }
+        func resourceLocation() throws -> (app: String, owner: uid_t, publisher: PublisherCodeVerifier.Identity) {
+            try revalidate()
+            return (publisher.app, publisher.owner, publisher.appIdentity)
+        }
+    }
+
+    /// Authentication and external-policy verification only. This creates no
+    /// state and supplies neither deployed-prerequisite proof nor activation.
+    func policyPrerequisite() throws -> CoordinatorPolicyPrerequisite {
+        try CoordinatorPolicyPrerequisite.capture(PolicyResourcesSource.capture(self))
+    }
+
     func installationIdentity() throws -> InstallationIdentity { try InstallationIdentity.capture(self) }
     func installationSourceBundle() throws -> String { try revalidate(); return app }
 
@@ -159,5 +222,145 @@ final class LifecyclePublisher {
         let (_, appNow) = try PublisherCodeVerifier.verifiedStatic(path: app, identifier: ReleaseIdentity.bundleIdentifier, team: appIdentity.team)
         let (_, helperNow) = try PublisherCodeVerifier.runningCode(path: executable, identifier: Self.identifier, team: appIdentity.team)
         guard appNow == appIdentity, helperNow == helperIdentity else { throw PublisherPolicyError.unavailable }
+    }
+}
+
+/// Retains the exact signed distribution and external configuration through a
+/// coordinator handoff. The transaction must call revalidate(for:) on both sides
+/// of a handoff and immediately before later activation or repository admission.
+/// It must separately obtain the independently deployed prerequisites in ADR 0003
+/// and normal repository classification; this value grants neither authority.
+final class CoordinatorPolicyPrerequisite {
+    private let source: LifecyclePublisher.PolicyResourcesSource
+    private let resources: PublisherPolicyResources
+    private let policy: RetainedPolicy
+    private let revalidation = RevalidationState()
+
+    /// Availability state only: this helper cannot mint publisher authority.
+    /// Production and isolated fixtures use the same claim/commit algorithm.
+    /// A second in-flight call permanently refuses this handoff rather than
+    /// waiting behind unbounded Security/filesystem work. The final commit is
+    /// the success linearization point; any earlier refusal defeats it.
+    final class RevalidationState {
+        private let mutex = NSLock()
+        private var inFlight = false
+        private var refused = false
+
+        func revalidate(_ validation: () throws -> Void) throws {
+            try claim()
+            do {
+                // Never hold the state mutex across validation or callbacks.
+                try validation()
+                try commit()
+            } catch {
+                refuse()
+                throw PublisherPolicyError.unavailable
+            }
+        }
+        private func claim() throws {
+            mutex.lock(); defer { mutex.unlock() }
+            guard !refused && !inFlight else {
+                refused = true
+                throw PublisherPolicyError.unavailable
+            }
+            inFlight = true
+        }
+        private func commit() throws {
+            mutex.lock(); defer { mutex.unlock() }
+            guard !refused && inFlight else { throw PublisherPolicyError.unavailable }
+            inFlight = false
+        }
+        private func refuse() {
+            mutex.lock(); defer { mutex.unlock() }
+            // Restoration never re-enables a previously refused handoff.
+            refused = true
+            inFlight = false
+        }
+    }
+
+    /// Configuration evidence only, deliberately not a publisher capability.
+    /// Constructing this helper cannot construct the enclosing prerequisite.
+    /// Production and isolated configuration fixtures share these exact checks.
+    struct RetainedPolicy {
+        private let snapshot: HostPolicySnapshot
+        private let identity: String
+        let account: EffectiveAccount
+        init(account: EffectiveAccount, contract: QualifiedAWAContract) throws {
+            let snapshot = try HostPolicySnapshot.load(account: account, contract: contract)
+            self.snapshot = snapshot; self.account = account
+            identity = try snapshot.identityCommitment()
+            try revalidate()
+        }
+        func revalidate() throws {
+            guard snapshot.account == account,
+                  try snapshot.identityCommitment() == identity else { throw HostPolicyBindingError.unavailable }
+            try snapshot.revalidate()
+        }
+    }
+
+    private init(source: LifecyclePublisher.PolicyResourcesSource,
+                 resources: PublisherPolicyResources, policy: RetainedPolicy) {
+        self.source = source; self.resources = resources; self.policy = policy
+    }
+    fileprivate static func capture(_ source: LifecyclePublisher.PolicyResourcesSource) throws -> Self {
+        #if SHADOW_SYNC_TESTING
+        throw PublisherPolicyError.unavailable
+        #else
+        try source.revalidate()
+        let resources = try PublisherPolicyResources.coordinator(source: source)
+        // No external binding is read until all publisher/runtime resources pass.
+        let contract = try QualifiedAWAContract.decode(resources.contract)
+        try resources.revalidate(); try source.revalidate()
+        let policy = try RetainedPolicy(account: source.account, contract: contract)
+        try resources.revalidate(); try source.revalidate()
+        let result = Self(source: source, resources: resources, policy: policy)
+        try result.revalidate(for: source.installation)
+        return result
+        #endif
+    }
+
+    func revalidate(for installation: LifecyclePublisher.InstallationIdentity) throws {
+        try revalidation.revalidate {
+            try source.requireInstallation(installation)
+            try resources.revalidate()
+            guard policy.account == source.account else { throw PublisherPolicyError.unavailable }
+            try policy.revalidate()
+            try resources.revalidate()
+            try source.requireInstallation(installation)
+        }
+    }
+}
+
+/// One authenticated distribution, original identity and retained policy. There
+/// is no path initializer and no testing constructor for production admission.
+final class CoordinatorInstallationAdmission {
+    let publisher: LifecyclePublisher
+    let installation: LifecyclePublisher.InstallationIdentity
+    private let policy: CoordinatorPolicyPrerequisite
+    let cancellation = InstallationCancellationGate()
+    private init(publisher: LifecyclePublisher, installation: LifecyclePublisher.InstallationIdentity,
+                 policy: CoordinatorPolicyPrerequisite) {
+        self.publisher = publisher; self.installation = installation; self.policy = policy
+    }
+    static func current() throws -> CoordinatorInstallationAdmission {
+        #if SHADOW_SYNC_TESTING
+        throw PublisherPolicyError.unavailable
+        #else
+        return try capture(LifecyclePublisher.current())
+        #endif
+    }
+    private static func capture(_ publisher: LifecyclePublisher) throws -> CoordinatorInstallationAdmission {
+        let installation = try publisher.installationIdentity()
+        let source = try LifecyclePublisher.PolicyResourcesSource.capture(publisher, installation: installation)
+        let policy = try CoordinatorPolicyPrerequisite.capture(source)
+        let result = CoordinatorInstallationAdmission(publisher: publisher, installation: installation, policy: policy)
+        try result.revalidateForward()
+        return result
+    }
+    func revalidateForward() throws {
+        try cancellation.check()
+        try policy.revalidate(for: installation)
+        // Cancellation can arrive during fallible Security/filesystem work.
+        try cancellation.check()
     }
 }

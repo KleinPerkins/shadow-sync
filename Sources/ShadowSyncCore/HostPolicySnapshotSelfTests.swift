@@ -349,6 +349,114 @@ public enum HostPolicySnapshotSelfTestRunner {
             }
         }
         onPass("POLICY-SNAPSHOT-T15-batch-postflight-rejects-earlier-file-and-parent-drift")
+        try RuntimeFixtureSession.withCase("POLICY-SNAPSHOT-T16-coordinator-retained-handoff-refusal-before-effects") {
+            // Exercise the production prerequisite's real retained-policy helper,
+            // without manufacturing the enclosing publisher capability.
+            for mutation in ["missing", "bytes", "inode", "ancestor"] {
+                let fixture = try Fixture(); defer { try? fixture.remove() }
+                let account = EffectiveAccount(uid: geteuid(), username: "fixture-account", homeDirectory: fixture.path)
+                let retained = try CoordinatorPolicyPrerequisite.RetainedPolicy(account: account, contract: fixture.contract())
+                var effects = 0
+                try retained.revalidate(); effects += 1
+                let input = fixture.path + "/owner/overlay.json"
+                switch mutation {
+                case "missing": try require(unlink(input) == 0, "handoff missing input")
+                case "bytes": try fixture.write("owner/overlay.json", Data("substituted".utf8))
+                case "inode":
+                    try fixture.write("owner/replacement", fixture.contents["owner/overlay.json"]!)
+                    try require(rename(fixture.path + "/owner/replacement", input) == 0, "handoff replacement")
+                default:
+                    try require(rename(fixture.path + "/owner", fixture.path + "/retained-owner") == 0,
+                                "handoff original ancestor retained")
+                    try fixture.restore()
+                }
+                try refuse { try retained.revalidate(); effects += 1 }
+                try require(effects == 1 && !FileManager.default.fileExists(atPath: fixture.path + "/workspace"),
+                            "changed handoff reached effects or repository root")
+                try fixture.remove()
+            }
+        }
+        onPass("POLICY-SNAPSHOT-T16-coordinator-retained-handoff-refusal-before-effects")
+        try RuntimeFixtureSession.withCase("POLICY-SNAPSHOT-T17-coordinator-retained-handoff-unavailable-inputs") {
+            for mutation in ["missing", "malformed", "incompatible", "stale", "account"] {
+                let fixture = try Fixture(); defer { try? fixture.remove() }
+                var account = EffectiveAccount(uid: geteuid(), username: "fixture-account", homeDirectory: fixture.path)
+                var contract = try fixture.contract()
+                switch mutation {
+                case "missing": try require(unlink(fixture.path + "/" + Fixture.binding) == 0, "missing binding")
+                case "malformed": try fixture.write(Fixture.binding, Data("{}".utf8))
+                case "incompatible": contract = try fixture.contract(moduleDigest: String(repeating: "e", count: 64))
+                case "stale": try fixture.write("owner/overlay.json", Data("changed source".utf8))
+                default: account = EffectiveAccount(uid: geteuid() + 1, username: "fixture-account", homeDirectory: fixture.path)
+                }
+                var effects = 0
+                try refuse {
+                    _ = try CoordinatorPolicyPrerequisite.RetainedPolicy(account: account, contract: contract)
+                    effects += 1
+                }
+                try require(effects == 0 && !FileManager.default.fileExists(atPath: fixture.path + "/workspace"),
+                            "unavailable prerequisite reached effects or repository root")
+                try fixture.remove()
+            }
+        }
+        onPass("POLICY-SNAPSHOT-T17-coordinator-retained-handoff-unavailable-inputs")
+        try RuntimeFixtureSession.withCase("POLICY-SNAPSHOT-T18-coordinator-overlap-refuses-inflight-commit") {
+            let state = CoordinatorPolicyPrerequisite.RevalidationState()
+            var trace = [String](), effects = 0
+            try state.revalidate { trace.append("initial-validation") }; effects += 1
+            try publisherRefuse {
+                try state.revalidate {
+                    trace.append("outer-validation")
+                    // Deterministic A-entry/B-refusal/A-commit interleaving on
+                    // the actual production state, without a scheduling race.
+                    // Reentry also requires that validation holds no state lock.
+                    try publisherRefuse {
+                        try state.revalidate { trace.append("overlap-validation") }
+                        effects += 1
+                    }
+                    trace.append("overlap-refused")
+                    // Even if A's underlying evidence remains valid and its
+                    // checks finish normally, its final commit must refuse.
+                    trace.append("outer-validation-finished")
+                }
+                effects += 1
+            }
+            try publisherRefuse {
+                try state.revalidate { trace.append("reuse-validation") }
+                effects += 1
+            }
+            try require(trace == ["initial-validation", "outer-validation", "overlap-refused", "outer-validation-finished"]
+                        && effects == 1, "overlapping refusal published success or reused validation")
+        }
+        onPass("POLICY-SNAPSHOT-T18-coordinator-overlap-refuses-inflight-commit")
+        try RuntimeFixtureSession.withCase("POLICY-SNAPSHOT-T19-coordinator-refusal-survives-restored-policy") {
+            let fixture = try Fixture(); defer { try? fixture.remove() }
+            let account = EffectiveAccount(uid: geteuid(), username: "fixture-account", homeDirectory: fixture.path)
+            let contract = try fixture.contract()
+            let state = CoordinatorPolicyPrerequisite.RevalidationState()
+            let retained = try CoordinatorPolicyPrerequisite.RetainedPolicy(account: account, contract: contract)
+            var validations = 0, effects = 0
+            try state.revalidate { validations += 1; try retained.revalidate() }; effects += 1
+            try fixture.write("owner/overlay.json", Data("substituted".utf8))
+            try publisherRefuse {
+                try state.revalidate { validations += 1; try retained.revalidate() }
+                effects += 1
+            }
+            try fixture.restore()
+            // Demonstrate real restored inputs validate independently. The old
+            // state's refusal, not still-invalid evidence, must prevent reuse.
+            let restored = try CoordinatorPolicyPrerequisite.RetainedPolicy(account: account, contract: contract)
+            try restored.revalidate()
+            try publisherRefuse {
+                try state.revalidate { validations += 1; try restored.revalidate() }
+                effects += 1
+            }
+            try require(validations == 2 && effects == 1
+                        && !FileManager.default.fileExists(atPath: fixture.path + "/workspace"),
+                        "restored policy reopened a refused handoff or reached effects")
+            try fixture.remove()
+        }
+        onPass("POLICY-SNAPSHOT-T19-coordinator-refusal-survives-restored-policy")
     }
 
     public static func runCatalogSession(onPass: (String) -> Void) throws {
@@ -370,9 +478,11 @@ public enum HostPolicySnapshotSelfTestRunner {
             for outside in ["/fixture/home/.git", "/fixture/home/workspace-other/ready/.git", projection + "/ready/.GIT"] {
                 try require(prefetched([outside]) == [outside], "prefetch escaped exact projection or marker spelling")
             }
-            let partial = [marker] + (0..<62).map { projection + "/candidate-\($0)" }
+            // Keep filler names outside shelf-child prefetch so this still tests
+            // the explicit marker's fixed-metadata priority at the final slot.
+            let partial = [marker] + (0..<62).map { projection + "/unconfigured/candidate-\($0)" }
             try require(prefetched(partial) == partial + [roster[1]], "prefetch did not respect final batch slot")
-            let full = partial + [projection + "/candidate-final"]
+            let full = partial + [projection + "/unconfigured/candidate-final"]
             try require(prefetched(full) == full, "prefetch displaced full mandatory batch")
             let nearFull = Set((0..<4094).map { Data((projection + "/cached-\($0)").utf8) })
             try require(prefetched([marker], nearFull) == [marker, roster[1]], "prefetch overfilled remaining cache slot")
@@ -410,6 +520,57 @@ public enum HostPolicySnapshotSelfTestRunner {
                 && protectedCatalog.catalog.counters.filesOpened == 0,
                 "prefetched descendant protection bypassed before file access")
             try context.remove()
+
+            // Exercise the root shelf the catalog really enumerates, including
+            // a visible directory with no marker and protected metadata. The
+            // evaluator refuses a child-only batch; old prefetch cannot pass.
+            let rootContext = try SessionFixture()
+            defer { try? rootContext.remove() }
+            try FileManager.default.createDirectory(atPath: rootContext.fixture.path + "/workspace/root-empty",
+                withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try rootContext.fixture.write("workspace/root-guarded/.git/config",
+                Data("[remote \"origin\"]\nurl = https://github.com/fixture-owner/root-guarded.git\n".utf8))
+            let rootAudit = CommandAudit()
+            let rootSession = try rootContext.make("root-shelf-prefetch", audit: rootAudit)
+            let rootCatalog = try rootSession.binder().processFreeCatalog(preferences: nil, generation: 3)
+            guard rootCatalog.isComplete,
+                  let rootGuarded = rootCatalog.catalog.candidates.first(where: { $0.displayLabel == "root-guarded" }),
+                  let rootReady = rootCatalog.catalog.candidates.first(where: { $0.id == "fixture-owner/ready" }) else {
+                throw Failure.assertion("root-shelf prefetch catalog incomplete or rows missing")
+            }
+            try require(rootReady.isEligible && rootGuarded.section == .protected
+                && rootGuarded.advisoryOrigin == nil && rootGuarded.catalogRepositoryIdentity == nil
+                && !rootCatalog.catalog.candidates.contains(where: { $0.displayLabel == "root-empty" })
+                && rootCatalog.catalog.counters.filesOpened == catalog.catalog.counters.filesOpened,
+                "root-shelf prefetch changed absent-marker or protected descendant outcome")
+            try require(rootAudit.invocations.count == 3 && rootAudit.invocations.allSatisfy {
+                $0.arguments == ["isolated-policy-classification"]
+                    && !$0.spawnArguments.joined().contains(rootContext.fixture.path)
+            }, "root-shelf catalog request count or lexical argument containment")
+
+            let rootChild = try RepositorySelectionAdmissionPath(root: "~", components: ["workspace", "root-empty"])
+            let rootMarker = try RepositorySelectionAdmissionPath(root: "~", components: ["workspace", "root-empty", ".git"])
+            let rootReuseAudit = CommandAudit()
+            let rootReuse = try rootContext.make("root-shelf-prefetch", audit: rootReuseAudit)
+            let rootDeadline = deadline()
+            try rootReuse.admission.requireAllowed(rootChild, deadline: rootDeadline)
+            try rootReuse.admission.requireAllowed(rootMarker, deadline: rootDeadline)
+            try require(rootReuseAudit.invocations.count == 1, "root marker did not reuse exact same-scan prefetch")
+            try rootContext.fixture.write("owner/overlay.json", rootContext.fixture.contents["owner/overlay.json"]! + Data("\n".utf8))
+            try denied { try rootReuse.admission.requireAllowed(rootMarker, deadline: rootDeadline) }
+            try require(rootReuseAudit.invocations.count == 1, "cached root marker bypassed current authority")
+            try rootContext.fixture.restore()
+            try rootReuse.admission.requireAllowed(rootMarker, deadline: rootDeadline)
+            try require(rootReuseAudit.invocations.count == 2, "root drift refusal retained prefetched decisions")
+
+            let invalidRootAudit = CommandAudit()
+            let invalidRoot = try rootContext.make("root-shelf-prefetch-invalid", audit: invalidRootAudit)
+            let invalidRootDeadline = deadline()
+            try denied { try invalidRoot.admission.requireAllowed(rootChild, deadline: invalidRootDeadline) }
+            try denied { try invalidRoot.admission.requireAllowed(rootMarker, deadline: invalidRootDeadline) }
+            try require(invalidRootAudit.invocations.count == 2,
+                "invalid optional root metadata retained a partial batch decision")
+            try rootContext.remove()
         }
         onPass("POLICY-SESSION-T01-snapshot-helper-and-catalog-composition")
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T02-selected-intent-reclassified-and-bound") {
@@ -1890,6 +2051,42 @@ public enum HostPolicySnapshotSelfTestRunner {
             let unicode = projection + "/personal/e\u{301}"
             let unicodeResult = expand([unicode])
             try require(unicodeResult[1].utf8.elementsEqual((unicode + "/.git").utf8), "prefetch normalized candidate bytes")
+            let rootChild = projection + "/root-ready", rootMarker = rootChild + "/.git"
+            let rootMetadata = ["config", "refs", "refs/remotes", "refs/remotes/origin", "refs/remotes/origin/HEAD"]
+                .map { rootMarker + "/" + $0 }
+            try require(expand([rootChild]) == [rootChild, rootMarker] + rootMetadata,
+                        "visible root child did not share fixed metadata request")
+            for path in [projection + "/.hidden", projection + "/.GIT", projection + "-other/root-ready",
+                         projection + "/root-ready/nested", "/fixture/home/root-ready"] {
+                try require(expand([path]) == [path], "root prefetch escaped exact visible child")
+            }
+            try require(expand([rootChild], cached: [Data(rootMarker.utf8)]) == [rootChild] + rootMetadata,
+                        "cached root marker suppressed uncached fixed metadata")
+            let rootCached = Set(([rootMarker] + rootMetadata).map { Data($0.utf8) })
+            try require(expand([rootChild], cached: rootCached) == [rootChild], "root prefetch repeated cached metadata")
+            let rootReserved = [rootChild] + (0..<63).map { projection + "/root-required-\($0)" }
+            try require(expand(rootReserved) == rootReserved, "root prefetch displaced mandatory full-batch candidates")
+            let rootPartial = Array(rootReserved.dropLast())
+            try require(expand(rootPartial) == rootPartial + [rootMarker], "root prefetch exceeded final transport slot")
+            try require(expand([rootChild], cached: nearFull) == [rootChild, rootMarker],
+                        "root prefetch exceeded final cache slot")
+            try require(expand([rootChild], cached: nearFull.union([Data("last cached entry".utf8)])) == [rootChild],
+                        "root prefetch consumed mandatory cache slot")
+            let rootUnicode = projection + "/e\u{301}"
+            let rootUnicodeResult = expand([rootUnicode])
+            try require(rootUnicodeResult.count == 7
+                && rootUnicodeResult[1].utf8.elementsEqual((rootUnicode + "/.git").utf8),
+                "root prefetch normalized candidate bytes")
+            let decomposedRoot = "/fixture/home/e\u{301}"
+            let decomposedChild = decomposedRoot + "/root-ready"
+            let decomposedResult = PolicyCatalogSession.prefetchCatalogMetadata([decomposedChild], cached: [],
+                projectionRoot: decomposedRoot)
+            try require(decomposedResult.count == 7
+                && decomposedResult[1].utf8.elementsEqual((decomposedChild + "/.git").utf8),
+                "root prefetch normalized projection bytes")
+            let composedChild = "/fixture/home/\u{e9}/root-ready"
+            try require(PolicyCatalogSession.prefetchCatalogMetadata([composedChild], cached: [],
+                projectionRoot: decomposedRoot) == [composedChild], "root parent accepted canonically equivalent wrong bytes")
         }
         onPass("POLICY-SESSION-T60-lexical-shelf-child-prefetch-preserves-admission-bounds")
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T61-diagnostic-opt-in-and-concurrent-output-bounds") {
@@ -2968,15 +3165,24 @@ public enum HostPolicySnapshotSelfTestRunner {
                     if mode=='config-ancestor': matched=matched or path.endswith('/.config')
                     if mode=='metadata-index': matched=matched or path.endswith('/.git/index')
                     if mode=='metadata-prefetch-protected': matched=matched or path.endswith('/ready/.git/config')
+                    if mode.startswith('root-shelf-prefetch'): matched=matched or path.endswith('/root-guarded/.git/config')
                     if mode=='rebind-first-protected': matched=matched or path.endswith('/ready') or '/ready/' in path
                     if mode=='metadata-object-ancestor': matched=matched or path.endswith('/.git/objects')
                     kind='exact_root' if matched else 'none'
                     if mode=='invalid': matched=True; kind='invalid_candidate'
+                    if mode=='root-shelf-prefetch-invalid' and path.endswith('/root-empty/.git/config'): matched=True; kind='invalid_candidate'
                     rows.append({'index':i,'matched':matched,'kind':kind,'policy_valid':True})
                 if mode in ('metadata-prefetch-roster','metadata-prefetch-protected'):
                     for marker in [p for p in request['candidates'] if p.endswith('/ready/.git')]:
                         expected=[marker+'/'+suffix for suffix in ('config','refs','refs/remotes','refs/remotes/origin','refs/remotes/origin/HEAD')]
                         if not set(expected).issubset(request['candidates']): rows=[]
+                if mode.startswith('root-shelf-prefetch'):
+                    for child in ('root-empty','root-guarded'):
+                        candidate='\(fixture.path)/workspace/'+child
+                        if candidate in request['candidates']:
+                            marker=candidate+'/.git'
+                            expected=[marker]+[marker+'/'+suffix for suffix in ('config','refs','refs/remotes','refs/remotes/origin','refs/remotes/origin/HEAD')]
+                            if not set(expected).issubset(request['candidates']): rows=[]
                 if mode in ('rebind-first-batch','rebind-first-protected') and '\(fixture.path)' in request['candidates']:
                     child='\(fixture.path)/workspace/products/ready'
                     marker=child+'/.git'
@@ -3029,6 +3235,11 @@ public enum HostPolicySnapshotSelfTestRunner {
         try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
     }
     private static func require(_ condition: Bool, _ message: String) throws { if !condition { throw Failure.assertion(message) } }
+    private static func publisherRefuse(_ operation: () throws -> Void) throws {
+        do { try operation(); throw Failure.assertion("refused coordinator handoff accepted") }
+        catch PublisherPolicyError.unavailable {}
+    }
+
     private static func refuse(_ operation: () throws -> Void) throws {
         do { try operation(); throw Failure.assertion("invalid configuration snapshot accepted") }
         catch HostPolicyBindingError.unavailable {}

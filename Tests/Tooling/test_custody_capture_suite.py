@@ -26,9 +26,9 @@ class CustodyCaptureSuiteTests(unittest.TestCase):
                          ['runtime-' + row['id'] for row in inventory['suites']])
         for row in inventory['suites']:
             self.assertEqual(value['coverage']['suites']['runtime-' + row['id']]['cases'], row['cases'])
-        names = ('runtime-m6', 'runtime-m6-custody-capture')
+        names = ('runtime-m6', 'runtime-m6-custody-capture', 'runtime-m6-staged-reconciliation')
         self.assertEqual(value['shards']['runtime-safety'], 4)
-        self.assertEqual([value['commands'][name]['timeout_seconds'] for name in names], [3600, 3600])
+        self.assertEqual([value['commands'][name]['timeout_seconds'] for name in names], [3600, 3600, 3600])
         plan = ci.make_plan(ci.encode(value), ci.encode(value), revision='a' * 40,
                             source_sha256='b' * 64, run_id='12', run_attempt='1')
         units = {name: [u['id'] for u in plan['units'] if name in u['suites']] for name in names}
@@ -68,12 +68,12 @@ class CustodyCaptureSuiteTests(unittest.TestCase):
             def verify():
                 return ci.aggregate(data, data, ci.encode(plan), ci.encode(needs), root, **identity)
             verify()
-            for name in ('runtime-m6', 'runtime-m6-custody-capture'):
+            for name in ('runtime-m6', 'runtime-m6-custody-capture', 'runtime-m6-staged-reconciliation'):
                 path, receipt = receipts[name]; original = path.read_bytes()
                 path.unlink()
                 with self.subTest(name=name, defect='missing'), self.assertRaises(ci.InvalidEvidence): verify()
                 path.write_bytes(original)
-                missing_cases = (receipt['expected_cases'] if name == 'runtime-m6-custody-capture'
+                missing_cases = (receipt['expected_cases'] if name != 'runtime-m6'
                                  else receipt['expected_cases'][:1])
                 for missing in missing_cases:
                     kept = [case for case in receipt['passed_cases'] if case != missing]

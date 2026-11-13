@@ -32,7 +32,7 @@ enum InstallationStagedCompletionFixtures {
     // reserve two terminal records so an exhausted progress trace cannot hide
     // the first body failure or the outer fixture result. No error text or paths.
     private enum CompletionPart: String { case fixture, sequence, bootstrap, kickstart, bootout }
-    private enum CompletionPhase: String {
+    enum CompletionPhase: String {
         case fixtureSetup, fixtureCleanup, fixtureCleanupOrBodyRethrow, fixtureReturned
         case quiet, completeAdmission, bootstrapIntent, bootstrapContext, bootstrapRun
         case wrongOperationRefusal, completeBootstrap, bootstrapRecord
@@ -134,11 +134,15 @@ enum InstallationStagedCompletionFixtures {
     // Reuse actual successful bootstrap custody for the separate incomplete
     // kickstart recovery fixture; no decoded record manufactures completion.
     static func bootstrapForRecovery(root: String, admission: InstallationStagedAdmission,
-        journal: J, registry: RetainedCleanupRegistry) throws {
+        journal: J, registry: RetainedCleanupRegistry, trace: ((CompletionPhase) -> Void)? = nil) throws {
+        trace?(.quiet)
         try quiet(root)
+        trace?(.bootstrapIntent)
         let intent = try journal.bootstrapCandidateIntent(deadline: .init(seconds: 3))
+        trace?(.bootstrapContext)
         var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
-        let retired = try run(.bootstrap, context: &context, registry: registry)
+        let retired = try run(.bootstrap, context: &context, registry: registry, trace: trace)
+        trace?(.completeBootstrap)
         _ = try journal.completeBootstrap(after: retired, deadline: .init(seconds: 3))
     }
     static func sequence() throws {

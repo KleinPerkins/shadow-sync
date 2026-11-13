@@ -6,8 +6,9 @@ import Foundation
 // qualification is inferred from the fixture-only consumed-owner constructor.
 enum InstallationOwnershipFixtures {
     typealias H = InstallationStorageFixtures
-    static func fixture(_ body: (String, StateLocation, RunAuthority) throws -> Void) throws {
-        try H.fixture { root, location in
+    static func fixture(observation: InstallationReconciliationDiagnostic.Observer? = nil,
+        _ body: (String, StateLocation, RunAuthority) throws -> Void) throws {
+        try H.fixture(observation: observation) { root, location in
             var initializer: FreshStateInitialization? = try .testing(root: root)
             _ = try initializer!.publish()
             let original = try initializer!.takeInstallationAuthority()

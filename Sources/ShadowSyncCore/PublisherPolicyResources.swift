@@ -288,8 +288,8 @@ struct PublisherExecutableSnapshot: Equatable {
     }
 }
 
-/// Constructible in production only from the currently running canonical,
-/// Developer ID application. All inputs are fixed application resources;
+/// Constructible from the currently running canonical Developer ID application
+/// or a nonconstructible capsule owned by its authenticated distribution coordinator. All inputs are fixed application resources;
 /// source checkouts, PATH, environment overrides and policy candidate paths
 /// cannot select the interpreter or establish publisher authority.
 final class PublisherPolicyResources: @unchecked Sendable {
@@ -304,6 +304,7 @@ final class PublisherPolicyResources: @unchecked Sendable {
     private let appExecutable: String
     private let appExecutableIdentity: PublisherExecutableSnapshot
     private let interpreterIdentity: PublisherCodeVerifier.Identity?
+    private var coordinatorSource: LifecyclePublisher.PolicyResourcesSource?
     #if SHADOW_SYNC_TESTING
     private var fixtureInterpreter: DiscoveryFixtureCode?
     #endif
@@ -377,6 +378,70 @@ final class PublisherPolicyResources: @unchecked Sendable {
         } catch { throw PublisherPolicyError.unavailable }
     }
 
+    /// Only the authenticated running distribution can supply this capsule.
+    /// The installed-app production factory remains a separate strict path.
+    static func coordinator(source: LifecyclePublisher.PolicyResourcesSource) throws -> PublisherPolicyResources {
+        #if SHADOW_SYNC_TESTING
+        throw PublisherPolicyError.unavailable
+        #else
+        do {
+            try source.revalidate()
+            let location = try source.resourceLocation()
+            let app = location.app
+            let owner = location.owner
+            func resource(_ relative: String, limit: Int = 1_048_576) throws -> PolicyAuthorityFile {
+                try PolicyAuthorityFile.read(path: app + "/Contents/" + relative, owner: owner, maximumBytes: limit)
+            }
+            let info = try resource("Info.plist", limit: 65_536)
+            let adapter = try resource("Resources/PolicyAdapter.py")
+            let contract = try resource("Resources/awa-contract.json", limit: 16_384)
+            let runtimeSource = try resource("Resources/policy-runtime-source.json", limit: 16_384)
+            let releaseContract = try resource("Resources/release-contract.json", limit: 65_536)
+            let codeResources = try resource("_CodeSignature/CodeResources")
+            let appExecutable = app + "/Contents/MacOS/ShadowSync"
+            let appExecutableIdentity = try PublisherExecutableSnapshot.capture(path: appExecutable, owner: owner)
+            let framework = app + "/Contents/Frameworks/Python.framework"
+            let manifest = try PolicyAuthorityFile.read(path: framework + "/" + PolicyRuntimeLayout.manifest,
+                owner: owner, maximumBytes: 1_048_576)
+            let layout = try PolicyRuntimeLayout.decode(manifest.bytes, source: runtimeSource.bytes)
+            let before = try PolicyRuntimeTree.capture(root: framework, owner: owner, layout: layout)
+            let (appCode, publisher) = try PublisherCodeVerifier.verifiedStatic(path: app,
+                identifier: ReleaseIdentity.bundleIdentifier, team: location.publisher.team)
+            guard publisher == location.publisher else { throw PublisherPolicyError.unavailable }
+            for (file, path) in [(adapter, "Resources/PolicyAdapter.py"), (contract, "Resources/awa-contract.json"),
+                                  (runtimeSource, "Resources/policy-runtime-source.json"), (releaseContract, "Resources/release-contract.json")] {
+                try PublisherCodeVerifier.sealed(file, relativePath: path, code: appCode)
+            }
+            let (frameworkCode, _) = try PublisherCodeVerifier.verifiedStatic(path: framework,
+                identifier: "com.kleinperkins.shadow-sync.python-runtime", team: publisher.team)
+            try PublisherCodeVerifier.sealed(manifest, relativePath: "Resources/ShadowSyncRuntimeLayout.json", code: frameworkCode)
+            var interpreterIdentity: PublisherCodeVerifier.Identity?
+            for file in before.machOFiles {
+                let (_, identity) = try PublisherCodeVerifier.verifiedStatic(path: framework + "/" + file,
+                    identifier: file == PolicyRuntimeLayout.interpreter ? "com.kleinperkins.shadow-sync.policy-helper" : nil,
+                    team: publisher.team)
+                if file == PolicyRuntimeLayout.interpreter { interpreterIdentity = identity }
+            }
+            guard let dictionary = try PropertyListSerialization.propertyList(from: info.bytes, format: nil) as? [String: Any] else {
+                throw PublisherPolicyError.unavailable
+            }
+            let release = try ReleaseIdentity(infoDictionary: dictionary)
+            try release.validate(requireProduction: true)
+            guard release == source.installation.candidate.release,
+                  release.releaseContractSHA256 == releaseContract.sha256 else { throw PublisherPolicyError.unavailable }
+            _ = try QualifiedAWAContract.decode(contract.bytes)
+            guard let interpreterIdentity else { throw PublisherPolicyError.unavailable }
+            let result = Self(interpreter: framework + "/" + PolicyRuntimeLayout.interpreter,
+                adapter: adapter.bytes, contract: contract.bytes, framework: framework, owner: owner,
+                layout: layout, tree: before, resources: [info, adapter, contract, runtimeSource, releaseContract, manifest, codeResources],
+                appExecutable: appExecutable, appExecutableIdentity: appExecutableIdentity, interpreterIdentity: interpreterIdentity)
+            result.coordinatorSource = source
+            try result.revalidate(); try source.revalidate()
+            return result
+        } catch { throw PublisherPolicyError.unavailable }
+        #endif
+    }
+
     func revalidate() throws {
         #if SHADOW_SYNC_TESTING
         let diagnosticStart = DispatchTime.now().uptimeNanoseconds
@@ -397,6 +462,7 @@ final class PublisherPolicyResources: @unchecked Sendable {
         }
         #endif
         do {
+            try coordinatorSource?.revalidate()
             try PolicyAuthorityFile.revalidate(resources)
             #if SHADOW_SYNC_TESTING
             if diagnosticCollect { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
@@ -410,6 +476,7 @@ final class PublisherPolicyResources: @unchecked Sendable {
             diagnosticStage = .runtimeTree
             #endif
             try tree.revalidate(root: framework, owner: owner, layout: layout)
+            try coordinatorSource?.revalidate()
             #if SHADOW_SYNC_TESTING
             // Three intervals: resource files, app identity, then runtime-tree
             // validation and defer overhead. All observed inputs stay private.

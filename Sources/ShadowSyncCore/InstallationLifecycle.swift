@@ -3841,7 +3841,8 @@ extension InstallationLifecycle {
     /// Existing fixed service diagnostic, owned by this live drain intent. Neither
     /// an injected controller result nor a caller-supplied status can prove absence.
     fileprivate func observeExclusiveServiceAbsence(owner: InstallationTransactionOwner,
-        journal: CustodyCatalogStore.InstallationJournalSession, deadline: MonotonicDeadline) throws {
+        journal: CustodyCatalogStore.InstallationJournalSession, deadline: MonotonicDeadline,
+        cancellation: InstallationCancellationGate) throws {
         var context: CommandCustodyContext?
         var registry = RetainedCleanupRegistry.shared
         #if SHADOW_SYNC_TESTING
@@ -3869,7 +3870,11 @@ extension InstallationLifecycle {
             #else
             command = try context!.prepare(.serviceStatus, budget: budget)
             #endif
+            #if SHADOW_SYNC_TESTING
+            try fault("exclusive-diagnostic-prepared")
+            #endif
             guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            try cancellation.check()
             result = try registry.start(command).wait()
         }
         context?.close(); context = nil
@@ -3978,8 +3983,8 @@ extension InstallationLifecycle {
 extension InstallationCapturedSlots {
     func requireExclusiveEmptyInstall() throws { try lifecycle.requireExclusiveEmptyInstall(self) }
     func observeExclusiveServiceAbsence(journal: CustodyCatalogStore.InstallationJournalSession,
-                                       deadline: MonotonicDeadline) throws {
-        try lifecycle.observeExclusiveServiceAbsence(owner: owner, journal: journal, deadline: deadline)
+                                       deadline: MonotonicDeadline, cancellation: InstallationCancellationGate) throws {
+        try lifecycle.observeExclusiveServiceAbsence(owner: owner, journal: journal, deadline: deadline, cancellation: cancellation)
     }
     func executeExclusive(_ permit: CustodyCatalogStore.InstallationExclusiveActionPermit) throws -> InstallationSlotSnapshot {
         try lifecycle.executeExclusive(permit, capture: self); return expected

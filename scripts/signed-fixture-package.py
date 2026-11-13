@@ -119,6 +119,8 @@ def required_case_ids():
                 'controlBeforeSwap', 'controlAfterSwap', 'controlAfterDirectorySync', 'controlAfterPreimageUnlink']
     ids = ['source-preflight', 'startup-stop', 'stop-store-uncertain', 'stop-completion-uncertain',
            'stop-held-completion', 'cleanup-positive', 'terminal-positive']
+    ids += ['start-adapter-join/' + n for n in ['in-budget', 'expired-complete', 'expired-pending']]
+    ids += ['start-adapter-join/' + n for n in ['fault-before-bind', 'fault-after-ack', 'fault-before-join', 'fault-after-refusal', 'h-expiry']]
     ids += ['cleanup-endpoint/' + n for n in ['beforeUnlink', 'unlinkFailure', 'afterUnlink', 'parentSyncFailure', 'afterParentSync', 'beforeAncestorClose']]
     ids += ['cleanup-publication/' + n for n in failures]
     ids += ['cleanup/' + n for n in ['wrong-owner', 'reader-alias', 'queue-join', 'listener-close', 'accepted-close',
@@ -138,6 +140,8 @@ def required_case_ids():
     ids += ['control/' + n for n in ['own-root', 'foreign-root', 'real-home-denial', 'network-denial', 'arbitrary-exec-denial',
         'wrong-role', 'adhoc-signature', 'wrong-team', 'wrong-identifier', 'wrong-cdhash', 'testing-profile-misuse',
         'missing-seal', 'missing-layout', 'missing-policy', 'stale-policy', 'policy-digest-mismatch']]
+    ids += ['fresh-driver/positive', 'fresh-driver/cancel-ready', 'fresh-driver/cancel-normal', 'fresh-driver/cleanup-after-unlink', 'fresh-driver/close/temporaryStore', 'fresh-driver/close/stagedSlots', 'fresh-driver/close/stagedParents', 'fresh-driver/close/bootstrapParents', 'fresh-driver/close/metadata', 'fresh-driver/close/admission', 'fresh-driver/close/state', 'fresh-driver/close/operation']
+    ids += ['fresh-driver/ready/claimed', 'fresh-driver/ready/intentRetained', 'fresh-driver/ready/contextRetained', 'fresh-driver/ready/commandRetained', 'fresh-driver/ready/submitted', 'fresh-driver/ready/retirementReceived', 'fresh-driver/ready/aliasesReleased', 'fresh-driver/ready/retired', 'fresh-driver/ready/completed', 'fresh-driver/commit/claimed', 'fresh-driver/commit/published', 'fresh-driver/commit/delivered', 'fresh-driver/publication/candidateIntent/afterReceipt', 'fresh-driver/publication/candidateIntent/beforeControl', 'fresh-driver/publication/candidateIntent/receiptBeforeSwap', 'fresh-driver/publication/candidateIntent/receiptAfterSwap', 'fresh-driver/publication/candidateIntent/receiptAfterDirectorySync', 'fresh-driver/publication/candidateIntent/controlBeforeSwap', 'fresh-driver/publication/candidateIntent/controlAfterSwap', 'fresh-driver/publication/candidateIntent/controlAfterDirectorySync', 'fresh-driver/publication/candidateIntent/controlAfterPreimageUnlink', 'fresh-driver/publication/candidateComplete/afterReceipt', 'fresh-driver/publication/candidateComplete/beforeControl', 'fresh-driver/publication/candidateComplete/receiptBeforeSwap', 'fresh-driver/publication/candidateComplete/receiptAfterSwap', 'fresh-driver/publication/candidateComplete/receiptAfterDirectorySync', 'fresh-driver/publication/candidateComplete/controlBeforeSwap', 'fresh-driver/publication/candidateComplete/controlAfterSwap', 'fresh-driver/publication/candidateComplete/controlAfterDirectorySync', 'fresh-driver/publication/candidateComplete/controlAfterPreimageUnlink', 'fresh-driver/publication/commitIntent/afterReceipt', 'fresh-driver/publication/commitIntent/beforeControl', 'fresh-driver/publication/commitIntent/receiptBeforeSwap', 'fresh-driver/publication/commitIntent/receiptAfterSwap', 'fresh-driver/publication/commitIntent/receiptAfterDirectorySync', 'fresh-driver/publication/commitIntent/controlBeforeSwap', 'fresh-driver/publication/commitIntent/controlAfterSwap', 'fresh-driver/publication/commitIntent/controlAfterDirectorySync', 'fresh-driver/publication/commitIntent/controlAfterPreimageUnlink', 'fresh-driver/publication/commitComplete/afterReceipt', 'fresh-driver/publication/commitComplete/beforeControl', 'fresh-driver/publication/commitComplete/receiptBeforeSwap', 'fresh-driver/publication/commitComplete/receiptAfterSwap', 'fresh-driver/publication/commitComplete/receiptAfterDirectorySync', 'fresh-driver/publication/commitComplete/controlBeforeSwap', 'fresh-driver/publication/commitComplete/controlAfterSwap', 'fresh-driver/publication/commitComplete/controlAfterDirectorySync', 'fresh-driver/publication/commitComplete/controlAfterPreimageUnlink', 'fresh-driver/delivery/afterReadback', 'fresh-driver/delivery/afterSendReservation', 'fresh-driver/lost-normal-started', 'fresh-driver/late-normal-started']
     return {'signed-installation/' + case for case in ids}
 
 
@@ -152,7 +156,9 @@ def registration(root=ROOT):
     require(case_source.startswith('#if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE\n'), 'case-build-fence')
     declared = re.findall(r'^    case [A-Za-z0-9]+ = "(signed-installation/[^"\n]+)"$', case_source, re.MULTILINE)
     require(0 < len(declared) <= 2048 and len(declared) == len(set(declared)), 'closed-source-case-roster')
-    positive = {'signed-installation/startup-stop', 'signed-installation/cleanup-positive', 'signed-installation/terminal-positive'}
+    positive = {'signed-installation/startup-stop', 'signed-installation/cleanup-positive', 'signed-installation/terminal-positive', 'signed-installation/fresh-driver/positive'}
+    # This additional positive proves command retirement only, not full startup.
+    positive.add('signed-installation/start-adapter-join/in-budget')
     require(positive.issubset(declared), 'required-positive-cases')
     expected_cases = [{'id': 'signed-installation/source-preflight', 'suite': 'signed-installation-source',
         'argument': '--verify-signed-installation-fixture-source', 'kind': 'source-preflight'}]
@@ -161,6 +167,27 @@ def registration(root=ROOT):
     require(value['cases'] == expected_cases, 'closed-case-roster')
     require(value['inherited_roles'] == {'coordinator': [0, 1, 2, 207, 208, 209],
             'host': [0, 1, 2, 213], 'adapter': [0, 1, 2, 198, 212]}, 'closed-descriptor-roster')
+    join_markers = {'signed-installation/start-adapter-join/' + n for n in ('in-budget', 'expired-complete', 'expired-pending')}
+    join_markers.add('SignedInstallationFixtureJoinController')
+    require(join_markers.issubset(value['required_binary_markers'].get('Contents/Helpers/ShadowSyncLifecycleCoordinator', [])),
+            'join-required-binary-markers')
+    control_markers = {'SignedInstallationFixtureJoinControlOwner', 'signed-installation/start-adapter-join/fault-before-join', 'SignedInstallationFixtureJoinControlFixtures', 'signed-installation/start-adapter-join/fault-after-ack', 'signed-installation/start-adapter-join/fault-after-refusal', 'SIGNED_JOIN_CONTROL_V1', 'signed-installation/start-adapter-join/fault-before-bind', 'signed-installation/start-adapter-join/h-expiry'}
+    require(control_markers.issubset(value['required_binary_markers'].get('Contents/Helpers/ShadowSyncLifecycleCoordinator', [])),
+            'control-required-binary-markers')
+    # These initial driver routes are compiled only in the separate signed
+    # fixture. Ordinary testing must exclude them just like production; their
+    # positive controls must be checked against the actual signed helper bytes.
+    fresh_markers = {'SignedFreshInstallationDriverFixture'}
+    fresh_markers.update('signed-installation/fresh-driver/' + suffix for suffix in (
+        'positive', 'cancel-normal', 'cancel-ready', 'cleanup-after-unlink',
+        'close/temporaryStore', 'close/stagedSlots', 'close/stagedParents',
+        'close/bootstrapParents', 'close/metadata', 'close/admission', 'close/state', 'close/operation'))
+    ordinary = decode(regular_bytes(root / 'Tests/Fixtures/production-test-markers.json'))
+    signed = decode(regular_bytes(root / 'Tests/Fixtures/signed-installation-source-markers.json'))
+    require(fresh_markers.isdisjoint(ordinary['markers']) and fresh_markers.issubset(signed['markers']),
+            'fresh-driver-build-classification')
+    require(fresh_markers.issubset(value['required_binary_markers'].get('Contents/Helpers/ShadowSyncLifecycleCoordinator', [])),
+            'fresh-driver-required-binary-markers')
     required = value['unavailable_requirements']
     require(type(required) is list and bool(required) and all(set(row) == {'id', 'status', 'reason'}
         and row['status'] == 'required-unavailable' and row['reason'] == 'source-route-or-reviewed-caller-pending'

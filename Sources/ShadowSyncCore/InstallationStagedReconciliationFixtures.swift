@@ -12,10 +12,31 @@ enum InstallationStagedReconciliationFixtures {
         catch CustodyResourceError.invalidResource { return }
         throw H.Failure(message: "unexpected recovery resource acceptance")
     }
-    private static func until(_ predicate: () throws -> Bool) throws {
+    // Failure attribution carries closed values only, never a fixture resource,
+    // snapshot, path or prior case's diagnostic state. Format only after expiry.
+    private struct ResumedDeadline {
+        enum Mode: String {
+            case completed
+            case mutationFailure = "lifecycle-mutation-failure"
+            case mutationCancel = "lifecycle-mutation-cancel"
+            case postflightTimeout = "lifecycle-postflight-timeout"
+        }
+        enum Wait: String {
+            case cancellationReady, commandFinished, commandRetirement
+            case observationHelpers, observationRetirement
+        }
+        let mode: Mode
+        let wait: Wait
+        var message: String {
+            "staged recovery retirement deadline mode=\(mode.rawValue) wait=\(wait.rawValue) error=deadline"
+        }
+    }
+    private static func until(failure: ResumedDeadline? = nil, _ predicate: () throws -> Bool) throws {
         let deadline = MonotonicDeadline(seconds: 8)
         while try !predicate() {
-            guard !deadline.hasExpired else { throw H.Failure(message: "staged recovery retirement deadline") }
+            guard !deadline.hasExpired else {
+                throw H.Failure(message: failure?.message ?? "staged recovery retirement deadline")
+            }
             Thread.sleep(forTimeInterval: 0.005)
         }
     }
@@ -26,20 +47,36 @@ enum InstallationStagedReconciliationFixtures {
         try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")))
     }
     private static func observe(_ recovery: R, root: String, registry: RetainedCleanupRegistry,
-                                mode: String = "installation-absent") throws -> T {
+                                mode: String = "installation-absent", probe: InstallationReconciliationDiagnostic? = nil,
+                                resumedMode: ResumedDeadline.Mode? = nil) throws -> T {
+        probe?.mark(.observationContext)
         var context: CommandCustodyContext? = try .testingRecovery(recovery, root: root)
         for operation in LifecycleLaunchCommand.Operation.allCases {
+            probe?.mark(.observationLifecycleRefusal)
             try H.refuses { _ = try context!.testingStagedLifecycle(operation) }
         }
+        probe?.mark(.observationPrepare)
         var command: PreparedCustodyCommand? = try context!.testingInstallationDiagnostic(mode)
+        probe?.mark(.observationStart)
         let handle = try registry.start(command!)
+        probe?.mark(.observationWait)
         let result = handle.wait()
+        probe?.mark(.observationAssertion)
         try H.check(result.phase == .finished && result.reason == nil, "recovery diagnostic did not finish")
+        probe?.mark(.observationToken)
         let token = try handle.stagedRecoveryRetirement()
+        probe?.mark(.observationAliasRefusal)
         try H.refuses { _ = try token.validate() }
+        probe?.mark(.observationRelease)
         command = nil; context!.close(); context = nil
-        try until { registry.testingCount == 0 && registry.testingOriginalHelpersReaped }
-        try until { (try? token.validate()) != nil }
+        probe?.mark(.observationHelpers)
+        try until(failure: resumedMode.map { ResumedDeadline(mode: $0, wait: .observationHelpers) }) {
+            registry.testingCount == 0 && registry.testingOriginalHelpersReaped
+        }
+        probe?.mark(.observationRetirement)
+        try until(failure: resumedMode.map { ResumedDeadline(mode: $0, wait: .observationRetirement) }) {
+            (try? token.validate()) != nil
+        }
         return token
     }
     static func unclaimedAndAbsentStop() throws {
@@ -80,51 +117,96 @@ enum InstallationStagedReconciliationFixtures {
     }
     static func retiredStarts() throws {
         marker()
-        try unpublishedKickstartRecovery()
-        // Actual registry proof distinguishes no successful spawn from an owned,
-        // never-resumed reaped helper. No decoded outcome grants that authority.
-        for cut in [RetainedCleanupRegistry.TestCut.beforeSpawn, .afterAnchor, .afterOwner] {
-            try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
-                _ = try journal.completeAdmission(deadline: .init(seconds: 3))
-                let intent = try journal.bootstrapCandidateIntent(deadline: .init(seconds: 3))
-                var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
-                var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.bootstrap)
-                registry.testingFault(cut)
-                let handle = try registry.start(command!)
-                let result = handle.wait()
-                try H.check(result.phase == .finished && result.journal?.outcome == .admissionRefused,
-                            "pre-spawn fixture did not retain actual refused outcome")
-                let retired = try handle.stagedRecoveryRetirement()
-                command = nil; context!.close(); context = nil
-                try until { (try? retired.validate()) != nil }
-                let path = location.path + "/custody/receipts/" + result.journal!.binding.requestID + ".json"
-                let archived = try Data(contentsOf: URL(fileURLWithPath: path))
-                let stop = try admission.stopOnly(after: registry.installationStagedStartRetirement(after: admission.closeStarts()))
-                let recovery = try journal.beginStartRecovery(admission: stop, after: retired, deadline: .init(seconds: 3))
-                let observed = try observe(recovery, root: root, registry: registry)
-                let resolved = try journal.reconcileStart(recovery, after: observed, deadline: .init(seconds: 3))
-                try H.check(resolved.phase == .recovery && resolved.step?.status == .complete
-                    && (try Data(contentsOf: URL(fileURLWithPath: path))) == archived,
-                    "recovery rewrote actual admission-refused archive")
+        let probe = InstallationReconciliationDiagnostic()
+        do {
+            probe.begin(.unpublishedKickstart)
+            try unpublishedKickstartRecovery(probe)
+            // Actual registry proof distinguishes no successful spawn from an owned,
+            // never-resumed reaped helper. No decoded outcome grants that authority.
+            for cut in [RetainedCleanupRegistry.TestCut.beforeSpawn, .afterAnchor, .afterOwner] {
+                switch cut {
+                case .beforeSpawn: probe.begin(.beforeSpawn)
+                case .afterAnchor: probe.begin(.afterAnchor)
+                default: probe.begin(.afterOwner) // The fixed list above contains only these three cuts.
+                }
+                try InstallationStagedJournalFixtures.fixture(observation: probe.observe) { root, location, _, _, admission, journal, registry in
+                    probe.mark(.completeAdmission)
+                    _ = try journal.completeAdmission(deadline: .init(seconds: 3))
+                    probe.mark(.bootstrapIntent)
+                    let intent = try journal.bootstrapCandidateIntent(deadline: .init(seconds: 3))
+                    probe.mark(.context)
+                    var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
+                    probe.mark(.prepare)
+                    var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.bootstrap)
+                    probe.mark(.fault)
+                    registry.testingFault(cut)
+                    probe.mark(.start)
+                    let handle = try registry.start(command!)
+                    probe.mark(.wait)
+                    let result = handle.wait()
+                    probe.mark(.actualOutcome)
+                    try H.check(result.phase == .finished && result.journal?.outcome == .admissionRefused,
+                                "pre-spawn fixture did not retain actual refused outcome")
+                    probe.mark(.retirementToken)
+                    let retired = try handle.stagedRecoveryRetirement()
+                    probe.mark(.releaseAliases)
+                    command = nil; context!.close(); context = nil
+                    probe.mark(.retirementWait)
+                    try until { (try? retired.validate()) != nil }
+                    let path = location.path + "/custody/receipts/" + result.journal!.binding.requestID + ".json"
+                    probe.mark(.archiveRead)
+                    let archived = try Data(contentsOf: URL(fileURLWithPath: path))
+                    probe.mark(.stopOnly)
+                    let stop = try admission.stopOnly(after: registry.installationStagedStartRetirement(after: admission.closeStarts()))
+                    probe.mark(.beginRecovery)
+                    let recovery = try journal.beginStartRecovery(admission: stop, after: retired, deadline: .init(seconds: 3))
+                    probe.mark(.observation)
+                    let observed = try observe(recovery, root: root, registry: registry, probe: probe)
+                    probe.mark(.reconcile)
+                    let resolved = try journal.reconcileStart(recovery, after: observed, deadline: .init(seconds: 3))
+                    probe.mark(.resolvedAssertion)
+                    try H.check(resolved.phase == .recovery && resolved.step?.status == .complete
+                        && (try Data(contentsOf: URL(fileURLWithPath: path))) == archived,
+                        "recovery rewrote actual admission-refused archive")
+                }
             }
+            probe.returned()
+        } catch {
+            probe.outerFailure(error)
+            throw error
         }
     }
-    private static func unpublishedKickstartRecovery() throws {
-        try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
+    private static func unpublishedKickstartRecovery(_ probe: InstallationReconciliationDiagnostic) throws {
+        try InstallationStagedJournalFixtures.fixture(observation: probe.observe) { root, location, _, _, admission, journal, registry in
+            probe.mark(.completeAdmission)
             _ = try journal.completeAdmission(deadline: .init(seconds: 30))
+            probe.mark(.bootstrap)
             try InstallationStagedCompletionFixtures.bootstrapForRecovery(root: root, admission: admission,
-                journal: journal, registry: registry)
+                journal: journal, registry: registry, trace: probe.bootstrapStage)
+            probe.mark(.kickstartIntent)
             let intent = try journal.kickstartCandidateIntent(deadline: .init(seconds: 3))
+            probe.mark(.context)
             var context: CommandCustodyContext? = try .testingStaged(admission, intent: intent, root: root)
+            probe.mark(.prepare)
             var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.kickstart)
-            let handle = try registry.start(command!), result = handle.wait()
+            probe.mark(.start)
+            let handle = try registry.start(command!)
+            probe.mark(.wait)
+            let result = handle.wait()
+            probe.mark(.terminal)
             guard let terminal = result.journal else { throw H.Failure(message: "kickstart original terminal missing") }
+            probe.mark(.actualOutcome)
             try H.check(result.phase == .finished && result.reason == nil && terminal.outcome == .completed,
                 "kickstart recovery did not finish actual command")
+            probe.mark(.retirementToken)
             let retired = try handle.stagedRecoveryRetirement()
+            probe.mark(.releaseAliases)
             command = nil; context!.close(); context = nil
+            probe.mark(.retirementWait)
             try until { (try? retired.validate()) != nil }
+            probe.mark(.retirementValidate)
             _ = try retired.validate()
+            probe.mark(.terminalAssertion)
             try H.check(terminal.waitStatus == 0 && terminal.target != nil,
                 "kickstart recovery lacks actual successful terminal")
             // Bootstrap completion deliberately enabled quiet fixture telemetry.
@@ -137,24 +219,33 @@ enum InstallationStagedReconciliationFixtures {
             // validates its exact original intent; fixtures do not inspect or
             // widen the production evidence's private representation.
             let path = location.path + "/custody/receipts/" + terminal.binding.requestID + ".json"
+            probe.mark(.archiveRead)
             let archive = try Data(contentsOf: URL(fileURLWithPath: path))
             // Deliberately omit successful installation completion. Recovery
             // keeps the actual command outcome, resolving only its intent.
+            probe.mark(.controlAssertion)
             try H.check((try read(location)) == intent.binding.control, "kickstart published without caller completion")
+            probe.mark(.stopOnly)
             let stop = try admission.stopOnly(after: registry.installationStagedStartRetirement(after: admission.closeStarts()))
+            probe.mark(.beginRecovery)
             let recovery = try journal.beginStartRecovery(admission: stop, after: retired, deadline: .init(seconds: 3))
-            let diagnostic = try observe(recovery, root: root, registry: registry, mode: "installation-loaded")
+            probe.mark(.observation)
+            let diagnostic = try observe(recovery, root: root, registry: registry, mode: "installation-loaded", probe: probe)
+            probe.mark(.reconcile)
             let resolved = try journal.reconcileStart(recovery, after: diagnostic, deadline: .init(seconds: 3))
+            probe.mark(.resolvedAssertion)
             try H.check(resolved.phase == .recovery && resolved.step?.action == .kickstartCandidate
                 && resolved.step?.status == .complete && resolved.readinessCommit == nil
                 && (try Data(contentsOf: URL(fileURLWithPath: path))) == archive,
                 "kickstart recovery altered outcome or granted readiness")
+            probe.mark(.replayRefusal)
             try H.refuses { _ = try journal.kickstartCandidateIntent(deadline: .init(seconds: 3)) }
         }
     }
     static func resumedOutcomes() throws {
         marker()
-        for mode in ["completed", "lifecycle-mutation-failure", "lifecycle-mutation-cancel", "lifecycle-postflight-timeout"] {
+        for failureMode in [ResumedDeadline.Mode.completed, .mutationFailure, .mutationCancel, .postflightTimeout] {
+            let mode = failureMode.rawValue
             try InstallationStagedJournalFixtures.fixture { root, location, _, _, admission, journal, registry in
                 if mode != "completed" {
                     let path = root + "/home/.staged-reconciliation-outcome"
@@ -173,11 +264,11 @@ enum InstallationStagedReconciliationFixtures {
                 var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.bootstrap, budget: budget)
                 let handle = try registry.start(command!)
                 if mode == "lifecycle-mutation-cancel" {
-                    try until { String(decoding: handle.snapshot().stderr, as: UTF8.self)
+                    try until(failure: .init(mode: failureMode, wait: .cancellationReady)) { String(decoding: handle.snapshot().stderr, as: UTF8.self)
                         .contains("shadow-sync-fixture-serial:1:ready:") }
                     handle.cancel()
                 }
-                try until { handle.snapshot().phase == .finished }
+                try until(failure: .init(mode: failureMode, wait: .commandFinished)) { handle.snapshot().phase == .finished }
                 let result = handle.snapshot()
                 guard let terminal = result.journal else { throw H.Failure(message: "recovery original terminal missing") }
                 let expected: CustodyReason = mode == "completed" ? .none : mode == "lifecycle-mutation-cancel" ? .cancelled
@@ -188,12 +279,12 @@ enum InstallationStagedReconciliationFixtures {
                             "recovery fixture did not resume actual mutation child")
                 let token = try handle.stagedRecoveryRetirement()
                 command = nil; context!.close(); context = nil
-                try until { (try? token.validate()) != nil }
+                try until(failure: .init(mode: failureMode, wait: .commandRetirement)) { (try? token.validate()) != nil }
                 let path = location.path + "/custody/receipts/" + terminal.binding.requestID + ".json"
                 let archived = try Data(contentsOf: URL(fileURLWithPath: path))
                 let stop = try admission.stopOnly(after: registry.installationStagedStartRetirement(after: admission.closeStarts()))
                 let recovery = try journal.beginStartRecovery(admission: stop, after: token, deadline: .init(seconds: 3))
-                let observed = try observe(recovery, root: root, registry: registry, mode: "installation-loaded")
+                let observed = try observe(recovery, root: root, registry: registry, mode: "installation-loaded", resumedMode: failureMode)
                 let resolved = try journal.reconcileStart(recovery, after: observed, deadline: .init(seconds: 3))
                 try H.check(resolved.phase == .recovery && resolved.step?.status == .complete
                     && resolved.readinessCommit == nil && (try Data(contentsOf: URL(fileURLWithPath: path))) == archived,

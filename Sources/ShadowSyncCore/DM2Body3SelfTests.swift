@@ -1391,6 +1391,24 @@ public enum V2Body3SelfTestRunner {
             catch SelectedRepositoryScopeError.cleanupPending { refused = true }
             try expect(refused, "malformed cleanup record accepted")
         }
+        // Returned values must survive overwrite and release of the borrowed
+        // input, just as they must survive the reader's temporary-buffer scope.
+        let ownedName = String(repeating: "caf\u{00e9}", count: 30)
+        let owned: (name: String, before: stat, parent: Int64, depth: Int)
+        do {
+            let bytes = record(Array(ownedName.utf8))
+            let storage = UnsafeMutableRawPointer.allocate(byteCount: bytes.count, alignment: 8)
+            defer { storage.deallocate() }
+            bytes.copyBytes(to: UnsafeMutableRawBufferPointer(start: storage, count: bytes.count))
+            let borrowed = Data(bytesNoCopy: storage, count: bytes.count, deallocator: .none)
+            owned = try RetentionArtifactStore.testingDecodeCleanupRecord(borrowed, index: 2)
+            storage.initializeMemory(as: UInt8.self, repeating: 0, count: bytes.count)
+            withExtendedLifetime(borrowed) {}
+        }
+        _ = try RetentionArtifactStore.testingDecodeCleanupRecord(record(Array("replacement".utf8)), index: 2)
+        try expect(owned.name == ownedName && owned.parent == 0 && owned.depth == 1
+            && owned.before.st_ino == metadata.st_ino && owned.before.st_size == metadata.st_size,
+            "cleanup record values escaped as borrowed storage")
     }
 
     private static func recoveryArtifact(

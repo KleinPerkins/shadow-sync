@@ -111,6 +111,185 @@ def verify_signed_host_side_effects(raw):
                 'ordinary-activation-changed')
 
 
+def verify_signed_adapter_join(files, catalog):
+    """Connected source obligations only; actual joins/fault unwinds require native qualification."""
+    fixture = files['SignedInstallationFixtureJoinFixtures.swift']
+    route = files['SignedInstallationFixtureEntrypoint.swift']
+    early = body(route, 'if scenario.isStartAdapterJoin {')
+    require(compact(early) == compact('''try SignedInstallationFixtureJoinFixtures.run(scenario, bootstrap: bootstrap,
+        context: context, service: service, custody: custody)
+        return''') and route.index('if scenario.isStartAdapterJoin {') < route.index('bootstrap.reserve('),
+        'join-early-dispatch')
+    factory = body(files['SignedInstallationFixtureContext.swift'], 'func makeAdapterChannel(')
+    require(factory.index('SignedInstallationFixtureAdapterChannel(') < factory.index('service.attachJoinFixture(')
+        < factory.index('channel.start()'), 'join-original-attachment')
+    service = files['SignedInstallationFixtureService.swift']
+    attach = body(service, 'func attachJoinFixture(')
+    require(attach.index('guard request.authority == .installationStagedStart, request.kind == .launchctlMutation')
+        < attach.index('controller.bind(') < attach.index('channel.attachJoinFixture(controller)'), 'join-exact-attachment')
+    arm = body(service, 'func armJoinFixture(')
+    require('controller.requireOwner(context: context, custody: rootCustody)' in arm
+        and 'guard !closing, joinFixture == nil' in arm, 'join-one-shot-arm')
+    match = compact(body(fixture, 'private func validateMatch('))
+    for requirement in ('signedRequest.bytes == request.bytes', 'signedRequest.root == request.root',
+        'command.authority == .installationStagedStart', 'command.kind == .launchctlMutation',
+        'LifecycleLaunchCommand(operation: .bootstrap, account: account).arguments',
+        'binding.validationProfile == profile', 'binding.control.transaction?.id == transaction',
+        'try binding.control.bindingDigest() == bindingDigest', 'command.budget.receipt < ceiling.absoluteUptimeNanoseconds'):
+        require(compact(requirement) in match, 'join-exact-match:' + requirement)
+    require('bound == nil, !teardown, !ceiling.hasExpired' in body(fixture, 'func bind('), 'join-duplicate-bind')
+    adapter = files['SignedInstallationFixtureAdapterChannel.swift']
+    serve = body(adapter, 'private func serve(')
+    hold = 'try joinFixture?.holdAfterFinalAcknowledgment(channel: self)'
+    require(serve.count(hold) == 1 and serve.index(hold) > serve.rindex('!reader.hasBufferedBytes else')
+        and compact(serve).endswith(compact('}' + hold)), 'join-hold-after-real-final-ack')
+    require(compact(body(adapter, 'func cancel()')) == compact('''lock.lock(); cancelled = true; lock.unlock()
+        parent.interruptSocket()'''), 'join-cancel-cannot-release')
+    join = body(adapter, 'func joinAndRetire(')
+    require('try work?.join(deadline: deadline)' in join and join.index('try work?.join(deadline: deadline)')
+        < join.index('parent.retireChecked()') < join.index('endJoin(trace, succeeded: true)'), 'join-real-work')
+    require('try value.value(deadline: deadline)' in body(adapter, 'func fixtureValue('), 'join-real-result')
+    for signature, semaphore in (('func holdAfterFinalAcknowledgment(', 'adapterRelease'), ('func holdSubmitted(', 'invocationRelease')):
+        latch = body(fixture, signature)
+        require(semaphore + '.wait(timeout: .init(uptimeNanoseconds: ceiling.absoluteUptimeNanoseconds))' in latch
+            and 'emergency = true' in latch and 'throw CustodyRecordError.busy' in latch
+            and latch.index('lock.unlock()') < latch.index(semaphore + '.wait('), 'join-finite-hold')
+    release = body(fixture, 'func releaseForTeardown(')
+    require('releaseAdapter(); releaseInvocation()' in release, 'join-owner-release')
+    close = body(service, 'func closeFixtureService(')
+    require(close.index('controller?.releaseForTeardown()') < close.index('channel.cancel()') < close.index('channel.joinAndRetire(')
+        and 'purpose: .fixtureTeardown' in close, 'join-service-teardown-order')
+    owner = body(fixture, 'private final class SignedInstallationFixtureJoinOwner:')
+    require('try invocation.join(deadline: deadline)' in owner and 'try registry.testingDisposeSignedJoin(' in owner
+        and 'failures.append(error)' in owner and 'if let failure = failures.first { throw failure }' in owner,
+        'join-unwind-retains-failure')
+    run = body(fixture, 'static func run(')
+    require('defer { owner.releaseOnUnwind() }' in run, 'join-root-owned-before-fallible-work')
+    require(run.index('custody.retainService(owner)') < run.index('defer { owner.releaseOnUnwind() }')
+        < run.index('bootstrap.reserve(') < run.index('service.armJoinFixture(controller)') < run.index('custody.startWork'),
+        'join-root-owned-before-fallible-work')
+    require('[weak owner]' in run, 'join-checkpoint-owner-cycle')
+    checkpoint = body(owner, 'func checkpoint(')
+    require('point == .commandRetained' in checkpoint and 'registry.testingDeferNextRead(.outputUntilReleased)' in checkpoint
+        and 'point == .submitted' in checkpoint and 'try controller.holdSubmitted()' in checkpoint, 'join-output-and-submitted-cuts')
+    dispose = body(files['RetainedCleanupRegistry.swift'], 'func testingDisposeSignedJoin(')
+    for requirement in ('try controller.requireOwner(', 'try invocation.join(', 'try controller.requireTeardownJoin()',
+        'handle.registry === self', 'entry.cell === handle.cell', 'entry.expiredCleanup?.state == .uncertain',
+        'entry.resources.testingSignedJoinMatches(controller)', 'case .reaped(0) = owner.poll()',
+        'entry.terminal != nil, entry.statusEnded, entry.stdoutEnded, entry.stderrEnded, entry.traceEnded',
+        'entry.resources.installationRetiredSuccessfully', 'entry.mapping?.childCopiesRetiredSuccessfully == true',
+        'installationCommands[handle.key] === record', '!record.resourcesClosedSuccessfully', '!record.issuanceQualified',
+        'guard remove(entry)'):
+        require(requirement in dispose, 'join-disposal-precondition:' + requirement)
+    for forbidden in ('resources.retire(', 'record.retired =', 'record.exactRemoval =', 'record.issuanceQualified =',
+                      'nextExpiredCleanupObservation?', 'testingDispose()'):
+        require(forbidden not in dispose, 'join-disposal-not-production-success')
+    require('case .startAdapterJoinInBudget, .startAdapterJoinExpiredComplete, .startAdapterJoinExpiredPending' in files['SignedInstallationFixtureCase.swift'],
+        'join-closed-family')
+    for assertion in ('joins[0].deadline == cap', 'joins[0].entered >= cap', 'controller.finalAcknowledgmentHeld && measured.expiryUncertain',
+        'later.entry == measured.entry', '!later.ledgerClosed && !later.removed && !later.issuance && !later.sealed',
+        'later.scope == sticky.scope', 'events.observed == [.beforeRead, .afterRead]', '!controller.emergencyReleased'):
+        require(assertion in run, 'join-causal-assertion:' + assertion)
+    require('scope: record.scope?.testingSignedJoinScope(record.request)' in files['RetainedCleanupRegistry.swift']
+        and 'liveRequests.contains(request.binding.requestID)' in body(catalog, 'func testingSignedJoinScope('), 'join-sticky-scope-observation')
+    controls = body(fixture, 'func requireRejectedMatches(')
+    require('try H.refuses { try bind(' in controls and 'binding: foreignProfile)' in controls
+        and 'signedRequest: foreignRequest' in controls and 'CustodyAuthorityMode.lifecycleMutation' in controls
+        and '.launchctlRead' in controls and 'operation: .kickstart' in controls
+        and 'try controller.requireRejectedMatches(' in attach, 'join-adversarial-match-controls')
+
+
+def verify_signed_adapter_controls(files):
+    """Source-connected negative obligations; never a native timing/cleanup proof."""
+    f = files['SignedInstallationFixtureJoinControlFixtures.swift']
+    route = files['SignedInstallationFixtureEntrypoint.swift']
+    controller = files['SignedInstallationFixtureJoinFixtures.swift']
+    registry = files['RetainedCleanupRegistry.swift']
+    scenarios = files['SignedInstallationFixtureCase.swift']
+    controls = ('startAdapterJoinFaultBeforeBind', 'startAdapterJoinFaultAfterAck',
+        'startAdapterJoinFaultBeforeJoin', 'startAdapterJoinFaultAfterRefusal', 'startAdapterJoinHExpiry')
+    classify = body(scenarios, 'var isStartAdapterJoinControl:')
+    require(set(re.findall(r'\.([A-Za-z0-9]+)', classify)) == set(controls), 'control-closed-classifier')
+    require(compact(body(scenarios, 'var isStartAdapterJoin:')) == compact('''
+        switch self {
+        case .startAdapterJoinInBudget, .startAdapterJoinExpiredComplete, .startAdapterJoinExpiredPending: return true
+        default: return false
+        }'''), 'control-normal-classifier')
+    require(route.index('requireControlReportTransport()') < route.index('RuntimeSuiteGuardian(')
+        < route.index('context.retainRootCustody()') < route.index('if scenario.isStartAdapterJoinControl {', route.index('context.retainRootCustody()'))
+        < route.index('if scenario.isStartAdapterJoin {'), 'control-early-preflight-dispatch')
+    early = body(route[route.index('context.retainRootCustody()'):], 'if scenario.isStartAdapterJoinControl {')
+    require(compact(early) == compact('''try SignedInstallationFixtureJoinControlFixtures.runSubject(scenario, bootstrap: bootstrap,
+        context: context, service: service, custody: custody)'''), 'control-throwing-dispatch')
+    run = body(f, 'static func runSubject(')
+    require('throws -> Never' in f and 'defer { owner.releaseOnUnwind() }' in run
+        and run.index('custody.retainService(owner)') < run.index('bootstrap.reserve(')
+        < run.index('service.armJoinFixture(controller)') < run.index('func exerciseCut()'), 'control-original-owner')
+    require('[weak owner]' in run and 'try H.refuses { try service.armJoinFixture(controller) }' in run, 'control-original-checkpoint')
+    exercise = body(f, 'func exerciseCut()')
+    beforebind = body(exercise, 'if scenario == .startAdapterJoinFaultBeforeBind')
+    require(exercise.index('throw InjectedAssertion(certificate: value)') < exercise.index('custody.startWork')
+        and all(x in beforebind for x in ('controller.binding == nil', 'state.invocation == nil', 'state.handle == nil',
+            'quiet.preceding > 0', 'quiet.precedingRetired', 'bootstrapStartObservation() == .notAttempted')),
+        'control-before-bind-prerequisites')
+    require(exercise.index('RuntimeSuiteGuardian.now < limit') < exercise.index('if scenario != .startAdapterJoinFaultAfterAck')
+        < exercise.index('expiry.expiryAwaiting') < exercise.index('if scenario == .startAdapterJoinFaultAfterRefusal')
+        < exercise.index('requireUncertain(measured') < exercise.rindex('throw InjectedAssertion'), 'control-reached-prerequisites')
+    cert = body(f, 'private final class Certificate')
+    require('!consumed, self.scenario' in cert and 'bound?.channel == controller.binding?.channel' in cert
+        and 'requestDigest == CustodyRecordBinding.digest(request.bytes)' in cert and 'consumed = true' in cert
+        and 'current.originalReceipt == snapshot.originalReceipt' in cert
+        and 'current.effectiveReceipt == snapshot.effectiveReceipt' in cert
+        and 'injection.certificate === certificate' in run and 'catch let injection as InjectedAssertion' in run,
+        'control-one-use-bound-certificate')
+    h = body(exercise, 'if scenario == .startAdapterJoinHExpiry')
+    require(h.index('try wait(context.deadline)') < h.index('try requireH(observed, released: false)')
+        < h.index('service.joinFixtureValue(') < h.index('work.value(deadline: context.deadline)')
+        < h.index('timeout = HSubjectFailure'), 'control-two-actual-H-values')
+    require(h.count('catch let error as SignedJoinHoldTimeout') == 2 and 'catch {' not in h
+        and 'deadline: controller.ceiling' not in h and all(x not in h for x in ('controller.release', 'owner.release', 'service.close')),
+        'control-no-generic-H-error')
+    require('!observation.traceOverflow' in body(f, 'private static func requireH(') and 'traceOverflow = true' in controller, 'control-independent-trace-overflow')
+    require('catch CustodyRecordError.fenced' in run and 'bootstrap.stagedReadinessClosureObservation() == .joined' in run, 'control-specific-expiry-refusal')
+    for method, semaphore, observation in [('func holdAfterFinalAcknowledgment(', 'adapterRelease', 'adapterObservation'),
+                                         ('func holdSubmitted(', 'invocationRelease', 'invocationObservation')]:
+        hold = body(controller, method)
+        require(hold.index('let result = ' + semaphore + '.wait(') < hold.index(observation + '.returned = RuntimeSuiteGuardian.now')
+            < hold.index('throw SignedJoinHoldTimeout(') and observation + '.result = result == .success ? .signalled : .timedOut' in hold,
+            'control-real-wait-return')
+    owner = body(f, 'private final class SignedInstallationFixtureJoinControlOwner:')
+    require('testingDisposeSignedJoin' not in owner and 'testingDispose()' not in f
+        and 'if let failure = failures.first { throw failure }' in owner, 'control-no-automatic-disposal')
+    negative = run[run.index('// Freeze the measured union'):]
+    require(negative.index('let measured = try registry.testingSignedJoinSnapshot') < negative.index('service.closeFixtureService(')
+        < negative.index('let later = try registry.testingSignedJoinSnapshot') < negative.index('registry.testingDisposeSignedJoin('),
+        'control-measure-before-teardown-dispose')
+    require('guard scenario == .startAdapterJoinFaultBeforeJoin || scenario == .startAdapterJoinFaultAfterRefusal' in negative
+        and f.count('try registry.testingDisposeSignedJoin(') == 1
+        and 'later.physicallyRetired && later.scope == sticky.scope' in negative,
+        'control-exact-uncertain-disposal')
+    ack = body(run, 'if scenario == .startAdapterJoinFaultAfterAck')
+    require('try invocation.value(deadline: deadline)' in ack and 'RuntimeSuiteGuardian.now < cap' in ack
+        and 'quiet.selectedDelivered' in ack and 'bootstrap.bootstrapStartObservation() == .complete' in ack
+        and 'testingDisposeSignedJoin' not in ack, 'control-after-ack-ordinary-success')
+    require(run.index('try owner.closeFixtureService(') < run.index('try custody.finish(deadline: context.deadline)')
+        < run.index('RuntimeFixtureSession.didFinishInstallationRoot(custody)') < run.index('try emit(report, deadline: context.deadline)')
+        < run.index('if let timeout { throw timeout }') < run.rindex('throw InjectedAssertion'), 'control-root-report-rethrow')
+    require('quiet.preceding > 0 && quiet.precedingRetired && quiet.publicationInactive' in run, 'control-historical-retirement')
+    quiet = body(registry, 'func testingSignedJoinQuiescence(')
+    for x in ('queue.sync', 'reservationMutex.lock()', 'reservedIDs == Set(reservationOutputs.keys)',
+        'reservationOutputs.values.reduce(0, +) == outputReserved', '$0.delivery == .delivered',
+        '$0.resources == nil && $0.prepared == nil && $0.scope == nil'):
+        require(x in quiet, 'control-quiescence-ledgers')
+    emit = body(f, 'private static func emit(')
+    for x in ('bytes.count <= 4096', 'Darwin.write(', 'buffer.baseAddress!.advanced(by: offset)', 'errno == EINTR',
+        'errno == EAGAIN', 'Darwin.poll(', 'UInt64(Int32.max)', 'POLLERR | POLLHUP | POLLNVAL'):
+        require(x in emit, 'control-bounded-writer')
+    require(emit.count('!deadline.hasExpired') >= 2 and 'F_SETFL' not in f and 'fputs' not in emit, 'control-original-C-writes')
+    require('flags & O_NONBLOCK' in body(f, 'static func requireControlReportTransport(')
+        and '(info.st_mode & S_IFMT) == S_IFIFO' in f, 'control-nonblocking-pipe-preflight')
+
+
 def verify(root):
     core = Path(root) / 'Sources/ShadowSyncCore'
     files = {name: (core / name).read_text() for name in (
@@ -120,6 +299,8 @@ def verify(root):
         'CustodyInheritedCommand.swift', 'RetainedCleanupRegistry.swift', 'CustodyResources.swift',
         'SignedInstallationFixtureHostChannel.swift', 'SignedInstallationFixtureAdapterChannel.swift',
         'SignedInstallationFixtureService.swift', 'SignedInstallationFixtureEntrypoint.swift', 'SignedInstallationFixtureCase.swift',
+        'FreshInstallationFixture.swift',
+        'SignedInstallationFixtureJoinFixtures.swift', 'SignedInstallationFixtureJoinControlFixtures.swift',
         'InstalledHostStartup.swift', 'InstallationPrecommitSession.swift', 'InstallationBootstrap.swift',
         'InstallationLifecycle.swift', 'InstallationStorageFixtures.swift', 'QualifiedCommandGraph.swift')}
     app = Path(root) / 'Sources/ShadowSyncApp'
@@ -128,6 +309,9 @@ def verify(root):
     require(markers['schema'] == 'shadow-sync-signed-installation-source-markers/v1'
             and markers['qualification'] == 'connected-startup-stop-source-only'
             and len(set(markers['markers'])) == len(markers['markers']) > 0, 'marker-contract')
+    require({'SignedInstallationFixtureJoinController', 'SignedInstallationFixtureJoinFixtures',
+        'signed-installation/start-adapter-join/in-budget', 'signed-installation/start-adapter-join/expired-complete',
+        'signed-installation/start-adapter-join/expired-pending'}.issubset(markers['markers']), 'join-required-exclusion-markers')
     for testing, signed in ((False, False), (False, True), (True, False)):
         product = '\n'.join(selected(body, testing, signed) for body in files.values())
         require(not any(marker in product for marker in markers['markers']), 'fixture-route-in-ordinary-build')
@@ -224,6 +408,8 @@ def verify(root):
         'bootstrap.commitCandidateReadiness()', 'scenario.run(')
     positions = [route.index(call) for call in sequence]
     require(positions == sorted(positions), 'disconnected-installation-order')
+    verify_signed_adapter_join(signed_sources, catalog)
+    verify_signed_adapter_controls(signed_sources)
     scenarios = signed_sources['SignedInstallationFixtureCase.swift']
     for actual in ('InstallationStartupFixtures.authenticatedStartupAndStop(',
                    'InstallationStartupFixtures.authenticatedStopRetirementCut(',

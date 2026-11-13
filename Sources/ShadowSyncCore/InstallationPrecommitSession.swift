@@ -323,6 +323,51 @@ final class InstallationPrecommitSession: @unchecked Sendable {
     private var verificationBarrier: CustodyLeaseTestingBarrier?
     enum TestingDeliveryPoint { case afterReadback, afterSendReservation }
     private var deliveryBarrier: (TestingDeliveryPoint, CustodyLeaseTestingBarrier)?
+    private var deliveryFailure: TestingDeliveryPoint?
+    private var reachedDeliveryFailure: TestingDeliveryPoint?
+    func testingFailDelivery(at point: TestingDeliveryPoint) throws {
+        state.lock(); defer { state.unlock() }
+        guard !cancelled, outcome == nil, commitDelivery == nil, deliveryFailure == nil else { throw CustodyRecordError.fenced }
+        deliveryFailure = point
+    }
+    var testingReachedDeliveryFailure: TestingDeliveryPoint? {
+        state.lock(); defer { state.unlock() }; return reachedDeliveryFailure
+    }
+    enum TestingNormalFrameCut { case discard, deferred }
+    private var normalFrameCut: (TestingNormalFrameCut, CustodyLeaseTestingBarrier?)?
+    private var receivedNormalControl: InstallationControlRecord?
+    // These observations arise only after the actual frame, native peer and
+    // transcript checks. They neither mint nor return the startup capability.
+    var testingNormalEvidence: (control: InstallationControlRecord?, retained: Bool, claimed: Bool) {
+        state.lock(); defer { state.unlock() }; return (receivedNormalControl, started != nil, startedClaimed)
+    }
+    func testingCutNormalFrame(_ cut: TestingNormalFrameCut, barrier: CustodyLeaseTestingBarrier? = nil) throws {
+        state.lock(); defer { state.unlock() }
+        guard !cancelled, outcome == nil, commitDelivery == nil, normalFrameCut == nil,
+              (cut == .discard ? barrier == nil : barrier != nil) else { throw CustodyRecordError.fenced }
+        normalFrameCut = (cut, barrier)
+    }
+    private func testingBeforeNormalFrame() throws {
+        state.lock(); let barrier = normalFrameCut?.1; state.unlock()
+        if let barrier, !barrier.pause() { throw CustodyRecordError.busy }
+    }
+    private func testingReceivedNormalFrame(_ control: InstallationControlRecord) throws {
+        state.lock()
+        let cut = normalFrameCut; normalFrameCut = nil
+        receivedNormalControl = control; state.broadcast(); state.unlock()
+        if cut != nil { throw CustodyRecordError.injectedFailure }
+    }
+    func testingWaitForNormalEvidence(deadline: MonotonicDeadline) throws {
+        state.lock(); defer { state.unlock() }
+        guard let anchored = anchor?.1,
+              deadline.absoluteUptimeNanoseconds == anchored.absoluteUptimeNanoseconds else { throw CustodyRecordError.fenced }
+        while outcome == nil && !cancelled {
+            guard !deadline.hasExpired else { throw CustodyRecordError.busy }
+            _ = state.wait(until: Date(timeIntervalSinceNow: min(0.02, Double(deadline.remainingMilliseconds) / 1_000)))
+        }
+        guard !deadline.hasExpired, receivedNormalControl != nil, started == nil, !startedClaimed,
+              case .failure? = outcome else { throw CustodyRecordError.fenced }
+    }
     func testingPauseDelivery(at point: TestingDeliveryPoint, barrier: CustodyLeaseTestingBarrier) throws {
         state.lock(); defer { state.unlock() }
         guard !cancelled, outcome == nil, commitDelivery == nil, deliveryBarrier == nil else {
@@ -334,8 +379,11 @@ final class InstallationPrecommitSession: @unchecked Sendable {
         state.lock()
         let barrier = deliveryBarrier.flatMap { $0.0 == point ? $0.1 : nil }
         if barrier != nil { deliveryBarrier = nil }
+        let fail = deliveryFailure == point
+        if fail { deliveryFailure = nil; reachedDeliveryFailure = point }
         state.unlock()
         if let barrier, !barrier.pause() { throw CustodyRecordError.busy }
+        if fail { throw CustodyRecordError.injectedFailure }
     }
     func testingPauseVerification(_ barrier: CustodyLeaseTestingBarrier) {
         state.lock(); verificationBarrier = barrier; state.unlock()
@@ -875,11 +923,17 @@ final class InstallationPrecommitSession: @unchecked Sendable {
         commit: InstallationReadinessMessage, delivery: CustodyCatalogStore.InstallationStagedJournal.CommitDelivery,
         ready: ReadyObservation, deadline: MonotonicDeadline) throws {
         var transcript = try InstallationStartupTranscript(commit: commit)
+        #if SHADOW_SYNC_TESTING
+        try testingBeforeNormalFrame()
+        #endif
         let normal = try InstallationReadinessMessage.decode(reader.read(descriptor: socket.value, deadline: deadline))
         guard !reader.hasBufferedBytes else { throw CustodyProtocolError.invalidSequence }
         _ = try currentDeadline(); try rejectExtraPeer()
         _ = try InstallationPrecommitTransport.authenticate(socket, identity: expected, uid: uid, original: ready.peer)
         try transcript.consume(normal, sender: .host, deadline: deadline)
+        #if SHADOW_SYNC_TESTING
+        try testingReceivedNormalFrame(delivery.control)
+        #endif
         let observation = NormalStarted(self, control: delivery.control, host: ready.host, digest: try normal.digest(), deadline: deadline)
         state.lock(); startupCandidate = observation; state.unlock()
         try journal.validateNormalStartup(observation, delivery: delivery, deadline: deadline)
@@ -956,6 +1010,13 @@ final class InstallationPrecommitSession: @unchecked Sendable {
         let joined = CleanupJoined(self, permit: permit)
         try joined.validate(permit)
         return joined
+    }
+    func observeWorkFinished(on queue: DispatchQueue,
+        observer: @escaping @Sendable () -> Void) -> InstallationObservationSubscription {
+        let subscription = InstallationObservationSubscription(on: queue, observer: observer)
+        // group was entered in init. This does not join or retire the endpoint.
+        group.notify(queue: queue) { subscription.publish() }
+        return subscription
     }
     func cancelAndJoin(deadline: MonotonicDeadline) throws {
         state.lock()

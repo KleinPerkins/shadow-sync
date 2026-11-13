@@ -65,6 +65,10 @@ final class InstallationReadinessFixtureCustody: @unchecked Sendable {
     private var work: [InstallationFixtureWork] = []
     private var registries: [RetainedCleanupRegistry] = []
     private var bootstraps: [InstallationBootstrap] = []
+    private var attempts: [FreshInstallationAttempt] = []
+    func retain(_ attempt: FreshInstallationAttempt) {
+        lock.lock(); attempts.append(attempt); lock.unlock()
+    }
     private var namedSockets: [InstallationNamedSocketFixtureCustodyOwner] = []
     init(root: String, identity: FileIdentity) { self.root = root; self.identity = identity }
     func retain(_ journal: CustodyCatalogStore.InstallationStagedJournal) {
@@ -116,7 +120,7 @@ final class InstallationReadinessFixtureCustody: @unchecked Sendable {
         #else
         try FileManager.default.removeItem(atPath: root)
         #endif
-        lock.lock(); self.journals.removeAll(); self.work.removeAll(); self.registries.removeAll(); self.bootstraps.removeAll(); self.namedSockets.removeAll()
+        lock.lock(); self.journals.removeAll(); self.work.removeAll(); self.registries.removeAll(); self.bootstraps.removeAll(); self.attempts.removeAll(); self.namedSockets.removeAll()
         #if SHADOW_SYNC_SIGNED_FIXTURE
         self.services.removeAll()
         #endif
@@ -137,7 +141,8 @@ enum InstallationStorageFixtures {
         catch is PolicyAuthorityFileError { return }
         throw Failure(message: "unexpected installation metadata acceptance")
     }
-    static func fixture(_ body: (String, StateLocation) throws -> Void) throws {
+    static func fixture(observation: InstallationReconciliationDiagnostic.Observer? = nil,
+        _ body: (String, StateLocation) throws -> Void) throws {
         var name = Array((try RuntimeFixtureSession.fixturePrefix("shadow-sync-ic.") + "XXXXXX").utf8CString)
         let root = try name.withUnsafeMutableBufferPointer { buffer in
             guard let pointer = mkdtemp(buffer.baseAddress) else { throw Failure(message: "fixture root creation") }
@@ -151,17 +156,26 @@ enum InstallationStorageFixtures {
         do {
             try check(mkdir(root + "/state", 0o700) == 0, "fixture state parent")
             try body(root, StateLocation.isolated(root: root))
-        } catch { failure = error }
+        } catch {
+            observation?(.rootCaught, .init(error))
+            failure = error
+        }
+        observation?(.rootCleanupEntry, .none)
         do {
             try custody.finish(deadline: .init(seconds: 3))
             RuntimeFixtureSession.didFinishInstallationRoot(custody)
         } catch {
+            observation?(.rootCleanupFailed, .init(error))
             // The outer case retains the actual journal/work/registry and root.
             // No defer removes a live tree or claims a timed-out join succeeded.
             fputs("INSTALLATION FIXTURE ROOT CLEANUP PENDING\n", stderr); fflush(stderr)
             throw error
         }
-        if let failure { throw failure }
+        observation?(.rootCleanupReturned, .none)
+        if let failure {
+            observation?(.rootRethrow, .init(failure))
+            throw failure
+        }
     }
     static func initial() throws {
         try fixture { root, location in

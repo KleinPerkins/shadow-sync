@@ -1803,17 +1803,47 @@ public enum DiscoveryCallerSelfTestRunner {
         }
         let location = try StateLocation.isolated(root: fixture.root)
         var final: CustodyJournal?
-        func absent(_ observation: RepositoryWorkerObservation) -> Bool {
+        // Keep only the last predicate observations from this exact readiness
+        // record. These closed labels grant no custody and perform no extra probe.
+        var journalObservation = "unreadable"
+        var helperObservation = "not-sampled", targetObservation = "not-sampled"
+        func absent(_ observation: RepositoryWorkerObservation, diagnostic: inout String) -> Bool {
             var info = proc_bsdinfo(); errno = 0
             let count = proc_pidinfo(Int32(observation.pid), PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size))
-            return (count == 0 && errno == ESRCH) || (count == MemoryLayout<proc_bsdinfo>.size
+            let observationErrno = errno
+            let isAbsent = (count == 0 && observationErrno == ESRCH) || (count == MemoryLayout<proc_bsdinfo>.size
                 && (info.pbi_start_tvsec != observation.startSeconds || info.pbi_start_tvusec != observation.startMicroseconds))
+            if count == 0 && observationErrno == ESRCH { diagnostic = "absent-esrch" }
+            else if count == MemoryLayout<proc_bsdinfo>.size {
+                if info.pbi_start_tvsec != observation.startSeconds || info.pbi_start_tvusec != observation.startMicroseconds {
+                    diagnostic = "absent-reused"
+                } else {
+                    diagnostic = info.pbi_status == UInt32(SZOMB) ? "same-start-zombie" : "same-start-present"
+                }
+            } else { diagnostic = "unavailable" }
+            return isAbsent
         }
         while true {
-            if let bytes = try? repositoryCustodyBytes(location, ready.request + ".json"),
-               let journal = try? CustodyJournal.decode(bytes), journal.phase == .terminal,
-               absent(ready.helper), absent(ready.target) { final = journal; break }
-            guard !drain.hasExpired else { throw Failure.assertion("repository orphan custody pending; evidence retained") }
+            journalObservation = "unreadable"
+            helperObservation = "not-sampled"; targetObservation = "not-sampled"
+            if let bytes = try? repositoryCustodyBytes(location, ready.request + ".json") {
+                journalObservation = "undecodable"
+                if let journal = try? CustodyJournal.decode(bytes) {
+                    journalObservation = journal.phase.rawValue
+                    if journal.phase == .terminal,
+                       absent(ready.helper, diagnostic: &helperObservation),
+                       absent(ready.target, diagnostic: &targetObservation) { final = journal; break }
+                }
+            }
+            guard !drain.hasExpired else {
+                // Failure-only, one closed line. A skipped short-circuit operand
+                // stays not-sampled; a zombie never becomes absence or ownership.
+                let phaseLabel = ["system", "policy", "root", "origin", "transport", "command", "postflight"].contains(phase) ? phase : "unknown"
+                fputs("DISCOVERY REPOSITORY WORKER PENDING phase=\(phaseLabel)"
+                    + " worker_reaped=true journal=\(journalObservation)"
+                    + " helper=\(helperObservation) target=\(targetObservation)\n", stderr)
+                throw Failure.assertion("repository orphan custody pending; evidence retained")
+            }
             usleep(5_000)
         }
         guard let final else { throw Failure.assertion("repository terminal missing") }

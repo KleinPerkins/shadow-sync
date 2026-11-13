@@ -6,6 +6,14 @@ import Foundation
 /// includes only source-connected cases with separately owned fixture teardown.
 /// Required pending-cut cases remain explicit unavailable coverage in discovery.
 enum SignedInstallationFixtureCase: String, CaseIterable {
+    case startAdapterJoinInBudget = "signed-installation/start-adapter-join/in-budget"
+    case startAdapterJoinExpiredComplete = "signed-installation/start-adapter-join/expired-complete"
+    case startAdapterJoinExpiredPending = "signed-installation/start-adapter-join/expired-pending"
+    case startAdapterJoinFaultBeforeBind = "signed-installation/start-adapter-join/fault-before-bind"
+    case startAdapterJoinFaultAfterAck = "signed-installation/start-adapter-join/fault-after-ack"
+    case startAdapterJoinFaultBeforeJoin = "signed-installation/start-adapter-join/fault-before-join"
+    case startAdapterJoinFaultAfterRefusal = "signed-installation/start-adapter-join/fault-after-refusal"
+    case startAdapterJoinHExpiry = "signed-installation/start-adapter-join/h-expiry"
     case startupStop = "signed-installation/startup-stop"
     case stopStore = "signed-installation/stop-store-uncertain"
     case stopCompletion = "signed-installation/stop-completion-uncertain"
@@ -105,6 +113,143 @@ enum SignedInstallationFixtureCase: String, CaseIterable {
     case terminalSyncBeforeRetirement = "signed-installation/terminal-sync/beforeRetirement"
     case terminalOperationCloseDeadline = "signed-installation/terminal-successful-operation-close-deadline"
 
+    case freshDriverPositive = "signed-installation/fresh-driver/positive"
+    case freshDriverCancelReady = "signed-installation/fresh-driver/cancel-ready"
+    case freshDriverCancelNormal = "signed-installation/fresh-driver/cancel-normal"
+    case freshDriverCleanup = "signed-installation/fresh-driver/cleanup-after-unlink"
+    case freshDriverCloseTemporaryStore = "signed-installation/fresh-driver/close/temporaryStore"
+    case freshDriverCloseStagedSlots = "signed-installation/fresh-driver/close/stagedSlots"
+    case freshDriverCloseStagedParents = "signed-installation/fresh-driver/close/stagedParents"
+    case freshDriverCloseBootstrapParents = "signed-installation/fresh-driver/close/bootstrapParents"
+    case freshDriverCloseMetadata = "signed-installation/fresh-driver/close/metadata"
+    case freshDriverCloseAdmission = "signed-installation/fresh-driver/close/admission"
+    case freshDriverCloseState = "signed-installation/fresh-driver/close/state"
+    case freshDriverCloseOperation = "signed-installation/fresh-driver/close/operation"
+
+    case freshDriverReadyClaimed = "signed-installation/fresh-driver/ready/claimed"
+    case freshDriverReadyIntentRetained = "signed-installation/fresh-driver/ready/intentRetained"
+    case freshDriverReadyContextRetained = "signed-installation/fresh-driver/ready/contextRetained"
+    case freshDriverReadyCommandRetained = "signed-installation/fresh-driver/ready/commandRetained"
+    case freshDriverReadySubmitted = "signed-installation/fresh-driver/ready/submitted"
+    case freshDriverReadyRetirementReceived = "signed-installation/fresh-driver/ready/retirementReceived"
+    case freshDriverReadyAliasesReleased = "signed-installation/fresh-driver/ready/aliasesReleased"
+    case freshDriverReadyRetired = "signed-installation/fresh-driver/ready/retired"
+    case freshDriverReadyCompleted = "signed-installation/fresh-driver/ready/completed"
+    case freshDriverCommitClaimed = "signed-installation/fresh-driver/commit/claimed"
+    case freshDriverCommitPublished = "signed-installation/fresh-driver/commit/published"
+    case freshDriverCommitDelivered = "signed-installation/fresh-driver/commit/delivered"
+    case freshDriverPublicationCandidateIntentAfterReceipt = "signed-installation/fresh-driver/publication/candidateIntent/afterReceipt"
+    case freshDriverPublicationCandidateIntentBeforeControl = "signed-installation/fresh-driver/publication/candidateIntent/beforeControl"
+    case freshDriverPublicationCandidateIntentReceiptBeforeSwap = "signed-installation/fresh-driver/publication/candidateIntent/receiptBeforeSwap"
+    case freshDriverPublicationCandidateIntentReceiptAfterSwap = "signed-installation/fresh-driver/publication/candidateIntent/receiptAfterSwap"
+    case freshDriverPublicationCandidateIntentReceiptAfterDirectorySync = "signed-installation/fresh-driver/publication/candidateIntent/receiptAfterDirectorySync"
+    case freshDriverPublicationCandidateIntentControlBeforeSwap = "signed-installation/fresh-driver/publication/candidateIntent/controlBeforeSwap"
+    case freshDriverPublicationCandidateIntentControlAfterSwap = "signed-installation/fresh-driver/publication/candidateIntent/controlAfterSwap"
+    case freshDriverPublicationCandidateIntentControlAfterDirectorySync = "signed-installation/fresh-driver/publication/candidateIntent/controlAfterDirectorySync"
+    case freshDriverPublicationCandidateIntentControlAfterPreimageUnlink = "signed-installation/fresh-driver/publication/candidateIntent/controlAfterPreimageUnlink"
+    case freshDriverPublicationCandidateCompleteAfterReceipt = "signed-installation/fresh-driver/publication/candidateComplete/afterReceipt"
+    case freshDriverPublicationCandidateCompleteBeforeControl = "signed-installation/fresh-driver/publication/candidateComplete/beforeControl"
+    case freshDriverPublicationCandidateCompleteReceiptBeforeSwap = "signed-installation/fresh-driver/publication/candidateComplete/receiptBeforeSwap"
+    case freshDriverPublicationCandidateCompleteReceiptAfterSwap = "signed-installation/fresh-driver/publication/candidateComplete/receiptAfterSwap"
+    case freshDriverPublicationCandidateCompleteReceiptAfterDirectorySync = "signed-installation/fresh-driver/publication/candidateComplete/receiptAfterDirectorySync"
+    case freshDriverPublicationCandidateCompleteControlBeforeSwap = "signed-installation/fresh-driver/publication/candidateComplete/controlBeforeSwap"
+    case freshDriverPublicationCandidateCompleteControlAfterSwap = "signed-installation/fresh-driver/publication/candidateComplete/controlAfterSwap"
+    case freshDriverPublicationCandidateCompleteControlAfterDirectorySync = "signed-installation/fresh-driver/publication/candidateComplete/controlAfterDirectorySync"
+    case freshDriverPublicationCandidateCompleteControlAfterPreimageUnlink = "signed-installation/fresh-driver/publication/candidateComplete/controlAfterPreimageUnlink"
+    case freshDriverPublicationCommitIntentAfterReceipt = "signed-installation/fresh-driver/publication/commitIntent/afterReceipt"
+    case freshDriverPublicationCommitIntentBeforeControl = "signed-installation/fresh-driver/publication/commitIntent/beforeControl"
+    case freshDriverPublicationCommitIntentReceiptBeforeSwap = "signed-installation/fresh-driver/publication/commitIntent/receiptBeforeSwap"
+    case freshDriverPublicationCommitIntentReceiptAfterSwap = "signed-installation/fresh-driver/publication/commitIntent/receiptAfterSwap"
+    case freshDriverPublicationCommitIntentReceiptAfterDirectorySync = "signed-installation/fresh-driver/publication/commitIntent/receiptAfterDirectorySync"
+    case freshDriverPublicationCommitIntentControlBeforeSwap = "signed-installation/fresh-driver/publication/commitIntent/controlBeforeSwap"
+    case freshDriverPublicationCommitIntentControlAfterSwap = "signed-installation/fresh-driver/publication/commitIntent/controlAfterSwap"
+    case freshDriverPublicationCommitIntentControlAfterDirectorySync = "signed-installation/fresh-driver/publication/commitIntent/controlAfterDirectorySync"
+    case freshDriverPublicationCommitIntentControlAfterPreimageUnlink = "signed-installation/fresh-driver/publication/commitIntent/controlAfterPreimageUnlink"
+    case freshDriverPublicationCommitCompleteAfterReceipt = "signed-installation/fresh-driver/publication/commitComplete/afterReceipt"
+    case freshDriverPublicationCommitCompleteBeforeControl = "signed-installation/fresh-driver/publication/commitComplete/beforeControl"
+    case freshDriverPublicationCommitCompleteReceiptBeforeSwap = "signed-installation/fresh-driver/publication/commitComplete/receiptBeforeSwap"
+    case freshDriverPublicationCommitCompleteReceiptAfterSwap = "signed-installation/fresh-driver/publication/commitComplete/receiptAfterSwap"
+    case freshDriverPublicationCommitCompleteReceiptAfterDirectorySync = "signed-installation/fresh-driver/publication/commitComplete/receiptAfterDirectorySync"
+    case freshDriverPublicationCommitCompleteControlBeforeSwap = "signed-installation/fresh-driver/publication/commitComplete/controlBeforeSwap"
+    case freshDriverPublicationCommitCompleteControlAfterSwap = "signed-installation/fresh-driver/publication/commitComplete/controlAfterSwap"
+    case freshDriverPublicationCommitCompleteControlAfterDirectorySync = "signed-installation/fresh-driver/publication/commitComplete/controlAfterDirectorySync"
+    case freshDriverPublicationCommitCompleteControlAfterPreimageUnlink = "signed-installation/fresh-driver/publication/commitComplete/controlAfterPreimageUnlink"
+    case freshDriverDeliveryAfterReadback = "signed-installation/fresh-driver/delivery/afterReadback"
+    case freshDriverDeliveryAfterSendReservation = "signed-installation/fresh-driver/delivery/afterSendReservation"
+    case freshDriverLostNormal = "signed-installation/fresh-driver/lost-normal-started"
+    case freshDriverLateNormal = "signed-installation/fresh-driver/late-normal-started"
+
+    var freshUncertainty: SignedFreshInstallationDriverFixture.Uncertainty? {
+        switch self {
+        case .freshDriverReadyClaimed: return .ready(.claimed)
+        case .freshDriverReadyIntentRetained: return .ready(.intentRetained)
+        case .freshDriverReadyContextRetained: return .ready(.contextRetained)
+        case .freshDriverReadyCommandRetained: return .ready(.commandRetained)
+        case .freshDriverReadySubmitted: return .ready(.submitted)
+        case .freshDriverReadyRetirementReceived: return .ready(.retirementReceived)
+        case .freshDriverReadyAliasesReleased: return .ready(.aliasesReleased)
+        case .freshDriverReadyRetired: return .ready(.retired)
+        case .freshDriverReadyCompleted: return .ready(.completed)
+        case .freshDriverCommitClaimed: return .commit(.claimed)
+        case .freshDriverCommitPublished: return .commit(.published)
+        case .freshDriverCommitDelivered: return .commit(.delivered)
+        case .freshDriverPublicationCandidateIntentAfterReceipt: return .publication(.candidateIntent, .afterReceipt)
+        case .freshDriverPublicationCandidateIntentBeforeControl: return .publication(.candidateIntent, .beforeControl)
+        case .freshDriverPublicationCandidateIntentReceiptBeforeSwap: return .publication(.candidateIntent, .receiptBeforeSwap)
+        case .freshDriverPublicationCandidateIntentReceiptAfterSwap: return .publication(.candidateIntent, .receiptAfterSwap)
+        case .freshDriverPublicationCandidateIntentReceiptAfterDirectorySync: return .publication(.candidateIntent, .receiptAfterDirectorySync)
+        case .freshDriverPublicationCandidateIntentControlBeforeSwap: return .publication(.candidateIntent, .controlBeforeSwap)
+        case .freshDriverPublicationCandidateIntentControlAfterSwap: return .publication(.candidateIntent, .controlAfterSwap)
+        case .freshDriverPublicationCandidateIntentControlAfterDirectorySync: return .publication(.candidateIntent, .controlAfterDirectorySync)
+        case .freshDriverPublicationCandidateIntentControlAfterPreimageUnlink: return .publication(.candidateIntent, .controlAfterPreimageUnlink)
+        case .freshDriverPublicationCandidateCompleteAfterReceipt: return .publication(.candidateComplete, .afterReceipt)
+        case .freshDriverPublicationCandidateCompleteBeforeControl: return .publication(.candidateComplete, .beforeControl)
+        case .freshDriverPublicationCandidateCompleteReceiptBeforeSwap: return .publication(.candidateComplete, .receiptBeforeSwap)
+        case .freshDriverPublicationCandidateCompleteReceiptAfterSwap: return .publication(.candidateComplete, .receiptAfterSwap)
+        case .freshDriverPublicationCandidateCompleteReceiptAfterDirectorySync: return .publication(.candidateComplete, .receiptAfterDirectorySync)
+        case .freshDriverPublicationCandidateCompleteControlBeforeSwap: return .publication(.candidateComplete, .controlBeforeSwap)
+        case .freshDriverPublicationCandidateCompleteControlAfterSwap: return .publication(.candidateComplete, .controlAfterSwap)
+        case .freshDriverPublicationCandidateCompleteControlAfterDirectorySync: return .publication(.candidateComplete, .controlAfterDirectorySync)
+        case .freshDriverPublicationCandidateCompleteControlAfterPreimageUnlink: return .publication(.candidateComplete, .controlAfterPreimageUnlink)
+        case .freshDriverPublicationCommitIntentAfterReceipt: return .publication(.commitIntent, .afterReceipt)
+        case .freshDriverPublicationCommitIntentBeforeControl: return .publication(.commitIntent, .beforeControl)
+        case .freshDriverPublicationCommitIntentReceiptBeforeSwap: return .publication(.commitIntent, .receiptBeforeSwap)
+        case .freshDriverPublicationCommitIntentReceiptAfterSwap: return .publication(.commitIntent, .receiptAfterSwap)
+        case .freshDriverPublicationCommitIntentReceiptAfterDirectorySync: return .publication(.commitIntent, .receiptAfterDirectorySync)
+        case .freshDriverPublicationCommitIntentControlBeforeSwap: return .publication(.commitIntent, .controlBeforeSwap)
+        case .freshDriverPublicationCommitIntentControlAfterSwap: return .publication(.commitIntent, .controlAfterSwap)
+        case .freshDriverPublicationCommitIntentControlAfterDirectorySync: return .publication(.commitIntent, .controlAfterDirectorySync)
+        case .freshDriverPublicationCommitIntentControlAfterPreimageUnlink: return .publication(.commitIntent, .controlAfterPreimageUnlink)
+        case .freshDriverPublicationCommitCompleteAfterReceipt: return .publication(.commitComplete, .afterReceipt)
+        case .freshDriverPublicationCommitCompleteBeforeControl: return .publication(.commitComplete, .beforeControl)
+        case .freshDriverPublicationCommitCompleteReceiptBeforeSwap: return .publication(.commitComplete, .receiptBeforeSwap)
+        case .freshDriverPublicationCommitCompleteReceiptAfterSwap: return .publication(.commitComplete, .receiptAfterSwap)
+        case .freshDriverPublicationCommitCompleteReceiptAfterDirectorySync: return .publication(.commitComplete, .receiptAfterDirectorySync)
+        case .freshDriverPublicationCommitCompleteControlBeforeSwap: return .publication(.commitComplete, .controlBeforeSwap)
+        case .freshDriverPublicationCommitCompleteControlAfterSwap: return .publication(.commitComplete, .controlAfterSwap)
+        case .freshDriverPublicationCommitCompleteControlAfterDirectorySync: return .publication(.commitComplete, .controlAfterDirectorySync)
+        case .freshDriverPublicationCommitCompleteControlAfterPreimageUnlink: return .publication(.commitComplete, .controlAfterPreimageUnlink)
+        case .freshDriverDeliveryAfterReadback: return .delivery(.afterReadback)
+        case .freshDriverDeliveryAfterSendReservation: return .delivery(.afterSendReservation)
+        case .freshDriverLostNormal: return .lostNormal
+        case .freshDriverLateNormal: return .lateNormal
+        default: return nil
+        }
+    }
+
+    var isStartAdapterJoinControl: Bool {
+        switch self {
+        case .startAdapterJoinFaultBeforeBind, .startAdapterJoinFaultAfterAck,
+             .startAdapterJoinFaultBeforeJoin, .startAdapterJoinFaultAfterRefusal, .startAdapterJoinHExpiry: return true
+        default: return false
+        }
+    }
+    var isStartAdapterJoin: Bool {
+        switch self {
+        case .startAdapterJoinInBudget, .startAdapterJoinExpiredComplete, .startAdapterJoinExpiredPending: return true
+        default: return false
+        }
+    }
     func run(bootstrap: InstallationBootstrap, journal: CustodyCatalogStore.InstallationStagedJournal,
              context: SignedInstallationFixtureContext, service: SignedInstallationFixtureService) throws {
         // The retained state location already carries the exact root; never
@@ -113,6 +258,14 @@ enum SignedInstallationFixtureCase: String, CaseIterable {
         let ownedRoot = URL(fileURLWithPath: context.paths.home).deletingLastPathComponent().path
         guard ownedRoot + "/home" == context.paths.home else { throw CustodyRecordError.fenced }
         switch self {
+        case .freshDriverReadyClaimed, .freshDriverReadyIntentRetained, .freshDriverReadyContextRetained, .freshDriverReadyCommandRetained, .freshDriverReadySubmitted, .freshDriverReadyRetirementReceived, .freshDriverReadyAliasesReleased, .freshDriverReadyRetired, .freshDriverReadyCompleted, .freshDriverCommitClaimed, .freshDriverCommitPublished, .freshDriverCommitDelivered, .freshDriverPublicationCandidateIntentAfterReceipt, .freshDriverPublicationCandidateIntentBeforeControl, .freshDriverPublicationCandidateIntentReceiptBeforeSwap, .freshDriverPublicationCandidateIntentReceiptAfterSwap, .freshDriverPublicationCandidateIntentReceiptAfterDirectorySync, .freshDriverPublicationCandidateIntentControlBeforeSwap, .freshDriverPublicationCandidateIntentControlAfterSwap, .freshDriverPublicationCandidateIntentControlAfterDirectorySync, .freshDriverPublicationCandidateIntentControlAfterPreimageUnlink, .freshDriverPublicationCandidateCompleteAfterReceipt, .freshDriverPublicationCandidateCompleteBeforeControl, .freshDriverPublicationCandidateCompleteReceiptBeforeSwap, .freshDriverPublicationCandidateCompleteReceiptAfterSwap, .freshDriverPublicationCandidateCompleteReceiptAfterDirectorySync, .freshDriverPublicationCandidateCompleteControlBeforeSwap, .freshDriverPublicationCandidateCompleteControlAfterSwap, .freshDriverPublicationCandidateCompleteControlAfterDirectorySync, .freshDriverPublicationCandidateCompleteControlAfterPreimageUnlink, .freshDriverPublicationCommitIntentAfterReceipt, .freshDriverPublicationCommitIntentBeforeControl, .freshDriverPublicationCommitIntentReceiptBeforeSwap, .freshDriverPublicationCommitIntentReceiptAfterSwap, .freshDriverPublicationCommitIntentReceiptAfterDirectorySync, .freshDriverPublicationCommitIntentControlBeforeSwap, .freshDriverPublicationCommitIntentControlAfterSwap, .freshDriverPublicationCommitIntentControlAfterDirectorySync, .freshDriverPublicationCommitIntentControlAfterPreimageUnlink, .freshDriverPublicationCommitCompleteAfterReceipt, .freshDriverPublicationCommitCompleteBeforeControl, .freshDriverPublicationCommitCompleteReceiptBeforeSwap, .freshDriverPublicationCommitCompleteReceiptAfterSwap, .freshDriverPublicationCommitCompleteReceiptAfterDirectorySync, .freshDriverPublicationCommitCompleteControlBeforeSwap, .freshDriverPublicationCommitCompleteControlAfterSwap, .freshDriverPublicationCommitCompleteControlAfterDirectorySync, .freshDriverPublicationCommitCompleteControlAfterPreimageUnlink, .freshDriverDeliveryAfterReadback, .freshDriverDeliveryAfterSendReservation, .freshDriverLostNormal, .freshDriverLateNormal:
+            throw CustodyRecordError.fenced // actual-driver uncertainty dispatch only
+        case .freshDriverPositive, .freshDriverCancelReady, .freshDriverCancelNormal, .freshDriverCleanup, .freshDriverCloseTemporaryStore, .freshDriverCloseStagedSlots, .freshDriverCloseStagedParents, .freshDriverCloseBootstrapParents, .freshDriverCloseMetadata, .freshDriverCloseAdmission, .freshDriverCloseState, .freshDriverCloseOperation:
+            throw CustodyRecordError.fenced // driver cases enter before manual phase dispatch
+        case .startAdapterJoinFaultBeforeBind, .startAdapterJoinFaultAfterAck,
+             .startAdapterJoinFaultBeforeJoin, .startAdapterJoinFaultAfterRefusal, .startAdapterJoinHExpiry,
+             .startAdapterJoinInBudget, .startAdapterJoinExpiredComplete, .startAdapterJoinExpiredPending:
+            throw CustodyRecordError.fenced // These require the separate pre-start driver.
         case .startupStop:
             try InstallationStartupFixtures.authenticatedStartupAndStop(journal, root: ownedRoot, location: location)
             try service.requireSuccessfulHostExit(deadline: context.deadline)

@@ -19,6 +19,22 @@ final class SignedInstallationFixtureAdapterChannel: @unchecked Sendable {
     private var work: InstallationFixtureWork?
     private var handed = false
     private var cancelled = false
+    private var joinFixture: SignedInstallationFixtureJoinController?
+    func attachJoinFixture(_ controller: SignedInstallationFixtureJoinController) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard work == nil, !cancelled, joinFixture == nil,
+              controller.matches(channel: self, digest: digest) else { throw CustodyRecordError.fenced }
+        joinFixture = controller
+    }
+    func fixtureValue(deadline: MonotonicDeadline) throws {
+        lock.lock(); let value = work; lock.unlock()
+        guard let value else { throw CustodyRecordError.fenced }
+        try value.value(deadline: deadline)
+    }
+    func fixtureMatches(_ controller: SignedInstallationFixtureJoinController) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return joinFixture === controller && controller.matches(channel: self, digest: digest)
+    }
     init(context: SignedInstallationFixtureContext.Request, digest: String, kind: CustodyCommandKind,
          arguments: [String], binding: InstallationCommandBinding, service: SignedInstallationFixtureService, deadline: UInt64) throws {
         guard CustodyWire.hex(digest, bytes: 32), let transaction = binding.control.transaction,
@@ -89,6 +105,9 @@ final class SignedInstallationFixtureAdapterChannel: @unchecked Sendable {
             guard try reader.read(descriptor: parent.value, deadline: deadline) == challengeBytes,
                   !reader.hasBufferedBytes else { throw CustodyRecordError.fenced }
         }
+        // The final real acknowledgment and buffered-byte guard above have
+        // completed. Returning from this body alone permits group.leave().
+        try joinFixture?.holdAfterFinalAcknowledgment(channel: self)
     }
     func takeChildMapping() throws -> (Int32, OwnedFileDescriptor) {
         lock.lock(); defer { lock.unlock() }
@@ -99,10 +118,18 @@ final class SignedInstallationFixtureAdapterChannel: @unchecked Sendable {
         lock.lock(); cancelled = true; lock.unlock()
         parent.interruptSocket()
     }
-    func joinAndRetire(deadline: MonotonicDeadline) throws {
-        lock.lock(); let work = self.work; lock.unlock()
-        try work?.join(deadline: deadline)
-        guard parent.retireChecked() == .succeeded, child.retireChecked() == .succeeded else { throw CustodyRecordError.fenced }
+    func joinAndRetire(deadline: MonotonicDeadline,
+                       purpose: SignedInstallationFixtureJoinController.JoinPurpose = .registryRetire) throws {
+        lock.lock(); let work = self.work, controller = joinFixture; lock.unlock()
+        let trace = controller?.beginJoin(channel: self, deadline: deadline, purpose: purpose)
+        do {
+            try work?.join(deadline: deadline)
+            guard parent.retireChecked() == .succeeded, child.retireChecked() == .succeeded else { throw CustodyRecordError.fenced }
+            controller?.endJoin(trace, succeeded: true)
+        } catch {
+            controller?.endJoin(trace, succeeded: false)
+            throw error
+        }
     }
     var retiredSuccessfully: Bool {
         parent.retirementObservation == .succeeded && child.retirementObservation == .succeeded

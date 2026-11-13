@@ -133,10 +133,10 @@ final class InstallationBootstrap {
               let deadline = candidateDeadline else { mutex.unlock(); throw CustodyRecordError.fenced }
         normalStartupProgress = .running; mutex.unlock()
         do {
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             let observed = try journal.takeNormalStarted()
             mutex.lock(); normalStarted = observed; mutex.unlock()
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             mutex.lock(); normalStartupProgress = .observed; mutex.unlock()
         } catch {
             mutex.lock(); normalStartupProgress = .failed; failedClosed = true; mutex.unlock()
@@ -183,7 +183,7 @@ final class InstallationBootstrap {
     }
     /// Complete the same successful fresh invocation. An observation cannot
     /// release or reconstruct its owner. CLI installation remains unenrolled.
-    func finishFreshInstallation() throws {
+    @discardableResult func finishFreshInstallation() throws -> FreshInstallationExitReceipt {
         guard mutex.try() else { throw CustodyRecordError.busy }
         guard !failedClosed, coordinationCleanupProgress == .complete,
               completionProgress == .notAttempted, let journal = stagedJournal,
@@ -202,6 +202,7 @@ final class InstallationBootstrap {
             // Its result follows checked final operation close. Retired parent
             // descriptions must not be revalidated or reopened for postflight.
             mutex.lock(); completedInstallation = completed; completionProgress = .complete; mutex.unlock()
+            return FreshInstallationExitReceipt(bootstrap: self, disposition: .installed)
         } catch {
             retainCommitOutcome(from: journal)
             mutex.lock(); failedClosed = true; completionProgress = .pending; mutex.unlock()
@@ -210,7 +211,7 @@ final class InstallationBootstrap {
     }
     /// Continue only the retained original committed FRESH drain. The ordinary
     /// successful path stays failed-closed; this explicit route never resets it.
-    func repairStoppedFreshInstallation() throws {
+    @discardableResult func repairStoppedFreshInstallation() throws -> FreshInstallationExitReceipt {
         guard mutex.try() else { throw CustodyRecordError.busy }
         guard failedClosed, stoppedRecoveryProgress == .exclusive,
               completionProgress == .notAttempted || completionProgress == .pending,
@@ -226,6 +227,7 @@ final class InstallationBootstrap {
             #endif
             let result = try journal.repairStoppedFreshInstallation(exclusive, parents: parents, registry: registry)
             mutex.lock(); completedInstallation = result; completionProgress = .complete; mutex.unlock()
+            return FreshInstallationExitReceipt(bootstrap: self, disposition: .repaired)
         } catch {
             mutex.lock(); completionProgress = .pending; mutex.unlock()
             throw error
@@ -233,7 +235,7 @@ final class InstallationBootstrap {
     }
     /// Continue only the retained original readiness-only FRESH drain. The ordinary
     /// successful path stays failed-closed; this explicit route never resets it.
-    func restoreStoppedFreshInstallation() throws {
+    @discardableResult func restoreStoppedFreshInstallation() throws -> FreshInstallationExitReceipt {
         guard mutex.try() else { throw CustodyRecordError.busy }
         guard failedClosed, stoppedRecoveryProgress == .exclusive,
               completionProgress == .notAttempted || completionProgress == .pending,
@@ -249,6 +251,7 @@ final class InstallationBootstrap {
             #endif
             let result = try journal.restoreStoppedFreshInstallation(exclusive, parents: parents, registry: registry)
             mutex.lock(); completedInstallation = result; completionProgress = .complete; mutex.unlock()
+            return FreshInstallationExitReceipt(bootstrap: self, disposition: .restored)
         } catch {
             mutex.lock(); completionProgress = .pending; mutex.unlock()
             throw error
@@ -518,6 +521,10 @@ final class InstallationBootstrap {
     private var invocationDeadline: MonotonicDeadline?
     private let publisher: LifecyclePublisher?
     private let source: LifecyclePublisher.InstallationIdentity?
+    private var forwardAdmission: CoordinatorInstallationAdmission?
+    private let fixtureCancellation = InstallationCancellationGate()
+    private var primaryFailure: InstallationFailure?
+    private var settlementFailure: InstallationFailure?
     #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
     private var signedContext: SignedInstallationFixtureContext?
     private var signedService: SignedInstallationFixtureService?
@@ -584,13 +591,16 @@ final class InstallationBootstrap {
     /// This factory performs authentication only. It has no account-directory
     /// effects and cannot discard a partially effective bootstrap on a throw.
     static func production() throws -> InstallationBootstrap {
+        try production(admission: CoordinatorInstallationAdmission.current())
+    }
+    static func production(admission: CoordinatorInstallationAdmission) throws -> InstallationBootstrap {
         #if SHADOW_SYNC_TESTING
         throw CustodyRecordError.fenced
         #else
-        let publisher = try LifecyclePublisher.current()
-        let source = try publisher.installationIdentity()
-        try source.revalidate(); try publisher.revalidate()
-        return Self(publisher: publisher, source: source)
+        try admission.revalidateForward()
+        let value = Self(publisher: admission.publisher, source: admission.installation)
+        value.forwardAdmission = admission
+        return value
         #endif
     }
     #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
@@ -607,6 +617,13 @@ final class InstallationBootstrap {
         custody.retain(value.exclusiveRegistry!); custody.retain(value); custody.retainService(service)
         try profile.bindService(service)
         return value
+    }
+    func testingSignedJoinRegistry(context: SignedInstallationFixtureContext,
+                                   custody: InstallationReadinessFixtureCustody) throws -> RetainedCleanupRegistry {
+        guard signedContext === context, fixtureRoot == custody.root,
+              custody.root == URL(fileURLWithPath: context.paths.home).deletingLastPathComponent().path,
+              let registry = exclusiveRegistry else { throw CustodyRecordError.fenced }
+        return registry
     }
     #endif
     func observation() -> Observation {
@@ -632,6 +649,115 @@ final class InstallationBootstrap {
         let paths = try InstallationPaths.production()
         guard paths.home == publisher.account.homeDirectory, paths.state.uid == publisher.account.uid else { throw CustodyRecordError.fenced }
         return InstallationLifecycle(paths: paths, launchAgent: SystemLaunchAgentController(), host: SystemInstalledHostController())
+    }
+    var cancellationGate: InstallationCancellationGate { forwardAdmission?.cancellation ?? fixtureCancellation }
+    private func preParentForwardBoundary(_ deadline: MonotonicDeadline) throws {
+        try cancellationGate.check()
+        guard !deadline.hasExpired else { throw InstallationFailure.deadline }
+        try authenticate()
+        if let forwardAdmission { try forwardAdmission.revalidateForward() }
+        else {
+            #if !SHADOW_SYNC_TESTING
+            throw PublisherPolicyError.unavailable
+            #endif
+        }
+        guard !deadline.hasExpired else { throw InstallationFailure.deadline }
+        try cancellationGate.check()
+    }
+    private func forwardBoundary(_ deadline: MonotonicDeadline) throws {
+        try cancellationGate.check()
+        try boundary(deadline)
+        if let forwardAdmission { try forwardAdmission.revalidateForward() }
+        else {
+            #if !SHADOW_SYNC_TESTING
+            throw PublisherPolicyError.unavailable
+            #endif
+        }
+        guard !deadline.hasExpired else { throw InstallationFailure.deadline }
+        try cancellationGate.check()
+    }
+    private func rememberPrimaryFailure(_ error: Error) {
+        mutex.lock(); defer { mutex.unlock() }
+        if primaryFailure == nil { primaryFailure = InstallationFailure.classify(error) }
+    }
+    private func rememberSettlementFailure(_ error: Error) {
+        mutex.lock(); defer { mutex.unlock() }
+        if settlementFailure == nil { settlementFailure = InstallationFailure.classify(error) }
+    }
+    func failureObservation() -> (primary: InstallationFailure?, settlement: InstallationFailure?) {
+        mutex.lock(); defer { mutex.unlock() }; return (primaryFailure, settlementFailure)
+    }
+    enum OriginalSettlement {
+        case settled(FreshInstallationExitReceipt)
+        case retained
+    }
+    /// Select using real private capabilities, never public progress snapshots.
+    /// This route admits no new forward work and performs no policy validation.
+    func settleOriginalAttempt(cause: InstallationFailure) -> OriginalSettlement {
+        rememberPrimaryFailure(cause)
+        cancellationGate.request()
+        mutex.lock()
+        let canStopNormal = normalStarted != nil && (normalStartupProgress == .observed || normalStartupProgress == .failed)
+            && !stopStartedHostAttempted && coordinationCleanupProgress == .notAttempted && completionProgress == .notAttempted
+        let canStopReady = !failedClosed && candidateReadiness == .complete && readinessCommitProgress == .notAttempted
+            && normalStartupProgress == .notAttempted && coordinationCleanupProgress == .notAttempted
+            && completionProgress == .notAttempted && stoppedRecoveryProgress == .notAttempted && !stopStartedHostAttempted
+        let deadline = candidateDeadline ?? invocationDeadline
+        mutex.unlock()
+        do {
+            guard let deadline, !deadline.hasExpired else { return .retained }
+            if canStopNormal {
+                try stopNormallyStartedHost()
+                return .settled(try repairStoppedFreshInstallation())
+            }
+            if canStopReady {
+                try stopReadinessOnlyHost()
+                return .settled(try restoreStoppedFreshInstallation())
+            }
+            requestOriginalDrain()
+            // The collector is retry-permitted; it cannot confer exit authority.
+            try collectOriginalRetirement()
+        } catch { rememberSettlementFailure(error) }
+        return .retained
+    }
+    private func requestOriginalDrain() {
+        mutex.lock()
+        let starts = [bootstrapExecution, kickstartExecution].compactMap { $0 }
+        let ready = candidateExecution, admission = stagedAdmission
+        mutex.unlock()
+        _ = try? admission?.closeStarts()
+        for execution in starts { execution.cancelAndClose() }
+        ready?.cancelAndClose()
+    }
+    func observeOriginalWork(on queue: DispatchQueue,
+        observer: @escaping @Sendable () -> Void) -> [InstallationObservationSubscription] {
+        mutex.lock()
+        let executions = [bootstrapExecution, kickstartExecution, committedStopExecution, readinessStopExecution].compactMap { $0 }
+        let candidate = candidateExecution, journal = stagedJournal
+        mutex.unlock()
+        // Capture handles only long enough to register; subscriptions retain no
+        // execution/context/prepared-command/lease aliases or owner cycle.
+        var subscriptions = executions.compactMap { $0.read { $0.handle } }
+            .map { $0.observeActualRetirement(on: queue, observer: observer) }
+        if let handle = candidate?.read({ $0.handle }) {
+            subscriptions.append(handle.observeActualRetirement(on: queue, observer: observer))
+        }
+        if let subscription = journal?.observeReadinessWorkFinished(on: queue, observer: observer) {
+            subscriptions.append(subscription)
+        }
+        return subscriptions
+    }
+    func checkOriginalForwardAdmission() throws {
+        guard let deadline = candidateDeadline ?? invocationDeadline else { throw CustodyRecordError.fenced }
+        try forwardBoundary(deadline)
+    }
+    func collectOriginalRetirement() throws {
+        mutex.lock()
+        let eligible = failedClosed && (bootstrapStart == .failed || kickstartStart == .failed)
+        let deadline = invocationDeadline
+        mutex.unlock()
+        guard eligible, let deadline, !deadline.hasExpired else { return }
+        try retireFailedStartCommands()
     }
     private func boundary(_ deadline: MonotonicDeadline) throws {
         guard !deadline.hasExpired else { throw CustodyRecordError.busy }
@@ -661,7 +787,7 @@ final class InstallationBootstrap {
         invocationDeadline = deadline; mutex.unlock()
         defer { mutex.lock(); reserving = false; mutex.unlock() }
         do {
-            try authenticate()
+            try preParentForwardBoundary(deadline)
             guard !deadline.hasExpired else { throw CustodyRecordError.busy }
             try advance(.authenticated)
             if let publisher, let source {
@@ -683,11 +809,11 @@ final class InstallationBootstrap {
             #if SHADOW_SYNC_TESTING
             parents!.testingCut(parentCut)
             #endif
-            try authenticate()
+            try preParentForwardBoundary(deadline)
             guard !deadline.hasExpired else { throw CustodyRecordError.busy }
             try parents!.prepare()
             try advance(.parentsPrepared)
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             if let publisher, let source {
                 #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
                 if let signedContext { initializer = try .signedFixture(signedContext) }
@@ -707,13 +833,13 @@ final class InstallationBootstrap {
             #if SHADOW_SYNC_TESTING
             if let initializationFault { initializer!.testingFault(initializationFault) }
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             _ = try initializer!.publish()
             try advance(.statePublished)
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             original = try initializer!.takeInstallationAuthority()
             try advance(.authorityRetained)
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             if let publisher {
                 #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
                 if let signedContext { owner = try InstallationTransactionOwner.consumeSignedFixture(original!, context: signedContext) }
@@ -730,7 +856,7 @@ final class InstallationBootstrap {
                 #endif
             }
             try advance(.ownerConsumed)
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             if publisher != nil {
                 #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
                 if let signedContext, let signedService {
@@ -767,22 +893,22 @@ final class InstallationBootstrap {
             lifecycle!.testingSlotCaptureStoreFault = captureFault
             #endif
             try advance(.lifecycleRetained)
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             journal = try owner!.installationJournal(intent: .install, lifecycle: lifecycle!)
             try advance(.journalRetained)
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             #if SHADOW_SYNC_TESTING
             if !cutCompletion { journal!.testingCut(journalCut) }
             #endif
             _ = try journal!.begin(deadline: deadline)
             try advance(.reserveIntent)
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             #if SHADOW_SYNC_TESTING
             if cutCompletion { journal!.testingCut(journalCut) }
             #endif
             _ = try journal!.completeReservation(deadline: deadline)
             try advance(.reserveComplete)
-            try boundary(deadline)
+            try forwardBoundary(deadline)
         } catch {
             mutex.lock(); failedClosed = true; mutex.unlock()
             throw error
@@ -808,13 +934,21 @@ final class InstallationBootstrap {
         // No bootstrap mutex spans authentication, commands or retirement. All
         // original owners remain fields of this live instance on both outcomes.
         do {
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             #if SHADOW_SYNC_TESTING
             try exclusiveAfterClaim?()
             #endif
-            try boundary(deadline)
-            _ = try journal.prepareExclusive(deadline: deadline)
-            try boundary(deadline)
+            try forwardBoundary(deadline)
+            if let forwardAdmission {
+                _ = try journal.prepareExclusive(deadline: deadline, forwardAdmission: forwardAdmission)
+            } else {
+                #if SHADOW_SYNC_TESTING
+                _ = try journal.prepareExclusive(deadline: deadline, cancellation: cancellationGate)
+                #else
+                throw CustodyRecordError.fenced
+                #endif
+            }
+            try forwardBoundary(deadline)
             mutex.lock(); exclusivePreparation = .complete; mutex.unlock()
         } catch {
             mutex.lock(); failedClosed = true; exclusivePreparation = .failed; mutex.unlock()
@@ -846,7 +980,7 @@ final class InstallationBootstrap {
         }
         #endif
         do {
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             #if SHADOW_SYNC_TESTING
             try transferCheckpoint?(.claimed)
             owner.testingObserveAdmissionTransfer(transferObservation)
@@ -869,7 +1003,7 @@ final class InstallationBootstrap {
             actualAliasesRetired = [releasedInitializer == nil, releasedJournal == nil, releasedLifecycle == nil]
             try transferCheckpoint?(.aliasesReleased)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             let closed = try owner.closeBorrowing()
             #if SHADOW_SYNC_TESTING
             try transferCheckpoint?(.borrowingClosed)
@@ -883,11 +1017,11 @@ final class InstallationBootstrap {
             #if SHADOW_SYNC_TESTING
             try transferCheckpoint?(.retired)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             stagedAdmission = try owner.transferToStagedAdmission(intent: stagedIntent!,
                 after: retirement, deadline: deadline)
             try stagedAdmission!.revalidate()
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             mutex.lock(); stagedTransfer = .complete; mutex.unlock()
         } catch {
             // A checkpoint or intent-publication cut may precede alias release.
@@ -923,11 +1057,11 @@ final class InstallationBootstrap {
         #endif
         mutex.unlock()
         do {
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             #if SHADOW_SYNC_TESTING
             try afterClaim?()
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             let continued = try admission.continueJournal(deadline: deadline)
             mutex.lock(); stagedJournal = continued; mutex.unlock()
             guard let parents else { throw CustodyRecordError.fenced }
@@ -936,10 +1070,10 @@ final class InstallationBootstrap {
             if stagedJournalHoldBorrow { stagedJournalAlias = try admission.retainStartLeases() }
             try afterReturn?()
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: intent)
             try intent.revalidate(for: owner, deadline: deadline)
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             mutex.lock(); stagedJournalContinuation = .complete; mutex.unlock()
         } catch {
             mutex.lock(); failedClosed = true; stagedJournalContinuation = .failed; mutex.unlock()
@@ -986,24 +1120,25 @@ final class InstallationBootstrap {
             if let readinessPublicationBarrier { journal.testingPausePublication(readinessPublicationBarrier) }
             if let readinessSourceBarrier { journal.testingPauseSource(readinessSourceBarrier) }
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: intent)
             #if SHADOW_SYNC_TESTING
             try afterClaim?()
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             let completed = try journal.completeAdmission(deadline: deadline)
             mutex.lock(); openedAdmission = completed; mutex.unlock()
             #if SHADOW_SYNC_TESTING
             try afterReturn?()
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: intent)
             try journal.validateOpenedAdmission(completed, deadline: deadline)
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             mutex.lock(); stagedReadinessOpening = .complete; mutex.unlock()
         } catch {
             let failure = error
+            rememberPrimaryFailure(error)
             mutex.lock(); failedClosed = true; stagedReadinessOpening = .failed; mutex.unlock()
             // Close the actual start gate first. Unretired aliases can refuse
             // drainage without reopening it. Keep all owners and durable evidence.
@@ -1014,6 +1149,7 @@ final class InstallationBootstrap {
             } catch {
                 // Pending is observable, never silently reported as cancellation
                 // success. No fresh cleanup deadline or endpoint unlink is allowed.
+                rememberSettlementFailure(error)
                 mutex.lock(); stagedReadinessClosure = .pending; mutex.unlock()
                 throw error
             }
@@ -1145,7 +1281,7 @@ final class InstallationBootstrap {
         mutex.unlock()
         let operation: LifecycleLaunchCommand.Operation = kickstart ? .kickstart : .bootstrap
         do {
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: admissionIntent)
             #if SHADOW_SYNC_TESTING
             try checkpoint?(operation, .claimed)
@@ -1153,7 +1289,7 @@ final class InstallationBootstrap {
                 try journal.testingObservePublication(publicationProbe)
             }
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             if !kickstart { try journal.validateOpenedAdmission(openedAdmission, deadline: deadline) }
             let intent = try kickstart ? journal.kickstartCandidateIntent(deadline: deadline)
                 : journal.bootstrapCandidateIntent(deadline: deadline)
@@ -1161,7 +1297,7 @@ final class InstallationBootstrap {
             #if SHADOW_SYNC_TESTING
             try checkpoint?(operation, .intentRetained)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try execution.makeContext {
                 #if SHADOW_SYNC_TESTING && !SHADOW_SYNC_SIGNED_FIXTURE
                 guard let fixtureRoot else { throw CustodyRecordError.fenced }
@@ -1173,7 +1309,7 @@ final class InstallationBootstrap {
             #if SHADOW_SYNC_TESTING
             try checkpoint?(operation, .contextRetained)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try execution.makeCommand { context in
                 #if SHADOW_SYNC_TESTING && !SHADOW_SYNC_SIGNED_FIXTURE
                 let budget = try CustodyBudget.make(kind: .launchctlMutation, workSeconds: 10)
@@ -1186,8 +1322,9 @@ final class InstallationBootstrap {
             #if SHADOW_SYNC_TESTING
             try checkpoint?(operation, .commandRetained)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: admissionIntent)
+            try cancellationGate.check()
             try execution.submit(to: registry)
             #if SHADOW_SYNC_TESTING
             try checkpoint?(operation, .submitted)
@@ -1196,7 +1333,7 @@ final class InstallationBootstrap {
             // Request endpoints are all clipped to reserve's absolute ceiling.
             // No Bootstrap/catalog/authority mutex spans this wait or closure.
             _ = handle.wait()
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             let retired = try handle.stagedCompletion()
             execution.store { $0.retirement = retired }
             #if SHADOW_SYNC_TESTING
@@ -1222,24 +1359,25 @@ final class InstallationBootstrap {
             #if SHADOW_SYNC_TESTING
             try checkpoint?(operation, .retired)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             let completed = try kickstart ? journal.completeKickstart(after: retired, deadline: deadline)
                 : journal.completeBootstrap(after: retired, deadline: deadline)
             execution.store { $0.completed = completed }
             #if SHADOW_SYNC_TESTING
             try checkpoint?(operation, .completed)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: admissionIntent)
             // completeKickstart consumes the registry's original retirement
             // timestamp. This wrapper never creates another readiness deadline.
             if kickstart { _ = try retired.readinessDeadline() }
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             mutex.lock()
             if kickstart { kickstartStart = .complete } else { bootstrapStart = .complete }
             mutex.unlock()
         } catch {
             let failure = error
+            rememberPrimaryFailure(error)
             mutex.lock()
             failedClosed = true; handlingStartFailure = true
             if kickstart { kickstartStart = .failed } else { bootstrapStart = .failed }
@@ -1254,6 +1392,7 @@ final class InstallationBootstrap {
                 try journal.closeReadiness(deadline: deadline)
                 mutex.lock(); stagedReadinessClosure = .joined; mutex.unlock()
             } catch {
+                rememberSettlementFailure(error)
                 mutex.lock(); stagedReadinessClosure = .pending; mutex.unlock()
                 throw error
             }
@@ -1294,19 +1433,19 @@ final class InstallationBootstrap {
             deadline = MonotonicDeadline(uptimeNanoseconds: min(invocation.absoluteUptimeNanoseconds,
                 anchored.absoluteUptimeNanoseconds))
             mutex.lock(); candidateDeadline = deadline; mutex.unlock()
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: admissionIntent)
             #if SHADOW_SYNC_TESTING
             try checkpoint?(.claimed)
             if let publicationProbe { try journal.testingObservePublication(publicationProbe) }
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             let intent = try journal.candidateReadyIntent()
             execution.store { $0.intent = intent }
             #if SHADOW_SYNC_TESTING
             try checkpoint?(.intentRetained)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try execution.makeContext {
                 #if SHADOW_SYNC_TESTING && !SHADOW_SYNC_SIGNED_FIXTURE
                 guard let fixtureRoot else { throw CustodyRecordError.fenced }
@@ -1318,7 +1457,7 @@ final class InstallationBootstrap {
             #if SHADOW_SYNC_TESTING
             try checkpoint?(.contextRetained)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try execution.makeCommand { context in
                 let budget = try CustodyBudget.make(kind: .launchctlRead, workSeconds: 10)
                     .clipped(to: deadline, kind: .launchctlRead, permittedWorkSeconds: 10)
@@ -1329,8 +1468,9 @@ final class InstallationBootstrap {
             #if SHADOW_SYNC_TESTING
             try checkpoint?(.commandRetained)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: admissionIntent)
+            try cancellationGate.check()
             try execution.submit(to: registry)
             #if SHADOW_SYNC_TESTING
             try checkpoint?(.submitted)
@@ -1358,17 +1498,18 @@ final class InstallationBootstrap {
             #if SHADOW_SYNC_TESTING
             try checkpoint?(.retired)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             let completed = try journal.completeCandidateReady(after: retired)
             execution.store { $0.completed = completed }
             #if SHADOW_SYNC_TESTING
             try checkpoint?(.completed)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: admissionIntent)
             mutex.lock(); candidateReadiness = .complete; mutex.unlock()
         } catch {
             let failure = error
+            rememberPrimaryFailure(error)
             mutex.lock(); failedClosed = true; candidateReadiness = .failed; mutex.unlock()
             _ = try? admission.closeStarts()
             execution.cancelAndClose()
@@ -1376,6 +1517,7 @@ final class InstallationBootstrap {
                 try journal.closeReadiness(deadline: deadline)
                 mutex.lock(); stagedReadinessClosure = .joined; mutex.unlock()
             } catch {
+                rememberSettlementFailure(error)
                 mutex.lock(); stagedReadinessClosure = .pending; mutex.unlock()
                 throw error
             }
@@ -1410,20 +1552,21 @@ final class InstallationBootstrap {
         #endif
         mutex.unlock()
         do {
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: admissionIntent)
             #if SHADOW_SYNC_TESTING
             try checkpoint?(.claimed)
             if let publicationProbe { try journal.testingObservePublication(publicationProbe) }
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             _ = try journal.publishReadinessCommit()
             retainCommitOutcome(from: journal)
             #if SHADOW_SYNC_TESTING
             try checkpoint?(.published)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: admissionIntent)
+            try cancellationGate.check()
             let delivered = try journal.deliverReadinessCommit()
             // The actual transport outcome is held even if the next wrapper
             // postflight fails. Neither this value nor the durable record can
@@ -1433,11 +1576,12 @@ final class InstallationBootstrap {
             #if SHADOW_SYNC_TESTING
             try checkpoint?(.delivered)
             #endif
-            try boundary(deadline)
+            try forwardBoundary(deadline)
             try admission.validateOwner(owner, intent: admissionIntent)
             mutex.lock(); readinessCommitProgress = .delivered; mutex.unlock()
         } catch {
             let failure = error
+            rememberPrimaryFailure(error)
             mutex.lock(); failedClosed = true; readinessCommitProgress = .failed; mutex.unlock()
             // Includes an actual fsynced result returned by neither lower-level
             // call because its postflight failed, and uncertain atomic proposals.
@@ -1458,6 +1602,7 @@ final class InstallationBootstrap {
                 try journal.closeReadiness(deadline: deadline)
                 mutex.lock(); stagedReadinessClosure = .joined; mutex.unlock()
             } catch {
+                rememberSettlementFailure(error)
                 mutex.lock(); stagedReadinessClosure = .pending; mutex.unlock()
                 throw error
             }
@@ -1477,6 +1622,9 @@ final class InstallationBootstrap {
     func testingFenceCommitFailure() throws {
         guard let journal = stagedJournal else { throw CustodyRecordError.fenced }
         _ = try journal.fenceReadinessCommitFailure()
+    }
+    var testingNormalStartedRetained: Bool {
+        mutex.lock(); defer { mutex.unlock() }; return normalStarted != nil
     }
     func testingCommitRetention() -> [Bool] {
         mutex.lock(); defer { mutex.unlock() }
@@ -1681,4 +1829,22 @@ final class InstallationBootstrap {
         return true
     }
     #endif
+}
+
+/// Only this file's checked terminal wrappers can mint this one-use capability.
+/// Identity matching cannot be reconstructed from persisted metadata.
+final class FreshInstallationExitReceipt {
+    enum Disposition: Equatable { case installed, repaired, restored }
+    let disposition: Disposition
+    private weak var bootstrap: InstallationBootstrap?
+    private let mutex = NSLock()
+    private var consumed = false
+    fileprivate init(bootstrap: InstallationBootstrap, disposition: Disposition) {
+        self.bootstrap = bootstrap; self.disposition = disposition
+    }
+    func consume(for bootstrap: InstallationBootstrap) -> Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        guard !consumed, self.bootstrap === bootstrap else { return false }
+        consumed = true; return true
+    }
 }

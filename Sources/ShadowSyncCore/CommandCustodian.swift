@@ -884,6 +884,50 @@ private final class CustodianLoop {
         }
         throw CustodyProtocolError.invalidBudget
     }
+    /// Negative-only ordinary staged fixture: the real target is already
+    /// drained and its original terminal has been published. Wait for the
+    /// original control EOF, then corrupt transport or helper exit. No command,
+    /// capability, deadline, positive owner observation or target is substituted.
+    private func testingStagedExpiredTransportFault() -> Int32? {
+        guard inherited.request.authority == .installationStagedStart,
+              inherited.fixtureMode == "complete", targetDrained, terminalPublished,
+              statusQueue.isEmpty, let control = inherited.descriptors[.control] else { return nil }
+        let path = inherited.account.homeDirectory + "/.staged-expired-transport-fault"
+        var node = stat()
+        guard lstat(path, &node) == 0 else { return errno == ENOENT ? nil : 74 }
+        do {
+            let marker = try PolicyAuthorityFile.read(path: path, owner: inherited.account.uid, maximumBytes: 64)
+            guard node.st_mode == S_IFREG | 0o600,
+                  let fault = String(data: marker.bytes, encoding: .utf8),
+                  ["malformed-status", "nonzero-helper", "poisoned-output"].contains(fault) else { return 74 }
+            // The fixture never supplies a time. The unchanged request receipt
+            // bounds this hold; only actual parent-writer closure releases it.
+            var sawEOF = false
+            while now < inherited.request.budget.receipt {
+                var item = pollfd(fd: control.value, events: Int16(POLLHUP), revents: 0)
+                let value = poll(&item, 1, 2)
+                if value > 0 && item.revents & Int16(POLLHUP) != 0 { sawEOF = true; break }
+                if value < 0 && errno != EINTR { return 74 }
+            }
+            guard sawEOF else { return 74 }
+            if fault == "nonzero-helper" { return 77 }
+            let bytes = fault == "malformed-status" ? Data([255, 255, 255, 255])
+                : Data(repeating: 120, count: Int(inherited.request.stdoutLimit) + 1)
+            guard let statusDescriptor = inherited.descriptors[.status] else { return 74 }
+            let descriptor = fault == "malformed-status" ? statusDescriptor.value : inherited.output.value
+            var offset = 0
+            while offset < bytes.count && now < inherited.request.budget.receipt {
+                let count = bytes.withUnsafeBytes {
+                    Darwin.write(descriptor, $0.baseAddress!.advanced(by: offset), $0.count - offset)
+                }
+                if count > 0 { offset += count; continue }
+                if count < 0 && errno == EINTR { continue }
+                if count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) { usleep(1_000); continue }
+                return 74
+            }
+            return offset == bytes.count ? 0 : 74
+        } catch { return 74 }
+    }
     private func testingSerialMarker(_ event: String, targetPID: pid_t) throws {
         // Optional owner-private disposable-fixture output mode. The same three
         // actual children and custody checks run; only test telemetry is quiet.
@@ -1395,6 +1439,9 @@ private final class CustodianLoop {
             }
             flushStatus()
             if terminalPublished {
+                #if SHADOW_SYNC_TESTING
+                if let failure = testingStagedExpiredTransportFault() { return failure }
+                #endif
                 if statusQueue.isEmpty || statusBroken { return 0 }
                 // Terminal is already durable and no child remains. A bounded
                 // delivery failure leaves caller retirement fenced, not success.

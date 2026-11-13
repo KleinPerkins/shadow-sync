@@ -273,7 +273,8 @@ final class PolicyCatalogSession: @unchecked Sendable {
         // and metadata in the same bounded request. No path is inspected here.
         // Later traversal still consumes its own exact decision under the same
         // deadline and freshly revalidated policy/resource lease.
-        let parents = Set(shelves.map { Data((projectionRoot + "/" + $0.joined(separator: "/")).utf8) })
+        let parents = Set([Data(projectionRoot.utf8)]
+            + shelves.map { Data((projectionRoot + "/" + $0.joined(separator: "/")).utf8) })
         for candidate in required {
             guard let slash = candidate.lastIndex(of: "/"),
                   parents.contains(Data(candidate[..<slash].utf8)) else { continue }

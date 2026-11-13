@@ -28,37 +28,60 @@ enum InstallationStagedJournalFixtures {
             fflush(stderr)
         }
     }
-    static func fixture(bindingSource: ((InstallationBindingTestingSource) -> Void)? = nil,
+    static func fixture(observation: InstallationReconciliationDiagnostic.Observer? = nil, bindingSource: ((InstallationBindingTestingSource) -> Void)? = nil,
         _ body: (String, StateLocation, InstallationTransactionOwner,
         CustodyCatalogStore.InstallationStagedAdmissionIntent, InstallationStagedAdmission,
         J, RetainedCleanupRegistry) throws -> Void) throws {
-        try diagnosticFixture(bindingSource: bindingSource, body)
+        try diagnosticFixture(observation: observation, bindingSource: bindingSource, body)
     }
-    private static func diagnosticFixture(diagnostic: ((OrderPhase) -> Void)? = nil, bindingSource: ((InstallationBindingTestingSource) -> Void)? = nil,
+    private static func diagnosticFixture(observation: InstallationReconciliationDiagnostic.Observer? = nil, diagnostic: ((OrderPhase) -> Void)? = nil, bindingSource: ((InstallationBindingTestingSource) -> Void)? = nil,
         _ body: (String, StateLocation, InstallationTransactionOwner,
         CustodyCatalogStore.InstallationStagedAdmissionIntent, InstallationStagedAdmission,
         J, RetainedCleanupRegistry) throws -> Void) throws {
+        observation?(.fixtureEntry, .none)
         diagnostic?(.fixtureEntry)
-        try InstallationExclusivePreparationFixtures.withPreparedIntent(bindingSource: bindingSource) { root, location, owner, intent, registry in
+        try InstallationExclusivePreparationFixtures.withPreparedIntent(observation: observation, bindingSource: bindingSource) { root, location, owner, intent, registry in
+            observation?(.preparedIntent, .none)
             diagnostic?(.preparedIntent)
+            observation?(.installationRetirement, .none)
             let retired = try registry.installationRetirement(after: owner.closeBorrowing())
             diagnostic?(.retired)
+            observation?(.transfer, .none)
             let admission = try owner.transferToStagedAdmission(intent: intent, after: retired, deadline: .init(seconds: 3))
             diagnostic?(.transferred)
+            observation?(.journal, .none)
             let journal = try admission.continueJournal(deadline: .init(seconds: 3))
             diagnostic?(.continued)
+            observation?(.retainJournal, .none)
             try RuntimeFixtureSession.installationRoot(root).retain(journal)
+            observation?(.bodyEntered, .none)
             do { try body(root, location, owner, intent, admission, journal, registry) }
             catch {
-                try journal.closeReadiness(deadline: .init(seconds: 3))
+                observation?(.bodyFailed, .init(error))
+                observation?(.readinessCloseEntry, .none)
+                do { try journal.closeReadiness(deadline: .init(seconds: 3)) }
+                catch {
+                    observation?(.readinessCloseFailed, .init(error))
+                    throw error
+                }
+                observation?(.readinessCloseReturned, .none)
                 throw error
             }
-            try journal.closeReadiness(deadline: .init(seconds: 3))
+            observation?(.bodyReturned, .none)
+            observation?(.readinessCloseEntry, .none)
+            do { try journal.closeReadiness(deadline: .init(seconds: 3)) }
+            catch {
+                observation?(.readinessCloseFailed, .init(error))
+                throw error
+            }
+            observation?(.readinessCloseReturned, .none)
             diagnostic?(.bodyComplete)
+            observation?(.exclusion, .none)
             try InstallationOwnershipFixtures.excluded(location)
             diagnostic?(.exclusionComplete)
         }
         diagnostic?(.cleanupComplete)
+        observation?(.fixtureReturned, .none)
     }
     private static func record(_ location: StateLocation) throws -> InstallationControlRecord {
         try InstallationControlRecord.decode(Data(contentsOf: URL(fileURLWithPath: location.path + "/custody/installation.json")))

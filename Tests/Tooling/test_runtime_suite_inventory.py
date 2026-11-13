@@ -26,7 +26,7 @@ class RuntimeInventoryTests(unittest.TestCase):
 
     def test_current_source_has_complete_entrypoint_and_case_registration(self):
         result = inventory.inspect(self.root)
-        self.assertEqual((len(result['suites']), result['case_count'], len(result['other_entrypoints'])), (43, 1324, 12))
+        self.assertEqual((len(result['suites']), result['case_count'], len(result['other_entrypoints'])), (45, 1349, 12))
         self.assertFalse(result['runtime_executed'])
 
     def test_capture_suite_is_exact_independent_real_coverage(self):
@@ -37,14 +37,14 @@ class RuntimeInventoryTests(unittest.TestCase):
         self.assertEqual(rows['m6-custody-capture']['entrypoint'],
                          'M6SelfTestRunner.runLiveCustodyCapture')
         self.assertEqual(rows['m6']['entrypoint'], 'M6SelfTestRunner.runAll')
-        self.assertEqual(len(rows['m6']['cases']), 730)
+        self.assertEqual(len(rows['m6']['cases']), 730 + 12)  # Original full suite plus fresh-driver cases.
         self.assertTrue(set(expected) <= set(rows['m6']['cases']))
 
     def test_capture_route_cannot_skip_substitute_reorder_or_select_cases(self):
         path = self.root / 'Sources/ShadowSyncCore/M6SelfTests.swift'
         original = path.read_text()
         start = original.index('    public static func runLiveCustodyCapture(')
-        end = original.index('    public static func runAll(')
+        end = original.index('    // Fixed existing reconciliation coverage;')
         focused = original[start:end]
         publication = next(line for line in focused.splitlines(True)
                            if 'try run("m6-live-custody-capture-publication")' in line)

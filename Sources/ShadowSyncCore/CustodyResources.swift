@@ -256,6 +256,10 @@ final class CustodyPipe {
         mutex.lock(); defer { mutex.unlock() }
         return ownedEndpoints.allSatisfy { $0.retirementObservation == .succeeded }
     }
+    var writerRetiredSuccessfully: Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        return ownedEndpoints[1].retirementObservation == .succeeded
+    }
     func closeWriter() { mutex.lock(); writer?.closeNow(); writer = nil; mutex.unlock() }
     func read(maximum: Int) throws -> CustodyPipeRead {
         guard (1...16_388).contains(maximum) else { throw CustodyResourceError.limit }
@@ -613,7 +617,7 @@ final class CustodyRequestResources: @unchecked Sendable {
     }
     /// Called by the sole registry owner only after terminal persistence/reap/EOF,
     /// or before any metadata/spawn attempt. No descriptor is explicitly unlocked.
-    func retire() {
+    func retire(installationReceipt: UInt64? = nil) {
         mutex.lock()
         guard !retired else { mutex.unlock(); return }
         if transferring { retirementRequested = true; mutex.unlock(); return }
@@ -624,8 +628,17 @@ final class CustodyRequestResources: @unchecked Sendable {
         #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
         signedParentChannel?.retire()
         signedAdapterChannel?.cancel()
-        try? signedAdapterChannel?.joinAndRetire(deadline: .init(uptimeNanoseconds: request.budget.receipt))
+        try? signedAdapterChannel?.joinAndRetire(deadline: .init(uptimeNanoseconds: min(request.budget.receipt, installationReceipt ?? request.budget.receipt)))
         #endif
+    }
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    func testingSignedJoinMatches(_ controller: SignedInstallationFixtureJoinController) -> Bool {
+        controller.matches(request: request) && (signedAdapterChannel?.fixtureMatches(controller) ?? false)
+    }
+    #endif
+    var installationReadyForCheckedRetirement: Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        return request.authority.isInstallationStaged && !transferring && !retired && !retirementRequested
     }
     var installationRetiredSuccessfully: Bool {
         mutex.lock(); defer { mutex.unlock() }
@@ -647,6 +660,10 @@ final class CustodyRequestResources: @unchecked Sendable {
         }
     }
     #endif
+    var originalRefusalControlClosed: Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        return transferred && !transferring && !retired && !retirementRequested && control.writerRetiredSuccessfully
+    }
     func closeControl() { control.closeWriter() }
     func writeControl(_ data: Data, offset: Int = 0) throws -> Int { try control.write(data, offset: offset) }
     func readStatus(maximum: Int = 16_388) throws -> CustodyPipeRead { try status.read(maximum: maximum) }
@@ -756,6 +773,10 @@ final class CustodySpawnResources: @unchecked Sendable {
         if mapping { releaseRequested = true; mutex.unlock(); return }
         released = true; mutex.unlock()
         for (_, source) in pipeSources + childOwnedSources { source.closeNow() }
+    }
+    var childCopiesRetiredSuccessfully: Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        return released && !mapping && (pipeSources + childOwnedSources).allSatisfy { $0.1.retirementObservation == .succeeded }
     }
     #if SHADOW_SYNC_TESTING
     func testingDescriptor(_ target: Int32) -> Int32? { (pipeSources + fileSources).first { $0.0 == target }?.1.value }

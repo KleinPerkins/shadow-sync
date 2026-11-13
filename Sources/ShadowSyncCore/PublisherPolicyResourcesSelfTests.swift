@@ -779,7 +779,8 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                 for key in entries.keys.sorted().reversed() { rebuilt[key] = entries[key] }
                 try tree.revalidate(root: fixture.framework, owner: geteuid(),
                     layout: PolicyRuntimeLayout(entries: rebuilt))
-                try require(try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: layout) == tree,
+                try require(try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(),
+                    layout: PolicyRuntimeLayout(entries: rebuilt)) == tree,
                     "indexed revalidation differs from independent full capture")
                 // Retained node lookup may never be paired with changed layout
                 // authority, even when all actual files remain unchanged.
@@ -853,8 +854,35 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                             "mixed fresh scan differs from full capture")
                 try fixture.remove()
             }
+            // Replay one complete freshly enumerated record in place of a
+            // different entry. Keeping the first bulk stat makes duplicate
+            // rejection itself decisive, rather than incidental inode drift.
             for directory in ["route-eight", "route-nine"] {
-                for variant in ["name", "inode", "mode"] {
+                let fixture = try Fixture(layout: routedLayout); defer { try? fixture.remove() }
+                let retained = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: routedLayout)
+                var first: (String, stat?)?, substituted = false, observedDuplicate = false
+                var observed: Set<String> = []
+                try refused {
+                    try retained.testingRevalidateScan(root: fixture.framework, owner: geteuid(), layout: routedLayout,
+                        afterEntryRead: { prefix, name, bulk in
+                            guard prefix == directory else { return }
+                            try require(bulk == (directory == "route-nine"), "duplicate exercised wrong enumeration route")
+                            if !observed.insert(name).inserted { observedDuplicate = true }
+                        }, substituteEntry: { prefix, name, metadata, bulk in
+                            guard prefix == directory else { return (name, metadata) }
+                            try require(bulk == (directory == "route-nine"), "duplicate read wrong enumeration route")
+                            if substituted { return (name, metadata) }
+                            guard let prior = first else { first = (name, metadata); return (name, metadata) }
+                            try require(name != prior.0, "duplicate did not replace a distinct fresh record")
+                            substituted = true
+                            return prior
+                        })
+                }
+                try require(substituted && observedDuplicate, "malformed duplicate never reached actual scan validation")
+                try fixture.remove()
+            }
+            for directory in ["route-eight", "route-nine"] {
+                for variant in ["name", "inode", "mode", "missing"] {
                     let fixture = try Fixture(layout: routedLayout); defer { try? fixture.remove() }
                     let target = fixture.framework + "/" + directory + "/file-0"
                     let replacement = fixture.path + "/replacement"
@@ -863,7 +891,7 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                         try require(chmod(replacement, 0o644) == 0, "route replacement mode")
                     }
                     let retained = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: routedLayout)
-                    var entered = false, observedTarget = false
+                    var entered = false, observedTarget = false, routeEntries = 0
                     try refused {
                         try retained.testingRevalidateScan(root: fixture.framework, owner: geteuid(), layout: routedLayout,
                             beforeDirectoryRead: { prefix in
@@ -876,16 +904,23 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                                 case "name": try require(renameatx_np(AT_FDCWD, target, AT_FDCWD, target + "-unknown",
                                     UInt32(RENAME_EXCL)) == 0, "route same-count name mutation")
                                 case "inode": try require(rename(replacement, target) == 0, "route inode substitution")
+                                case "missing": try require(unlink(target) == 0, "route missing entry")
                                 default: try require(chmod(target, 0o600) == 0, "route file mode mutation")
                                 }
                             }, afterEntryRead: { prefix, name, bulk in
+                                if prefix == directory { routeEntries += 1 }
                                 if prefix == directory && name == (variant == "name" ? "file-0-unknown" : "file-0") {
                                     observedTarget = true
                                     try require(bulk == (directory == "route-nine"), "mutation exercised wrong enumeration route")
                                 }
                             })
                     }
-                    try require(entered && observedTarget, "mutation refused before optimized enumeration")
+                    try require(entered && (variant == "missing" ? !observedTarget : observedTarget),
+                                "mutation refused before optimized enumeration")
+                    if variant == "missing" {
+                        try require(routeEntries == (directory == "route-nine" ? 8 : 7),
+                                    "missing-entry scan omitted remaining fresh names")
+                    }
                     try fixture.remove()
                 }
             }

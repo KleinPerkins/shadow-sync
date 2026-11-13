@@ -19,6 +19,28 @@ final class SignedInstallationFixtureService: LaunchAgentControlling, InstalledH
     private var hostChannel: SignedInstallationFixtureHostChannel?
     private var streams: Streams?
     private var handoffs: [SignedInstallationFixtureAdapterChannel] = []
+    private var joinFixture: SignedInstallationFixtureJoinController?
+    func armJoinFixture(_ controller: SignedInstallationFixtureJoinController) throws {
+        try controller.requireOwner(context: context, custody: rootCustody)
+        lock.lock(); defer { lock.unlock() }
+        guard !closing, joinFixture == nil else { throw CustodyRecordError.fenced }
+        joinFixture = controller
+    }
+    func attachJoinFixture(_ channel: SignedInstallationFixtureAdapterChannel,
+                           signedRequest: SignedInstallationFixtureContext.Request,
+                           request: UnvalidatedCustodyRequest, digest: String,
+                           binding: InstallationCommandBinding) throws {
+        lock.lock(); let controller = joinFixture, closed = closing; lock.unlock()
+        guard !closed else { throw CustodyRecordError.fenced }
+        // A preparation/diagnostic channel cannot consume the one-shot arm.
+        guard request.authority == .installationStagedStart, request.kind == .launchctlMutation else { return }
+        guard let controller else { return }
+        try controller.bind(channel, context: context, custody: rootCustody,
+            signedRequest: signedRequest, request: request, digest: digest, binding: binding)
+        try controller.requireRejectedMatches(channel, context: context, custody: rootCustody,
+            signedRequest: signedRequest, command: request, digest: digest, binding: binding)
+        try channel.attachJoinFixture(controller)
+    }
     init(context: SignedInstallationFixtureContext, custody: InstallationReadinessFixtureCustody) throws {
         try context.revalidate()
         self.context = context; rootCustody = custody
@@ -28,6 +50,13 @@ final class SignedInstallationFixtureService: LaunchAgentControlling, InstalledH
         lock.lock(); defer { lock.unlock() }
         guard !closing else { throw CustodyRecordError.fenced }
         handoffs.append(channel)
+    }
+    func joinFixtureValue(_ controller: SignedInstallationFixtureJoinController, deadline: MonotonicDeadline) throws {
+        try controller.requireOwner(context: context, custody: rootCustody)
+        lock.lock(); let channels = handoffs; lock.unlock()
+        let selected = channels.filter { $0.fixtureMatches(controller) }
+        guard selected.count == 1 else { throw CustodyRecordError.fenced }
+        try selected[0].fixtureValue(deadline: deadline)
     }
     func work(_ body: @escaping @Sendable () throws -> Void) -> InstallationFixtureWork {
         rootCustody.startWork(body)
@@ -203,13 +232,17 @@ final class SignedInstallationFixtureService: LaunchAgentControlling, InstalledH
     }
     func closeFixtureService(deadline: MonotonicDeadline) throws {
         lock.lock(); closing = true; let channels = handoffs, busy = working; lock.unlock()
+        // Cancellation by production retirement cannot release the hold. Only
+        // this distinct original-service teardown releases both fixture latches.
+        lock.lock(); let controller = joinFixture; lock.unlock()
+        controller?.releaseForTeardown()
         for channel in channels { channel.cancel() }
         guard !busy else { throw CustodyRecordError.busy }
         if let anchor {
             anchor.testingRequestRuntimeDrain()
             guard anchor.testingRuntimeRetired else { throw CustodyRecordError.busy }
         }
-        for channel in channels { try channel.joinAndRetire(deadline: deadline) }
+        for channel in channels { try channel.joinAndRetire(deadline: deadline, purpose: .fixtureTeardown) }
         if let streams { try streams.retire() }
         try hostChannel?.retireAfterHostReaped()
     }

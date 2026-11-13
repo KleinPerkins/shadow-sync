@@ -16,6 +16,76 @@ class SignedFixtureSourceTests(unittest.TestCase):
         self.assertEqual(source.verify(ROOT), ['ordinary-build-exclusion', 'reachable-source-preflight',
             'production-decode-default', 'full-publisher-layout', 'pure-record-profile-validation', 'retained-staged-profile', 'retained-commit-profile', 'authenticated-helper-channel', 'connected-startup-stop-route', 'owned-service-handoff', 'real-appkit-entry', 'signed-host-side-effect-fences', 'committed-isolated-policy', 'external-root-disposal', 'owner-lock-reservations'])
 
+    def join_sources(self):
+        core = ROOT / 'Sources/ShadowSyncCore'
+        names = ('SignedInstallationFixtureJoinFixtures.swift', 'SignedInstallationFixtureEntrypoint.swift',
+            'SignedInstallationFixtureContext.swift', 'SignedInstallationFixtureService.swift',
+            'SignedInstallationFixtureAdapterChannel.swift', 'SignedInstallationFixtureCase.swift',
+            'RetainedCleanupRegistry.swift')
+        return {name: source.selected((core / name).read_text(), True, True) for name in names}, (core / 'CustodyCatalog.swift').read_text()
+
+    def reject_join_mutation(self, name, original, replacement, error):
+        files, catalog = self.join_sources()
+        source.verify_signed_adapter_join(files, catalog)
+        self.assertEqual(files[name].count(original), 1)
+        files[name] = files[name].replace(original, replacement)
+        with self.assertRaisesRegex(ValueError, error):
+            source.verify_signed_adapter_join(files, catalog)
+
+    def test_join_early_dispatch_cannot_fall_through_full_startup(self):
+        self.reject_join_mutation('SignedInstallationFixtureEntrypoint.swift',
+            '                            context: context, service: service, custody: custody)\n                        return',
+            '                            context: context, service: service, custody: custody)', 'join-early-dispatch')
+
+    def test_join_hold_must_follow_final_ack_and_cancel_cannot_release_it(self):
+        files, catalog = self.join_sources()
+        name = 'SignedInstallationFixtureAdapterChannel.swift'
+        hold = 'try joinFixture?.holdAfterFinalAcknowledgment(channel: self)'
+        moved = files[name].replace(hold, '').replace('        for (index, operation)', hold + '\n        for (index, operation)')
+        files[name] = moved
+        with self.assertRaisesRegex(ValueError, 'join-hold-after-real-final-ack'):
+            source.verify_signed_adapter_join(files, catalog)
+        self.reject_join_mutation(name, '        parent.interruptSocket()',
+            '        joinFixture?.releaseAdapter(); parent.interruptSocket()', 'join-cancel-cannot-release')
+
+    def test_join_real_wait_and_checked_disposal_cannot_be_replaced_by_success(self):
+        self.reject_join_mutation('SignedInstallationFixtureAdapterChannel.swift',
+            'try work?.join(deadline: deadline)', '_ = deadline', 'join-real-work')
+        self.reject_join_mutation('RetainedCleanupRegistry.swift',
+            '                  entry.resources.installationRetiredSuccessfully,',
+            '                  true,', 'join-disposal-precondition')
+        self.reject_join_mutation('RetainedCleanupRegistry.swift',
+            '            guard remove(entry) else { throw CustodyRecordError.fenced }\n            timer?.cancel();',
+            '            record.issuanceQualified = true\n            guard remove(entry) else { throw CustodyRecordError.fenced }\n            timer?.cancel();',
+            'join-disposal-not-production-success')
+
+    def test_join_throwing_unwind_and_finite_hold_source_obligations(self):
+        # Mutation coverage checks real failure paths; it is not runtime fault execution.
+        for original, replacement, error in (
+            ('defer { owner.releaseOnUnwind() }', 'defer { }', 'join-root-owned-before-fallible-work'),
+            ('releaseAdapter(); releaseInvocation()', 'releaseAdapter()', 'join-owner-release'),
+            ('if let failure = failures.first { throw failure }', '_ = failures', 'join-unwind-retains-failure'),
+            ('[weak owner]', '[owner]', 'join-checkpoint-owner-cycle'),
+            ('emergency = true; adapterReleased = true', 'adapterReleased = true', 'join-finite-hold'),
+        ):
+            with self.subTest(original=original):
+                self.reject_join_mutation('SignedInstallationFixtureJoinFixtures.swift', original, replacement, error)
+
+    def test_join_exact_foreign_and_duplicate_match_controls_are_connected(self):
+        self.reject_join_mutation('SignedInstallationFixtureJoinFixtures.swift',
+            'guard bound == nil, !teardown, !ceiling.hasExpired', 'guard !teardown, !ceiling.hasExpired', 'join-duplicate-bind')
+        self.reject_join_mutation('SignedInstallationFixtureJoinFixtures.swift',
+            'binding.validationProfile == profile', 'true', 'join-exact-match')
+        self.reject_join_mutation('SignedInstallationFixtureService.swift',
+            'try controller.requireRejectedMatches(', 'try controller.unusedRejectedMatches(', 'join-adversarial-match-controls')
+
+    def test_join_production_and_ordinary_testing_exclusion(self):
+        raw = (ROOT / 'Sources/ShadowSyncCore/SignedInstallationFixtureJoinFixtures.swift').read_text()
+        for testing, signed in ((False, False), (False, True), (True, False)):
+            self.assertNotIn('SignedInstallationFixtureJoinController', source.selected(raw, testing, signed))
+        weakened = raw.replace('#if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE', '#if SHADOW_SYNC_TESTING', 1)
+        self.assertIn('SignedInstallationFixtureJoinController', source.selected(weakened, True, False))
+
     def test_signed_activation_fence_precedes_real_sink_and_testing_overrides(self):
         raw = (ROOT / 'Sources/ShadowSyncApp/AppDelegate.swift').read_text()
         source.verify_signed_host_side_effects(raw)
@@ -134,3 +204,64 @@ class SignedFixtureSourceTests(unittest.TestCase):
         end = text.index('func validateCandidate(', start)
         self.assertNotIn('try revalidate()', text[start:end])
         self.assertNotIn('sealed.revalidate()', text[start:end])
+
+class SignedFixtureControlSourceTests(unittest.TestCase):
+    def files(self):
+        core=ROOT/'Sources/ShadowSyncCore'
+        return {name:source.selected((core/name).read_text(),True,True) for name in (
+            'SignedInstallationFixtureJoinControlFixtures.swift','SignedInstallationFixtureJoinFixtures.swift',
+            'SignedInstallationFixtureEntrypoint.swift','SignedInstallationFixtureCase.swift','RetainedCleanupRegistry.swift')}
+
+    def test_control_source_connected_and_dual_fenced(self):
+        source.verify_signed_adapter_controls(self.files())
+        raw=(ROOT/'Sources/ShadowSyncCore/SignedInstallationFixtureJoinControlFixtures.swift').read_text()
+        for testing,signed in ((False,False),(True,False),(False,True)):
+            self.assertEqual(source.selected(raw,testing,signed).strip(),'')
+
+    def test_control_fault_prerequisite_and_one_use_certificate_mutations_refuse(self):
+        mutations=[('bootstrapStartObservation() == .notAttempted','bootstrapStartObservation() == .failed'),
+            ('quiet.preceding > 0','quiet.preceding >= 0'),
+            ('injection.certificate === certificate','true'),
+            ('!consumed, self.scenario','true, self.scenario'),
+            ('expiry.expiryAwaiting','true'),
+            ('bound?.channel == controller.binding?.channel','true'),
+            ('current.originalReceipt == snapshot.originalReceipt','true')]
+        for old,new in mutations:
+            files=self.files();name='SignedInstallationFixtureJoinControlFixtures.swift';files[name]=files[name].replace(old,new)
+            with self.subTest(old=old),self.assertRaises(ValueError): source.verify_signed_adapter_controls(files)
+
+    def test_control_no_generic_H_success_swallow_or_timeout_fabrication(self):
+        for name,old,new in [
+            ('SignedInstallationFixtureJoinControlFixtures.swift','catch let error as SignedJoinHoldTimeout','catch let error as CustodyRecordError'),
+            ('SignedInstallationFixtureJoinControlFixtures.swift','try work.value(deadline: context.deadline)','try work.join(deadline: context.deadline)'),
+            ('SignedInstallationFixtureJoinFixtures.swift','let result = adapterRelease.wait(timeout: .init(uptimeNanoseconds: ceiling.absoluteUptimeNanoseconds))','let result = DispatchTimeoutResult.timedOut'),
+            ('SignedInstallationFixtureJoinFixtures.swift','invocationObservation.returned = RuntimeSuiteGuardian.now','invocationObservation.returned = nil'),
+        ]:
+            files=self.files();self.assertIn(old,files[name]);files[name]=files[name].replace(old,new)
+            with self.subTest(old=old),self.assertRaises(ValueError): source.verify_signed_adapter_controls(files)
+
+    def test_control_teardown_disposal_or_normal_success_shortcuts_refuse(self):
+        for old,new in [
+            ('guard scenario == .startAdapterJoinFaultBeforeJoin || scenario == .startAdapterJoinFaultAfterRefusal','guard scenario.isStartAdapterJoinControl'),
+            ('later.physicallyRetired && later.scope == sticky.scope','later.physicallyRetired'),
+            ('quiet.selectedDelivered','true'),
+            ('bootstrap.bootstrapStartObservation() == .complete','true'),
+            ('try custody.finish(deadline: context.deadline)','_ = custody'),
+            ('if let timeout { throw timeout }','if let timeout { _ = timeout }'),
+            ('try emit(report, deadline: context.deadline)','_ = report'),
+            ('if let failure = failures.first { throw failure }','_ = failures'),
+        ]:
+            files=self.files();name='SignedInstallationFixtureJoinControlFixtures.swift';self.assertIn(old,files[name]);files[name]=files[name].replace(old,new)
+            with self.subTest(old=old),self.assertRaises(ValueError): source.verify_signed_adapter_controls(files)
+
+    def test_control_report_transport_deadline_and_accounting_mutations_refuse(self):
+        for name,old,new in [
+            ('SignedInstallationFixtureJoinControlFixtures.swift','bytes.count <= 4096','bytes.count <= 65536'),
+            ('SignedInstallationFixtureJoinControlFixtures.swift','flags & O_NONBLOCK','flags & O_APPEND'),
+            ('SignedInstallationFixtureJoinControlFixtures.swift','Darwin.write(','fwrite('),
+            ('SignedInstallationFixtureJoinControlFixtures.swift','POLLERR | POLLHUP | POLLNVAL','POLLERR'),
+            ('RetainedCleanupRegistry.swift','$0.delivery == .delivered','true'),
+            ('RetainedCleanupRegistry.swift','reservationOutputs.values.reduce(0, +) == outputReserved','true'),
+        ]:
+            files=self.files();self.assertIn(old,files[name]);files[name]=files[name].replace(old,new)
+            with self.subTest(old=old),self.assertRaises(ValueError): source.verify_signed_adapter_controls(files)

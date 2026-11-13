@@ -2983,34 +2983,54 @@ public final class RetentionArtifactStore:
     }
     private func readCleanupNode(_ index: Int64, plan: CleanupPlan, deadline: MonotonicDeadline) throws -> CleanupNode {
         guard index >= 0, index < plan.nodeCount else { throw SelectedRepositoryScopeError.cleanupPending }
-        let bytes = try readCleanupBytes(plan.nodes, offset: cleanupRecordOffset(index), count: Self.cleanupRecordBytes,
-            deadline: deadline, sealed: plan.preflightComplete)
-        return try Self.decodeCleanupNode(index, bytes: bytes)
-    }
-    private static func decodeCleanupNode(_ index: Int64, bytes: Data) throws -> CleanupNode {
-        // Borrow this freshly checked record once. Header loads support unaligned
-        // Data storage; the name is decoded strictly without a copied subdata.
-        // No decoded value outlives or substitutes for a later live spill check.
-        guard index >= 0, bytes.count == cleanupRecordBytes else {
+        let spill = plan.nodes, offset = try cleanupRecordOffset(index), count = Self.cleanupRecordBytes
+        let sealed = plan.preflightComplete
+        let end = offset.addingReportingOverflow(Int64(count))
+        guard offset >= 0, count > 0, count <= Self.cleanupRecordBytes, !end.overflow,
+              end.partialValue <= spill.bytes, !deadline.hasExpired, let reader = spill.reader else {
             throw SelectedRepositoryScopeError.cleanupPending
         }
-        return try bytes.withUnsafeBytes { raw in
-            let parent = raw.loadUnaligned(fromByteOffset: 0, as: Int64.self)
-            let depth = raw.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
-            let length = raw.loadUnaligned(fromByteOffset: 12, as: UInt32.self)
-            let start = 16 + MemoryLayout<stat>.size
-            guard length > 0, length <= UInt32(MAXNAMLEN), depth < UInt32(maximumCleanupDepth),
-                  (index == 0 ? parent == -1 && depth == 0 : parent >= 0 && parent < index && depth > 0),
-                  let name = String(bytes: raw[start..<(start + Int(length))], encoding: .utf8),
-                  RetentionPath.isComponent(name) else { throw SelectedRepositoryScopeError.cleanupPending }
-            let before = raw.loadUnaligned(fromByteOffset: 16, as: stat.self)
-            return CleanupNode(name: name, before: before, parentIndex: parent, depth: Int(depth))
+        try validateCleanupSpill(spill, requireSealed: sealed)
+        let fd = try reader.descriptor()
+        // Every byte is filled before decoding; a partial read or failed fresh
+        // spill check throws inside this scope without exposing the buffer.
+        return try withUnsafeTemporaryAllocation(byteCount: count, alignment: MemoryLayout<stat>.alignment) { raw in
+            var done = 0
+            while done < raw.count {
+                guard !deadline.hasExpired else { throw SelectedRepositoryScopeError.cleanupPending }
+                let n = pread(fd, raw.baseAddress!.advanced(by: done), raw.count - done, off_t(offset + Int64(done)))
+                if n > 0 { done += n }
+                else if n < 0 && errno == EINTR { continue }
+                else { throw SelectedRepositoryScopeError.cleanupPending }
+            }
+            try validateCleanupSpill(spill, requireSealed: sealed)
+            return try Self.decodeCleanupNode(index, bytes: UnsafeRawBufferPointer(raw))
         }
+    }
+    private static func decodeCleanupNode(_ index: Int64, bytes raw: UnsafeRawBufferPointer) throws -> CleanupNode {
+        // Header loads support unaligned borrowed storage. Strict UTF-8 decoding
+        // returns an owned String; the stat and scalar fields are copied values.
+        // No decoded value outlives or substitutes for a later live spill check.
+        guard index >= 0, raw.count == cleanupRecordBytes else {
+            throw SelectedRepositoryScopeError.cleanupPending
+        }
+        let parent = raw.loadUnaligned(fromByteOffset: 0, as: Int64.self)
+        let depth = raw.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
+        let length = raw.loadUnaligned(fromByteOffset: 12, as: UInt32.self)
+        let start = 16 + MemoryLayout<stat>.size
+        guard length > 0, length <= UInt32(MAXNAMLEN), depth < UInt32(maximumCleanupDepth),
+              (index == 0 ? parent == -1 && depth == 0 : parent >= 0 && parent < index && depth > 0),
+              let name = String(bytes: raw[start..<(start + Int(length))], encoding: .utf8),
+              RetentionPath.isComponent(name) else { throw SelectedRepositoryScopeError.cleanupPending }
+        let before = raw.loadUnaligned(fromByteOffset: 16, as: stat.self)
+        return CleanupNode(name: name, before: before, parentIndex: parent, depth: Int(depth))
     }
     #if SHADOW_SYNC_TESTING
     static func testingDecodeCleanupRecord(_ bytes: Data, index: Int64)
         throws -> (name: String, before: stat, parent: Int64, depth: Int) {
-        let node = try decodeCleanupNode(index, bytes: bytes)
+        let node = try bytes.withUnsafeBytes { raw in
+            try decodeCleanupNode(index, bytes: raw)
+        }
         return (node.name, node.before, node.parentIndex, node.depth)
     }
     #endif

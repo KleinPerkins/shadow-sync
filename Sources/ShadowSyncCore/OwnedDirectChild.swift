@@ -479,6 +479,24 @@ public final class OwnedDirectChild: @unchecked Sendable {
     private var neverResumedSnapshot: Bool {
         mutex.lock(); defer { mutex.unlock() }; return neverResumed
     }
+    /// Scheduling coordination only. Observe the same retained original
+    /// child's terminal availability without consuming it or changing custody.
+    /// No PID argument, held status, signal, proof, or ownership repair exists.
+    @_silgen_name("shadowSyncTesting_originalTerminationAvailable")
+    @inline(never)
+    func testingOriginalTerminationAvailable() -> Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        guard testingOriginalSuspendedSpawn, !neverResumed, state == .running,
+              reapPolicy == .immediate else { return false }
+        var info = siginfo_t()
+        let result = waitid(P_PID, id_t(identity.processID), &info, WEXITED | WNOHANG | WNOWAIT)
+        // EINTR, ECHILD and every other error yield no coordination signal.
+        // No result (si_pid zero) also cannot release the fixture's barrier.
+        guard result == 0, info.si_pid != 0, info.si_pid == identity.processID else { return false }
+        return (info.si_code == CLD_EXITED && (0...255).contains(info.si_status))
+            || ((info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
+                && info.si_status > 0 && info.si_status < 0x7f)
+    }
     public func testingObserveNextPoll(_ attempt: OwnedDirectChildTestingPollAttempt) {
         testingObservationLock.lock()
         testingPollAttempt = attempt

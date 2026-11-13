@@ -210,6 +210,10 @@ final class SignedInstallationFixtureContext {
         var inheritedParent: SignedInstallationFixtureParentChannel.Inherited? {
             if case let .inherited(parent) = lifetime { return parent }; return nil
         }
+        func joinFixtureRequest() throws -> Request {
+            guard case .guardian = lifetime else { throw CustodyRecordError.fenced }
+            try revalidate(); return request
+        }
         func makeParentChannel(requestDigest: String) throws -> SignedInstallationFixtureParentChannel {
             // Only the original guardian-backed coordinator exports context.
             // A helper cannot re-export inherited authority to another helper.
@@ -231,6 +235,8 @@ final class SignedInstallationFixtureContext {
             let channel = try SignedInstallationFixtureAdapterChannel(context: self.request, digest: requestDigest,
                 kind: request.kind, arguments: request.arguments, binding: binding, service: service,
                 deadline: min(self.request.deadline, request.budget.work))
+            try service.attachJoinFixture(channel, signedRequest: self.request,
+                request: request, digest: requestDigest, binding: binding)
             try channel.start(); return channel
         }
         func makeHostChannel(binding: InstallationCommandBinding) throws -> SignedInstallationFixtureHostChannel {
