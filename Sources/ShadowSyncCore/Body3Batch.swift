@@ -39,10 +39,13 @@ public enum Body3BatchNodeStatus:
     case refused
     case failed
     case cancelled
+    case cleanupPending
+
+    public var isSettled: Bool { isTerminal || self == .cleanupPending }
 
     public var isTerminal: Bool {
         switch self {
-        case .queued, .running: return false
+        case .queued, .running, .cleanupPending: return false
         case .succeeded, .skipped, .refused,
              .failed, .cancelled:
             return true
@@ -814,7 +817,7 @@ public struct Body3BatchNodeOutcome:
         awaAdvisoryFailure: Bool = false,
         technicalDetail: String? = nil
     ) {
-        precondition(status.isTerminal)
+        precondition(status.isSettled)
         self.status = status
         self.detail = String(
             Redactor.sanitize(detail).prefix(2_048)
@@ -937,8 +940,10 @@ public struct Body3BatchReport:
     public let results: [Body3BatchNodeResult]
     public let repositoryCounts: [String: Int]
 
+    public var cleanupPending: Bool { results.contains { $0.status == .cleanupPending } }
+
     public var requiresReview: Bool {
-        cancelled
+        cleanupPending || cancelled
             || paused
             || results.contains {
                 $0.status == .failed
@@ -958,10 +963,10 @@ public struct Body3BatchReport:
         guard RunIdentity.isValid(run),
               !results.isEmpty,
               results.allSatisfy({
-                  $0.status.isTerminal
+                  $0.status.isSettled
               }) else {
             throw GitSafetyError.unsafeRepository(
-                "Body 3 report requires every node terminal"
+                "Body 3 report requires settled callbacks or explicit cleanup pending"
             )
         }
         schema = "shadow-sync-batch-report/v2"
@@ -1017,7 +1022,7 @@ public struct Body3BatchMetadata:
               Set(report.results.map(\.node.id))
                 == Set(plan.nodes.map(\.id)),
               report.results.allSatisfy({
-                  $0.status.isTerminal
+                  $0.status.isSettled
                       && plan.nodes.contains($0.node)
                       && $0.durationMilliseconds >= 0
                       && (
@@ -1267,7 +1272,7 @@ public final class Body3BatchCoordinator:
 
         condition.lock()
         while scheduler.nodes.values.contains(where: {
-            !$0.status.isTerminal
+            !$0.status.isSettled
         }) {
             if externalCancellation?.isCancelled == true {
                 control.cancel()
@@ -1282,14 +1287,14 @@ public final class Body3BatchCoordinator:
                                 .status
                         }
                     let waiting = dependencyStatuses
-                        .contains { !$0.isTerminal }
+                        .contains { !$0.isSettled }
                     let failedRequired =
                         node.dependencies.contains {
                             dependency in
                             dependency.requiresSuccess
                                 && scheduler.nodes[
                                     dependency.nodeID
-                                ]?.status.isTerminal
+                                ]?.status.isSettled
                                     == true
                                 && scheduler.nodes[
                                     dependency.nodeID
@@ -1325,7 +1330,7 @@ public final class Body3BatchCoordinator:
                                   let status = scheduler.nodes[
                                     dependency.nodeID
                                   ]?.status,
-                                  status.isTerminal else {
+                                  status.isSettled else {
                                 return false
                             }
                             return status != .succeeded
@@ -1353,7 +1358,7 @@ public final class Body3BatchCoordinator:
             }
 
             if scheduler.nodes.values.allSatisfy({
-                $0.status.isTerminal
+                $0.status.isSettled
             }) {
                 break
             }
@@ -1403,7 +1408,7 @@ public final class Body3BatchCoordinator:
                 let dependenciesTerminal =
                     node.dependencies.allSatisfy {
                         scheduler.nodes[$0.nodeID]?
-                            .status.isTerminal
+                            .status.isSettled
                             == true
                     }
                 guard dependenciesTerminal else { continue }
@@ -1478,10 +1483,9 @@ public final class Body3BatchCoordinator:
                         outcome.detail
                     scheduler.nodes[node.id]?.technicalDetail =
                         outcome.technicalDetail
-                    onNodeTerminal(
-                        node.id,
-                        outcome.status
-                    )
+                    if outcome.status.isTerminal {
+                        onNodeTerminal(node.id, outcome.status)
+                    }
                     scheduler.activeWorkers.removeValue(
                         forKey: worker
                     )

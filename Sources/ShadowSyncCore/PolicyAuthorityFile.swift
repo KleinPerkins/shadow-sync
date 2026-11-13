@@ -31,6 +31,10 @@ struct PolicyAuthorityFile: Equatable, Sendable {
     private let identity: Node
     private let ancestors: [DirectoryNode]
 
+    /// The mode belongs to the captured no-follow file, not a later pathname
+    /// observation. Revalidation still binds its bytes, identity and ancestors.
+    var hasOwnerPrivateMode: Bool { identity.directory.mode & 0o077 == 0 }
+
     private struct DirectoryNode: Codable, Equatable, Sendable {
         let device: Int32
         let inode: UInt64
@@ -199,19 +203,85 @@ struct PolicyAuthorityFile: Equatable, Sendable {
         try checkedACL(descriptor, allowingReadGrants: false)
     }
 
-    private static func checkedACL(_ descriptor: Int32, allowingReadGrants: Bool) throws -> String {
+    /// Validate each caller's original metadata checks before ACL decoding.
+    /// A failed combined query uses the original fstat only on that error path,
+    /// preserving metadata refusal precedence before the ACL failure escapes.
+    static func privateStateACLObservation(_ descriptor: Int32,
+        validateMetadata: (stat?) throws -> Void) throws -> stat {
+        var info = stat()
+        _ = try withoutActuallyEscaping(validateMetadata) { validator in
+            try checkedACL(descriptor, allowingReadGrants: false, observedStat: &info,
+                           metadataValidator: validator)
+        }
+        return info
+    }
+
+    /// Retain the stat already filled by the ACL security query. This is a
+    /// fresh observation, not a cache; callers still check names and the full
+    /// batch postflight after every payload has been read.
+    static func safeACLObservation(_ descriptor: Int32) throws -> (info: stat, acl: String) {
+        var info = stat()
+        let acl = try checkedACL(descriptor, allowingReadGrants: true, observedStat: &info)
+        return (info, acl)
+    }
+
+    /// The named reader checks its original budget inside ancestor ACL traversal.
+    /// Existing descriptor APIs retain the no-op default and identical policy.
+    static func socketObservationDirectoryACL(_ descriptor: Int32, privateState: Bool,
+                                               deadline: MonotonicDeadline) throws -> String {
+        try checkedACL(descriptor, allowingReadGrants: !privateState, checkBudget: {
+            if deadline.hasExpired { throw CustodyRecordError.busy }
+        })
+    }
+
+    private static func checkedACL(_ descriptor: Int32, allowingReadGrants: Bool,
+                                   observedStat: UnsafeMutablePointer<stat>? = nil,
+                                   metadataValidator: ((stat?) throws -> Void)? = nil,
+                                   checkBudget: () throws -> Void = {}) throws -> String {
+        try checkBudget()
         // acl_get_fd_np returns nil/ENOENT for an absent ACL as well as other
         // failures. Prove absence from a successful descriptor security read
         // instead of interpreting an errno as permission to continue.
         guard let security = filesec_init() else {
+            try validateMetadataAfterSecurityFailure(descriptor, validator: metadataValidator)
             throw PolicyAuthorityFileError.unavailable
         }
         defer { filesec_free(security) }
-        var info = stat(), present: Int32 = 0
-        guard fstatx_np(descriptor, &info, security) == 0,
-              filesec_query_property(security, FILESEC_ACL, &present) == 0 else {
+        var info = stat()
+        guard fstatx_np(descriptor, &info, security) == 0 else {
+            try validateMetadataAfterSecurityFailure(descriptor, validator: metadataValidator)
             throw PolicyAuthorityFileError.unavailable
         }
+        try metadataValidator?(info)
+        let acl = try checkedSecurityACL(security, allowingReadGrants: allowingReadGrants, checkBudget: checkBudget)
+        observedStat?.pointee = info
+        return acl
+    }
+
+    private static func validateMetadataAfterSecurityFailure(_ descriptor: Int32,
+        validator: ((stat?) throws -> Void)?) throws {
+        guard let validator else { return }
+        var info = stat()
+        let status = fstat(descriptor, &info)
+        try validator(status == 0 ? info : nil)
+    }
+
+    /// Named strict-getter callers validate native bytes and own this ACL.
+    /// Descriptor callers retain their original filesec absence interpretation.
+    static func privateStateObservedACL(_ acl: acl_t, deadline: MonotonicDeadline) throws -> String {
+        try checkedDecodedACL(acl, allowingReadGrants: false) {
+            if deadline.hasExpired { throw CustodyRecordError.busy }
+        }
+    }
+
+    private static func checkedSecurityACL(_ security: filesec_t, allowingReadGrants: Bool,
+                                           checkBudget: () throws -> Void = {}) throws -> String {
+        try checkBudget()
+        var present: Int32 = 0
+        guard filesec_query_property(security, FILESEC_ACL, &present) == 0 else {
+            throw PolicyAuthorityFileError.unavailable
+        }
+        try checkBudget()
         if present == 0 {
             return absentACLSHA256
         }
@@ -219,12 +289,18 @@ struct PolicyAuthorityFile: Equatable, Sendable {
         guard present > 0, filesec_get_property(security, FILESEC_ACL, &value) == 0,
               let acl = value else { throw PolicyAuthorityFileError.unavailable }
         defer { acl_free(UnsafeMutableRawPointer(acl)) }
+        return try checkedDecodedACL(acl, allowingReadGrants: allowingReadGrants, checkBudget: checkBudget)
+    }
+
+    private static func checkedDecodedACL(_ acl: acl_t, allowingReadGrants: Bool,
+                                          checkBudget: () throws -> Void) throws -> String {
         guard acl_valid(acl) == 0 else { throw PolicyAuthorityFileError.unavailable }
         let readOnly = [ACL_READ_DATA, ACL_EXECUTE, ACL_READ_ATTRIBUTES,
                         ACL_READ_EXTATTRIBUTES, ACL_READ_SECURITY, ACL_SYNCHRONIZE]
             .reduce(UInt64(0)) { $0 | UInt64($1.rawValue) }
         var ended = false
         for index in 0..<1024 {
+            try checkBudget()
             var entry: acl_entry_t?
             errno = 0
             let result = acl_get_entry(acl, Int32(index), &entry)
@@ -239,6 +315,7 @@ struct PolicyAuthorityFile: Equatable, Sendable {
                 throw PolicyAuthorityFileError.unavailable
             }
         }
+        try checkBudget()
         let size = acl_size(acl)
         guard ended, (1...65_536).contains(size) else {
             throw PolicyAuthorityFileError.unavailable
@@ -248,6 +325,7 @@ struct PolicyAuthorityFile: Equatable, Sendable {
             acl_copy_ext($0.baseAddress, acl, size)
         }
         guard copied == size else { throw PolicyAuthorityFileError.unavailable }
+        try checkBudget()
         return hex(SHA256.hash(data: serialized))
     }
 
@@ -302,9 +380,8 @@ struct PolicyAuthorityFile: Equatable, Sendable {
                     ?? Darwin.open("/", flags | O_DIRECTORY)
                 guard descriptor >= 0 else { throw PolicyAuthorityFileError.unavailable }
                 descriptors.append(descriptor)
-                var info = stat()
-                guard fstat(descriptor, &info) == 0,
-                      DirectoryNode(info, aclSHA256: try PolicyAuthorityFile.safeACL(descriptor)) == expected else {
+                let observed = try PolicyAuthorityFile.safeACLObservation(descriptor)
+                guard DirectoryNode(observed.info, aclSHA256: observed.acl) == expected else {
                     throw PolicyAuthorityFileError.unavailable
                 }
                 directoryIndex[key] = directories.count
@@ -328,9 +405,8 @@ struct PolicyAuthorityFile: Equatable, Sendable {
                 let descriptor = openat(parent, leaf, flags)
                 guard descriptor >= 0 else { throw PolicyAuthorityFileError.unavailable }
                 descriptors.append(descriptor)
-                var before = stat()
-                guard fstat(descriptor, &before) == 0,
-                      Node(before, aclSHA256: try PolicyAuthorityFile.safeACL(descriptor)) == file.identity else {
+                let before = try PolicyAuthorityFile.safeACLObservation(descriptor)
+                guard Node(before.info, aclSHA256: before.acl) == file.identity else {
                     throw PolicyAuthorityFileError.unavailable
                 }
                 var bytes = Data(), buffer = [UInt8](repeating: 0, count: 16_384)
@@ -352,23 +428,21 @@ struct PolicyAuthorityFile: Equatable, Sendable {
             }
             // Span the entire batch, including files read before a later sibling.
             for payload in payloads {
-                var opened = stat(), named = stat()
-                let acl = try PolicyAuthorityFile.safeACL(payload.descriptor)
-                guard fstat(payload.descriptor, &opened) == 0,
-                      fstatat(payload.parent, payload.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
-                      Node(opened, aclSHA256: acl) == payload.identity,
-                      Node(named, aclSHA256: acl) == payload.identity else { throw PolicyAuthorityFileError.unavailable }
+                var named = stat()
+                let opened = try PolicyAuthorityFile.safeACLObservation(payload.descriptor)
+                guard fstatat(payload.parent, payload.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                      Node(opened.info, aclSHA256: opened.acl) == payload.identity,
+                      Node(named, aclSHA256: opened.acl) == payload.identity else { throw PolicyAuthorityFileError.unavailable }
             }
             for directory in directories {
-                var opened = stat(), named = stat()
-                let acl = try PolicyAuthorityFile.safeACL(directory.descriptor)
-                guard fstat(directory.descriptor, &opened) == 0,
-                      DirectoryNode(opened, aclSHA256: acl) == directory.identity else {
+                var named = stat()
+                let opened = try PolicyAuthorityFile.safeACLObservation(directory.descriptor)
+                guard DirectoryNode(opened.info, aclSHA256: opened.acl) == directory.identity else {
                     throw PolicyAuthorityFileError.unavailable
                 }
                 if let parent = directory.parent {
                     guard fstatat(parent, directory.name, &named, AT_SYMLINK_NOFOLLOW) == 0,
-                          DirectoryNode(named, aclSHA256: acl) == directory.identity else {
+                          DirectoryNode(named, aclSHA256: opened.acl) == directory.identity else {
                         throw PolicyAuthorityFileError.unavailable
                     }
                 }

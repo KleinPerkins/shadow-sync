@@ -879,7 +879,7 @@ final class Body3RunWindowController:
             return
         }
         terminalPresentation = .report
-        progress.doubleValue = Double(report.results.count)
+        progress.doubleValue = Double(report.results.filter { $0.status.isTerminal }.count)
         for result in report.results {
             nodeStatuses[result.node.id] =
                 result.status
@@ -898,7 +898,7 @@ final class Body3RunWindowController:
             metadata.timing,
             metadata.summary,
         ].joined(separator: "\n")
-        headline.stringValue = report.cancelled
+        headline.stringValue = report.cleanupPending ? "Cleanup pending" : report.cancelled
             ? "Cancelled · residue checked"
             : (
                 report.paused || wasPaused
@@ -910,8 +910,9 @@ final class Body3RunWindowController:
                 || $0.status == .refused
                 || $0.status == .cancelled
         }.count
-        summary.stringValue =
-            "\(report.results.count)/\(totalNodes) terminal across \(report.repositoryCounts.count) repositor\(report.repositoryCounts.count == 1 ? "y" : "ies") · \(attention) need\(attention == 1 ? "s" : "") attention · completed artifacts and completed mutations were preserved."
+        summary.stringValue = report.cleanupPending
+            ? "Cleanup is still pending. Retained resources and incomplete recovery artifacts remain protected; further work is blocked."
+            : "\(report.results.count)/\(totalNodes) terminal across \(report.repositoryCounts.count) repositor\(report.repositoryCounts.count == 1 ? "y" : "ies") · \(attention) need\(attention == 1 ? "s" : "") attention · completed artifacts and completed mutations were preserved."
         cancelButton.title = "Close"
         if !logScroll.isHidden {
             updatePerformanceEvidenceLabel()
@@ -1280,6 +1281,8 @@ final class Body3RunWindowController:
         color: NSColor
     ) {
         switch status {
+        case .cleanupPending:
+            return ("◐", "Cleanup pending", .systemOrange)
         case .queued:
             return ("○", "Not started", .secondaryLabelColor)
         case .running:

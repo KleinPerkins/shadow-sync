@@ -10,11 +10,36 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 import unittest
 
 MODULE = re.compile(r'test_[a-z0-9_]+')
 CASE = re.compile(r'[A-Za-z0-9_.]{1,160}')
+DIAGNOSTIC_OPERATIONS = frozenset({
+    'fixture-install', 'fixture-direct', 'live-home-refusal', 'live-launchctl-refusal',
+})
+DIAGNOSTIC_PHASES = frozenset({'run', 'returncode', 'output'})
+
+
+def failure_diagnostic(test, err):
+    # Never stringify an exception, its arguments, traceback, output or command.
+    error = err[1]
+    cause = ('timeout' if isinstance(error, subprocess.TimeoutExpired) else
+             'assertion' if isinstance(error, AssertionError) else
+             'os-error' if isinstance(error, OSError) else 'other')
+    detail = getattr(error, 'shadow_sync_diagnostic', None)
+    detail = detail if type(detail) is dict else {}
+    operation = detail.get('operation')
+    phase = detail.get('phase')
+    exit_code = detail.get('exit_code')
+    identifier = test.id()
+    return {'schema': 'shadow-sync-python-failure/v1',
+            'case': identifier if type(identifier) is str and CASE.fullmatch(identifier) else 'unavailable',
+            'cause': cause,
+            'operation': operation if type(operation) is str and operation in DIAGNOSTIC_OPERATIONS else 'unspecified',
+            'phase': phase if type(phase) is str and phase in DIAGNOSTIC_PHASES else 'unspecified',
+            'exit_code': exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else None}
 
 
 def discover(directory):
@@ -92,17 +117,20 @@ class CompletionResult(unittest.TestResult):
         self.passed.append(test.id())
         self.emit('PASS ' + test.id())
 
-    def reject(self, test, status='FAIL'):
+    def reject(self, test, status='FAIL', err=None):
         self.rejected.append(test.id())
         self.emit(status + ' ' + test.id())
+        if err is not None:
+            self.emit('DIAGNOSTIC ' + json.dumps(failure_diagnostic(test, err),
+                                                sort_keys=True, separators=(',', ':')))
 
     def addFailure(self, test, err):
         super().addFailure(test, err)
-        self.reject(test)
+        self.reject(test, err=err)
 
     def addError(self, test, err):
         super().addError(test, err)
-        self.reject(test)
+        self.reject(test, err=err)
 
     def addSkip(self, test, reason):
         super().addSkip(test, reason)
@@ -110,7 +138,7 @@ class CompletionResult(unittest.TestResult):
 
     def addExpectedFailure(self, test, err):
         super().addExpectedFailure(test, err)
-        self.reject(test)
+        self.reject(test, err=err)
 
     def addUnexpectedSuccess(self, test):
         super().addUnexpectedSuccess(test)
@@ -119,7 +147,7 @@ class CompletionResult(unittest.TestResult):
     def addSubTest(self, test, subtest, err):
         super().addSubTest(test, subtest, err)
         if err is not None:
-            self.reject(test)
+            self.reject(test, err=err)
 
     def complete(self, expected):
         return bool(expected) and not self.rejected and self.wasSuccessful() \

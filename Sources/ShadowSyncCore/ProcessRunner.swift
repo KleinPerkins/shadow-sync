@@ -268,8 +268,9 @@ public final class DescriptorProcessRunner: @unchecked Sendable {
     public static let trampolineMode = "--shadow-sync-git-child"
     public static let completeRepositoryOutputLimit = 32 * 1024 * 1024
 
-    private let audit: CommandAudit?
-    private let outputLimit: Int
+    let audit: CommandAudit?
+    let outputLimit: Int
+    let repositoryObserver: (@Sendable (RepositoryCommandObservation) -> Bool)?
     private let processObserver: (@Sendable (ProcessIdentity?) -> Bool)?
     #if SHADOW_SYNC_TESTING
     private let testingIdentityCapture:
@@ -282,11 +283,13 @@ public final class DescriptorProcessRunner: @unchecked Sendable {
     public init(
         audit: CommandAudit? = nil,
         outputLimit: Int = 16_384,
-        processObserver: (@Sendable (ProcessIdentity?) -> Bool)? = nil
+        processObserver: (@Sendable (ProcessIdentity?) -> Bool)? = nil,
+        repositoryObserver: (@Sendable (RepositoryCommandObservation) -> Bool)? = nil
     ) {
         self.audit = audit
         self.outputLimit = outputLimit
         self.processObserver = processObserver
+        self.repositoryObserver = repositoryObserver
         #if SHADOW_SYNC_TESTING
         testingIdentityCapture = nil
         beforeGatePublication = nil
@@ -302,7 +305,7 @@ public final class DescriptorProcessRunner: @unchecked Sendable {
     ) {
         self.audit = audit
         self.outputLimit = outputLimit
-        processObserver = nil
+        processObserver = nil; repositoryObserver = nil
         testingIdentityCapture = nil
         self.beforeGatePublication = { _ in beforeGatePublication() }
         afterProcessExit = nil
@@ -315,7 +318,7 @@ public final class DescriptorProcessRunner: @unchecked Sendable {
     ) {
         self.audit = audit
         self.outputLimit = outputLimit
-        processObserver = nil
+        processObserver = nil; repositoryObserver = nil
         testingIdentityCapture = nil
         beforeGatePublication = beforeGatePublicationForRequest
         afterProcessExit = nil
@@ -328,7 +331,7 @@ public final class DescriptorProcessRunner: @unchecked Sendable {
     ) {
         self.audit = audit
         self.outputLimit = outputLimit
-        processObserver = nil
+        processObserver = nil; repositoryObserver = nil
         testingIdentityCapture = nil
         beforeGatePublication = nil
         self.afterProcessExit = afterProcessExit
@@ -343,7 +346,7 @@ public final class DescriptorProcessRunner: @unchecked Sendable {
     ) {
         self.audit = audit
         self.outputLimit = outputLimit
-        processObserver = nil
+        processObserver = nil; repositoryObserver = nil
         self.testingIdentityCapture = testingIdentityCapture
         beforeGatePublication = nil
         afterProcessExit = nil
@@ -353,7 +356,7 @@ public final class DescriptorProcessRunner: @unchecked Sendable {
         testingIdentityCapture: (@Sendable (pid_t, String, String) -> ProcessIdentity?)? = nil,
         beforeGatePublication: (@Sendable ([String]) -> Void)? = nil
     ) {
-        audit = nil; outputLimit = 16_384; processObserver = nil
+        audit = nil; outputLimit = 16_384; processObserver = nil; repositoryObserver = nil
         self.testingIdentityCapture = testingIdentityCapture
         self.beforeGatePublication = beforeGatePublication
         afterProcessExit = nil
@@ -365,6 +368,9 @@ public final class DescriptorProcessRunner: @unchecked Sendable {
         _ request: ProcessRequest,
         cancellation: CancellationToken
     ) throws -> ProcessResult {
+        #if !SHADOW_SYNC_TESTING
+        throw SystemGitConfigurationError.unavailable
+        #else
         guard request.executable == Self.gitPath,
               request.trampolineExecutable != nil,
               request.executionSnapshot != nil,
@@ -587,6 +593,7 @@ public final class DescriptorProcessRunner: @unchecked Sendable {
             terminationRequested: !resumed || terminationDeadline != nil,
             processID: pid
         )
+        #endif
     }
 
     private struct SpawnSpec {
@@ -941,6 +948,12 @@ public enum GitChildTrampoline {
         guard arguments.count >= 5, arguments[1] == DescriptorProcessRunner.trampolineMode else {
             return nil
         }
+        #if !SHADOW_SYNC_TESTING
+        // Decoded snapshots and inherited descriptors do not create a typed
+        // configuration preflight or repository command authority.
+        writeError("ShadowSync repository command custody is unavailable.\n")
+        return 125
+        #else
         signal(SIGTERM, SIG_IGN)
         signal(SIGINT, SIG_IGN)
         guard waitForStartAdmission(),
@@ -1182,6 +1195,7 @@ public enum GitChildTrampoline {
             #endif
             return 125
         }
+        #endif
     }
 
     #if SHADOW_SYNC_TESTING
@@ -1272,6 +1286,7 @@ public enum GitChildTrampoline {
     }
     #endif
 
+    #if SHADOW_SYNC_TESTING
     private static func waitForStartAdmission() -> Bool {
         defer { close(DescriptorProcessRunner.startGateFD) }
         var byte: UInt8 = 0
@@ -1586,6 +1601,8 @@ public enum GitChildTrampoline {
         }
         return 128 + (status & 0x7F)
     }
+
+    #endif
 
     private static func writeError(_ value: String) {
         let bytes = Array(value.utf8)

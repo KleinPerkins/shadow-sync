@@ -18,6 +18,43 @@ struct PolicyRuntimeBulkDirectory {
     private var offset = 0, remaining = 0, total = 0
     private var finished = false
 
+    /// Scratch only: no descriptor, pathname, metadata or authority survives return.
+    /// Each active recursive frame checks out a value; only unwinding frames
+    /// return one. Clearing the caller before reset avoids a retained COW alias.
+    struct Pool {
+        private var available: [PolicyRuntimeBulkDirectory] = []
+        mutating func take() -> PolicyRuntimeBulkDirectory {
+            available.popLast() ?? PolicyRuntimeBulkDirectory()
+        }
+        mutating func put(_ reader: inout PolicyRuntimeBulkDirectory?) {
+            guard var returned = reader else { return }
+            reader = nil
+            returned.reset()
+            available.append(returned)
+        }
+    }
+
+    private mutating func reset() {
+        buffer.withUnsafeMutableBytes { bytes in
+            _ = memset(bytes.baseAddress!, 0, bytes.count)
+        }
+        offset = 0; remaining = 0; total = 0; finished = false
+    }
+
+    #if SHADOW_SYNC_TESTING
+    var testingStorageAddress: UInt {
+        @inline(never) get { buffer.withUnsafeBytes { UInt(bitPattern: $0.baseAddress!) } }
+    }
+    var testingIsReset: Bool {
+        @inline(never) get {
+            offset == 0 && remaining == 0 && total == 0 && !finished
+                && buffer.allSatisfy { $0 == 0 }
+        }
+    }
+    var testingPendingCount: Int { @inline(never) get { remaining } }
+    var testingTotalCount: Int { @inline(never) get { total } }
+    #endif
+
     mutating func next(fd: Int32) throws -> Entry? {
         if finished { return nil }
         if remaining == 0 {

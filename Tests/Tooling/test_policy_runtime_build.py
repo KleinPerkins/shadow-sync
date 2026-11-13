@@ -3,6 +3,7 @@ import importlib.util
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import shutil
 import tempfile
@@ -19,6 +20,68 @@ spec.loader.exec_module(module)
 
 
 class RuntimeBuildTests(unittest.TestCase):
+    def test_signature_layout_modes_survive_private_parent_mask(self):
+        # Match the full private-mask caller condition, including payload copy,
+        # notice creation and signing. Never execute the generated fixture dylib.
+        with tempfile.TemporaryDirectory(prefix="shadow-sync-policy-build-umask-") as temporary:
+            root = Path(temporary).resolve()
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            previous = os.umask(0o077)
+            try:
+                upstream = root / "upstream"
+                upstream_resources = upstream / "Versions/3.14/Resources"
+                upstream_resources.mkdir(parents=True)
+                (upstream / "Versions/Current").symlink_to("3.14")
+                (upstream / "Python").symlink_to("Versions/Current/Python")
+                (upstream / "Resources").symlink_to("Versions/Current/Resources")
+                code = root / "fixture.c"
+                code.write_text("int shadow_sync_fixture(void) { return 0; }\n")
+                executable = upstream / "Versions/3.14/Python"
+                module.run(["/usr/bin/xcrun", "clang", "-dynamiclib", "-arch", "arm64", str(code), "-o", str(executable)])
+                executable.chmod(0o755)
+                (upstream_resources / "Info.plist").write_bytes(plistlib.dumps({
+                    "CFBundleIdentifier": "com.example.policy-runtime-fixture", "CFBundleExecutable": "Python",
+                    "CFBundleName": "Python", "CFBundlePackageType": "FMWK", "CFBundleVersion": "1"}))
+                framework = root / "Python.framework"
+                module.copy_selected(upstream, framework)
+                version = framework / "Versions/3.14"
+                resources = version / "Resources"
+                module.install_notice_snapshot(module.load_notice_bundle(module.load_pin()), resources)
+                for directory in [framework, framework / "Versions", version, resources, resources / "ThirdPartyNotices"]:
+                    self.assertEqual(directory.stat().st_mode & 0o777, 0o755)
+                module.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(framework)])
+                module.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(framework)])
+                self.assertEqual((version / "_CodeSignature").stat().st_mode & 0o777, 0o755)
+                self.assertEqual((version / "_CodeSignature/CodeResources").stat().st_mode & 0o777, 0o644)
+                self.assertEqual(os.umask(0o077), 0o077)
+                self.assertEqual(int(module.run(["/bin/sh", "-c", "umask"]).strip(), 8), 0o077)
+            finally:
+                os.umask(previous)
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+
+    def test_install_name_rewrite_modes_survive_private_parent_mask(self):
+        # Exercise the actual replacing tool, not a mocked permission result.
+        # The resulting fixture dylib is signed/inspected but never executed.
+        with tempfile.TemporaryDirectory(prefix="shadow-sync-policy-rewrite-") as temporary:
+            root = Path(temporary).resolve()
+            previous = os.umask(0o077)
+            try:
+                source = root / "fixture.c"
+                source.write_text("int shadow_sync_fixture(void) { return 0; }\n")
+                executable = root / "fixture.dylib"
+                module.run(["/usr/bin/xcrun", "clang", "-dynamiclib", "-arch", "arm64",
+                            "-install_name", "@rpath/fixture-original.dylib", str(source), "-o", str(executable)])
+                executable.chmod(0o755)
+                module.run(["/usr/bin/install_name_tool", "-id", "@rpath/fixture-rewritten.dylib", str(executable)])
+                self.assertEqual(executable.stat().st_mode & 0o777, 0o755)
+                module.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(executable)])
+                module.run(["/usr/bin/codesign", "--verify", "--strict", str(executable)])
+                self.assertEqual(os.umask(0o077), 0o077)
+                self.assertEqual(int(module.run(["/bin/sh", "-c", "umask"]).strip(), 8), 0o077)
+                self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            finally:
+                os.umask(previous)
+
     def archive_inputs(self, root):
         source, bytecode = root / 'source', root / 'bytecode'
         source.mkdir(); bytecode.mkdir()

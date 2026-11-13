@@ -28,27 +28,14 @@ from pathlib import Path
 import sys
 
 capability = Path(sys.argv[1])
-repository = capability.parents[2]
 expected = {
-    "docs/plans/shadow-sync-global-capability-v2.md":
-        "36fc11c68601de2d1874c8e7aed648c9be186cf82cbeca8e65c14af26eae64f4",
-    "docs/plans/shadow-sync-global-capability-v3.md":
-        "52f51c621a87bf986f36a87398e2f660dc06c30bd5380c6a6bf8df01875f9dbd",
-    "docs/plans/shadow-sync-global-capability-v4.md":
-        "b347ef15a201434b823d07aa04593e729f4082611da8aec7047e563ef4bf7ac2",
-    "docs/plans/shadow-sync-global-capability-v5.md":
-        "9073bb8c2110ab259dd03634ece66d5d7f2f93448d3eb7921dd00455bc085627",
-    "docs/plans/shadow-sync-global-capability-v6.md":
-        "650448daf0563d888950e9414912cdf11d0a3ba68c5391e6867aa7fc2403c534",
-    "docs/plans/shadow-sync-global-capability-v7.md":
-        "4619f4d435687fc53ac72428443fbb7078ab619fa4793ca7dc39e809e8bca6a6",
-    "global/tools/shadow-sync/Resources/ShadowSyncIcon-1024.png":
+    "Resources/ShadowSyncIcon-1024.png":
         "bec4636abe7ada114c61897e6b7f66181b13ec93438d37b8213d5061ab13bd90",
-    "global/tools/shadow-sync/Resources/ShadowSync.icns":
+    "Resources/ShadowSync.icns":
         "e27b55fc793f25867793f1ca9000e2454d448329169ade1b89e4beb3950444cc",
 }
 for relative, digest in expected.items():
-    observed = sha256((repository / relative).read_bytes()).hexdigest()
+    observed = sha256((capability / relative).read_bytes()).hexdigest()
     if observed != digest:
         raise SystemExit(f"portable contract digest drift: {relative}")
 

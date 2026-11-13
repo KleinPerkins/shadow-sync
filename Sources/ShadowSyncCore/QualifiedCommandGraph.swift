@@ -8,15 +8,21 @@ import Security
 struct CommandGraphCatalog {
     enum Adapter: String {
         case launchctlRead = "launchctl-read/v1"
+        case launchctlMutation = "launchctl-mutation/v1"
         case signatureCheck = "signature-check/v1"
+        case repositoryGit = "repository-git/v1"
         case discoveryGit = "discovery-git/v1"
+        case retentionArchive = "retention-archive/v1"
         case systemGitConfig = "system-git-config/v1"
         case policyClassify = "policy-classify/v1"
         var kind: CustodyCommandKind {
             switch self {
             case .launchctlRead: .launchctlRead
+            case .launchctlMutation: .launchctlMutation
             case .signatureCheck: .signatureCheck
+            case .repositoryGit: .repositoryGit
             case .discoveryGit: .discoveryGit
+            case .retentionArchive: .retentionArchive
             case .systemGitConfig: .systemGitConfig
             case .policyClassify: .policyClassify
             }
@@ -25,9 +31,9 @@ struct CommandGraphCatalog {
         // tool selection, path, command form or graph needs its own review.
         var paths: [String] {
             switch self {
-            case .launchctlRead: ["/bin/launchctl"]
+            case .launchctlRead, .launchctlMutation: ["/bin/launchctl"]
             case .signatureCheck: ["/usr/bin/codesign"]
-            case .discoveryGit, .systemGitConfig: ["/usr/bin/git", "/Library/Developer/CommandLineTools/usr/bin/git"]
+            case .repositoryGit, .retentionArchive, .discoveryGit, .systemGitConfig: ["/usr/bin/git", "/Library/Developer/CommandLineTools/usr/bin/git"]
             // This one fixed relative path is resolved only through verified
             // publisher resources, never through a caller-selected bundle.
             case .policyClassify: ["Contents/Frameworks/Python.framework/" + PolicyRuntimeLayout.interpreter]
@@ -92,6 +98,9 @@ final class QualifiedCommandGraph: @unchecked Sendable {
     private let nodes: [Node]
     private let resource: PolicyAuthorityFile?
     private let publisher: PublisherPolicyResources?
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    private var signedFixtureProfile: SignedInstallationFixtureContext.ReleaseProfile?
+    #endif
     private static func snapshot(_ path: String, owner: uid_t) throws -> PublisherExecutableSnapshot {
         if path == "/usr/bin/git" { return try PublisherExecutableSnapshot.captureSystemGitLauncher() }
         return try PublisherExecutableSnapshot.capture(path: path, owner: owner)
@@ -146,6 +155,15 @@ final class QualifiedCommandGraph: @unchecked Sendable {
     /// fixture helper may use a retained test catalog only in a testing build.
     static func forHelper(kind: CustodyCommandKind, helper: CustodyHelperExecutable,
                           publisher: PublisherPolicyResources? = nil) throws -> Self {
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if case let .signedFixture(profile) = helper.validationProfile {
+            guard publisher == nil, [.launchctlRead, .launchctlMutation, .signatureCheck].contains(kind) else {
+                throw PublisherPolicyError.unavailable
+            }
+            try helper.revalidate()
+            return try Self(signedFixture: profile)
+        }
+        #endif
         #if SHADOW_SYNC_TESTING
         if let resource = try helper.testingDiscoveryGraphResource() {
             let entry = try CommandGraphCatalog.decode(resource.bytes).entry(kind: kind, systemBuild: systemBuild())
@@ -153,7 +171,7 @@ final class QualifiedCommandGraph: @unchecked Sendable {
                 guard let publisher else { throw PublisherPolicyError.unavailable }
                 return try Self(testingEntry: entry, resource: resource, publisher: publisher)
             }
-            guard publisher == nil, kind == .systemGitConfig || kind == .discoveryGit else {
+            guard publisher == nil, [.systemGitConfig, .discoveryGit, .repositoryGit, .retentionArchive].contains(kind) else {
                 throw PublisherPolicyError.unavailable
             }
             return try Self(entry: entry, resource: resource)
@@ -161,6 +179,24 @@ final class QualifiedCommandGraph: @unchecked Sendable {
         #endif
         return try production(kind: kind, helper: helper, publisher: publisher)
     }
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    /// Separate sealed fixture graph. This neither adds a production catalog
+    /// entry nor qualifies launchctl. Its single-image/non-detaching behavior
+    /// must still pass the signed native fixture controls before acceptance.
+    private init(signedFixture profile: SignedInstallationFixtureContext.ReleaseProfile) throws {
+        let code = try profile.adapterCode()
+        let requirement = try PublisherCodeVerifier.requirement(identifier: code.identity.identifier,
+            team: code.identity.team, codeDirectory: code.identity.codeDirectory)
+        let observed = try PublisherCodeVerifier.verifiedStatic(path: code.path,
+            identifier: LifecyclePublisher.identifier, team: code.identity.team).1
+        guard observed == code.identity else { throw PublisherPolicyError.unavailable }
+        entryPath = code.path; resource = code.resource; publisher = nil
+        nodes = [Node(path: code.path, snapshot: try Self.snapshot(code.path, owner: geteuid()),
+                      requirement: requirement, owner: geteuid())]
+        signedFixtureProfile = profile
+        try revalidate()
+    }
+    #endif
     private static func systemBuild() throws -> String {
         var bytes = [CChar](repeating: 0, count: 64), size = 64
         guard sysctlbyname("kern.osversion", &bytes, &size, nil, 0) == 0,
@@ -168,6 +204,9 @@ final class QualifiedCommandGraph: @unchecked Sendable {
         return String(decoding: bytes.prefix(size - 1).map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
     func revalidate() throws {
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        try signedFixtureProfile?.revalidate()
+        #endif
         try resource?.revalidate()
         try publisher?.revalidate()
         for node in nodes {

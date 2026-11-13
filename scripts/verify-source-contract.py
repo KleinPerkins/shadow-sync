@@ -13,6 +13,7 @@ MAX_FILE = 16 * 1024 * 1024
 REQUIRED = ('Package.swift', 'Resources/Info.plist', 'Resources/release-contract.json', 'Resources/command-graphs.json',
             'Sources/ShadowSyncCore/ReleaseIdentity.swift',
             'Sources/ShadowSyncCore/LifecycleCoordinatorMain.swift',
+            'Sources/ShadowSyncCore/ProductionInstallationDriver.swift',
             'Sources/ShadowSyncLifecycleCoordinator/main.swift',
             'Resources/com.kleinperkins.shadow-sync.plist.template', 'Resources/ShadowSync.icns',
             'THIRD_PARTY_NOTICES.md', 'scripts/build-app.sh', 'scripts/source-doctor.sh',

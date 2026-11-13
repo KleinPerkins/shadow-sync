@@ -12,3 +12,4 @@ Accepted decisions are immutable; semantic changes use successors.
 | [0006](0006-bounded-policy-classification-before-repository-selection.md) | Accepted | Bounded policy classification before repository selection |
 | [0007](0007-deterministic-mandatory-ci-sharding.md) | Accepted | Deterministic mandatory CI sharding |
 | [0008](0008-mvp-first-standalone-delivery.md) | Accepted | MVP-first standalone delivery |
+| [0009](0009-installation-transaction-and-authenticated-staged-readiness.md) | Accepted | Installation transaction and authenticated staged readiness |

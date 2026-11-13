@@ -19,6 +19,9 @@ final class RuntimeSuiteGuardian: @unchecked Sendable {
     let probeTarget: String?
     private let expected: Set<String>
     private var active: (String, RuntimeFixtureCustody)?
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    private var signedSourceContextClaimed = false
+    #endif
     private var passed: Set<String> = []
     private var begun: Set<String> = []
     private var reason: Reason?
@@ -30,7 +33,13 @@ final class RuntimeSuiteGuardian: @unchecked Sendable {
     init(suite: String, cases: [String], nonce: String, deadline: UInt64,
          source: String, executable: String, app: String, probeTarget: String?) throws {
         let now = Self.now
-        guard ["m1", "m3", "practical-m3", "m2", "practical-m2", "m4", "m6", "runtime-guardian", "runtime-custody", "policy-wire", "policy-binding", "policy-projection", "release-identity", "policy-input", "policy-transport", "closed-runner", "identity-history", "policy-authority", "policy-snapshot", "policy-catalog", "policy-catalog-session", "publisher-policy", "runtime-ownership", "discovery-spawn", "discovery-caller", "discovery-bootstrap", "body1", "body2", "body3", "body4", "v3-preflight", "v4-preflight", "beta-v02-chooser", "beta-v02-device-drift", "beta-v03", "beta-v04", "beta-v05", "beta-v06", "beta-v07", "beta-v08", "beta-v09"].contains(suite), !cases.isEmpty, cases.count <= 2048,
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        let signedSource = ((suite == SignedInstallationFixtureContext.suite && cases == [SignedInstallationFixtureContext.sourceCase])
+            || (suite == SignedInstallationFixtureContext.installationSuite && cases.count == 1 && SignedInstallationFixtureCase(rawValue: cases[0]) != nil)) && probeTarget == nil
+        #else
+        let signedSource = false
+        #endif
+        guard ["m1", "m3", "practical-m3", "m2", "practical-m2", "m4", "m6", "m6-custody-capture", "m6-staged-reconciliation", "reconciliation-observer", "runtime-guardian", "runtime-custody", "policy-wire", "policy-binding", "policy-projection", "release-identity", "policy-input", "policy-transport", "closed-runner", "identity-history", "policy-authority", "policy-snapshot", "policy-catalog", "policy-catalog-session", "publisher-policy", "runtime-ownership", "discovery-spawn", "discovery-caller", "discovery-bootstrap", "retention-custody", "body1", "body2", "body3", "body4", "v3-preflight", "v4-preflight", "beta-v02-chooser", "beta-v02-device-drift", "beta-v03", "beta-v04", "beta-v05", "beta-v06", "beta-v07", "beta-v08", "beta-v09"].contains(suite) || signedSource, !cases.isEmpty, cases.count <= 2048,
               Set(cases).count == cases.count,
               cases.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256
                   && !$0.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) }),
@@ -181,6 +190,22 @@ final class RuntimeSuiteGuardian: @unchecked Sendable {
         active = (id, registry); emitLocked("case_start", ["case": id])
         if let reason { registry.cancel(reason, now: Self.now) }
     }
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    func claimSignedSourceContext(registry: RuntimeFixtureCustody, caseID: String) throws {
+        lock.lock(); defer { lock.unlock() }; expireLocked()
+        guard started, reason == nil, !terminal, !signedSourceContextClaimed,
+              [SignedInstallationFixtureContext.suite, SignedInstallationFixtureContext.installationSuite].contains(suite),
+              SignedInstallationFixtureContext.cases.contains(caseID), active?.0 == caseID,
+              active?.1 === registry else { throw Failure.admissionClosed }
+        signedSourceContextClaimed = true
+    }
+    func requireActiveCase(_ id: String, registry: RuntimeFixtureCustody) throws {
+        lock.lock(); defer { lock.unlock() }; expireLocked()
+        guard started, reason == nil, !terminal, active?.0 == id, active?.1 === registry else {
+            throw Failure.admissionClosed
+        }
+    }
+    #endif
     func requireAdmission() throws {
         lock.lock(); defer { lock.unlock() }; expireLocked()
         guard started, reason == nil, !terminal else { throw Failure.admissionClosed }
@@ -293,7 +318,7 @@ public enum RuntimeSuiteGuardianEntrypoint {
         guard arguments.dropFirst().contains("--shadow-sync-runtime-guardian") else { return nil }
         do {
             guard arguments.count == 10, arguments[1] == "--shadow-sync-runtime-guardian",
-                  ["m1", "m3", "practical-m3", "m2", "practical-m2", "m4", "m6", "runtime-guardian", "runtime-custody", "policy-wire", "policy-binding", "policy-projection", "release-identity", "policy-input", "policy-transport", "closed-runner", "identity-history", "policy-authority", "policy-snapshot", "policy-catalog", "policy-catalog-session", "publisher-policy", "runtime-ownership", "discovery-spawn", "discovery-caller", "discovery-bootstrap", "body1", "body2", "body3", "body4", "v3-preflight", "v4-preflight", "beta-v02-chooser", "beta-v02-device-drift", "beta-v03", "beta-v04", "beta-v05", "beta-v06", "beta-v07", "beta-v08", "beta-v09"].contains(arguments[2]), let cases = catalog[arguments[2]],
+                  ["m1", "m3", "practical-m3", "m2", "practical-m2", "m4", "m6", "m6-custody-capture", "m6-staged-reconciliation", "reconciliation-observer", "runtime-guardian", "runtime-custody", "policy-wire", "policy-binding", "policy-projection", "release-identity", "policy-input", "policy-transport", "closed-runner", "identity-history", "policy-authority", "policy-snapshot", "policy-catalog", "policy-catalog-session", "publisher-policy", "runtime-ownership", "discovery-spawn", "discovery-caller", "discovery-bootstrap", "retention-custody", "body1", "body2", "body3", "body4", "v3-preflight", "v4-preflight", "beta-v02-chooser", "beta-v02-device-drift", "beta-v03", "beta-v04", "beta-v05", "beta-v06", "beta-v07", "beta-v08", "beta-v09"].contains(arguments[2]), let cases = catalog[arguments[2]],
                   let deadline = UInt64(arguments[5]), String(deadline) == arguments[5],
                   ProcessInfo.processInfo.environment["SHADOW_SYNC_RUNTIME_FIXTURE_NAMESPACE"] == arguments[4] else {
                 throw RuntimeSuiteGuardian.Failure.invalidContract

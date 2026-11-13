@@ -480,6 +480,18 @@ enum WorkerOwnerOrderingFixtures {
             guard !fixture.owner.send(SIGKILL), signals == 1,
                   fixture.owner.testingSignalSystemCallCount == signals,
                   observed.exits == [0], observed.failures == 0, observed.reaped else { return false }
+            let commandID = RunIdentity.make()
+            func observation(_ phase: String) throws -> RepositoryCommandObservation {
+                let bytes = try JSONSerialization.data(withJSONObject: ["requestID": commandID, "phase": phase])
+                return try JSONDecoder().decode(RepositoryCommandObservation.self, from: bytes)
+            }
+            let admission = try observation("admission"), retirement = try observation("retired")
+            guard !session.recordRepositoryCommand(retirement), session.recordRepositoryCommand(admission),
+                  !session.recordRepositoryCommand(admission),
+                  session.verifySafetyAfterWorkerReap().recordedChildDrain == .unverified,
+                  session.recordRepositoryCommand(retirement), !session.recordRepositoryCommand(retirement),
+                  session.verifySafetyAfterWorkerReap().recordedChildDrain == .noneRecorded,
+                  fixture.owner.testingSignalSystemCallCount == signals else { return false }
             var status: Int32 = -1
             return waitpid(fixture.processID, &status, WNOHANG) == -1 && errno == ECHILD
         } catch {

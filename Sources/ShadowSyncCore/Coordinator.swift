@@ -7,6 +7,9 @@ public struct CoordinatorConfiguration: Sendable {
     let governedRootRole: GovernedRootRole?
     let installationAdmission: (@Sendable () throws -> Void)?
     #if SHADOW_SYNC_TESTING
+    var testingRepositoryCustodyRoot: String? = nil
+    var testingRetentionCustodyHooks: RetentionArtifactStore.TestingCustodyHooks? = nil
+    var testingRepositoryContextObserved: (@Sendable (CommandCustodyContext) -> Void)? = nil
     // Existing fixture-only callers predate bound host-policy snapshots. Explicit
     // test roles still exercise the production digest check below.
     let usesUnboundTestingRole: Bool
@@ -224,14 +227,31 @@ public final class RunCoordinator: @unchecked Sendable {
         configuration: CoordinatorConfiguration,
         audit: CommandAudit? = nil,
         processObserver: (@Sendable (ProcessIdentity?) -> Bool)? = nil,
+        repositoryObserver: (@Sendable (RepositoryCommandObservation) -> Bool)? = nil,
         account: EffectiveAccount
     ) {
         self.configuration = configuration
         runner = DescriptorProcessRunner(
             audit: audit,
-            processObserver: processObserver
+            processObserver: processObserver,
+            repositoryObserver: repositoryObserver
         )
         self.account = account
+    }
+
+    func borrowRepositoryContext(_ authority: RunAuthority) throws -> CommandCustodyContext? {
+        #if SHADOW_SYNC_TESTING
+        if let root = configuration.testingRepositoryCustodyRoot {
+            let context = try CommandCustodyContext.testing(leases: authority.retainCommandLeases(),
+                location: configuration.stateLocation, root: root, authority: authority, discoveryFixture: true)
+            configuration.testingRepositoryContextObserved?(context)
+            return context
+        }
+        // Existing legacy transport fixtures keep their explicit fixture route.
+        return nil
+        #else
+        return try CommandCustodyContext.borrowing(authority)
+        #endif
     }
 
     public func run(
@@ -292,6 +312,8 @@ public final class RunCoordinator: @unchecked Sendable {
             at: configuration.stateLocation
         )
         defer { authority.release() }
+        let commandContext = try borrowRepositoryContext(authority)
+        defer { commandContext?.close() }
         try configuration.installationAdmission?()
         let lease = try authority.duplicateOperationLease()
         defer { close(lease) }
@@ -338,7 +360,7 @@ public final class RunCoordinator: @unchecked Sendable {
                 message: seededDiagnostic
             )
         }
-        let transactionConfiguration: GitTransactionConfiguration
+        var transactionConfiguration: GitTransactionConfiguration
         if let mapping = configuration.transportMapping {
             transactionConfiguration = GitTransactionConfiguration(
                 trampolineExecutable:
@@ -360,11 +382,12 @@ public final class RunCoordinator: @unchecked Sendable {
             )
         }
         #else
-        let transactionConfiguration = GitTransactionConfiguration(
+        var transactionConfiguration = GitTransactionConfiguration(
             trampolineExecutable: configuration.trampolineExecutable,
             operationLeaseDescriptor: lease
         )
         #endif
+        transactionConfiguration.commandContext = commandContext
         let transaction = FastForwardTransactionV2(
             runner: runner,
             configuration: transactionConfiguration,
@@ -494,14 +517,14 @@ public final class RunCoordinator: @unchecked Sendable {
             if cancellation.isCancelled {
                 try log.append(type: "control", data: "cancel")
             }
-            try log.append(type: "run_finished", report: report)
-            try log.append(type: "worker_exit", data: "completed")
+            try log.append(type: report.hasCleanupPending ? "run_cleanup_pending" : "run_finished", report: report)
+            try log.append(type: "worker_exit", data: report.hasCleanupPending ? "cleanup_pending" : "completed")
         } catch {
             cancellation.cancel()
             throw error
         }
         try emitter.emit(
-            type: .runFinished,
+            type: report.hasCleanupPending ? .diagnostic : .runFinished,
             message: report.summary
         )
         do {
@@ -528,6 +551,8 @@ public final class RunCoordinator: @unchecked Sendable {
         }
         let authority = try RunAuthority.acquireRun(at: configuration.stateLocation)
         defer { authority.release() }
+        let commandContext = try borrowRepositoryContext(authority)
+        defer { commandContext?.close() }
         try configuration.installationAdmission?()
         let lease = try authority.duplicateOperationLease()
         defer { close(lease) }
@@ -575,7 +600,7 @@ public final class RunCoordinator: @unchecked Sendable {
         }
         #endif
         #if SHADOW_SYNC_TESTING
-        let transactionConfiguration: GitTransactionConfiguration
+        var transactionConfiguration: GitTransactionConfiguration
         if let mapping = configuration.transportMapping {
             transactionConfiguration = GitTransactionConfiguration(
                 trampolineExecutable: configuration.trampolineExecutable,
@@ -592,11 +617,12 @@ public final class RunCoordinator: @unchecked Sendable {
             )
         }
         #else
-        let transactionConfiguration = GitTransactionConfiguration(
+        var transactionConfiguration = GitTransactionConfiguration(
             trampolineExecutable: configuration.trampolineExecutable,
             operationLeaseDescriptor: lease
         )
         #endif
+        transactionConfiguration.commandContext = commandContext
         let transaction = GitTransaction(
             runner: runner,
             configuration: transactionConfiguration,
@@ -659,13 +685,13 @@ public final class RunCoordinator: @unchecked Sendable {
             if cancellation.isCancelled {
                 try log.append(type: "control", data: "cancel")
             }
-            try log.append(type: "run_finished", report: report)
-            try log.append(type: "worker_exit", data: "completed")
+            try log.append(type: report.hasCleanupPending ? "run_cleanup_pending" : "run_finished", report: report)
+            try log.append(type: "worker_exit", data: report.hasCleanupPending ? "cleanup_pending" : "completed")
         } catch {
             cancellation.cancel()
             throw error
         }
-        try emitter.emit(type: .runFinished, message: report.summary)
+        try emitter.emit(type: report.hasCleanupPending ? .diagnostic : .runFinished, message: report.summary)
         do {
             try log.flush()
         } catch {

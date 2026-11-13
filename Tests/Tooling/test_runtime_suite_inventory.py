@@ -26,8 +26,39 @@ class RuntimeInventoryTests(unittest.TestCase):
 
     def test_current_source_has_complete_entrypoint_and_case_registration(self):
         result = inventory.inspect(self.root)
-        self.assertEqual((len(result['suites']), result['case_count'], len(result['other_entrypoints'])), (41, 849, 12))
+        self.assertEqual((len(result['suites']), result['case_count'], len(result['other_entrypoints'])), (45, 1355, 12))
         self.assertFalse(result['runtime_executed'])
+
+    def test_capture_suite_is_exact_independent_real_coverage(self):
+        rows = {row['id']: row for row in inventory.inspect(self.root)['suites']}
+        expected = ['m6-live-custody-capture-' + name for name in
+                    ('publication', 'removal', 'retirement', 'refusals')]
+        self.assertEqual(rows['m6-custody-capture']['cases'], expected)
+        self.assertEqual(rows['m6-custody-capture']['entrypoint'],
+                         'M6SelfTestRunner.runLiveCustodyCapture')
+        self.assertEqual(rows['m6']['entrypoint'], 'M6SelfTestRunner.runAll')
+        self.assertEqual(len(rows['m6']['cases']), 730 + 12 + 1)  # Original suite, fresh-driver cases, and metadata collector regression.
+        self.assertTrue(set(expected) <= set(rows['m6']['cases']))
+
+    def test_capture_route_cannot_skip_substitute_reorder_or_select_cases(self):
+        path = self.root / 'Sources/ShadowSyncCore/M6SelfTests.swift'
+        original = path.read_text()
+        start = original.index('    public static func runLiveCustodyCapture(')
+        end = original.index('    // Fixed existing reconciliation coverage;')
+        focused = original[start:end]
+        publication = next(line for line in focused.splitlines(True)
+                           if 'try run("m6-live-custody-capture-publication")' in line)
+        removal = next(line for line in focused.splitlines(True)
+                       if 'try run("m6-live-custody-capture-removal")' in line)
+        variants = (focused.replace(publication, ''),
+                    focused.replace('try CustodyCatalogSelfTests.liveCustodyCapture("publication")', ''),
+                    focused.replace(publication, publication + publication),
+                    focused.replace(publication + removal, removal + publication),
+                    focused.replace('record: (String) -> Void', 'selected: [String], record: (String) -> Void'),
+                    focused.replace('try RuntimeFixtureSession.withCase(name) { try body() }', 'try body()'))
+        for changed in variants:
+            path.write_text(original[:start] + changed + original[end:])
+            with self.assertRaises(ValueError): inventory.inspect(self.root)
 
     def test_m6_unregistered_missing_duplicate_or_dynamic_body_refuses(self):
         path = self.root/'Sources/ShadowSyncCore/M6SelfTests.swift'

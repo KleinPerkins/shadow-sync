@@ -52,8 +52,12 @@ def sha(path):
 
 
 def run(argv, timeout=120):
+    # These tools create signature resources or replace payload files. Their
+    # reviewed modes require a child-only022 mask; retain the caller's private
+    # mask and every other tool's inherited mask. Output parents stay private.
     result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"})
+                            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"},
+                            umask=0o022 if argv[0] in ("/usr/bin/codesign", "/usr/bin/install_name_tool") else -1)
     require(result.returncode == 0, f"{argv[0]} failed ({result.returncode}): {result.stderr}")
     return result.stdout + result.stderr
 
@@ -137,6 +141,7 @@ def load_notice_bundle(pin, root=NOTICES_PATH):
 def install_notice_snapshot(snapshot, resources):
     target = resources / "ThirdPartyNotices"
     target.mkdir(mode=0o755)
+    target.chmod(0o755)
     for name, data in sorted(snapshot.items()):
         path = target / name
         with path.open("xb") as stream:
@@ -214,10 +219,12 @@ def copy_selected(source, destination):
     # Every selected link must resolve inside the selected output after copy.
     wanted = inventory(source, include=selected)
     destination.mkdir(mode=0o755)
+    destination.chmod(0o755)
     for name, row in sorted(wanted.items(), key=lambda item: (len(PurePosixPath(item[0]).parts), item[0])):
         target = destination / name
         if row["kind"] == "directory":
             target.mkdir(mode=0o755)
+            target.chmod(0o755)
         elif row["kind"] == "symlink":
             target.symlink_to(row["target"])
             os.lchmod(target, 0o755)
@@ -511,6 +518,7 @@ def build(args):
     resources = framework / "Versions/3.14/Resources"
     install_notice_snapshot(notices, resources)
     shutil.copyfile(license_file, resources / "Python-Package-License.rtf")
+    (resources / "Python-Package-License.rtf").chmod(0o644)
     (resources / "ShadowSyncRuntimeChanges.txt").write_text(
         "CPython 3.14.10, Python Software Foundation package.\n"
         "ShadowSync changes: select the reviewed non-GUI runtime; omit development, "
@@ -521,6 +529,7 @@ def build(args):
         "This is not a system Python installation. The Python license and upstream "
         "package license remain included. Exact source-bound third-party notices "
         "are included in ThirdPartyNotices/; their manifest is sealed with this framework.\n")
+    (resources / "ShadowSyncRuntimeChanges.txt").chmod(0o644)
     transformations = []
     for relative, row in sorted(inputs.items()):
         if row["kind"] != "file":
@@ -574,6 +583,11 @@ def build(args):
     layout[layout_path.relative_to(framework).as_posix()] = {"kind": "file", "mode": 0o644}
     layout["Versions/3.14/_CodeSignature"] = {"kind": "directory", "mode": 0o755}
     layout["Versions/3.14/_CodeSignature/CodeResources"] = {"kind": "file", "mode": 0o644}
+    # Match the separately enforced Swift consumer contract before sealing;
+    # a self-consistent layout with unsupported modes is not a usable runtime.
+    require(all(row["kind"] in ("file", "directory", "symlink")
+                and row["mode"] in ((0o644, 0o755) if row["kind"] == "file" else (0o755,))
+                for row in layout.values()), "Runtime node modes differ from consumer contract")
     layout_path.write_text(json.dumps({"schema": "shadow-sync-policy-runtime-layout/v1",
         "source": pin, "entries": dict(sorted(layout.items()))}, sort_keys=True, indent=2) + "\n")
     layout_path.chmod(0o644)

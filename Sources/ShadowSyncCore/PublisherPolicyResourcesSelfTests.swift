@@ -467,9 +467,19 @@ public enum PublisherPolicyResourcesSelfTestRunner {
             let layout = try PolicyRuntimeLayout.decode(Data(contentsOf: URL(fileURLWithPath: framework + "/" + PolicyRuntimeLayout.manifest)),
                 source: Data(contentsOf: URL(fileURLWithPath: sourcePath)))
             var compared: Set<String> = [], regular = 0
+            var pool = PolicyRuntimeBulkDirectory.Pool()
+            var active: Set<UInt> = [], storage: Set<UInt> = []
+            var scans = 0, reused = 0, pendingParents = 0, highWater = 0
             func walk(_ fd: Int32, prefix: String) throws {
-                var reader = PolicyRuntimeBulkDirectory()
-                while let entry = try reader.next(fd: fd) {
+                var reader: PolicyRuntimeBulkDirectory? = pool.take()
+                let address = reader!.testingStorageAddress
+                try require(reader!.testingIsReset && active.insert(address).inserted,
+                            "checked-out bulk scratch is stale or aliases active parent")
+                if !storage.insert(address).inserted { reused += 1 }
+                scans += 1; highWater = max(highWater, active.count)
+                defer { pool.put(&reader); active.remove(address) }
+                while let entry = try reader!.next(fd: fd) {
+                    try require(reader!.testingStorageAddress == address, "bulk refill unexpectedly copied scratch")
                     let path = prefix.isEmpty ? entry.name : prefix + "/" + entry.name
                     try require(compared.insert(path).inserted && compared.count <= 4096, "bulk duplicates or overflow")
                     var reference = stat()
@@ -485,15 +495,22 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                         let child = openat(fd, entry.name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
                         try require(child >= 0, "parity child directory")
                         defer { close(child) }
+                        let pending = reader!.testingPendingCount
+                        if pending > 0 { pendingParents += 1 }
                         try walk(child, prefix: path)
+                        try require(reader!.testingPendingCount == pending && reader!.testingStorageAddress == address,
+                                    "recursive child changed pending parent batch")
                     }
                 }
+                try require(reader!.testingStorageAddress == address, "bulk EOF unexpectedly copied scratch")
             }
             let fd = Darwin.open(framework, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             try require(fd >= 0, "parity root"); defer { close(fd) }
             try walk(fd, prefix: "")
             try require(compared == Set(layout.entries.keys) && compared.count == 158 && regular == 124,
                         "complete packaged runtime parity")
+            try require(scans == 22 && highWater == 7 && storage.count == highWater && reused == scans - highWater
+                && pendingParents > 0 && active.isEmpty, "bulk scratch recursion/reuse coverage changed")
             print("METRIC policy-runtime bulk-stat-parity-entries=\(compared.count) regular=\(regular)")
         }
         onPass("PUBLISHER-POLICY-T13-native-bulk-stat-full-inventory-parity")
@@ -531,6 +548,579 @@ public enum PublisherPolicyResourcesSelfTestRunner {
             try fixture.remove()
         }
         onPass("PUBLISHER-POLICY-T14-bulk-revalidation-drift-refusals")
+
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T15-install-inventory-preserves-sealed-links-and-modes") {
+            try withBundleFixture { fixture, app, layout in
+                let original = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout)
+                try require(original.inventory.filter { $0.hasPrefix("l\u{0}") }.count == PolicyRuntimeLayout.links.count,
+                            "reviewed links missing from canonical inventory")
+                let copy = fixture.path + "/staged.app"
+                try FileManager.default.copyItem(atPath: app, toPath: copy)
+                try InstallationLifecycle.testingSyncPublisherBundle(copy, layout: layout)
+                let copied = try BundleArtifactIdentity.testingInspect(bundlePath: copy, layout: layout)
+                try require(original == copied, "signed layout changed during bundle copy")
+                var info = stat()
+                try require(lstat(copy + "/Contents/Helpers/ShadowSyncLifecycleCoordinator", &info) == 0
+                    && info.st_mode & 0o7777 == 0o755, "coordinator executable mode changed")
+            }
+        }
+        onPass("PUBLISHER-POLICY-T15-install-inventory-preserves-sealed-links-and-modes")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T16-install-extra-links-and-permission-drift-refuse") {
+            try withBundleFixture { _, app, layout in
+                func inspect() throws { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
+                let extra = app + "/Contents/Resources/unexpected"
+                try Data("extra".utf8).write(to: URL(fileURLWithPath: extra))
+                try refused { try inspect() }; try require(unlink(extra) == 0, "extra cleanup")
+                try require(symlink("ShadowSync.icns", extra) == 0, "unknown link setup")
+                try refused { try inspect() }; try require(unlink(extra) == 0, "link cleanup")
+                let helper = app + "/Contents/Helpers/ShadowSyncLifecycleCoordinator"
+                try require(chmod(helper, 0o700) == 0, "mode drift setup")
+                try refused { try inspect() }; try require(chmod(helper, 0o755) == 0, "mode restore")
+                // Revalidation must catch drift after the initial inventory,
+                // including modes that are outside the code-signature seal.
+                for relative in ["Contents/Helpers/ShadowSyncLifecycleCoordinator", "Contents/Helpers"] {
+                    let retained = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)
+                    try retained.revalidate()
+                    try require(chmod(app + "/" + relative, 0o777) == 0, "late mode drift")
+                    try refused { try retained.revalidate() }
+                    try require(chmod(app + "/" + relative, 0o755) == 0, "late mode restore")
+                }
+                let retained = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)
+                try Data("late extra".utf8).write(to: URL(fileURLWithPath: extra))
+                try refused { try retained.revalidate() }
+                try require(unlink(extra) == 0, "late extra cleanup")
+                let link = app + "/" + PublisherBundleLayout.frameworkRelative + "/Python"
+                try require(unlink(link) == 0 && symlink("/outside", link) == 0 && lchmod(link, 0o755) == 0, "escaped link setup")
+                try refused { try inspect() }
+            }
+        }
+        onPass("PUBLISHER-POLICY-T16-install-extra-links-and-permission-drift-refuse")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T17-install-required-resources-and-quarantine") {
+            try withBundleFixture { _, app, layout in
+                let original = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout)
+                let quarantine = Data("0081;00000000;Fixture;".utf8)
+                try quarantine.withUnsafeBytes { bytes in
+                    try require(setxattr(app, "com.apple.quarantine", bytes.baseAddress, bytes.count, 0, XATTR_NOFOLLOW) == 0,
+                                "quarantine setup")
+                }
+                try require(try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) == original,
+                            "quarantine changed sealed inventory")
+                try require(getxattr(app, "com.apple.quarantine", nil, 0, 0, XATTR_NOFOLLOW) == quarantine.count,
+                            "quarantine removed")
+                let helper = app + "/Contents/Helpers/ShadowSyncLifecycleCoordinator"
+                try require(unlink(helper) == 0, "missing helper setup")
+                try refused { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
+            }
+        }
+        onPass("PUBLISHER-POLICY-T17-install-required-resources-and-quarantine")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T18-install-layout-does-not-grant-publisher-authority") {
+            try withBundleFixture { _, app, layout in
+                _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout)
+                try refused { _ = try BundleArtifactIdentity.inspect(bundlePath: app, requireProduction: true) }
+                try refused { _ = try PublisherBundleLayout.captureIfPresent(app) }
+            }
+        }
+        onPass("PUBLISHER-POLICY-T18-install-layout-does-not-grant-publisher-authority")
+
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T19-install-stapled-ticket-preservation-and-refusals") {
+            try withBundleFixture { fixture, app, layout in
+                let unstapled = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)
+                let path = app + "/" + PublisherBundleLayout.ticketRelative
+                let bytes = Data("synthetic notarization ticket; no publisher authority".utf8)
+                try bytes.write(to: URL(fileURLWithPath: path), options: .withoutOverwriting)
+                try require(chmod(path, 0o644) == 0, "ticket mode")
+                try refused { try unstapled.revalidate() }
+                let original = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout)
+                let retained = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)
+                try retained.revalidate()
+                let copy = fixture.path + "/stapled.app"
+                try FileManager.default.copyItem(atPath: app, toPath: copy)
+                try InstallationLifecycle.testingSyncPublisherBundle(copy, layout: layout)
+                try require(try BundleArtifactIdentity.testingInspect(bundlePath: copy, layout: layout) == original,
+                            "staging changed the ticket or signed layout")
+                try refused { _ = try PublisherBundleLayout.captureIfPresent(app) }
+                try Data("changed".utf8).write(to: URL(fileURLWithPath: path))
+                try refused { try retained.revalidate() }
+                try bytes.write(to: URL(fileURLWithPath: path))
+                try require(chmod(path, 0o755) == 0, "executable ticket setup")
+                try refused { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
+                try require(chmod(path, 0o644) == 0, "ticket mode restore")
+                try Data().write(to: URL(fileURLWithPath: path))
+                try refused { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
+                try require(unlink(path) == 0 && symlink("Info.plist", path) == 0, "ticket alias setup")
+                try refused { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
+            }
+        }
+        onPass("PUBLISHER-POLICY-T19-install-stapled-ticket-preservation-and-refusals")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T20-bulk-sibling-reset-multirefill-and-copy-isolation") {
+            var entries: [String: PolicyRuntimeLayout.Entry] = [:]
+            for name in ["large", "small", "empty"] {
+                entries[name] = .init(kind: .directory, mode: 0o755, target: nil)
+            }
+            var largeNames: Set<String> = []
+            for index in 0..<900 {
+                let name = String(format: "item-%04d-", index) + String(repeating: "x", count: 120)
+                largeNames.insert(name)
+                entries["large/" + name] = .init(kind: .file, mode: 0o644, target: nil)
+            }
+            entries["small/only"] = .init(kind: .file, mode: 0o644, target: nil)
+            let fixture = try Fixture(layout: PolicyRuntimeLayout(entries: entries))
+            defer { try? fixture.remove() }
+            var pool = PolicyRuntimeBulkDirectory.Pool()
+            var reader: PolicyRuntimeBulkDirectory? = pool.take()
+            let address = reader!.testingStorageAddress
+            func collect(_ name: String, expected: Set<String>, multi: Bool = false) throws {
+                try require(reader!.testingIsReset && reader!.testingStorageAddress == address, "sibling scratch not fully reset/reused")
+                let fd = Darwin.open(fixture.framework + "/" + name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try require(fd >= 0, "sibling directory open"); defer { close(fd) }
+                var names: Set<String> = [], batches: Set<Int> = []
+                while let entry = try reader!.next(fd: fd) {
+                    try require(names.insert(entry.name).inserted && reader!.testingStorageAddress == address,
+                                "sibling duplicate or COW allocation")
+                    batches.insert(reader!.testingTotalCount)
+                }
+                try require(names == expected && (!multi || batches.count > 1), "sibling stale tail, count or refill differs")
+                try require(try reader!.next(fd: fd) == nil, "sibling EOF not stable")
+                pool.put(&reader); try require(reader == nil, "returned scratch remains checked out")
+                reader = pool.take()
+            }
+            try collect("large", expected: largeNames, multi: true)
+            try collect("small", expected: ["only"])
+            try collect("empty", expected: [])
+            try collect("large", expected: largeNames, multi: true)
+            try collect("empty", expected: [])
+            try collect("small", expected: ["only"])
+            let fd = Darwin.open(fixture.framework + "/large", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try require(fd >= 0, "alias directory open"); defer { close(fd) }
+            let first = try reader!.next(fd: fd)
+            var alias = reader!
+            let pending = alias.testingPendingCount
+            try require(first != nil && pending > 0, "alias fixture lacks pending batch")
+            pool.put(&reader); reader = pool.take()
+            try require(reader!.testingIsReset && reader!.testingStorageAddress != alias.testingStorageAddress
+                && alias.testingStorageAddress == address && alias.testingPendingCount == pending,
+                "reset mutated copied pending reader or failed COW isolation")
+            let second = try alias.next(fd: fd)
+            try require(second != nil && second!.name != first!.name && largeNames.contains(second!.name)
+                && alias.testingPendingCount == pending - 1, "copied pending batch was cleared")
+            pool.put(&reader)
+            try fixture.remove()
+        }
+        onPass("PUBLISHER-POLICY-T20-bulk-sibling-reset-multirefill-and-copy-isolation")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T21-bulk-throw-unwind-clears-scratch-and-descriptors") {
+            let layout = PolicyRuntimeLayout(entries: ["child": .init(kind: .directory, mode: 0o755, target: nil),
+                "child/é": .init(kind: .file, mode: 0o644, target: nil)])
+            let fixture = try Fixture(layout: layout); defer { try? fixture.remove() }
+            var pool = PolicyRuntimeBulkDirectory.Pool(), addresses: Set<UInt> = []
+            var closed: [Int32] = [], active: Set<UInt> = [], enteredChild = false
+            func walk(_ path: String) throws {
+                let fd = Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try require(fd >= 0, "throw directory open")
+                defer { close(fd); closed.append(fd) }
+                var reader: PolicyRuntimeBulkDirectory? = pool.take()
+                let address = reader!.testingStorageAddress
+                try require(reader!.testingIsReset && active.insert(address).inserted, "throw active scratch alias")
+                addresses.insert(address)
+                defer { pool.put(&reader); active.remove(address) }
+                while let entry = try reader!.next(fd: fd) {
+                    try require(entry.name == "child", "throw fixture unexpected entry")
+                    enteredChild = true
+                    try walk(path + "/" + entry.name)
+                }
+            }
+            try refused { try walk(fixture.framework) }
+            try require(enteredChild && addresses.count == 2 && active.isEmpty && closed.count == 2,
+                        "throw fixture did not unwind both active frames")
+            for fd in closed { errno = 0; try require(fcntl(fd, F_GETFD) == -1 && errno == EBADF, "throw descriptor leaked") }
+            var first: PolicyRuntimeBulkDirectory? = pool.take(), second: PolicyRuntimeBulkDirectory? = pool.take()
+            try require(first!.testingIsReset && second!.testingIsReset
+                && first!.testingStorageAddress != second!.testingStorageAddress
+                && addresses == [first!.testingStorageAddress, second!.testingStorageAddress], "throw scratch reset/COW differs")
+            pool.put(&first); pool.put(&second)
+            // A separate invocation-local pool has no active storage in common.
+            var fresh = PolicyRuntimeBulkDirectory.Pool()
+            var next: PolicyRuntimeBulkDirectory? = fresh.take()
+            try require(next!.testingIsReset && !addresses.contains(next!.testingStorageAddress), "fresh invocation retained old scratch")
+            fresh.put(&next)
+            try fixture.remove()
+        }
+        onPass("PUBLISHER-POLICY-T21-bulk-throw-unwind-clears-scratch-and-descriptors")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T22-bulk-recursive-multibatch-physical-drift-refusals") {
+            guard let framework = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_FRAMEWORK"],
+                  let sourcePath = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_SOURCE"],
+                  framework.hasPrefix("/private/tmp/"), sourcePath.hasPrefix("/private/tmp/") else {
+                throw Failure.assertion("explicit test resources missing")
+            }
+            let original = try PolicyRuntimeLayout.decode(
+                Data(contentsOf: URL(fileURLWithPath: framework + "/" + PolicyRuntimeLayout.manifest)),
+                source: Data(contentsOf: URL(fileURLWithPath: sourcePath)))
+            var entries = original.entries
+            // Root needs multiple native batches while nested siblings retain
+            // pending parent records. The direct reader case proves refills.
+            for index in 0..<400 {
+                entries[String(format: "root-%04d-", index) + String(repeating: "x", count: 120)] =
+                    .init(kind: .file, mode: 0o644, target: nil)
+            }
+            for index in 0..<12 {
+                let name = String(format: "sibling-%02d", index)
+                entries[name] = .init(kind: .directory, mode: 0o755, target: nil)
+                entries[name + "/nested"] = .init(kind: .directory, mode: 0o755, target: nil)
+                entries[name + "/nested/file"] = .init(kind: .file, mode: 0o644, target: nil)
+            }
+            let layout = PolicyRuntimeLayout(entries: entries)
+            func verify(_ mutation: (Fixture, String) throws -> Void) throws {
+                let fixture = try Fixture(layout: layout); defer { try? fixture.remove() }
+                let tree = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: layout)
+                try tree.revalidate(root: fixture.framework, owner: geteuid(), layout: layout)
+                try require(tree.nodes.count == entries.count + 1, "recursive inventory omitted entries")
+                // Reconstruct the immutable input independently. Lookup indexing
+                // must not depend on Dictionary storage identity or entry order.
+                var rebuilt: [String: PolicyRuntimeLayout.Entry] = [:]
+                for key in entries.keys.sorted().reversed() { rebuilt[key] = entries[key] }
+                try tree.revalidate(root: fixture.framework, owner: geteuid(),
+                    layout: PolicyRuntimeLayout(entries: rebuilt))
+                try require(try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(),
+                    layout: PolicyRuntimeLayout(entries: rebuilt)) == tree,
+                    "indexed revalidation differs from independent full capture")
+                // Retained node lookup may never be paired with changed layout
+                // authority, even when all actual files remain unchanged.
+                var changedLayout = rebuilt
+                changedLayout["sibling-11/nested/file"] = .init(kind: .file, mode: 0o755, target: nil)
+                try refused { try tree.revalidate(root: fixture.framework, owner: geteuid(),
+                    layout: PolicyRuntimeLayout(entries: changedLayout)) }
+                changedLayout = rebuilt; changedLayout.removeValue(forKey: "sibling-11/nested/file")
+                try refused { try tree.revalidate(root: fixture.framework, owner: geteuid(),
+                    layout: PolicyRuntimeLayout(entries: changedLayout)) }
+                try mutation(fixture, fixture.framework + "/sibling-11/nested/file")
+                try refused { try tree.revalidate(root: fixture.framework, owner: geteuid(), layout: layout) }
+                try fixture.remove()
+            }
+            try verify { fixture, target in
+                let replacement = fixture.path + "/replacement"
+                try Data(contentsOf: URL(fileURLWithPath: target)).write(to: URL(fileURLWithPath: replacement))
+                try require(chmod(replacement, 0o644) == 0 && rename(replacement, target) == 0, "recursive inode replacement")
+            }
+            try verify { _, target in try require(chmod(target, 0o600) == 0, "recursive mode drift") }
+            try verify { fixture, target in try require(link(target, fixture.path + "/hardlink") == 0, "recursive link-count drift") }
+            try verify { _, target in try Data("changed metadata".utf8).write(to: URL(fileURLWithPath: target)) }
+            try verify { _, target in try require(unlink(target) == 0, "recursive missing entry") }
+            // Preserve total inventory count but replace the lexical name.
+            // A parent-local index must refuse it before using any retained node.
+            try verify { _, target in
+                try require(renameatx_np(AT_FDCWD, target, AT_FDCWD, target + "-unknown", UInt32(RENAME_EXCL)) == 0,
+                    "recursive unexpected same-count name")
+            }
+            try verify { _, target in try Data("extra".utf8).write(to: URL(fileURLWithPath: target + "-extra")) }
+            try verify { fixture, _ in
+                let link = fixture.framework + "/Python"
+                try require(unlink(link) == 0 && symlink("missing", link) == 0 && lchmod(link, 0o755) == 0,
+                            "recursive symlink drift")
+            }
+            try verify { fixture, _ in
+                let ancestor = fixture.framework + "/sibling-11/nested"
+                try require(rename(ancestor, fixture.path + "/old-ancestor") == 0 && mkdir(ancestor, 0o755) == 0
+                    && chmod(ancestor, 0o755) == 0, "recursive ancestor replacement")
+                try Data("fixture".utf8).write(to: URL(fileURLWithPath: ancestor + "/file"))
+                try require(chmod(ancestor + "/file", 0o644) == 0, "recursive replacement mode")
+            }
+            // Exercise both production enumeration routes at their boundary,
+            // including an empty directory. Compare all observed paths against
+            // the independently captured inventory, not merely a pass result.
+            var routedEntries = entries
+            for (directory, count) in [("route-empty", 0), ("route-eight", 8), ("route-nine", 9)] {
+                routedEntries[directory] = .init(kind: .directory, mode: 0o755, target: nil)
+                for index in 0..<count {
+                    routedEntries[directory + "/file-\(index)"] = .init(kind: .file, mode: 0o644, target: nil)
+                }
+            }
+            let routedLayout = PolicyRuntimeLayout(entries: routedEntries)
+            do {
+                let fixture = try Fixture(layout: routedLayout); defer { try? fixture.remove() }
+                let retained = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: routedLayout)
+                var observed: [String: Bool] = [:], visited: Set<String> = []
+                try retained.testingRevalidateScan(root: fixture.framework, owner: geteuid(), layout: routedLayout,
+                    beforeDirectoryRead: { prefix in
+                        try require(visited.insert(prefix).inserted, "enumeration repeated a directory")
+                    }, afterEntryRead: { prefix, name, bulk in
+                        let path = prefix.isEmpty ? name : prefix + "/" + name
+                        try require(observed.updateValue(bulk, forKey: path) == nil, "enumeration repeated an entry")
+                    })
+                try require(Set(observed.keys) == Set(routedEntries.keys)
+                    && visited == Set(routedEntries.filter { $0.value.kind == .directory }.keys).union([""]),
+                    "enumeration omitted a name or empty directory")
+                for index in 0..<8 { try require(observed["route-eight/file-\(index)"] == false, "small directory missed named-stat route") }
+                for index in 0..<9 { try require(observed["route-nine/file-\(index)"] == true, "large directory missed bulk route") }
+                try require(try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: routedLayout) == retained,
+                            "mixed fresh scan differs from full capture")
+                try fixture.remove()
+            }
+            // Replay one complete freshly enumerated record in place of a
+            // different entry. Keeping the first bulk stat makes duplicate
+            // rejection itself decisive, rather than incidental inode drift.
+            for directory in ["route-eight", "route-nine"] {
+                let fixture = try Fixture(layout: routedLayout); defer { try? fixture.remove() }
+                let retained = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: routedLayout)
+                var first: (String, stat?)?, substituted = false, observedDuplicate = false
+                var observed: Set<String> = []
+                try refused {
+                    try retained.testingRevalidateScan(root: fixture.framework, owner: geteuid(), layout: routedLayout,
+                        afterEntryRead: { prefix, name, bulk in
+                            guard prefix == directory else { return }
+                            try require(bulk == (directory == "route-nine"), "duplicate exercised wrong enumeration route")
+                            if !observed.insert(name).inserted { observedDuplicate = true }
+                        }, substituteEntry: { prefix, name, metadata, bulk in
+                            guard prefix == directory else { return (name, metadata) }
+                            try require(bulk == (directory == "route-nine"), "duplicate read wrong enumeration route")
+                            if substituted { return (name, metadata) }
+                            guard let prior = first else { first = (name, metadata); return (name, metadata) }
+                            try require(name != prior.0, "duplicate did not replace a distinct fresh record")
+                            substituted = true
+                            return prior
+                        })
+                }
+                try require(substituted && observedDuplicate, "malformed duplicate never reached actual scan validation")
+                try fixture.remove()
+            }
+            for directory in ["route-eight", "route-nine"] {
+                for variant in ["name", "inode", "mode", "missing"] {
+                    let fixture = try Fixture(layout: routedLayout); defer { try? fixture.remove() }
+                    let target = fixture.framework + "/" + directory + "/file-0"
+                    let replacement = fixture.path + "/replacement"
+                    if variant == "inode" {
+                        try Data(contentsOf: URL(fileURLWithPath: target)).write(to: URL(fileURLWithPath: replacement))
+                        try require(chmod(replacement, 0o644) == 0, "route replacement mode")
+                    }
+                    let retained = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: routedLayout)
+                    var entered = false, observedTarget = false, routeEntries = 0
+                    try refused {
+                        try retained.testingRevalidateScan(root: fixture.framework, owner: geteuid(), layout: routedLayout,
+                            beforeDirectoryRead: { prefix in
+                                guard prefix == directory else { return }
+                                try require(!entered, "route mutation repeated"); entered = true
+                                // The directory has already passed its named/
+                                // opened identity preflight. These changes must
+                                // reach the actual enumeration/node checks.
+                                switch variant {
+                                case "name": try require(renameatx_np(AT_FDCWD, target, AT_FDCWD, target + "-unknown",
+                                    UInt32(RENAME_EXCL)) == 0, "route same-count name mutation")
+                                case "inode": try require(rename(replacement, target) == 0, "route inode substitution")
+                                case "missing": try require(unlink(target) == 0, "route missing entry")
+                                default: try require(chmod(target, 0o600) == 0, "route file mode mutation")
+                                }
+                            }, afterEntryRead: { prefix, name, bulk in
+                                if prefix == directory { routeEntries += 1 }
+                                if prefix == directory && name == (variant == "name" ? "file-0-unknown" : "file-0") {
+                                    observedTarget = true
+                                    try require(bulk == (directory == "route-nine"), "mutation exercised wrong enumeration route")
+                                }
+                            })
+                    }
+                    try require(entered && (variant == "missing" ? !observedTarget : observedTarget),
+                                "mutation refused before optimized enumeration")
+                    if variant == "missing" {
+                        try require(routeEntries == (directory == "route-nine" ? 8 : 7),
+                                    "missing-entry scan omitted remaining fresh names")
+                    }
+                    try fixture.remove()
+                }
+            }
+            do {
+                let fixture = try Fixture(layout: routedLayout); defer { try? fixture.remove() }
+                let retained = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: routedLayout)
+                var entered = false, observedUnexpected = false
+                try refused {
+                    try retained.testingRevalidateScan(root: fixture.framework, owner: geteuid(), layout: routedLayout,
+                        beforeDirectoryRead: { prefix in
+                            guard prefix == "route-empty" else { return }
+                            entered = true
+                            try Data("unexpected".utf8).write(to: URL(fileURLWithPath: fixture.framework + "/route-empty/unexpected"))
+                        }, afterEntryRead: { prefix, name, bulk in
+                            if prefix == "route-empty" && name == "unexpected" {
+                                observedUnexpected = true
+                                try require(!bulk, "empty directory used wrong enumeration route")
+                            }
+                        })
+                }
+                try require(entered && observedUnexpected, "expected-empty directory was not freshly enumerated")
+                try fixture.remove()
+            }
+            // Use the established qualified chmod fixture, then clear only
+            // this owned ACL before identity-checked fixture removal.
+            let aclFixture = try Fixture(layout: layout)
+            let aclTarget = aclFixture.framework + "/sibling-11/nested/file"
+            defer {
+                if let empty = acl_init(0) {
+                    _ = acl_set_link_np(aclTarget, ACL_TYPE_EXTENDED, empty)
+                    acl_free(UnsafeMutableRawPointer(empty))
+                }
+                try? aclFixture.remove()
+            }
+            let retained = try PolicyRuntimeTree.capture(root: aclFixture.framework, owner: geteuid(), layout: layout)
+            try retained.revalidate(root: aclFixture.framework, owner: geteuid(), layout: layout)
+            let directory = open(aclFixture.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try require(directory >= 0, "ACL drift scratch open"); defer { close(directory) }
+            let account = EffectiveAccount(uid: geteuid(), username: "fixture", homeDirectory: aclFixture.path)
+            let changed = try ClosedProcessRunner(outputLimit: 4096).run(
+                command: ClosedProcessCommand(executable: "/bin/chmod", arguments: ["+a", "everyone deny delete", aclTarget]),
+                environment: ClosedProcessRunner.environment(account: account), workingDirectoryDescriptor: directory,
+                account: account, timeout: 2, cancellation: CancellationToken())
+            try require(changed.status == 0 && !changed.timedOut && !changed.cancelled
+                && !changed.stdoutTruncated && !changed.stderrTruncated, "ACL drift setup failed")
+            errno = 0
+            try require(waitpid(changed.processID, nil, WNOHANG) == -1 && errno == ECHILD, "ACL drift child not reaped")
+            try refused { try retained.revalidate(root: aclFixture.framework, owner: geteuid(), layout: layout) }
+        }
+        onPass("PUBLISHER-POLICY-T22-bulk-recursive-multibatch-physical-drift-refusals")
+        try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T23-ancestor-sibling-stability-and-policy-drift-refusals") {
+            guard let framework = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_FRAMEWORK"],
+                  let source = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_SOURCE"],
+                  framework.hasPrefix("/private/tmp/"), source.hasPrefix("/private/tmp/") else {
+                throw Failure.assertion("explicit test resources missing")
+            }
+            let layout = try PolicyRuntimeLayout.decode(
+                Data(contentsOf: URL(fileURLWithPath: framework + "/" + PolicyRuntimeLayout.manifest)),
+                source: Data(contentsOf: URL(fileURLWithPath: source)))
+            for variant in ["sibling", "mode", "flags", "identity", "acl", "framework-root"] {
+                let fixture = try Fixture(layout: layout)
+                defer { try? fixture.remove() }
+                let parent = open(fixture.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try require(parent >= 0, "ancestor fixture descriptor")
+                defer { close(parent) }
+                var initial = stat()
+                try require(fstat(parent, &initial) == 0, "ancestor fixture metadata")
+                let initialACL = try PolicyAuthorityFile.safeACL(parent)
+                let backup = fixture.path + "-retained"
+                var moved = false, replacement: FileIdentity?, mutated = false, restored = false
+                var mutationCompleted = false
+                func restore() throws {
+                    if restored { return }
+                    if variant == "identity", moved {
+                        if let replacement {
+                            var named = stat()
+                            try require(lstat(fixture.path, &named) == 0 && replacement.matchesStableNode(FileIdentity(named))
+                                && named.st_mode & S_IFMT == S_IFDIR && rmdir(fixture.path) == 0,
+                                "ancestor replacement cleanup identity")
+                        }
+                        var retained = stat()
+                        try require(lstat(backup, &retained) == 0 && retained.st_dev == initial.st_dev
+                            && retained.st_ino == initial.st_ino
+                            && renameatx_np(AT_FDCWD, backup, AT_FDCWD, fixture.path, UInt32(RENAME_EXCL)) == 0,
+                            "ancestor retained identity restore")
+                        moved = false
+                    }
+                    if variant == "mode" { try require(fchmod(parent, initial.st_mode & 0o7777) == 0, "ancestor mode restore") }
+                    if variant == "flags" { try require(fchflags(parent, initial.st_flags) == 0, "ancestor flags restore") }
+                    if variant == "acl", mutated {
+                        guard let empty = acl_init(0) else { throw Failure.assertion("ancestor empty ACL") }
+                        defer { acl_free(UnsafeMutableRawPointer(empty)) }
+                        try require(acl_set_fd_np(parent, empty, ACL_TYPE_EXTENDED) == 0, "ancestor ACL restore")
+                        try require(try PolicyAuthorityFile.safeACL(parent) == initialACL, "ancestor ACL identity restore")
+                    }
+                    restored = true
+                }
+                defer { try? restore() }
+                let retained = try PolicyRuntimeTree.capture(root: fixture.framework, owner: geteuid(), layout: layout)
+                try retained.revalidate(root: fixture.framework, owner: geteuid(), layout: layout)
+                var calls = 0
+                func run() throws {
+                    try retained.testingRevalidate(root: fixture.framework, owner: geteuid(), layout: layout) { path in
+                        guard path == (variant == "framework-root" ? fixture.framework : fixture.path) else { return }
+                        calls += 1
+                        try require(calls == 1, "ancestor hook repeated")
+                        mutated = true
+                        switch variant {
+                        case "sibling":
+                            var before = stat(), after = stat()
+                            try require(fstat(parent, &before) == 0 && mkdir(fixture.path + "/unrelated-sibling", 0o700) == 0
+                                && fstat(parent, &after) == 0, "ancestor sibling mutation")
+                            let a = PolicyRuntimeTree.Node(before, acl: try PolicyAuthorityFile.safeACL(parent))
+                            let b = PolicyRuntimeTree.Node(after, acl: try PolicyAuthorityFile.safeACL(parent))
+                            try require(a != b && a.matchesAncestorIdentityAndAccess(b),
+                                        "sibling must change volatile metadata while preserving identity and access")
+                        case "mode":
+                            try require(fchmod(parent, 0o701) == 0, "ancestor mode mutation")
+                        case "flags":
+                            try require(fchflags(parent, initial.st_flags ^ UInt32(UF_NODUMP)) == 0, "ancestor flag mutation")
+                        case "identity":
+                            try require(renameatx_np(AT_FDCWD, fixture.path, AT_FDCWD, backup, UInt32(RENAME_EXCL)) == 0,
+                                        "ancestor move original without replacement")
+                            moved = true
+                            try require(mkdir(fixture.path, 0o700) == 0, "ancestor replacement directory")
+                            var named = stat()
+                            try require(lstat(fixture.path, &named) == 0, "ancestor replacement observation")
+                            replacement = FileIdentity(named)
+                            try require(named.st_dev != initial.st_dev || named.st_ino != initial.st_ino,
+                                        "ancestor replacement must change identity")
+                        case "acl":
+                            var acl = acl_init(1)
+                            defer { if let acl { acl_free(UnsafeMutableRawPointer(acl)) } }
+                            var entry: acl_entry_t?
+                            try require(acl_create_entry(&acl, &entry) == 0 && entry != nil, "ancestor ACL entry")
+                            var uuid = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!.uuid
+                            var permissions: acl_permset_t?
+                            try require(acl_set_tag_type(entry!, ACL_EXTENDED_DENY) == 0
+                                && acl_set_qualifier(entry!, &uuid) == 0
+                                && acl_get_permset(entry!, &permissions) == 0 && permissions != nil,
+                                "ancestor ACL qualifier")
+                            try require(acl_add_perm(permissions!, ACL_DELETE) == 0
+                                && acl_set_fd_np(parent, acl, ACL_TYPE_EXTENDED) == 0, "ancestor ACL mutation")
+                            try require(try PolicyAuthorityFile.safeACL(parent) != initialACL, "ancestor ACL must drift")
+                        case "framework-root":
+                            try require(mkdir(fixture.framework + "/unexpected-child", 0o700) == 0, "framework root mutation")
+                        default: throw Failure.assertion("unknown ancestor mutation")
+                        }
+                        mutationCompleted = true
+                    }
+                }
+                if variant == "sibling" { try run() } else { try refused { try run() } }
+                try require(calls == 1 && mutated && mutationCompleted,
+                            "ancestor negative control did not complete mutation before validator refusal")
+                try restore()
+                try fixture.remove()
+            }
+        }
+        onPass("PUBLISHER-POLICY-T23-ancestor-sibling-stability-and-policy-drift-refusals")
+    }
+
+
+    private static func withBundleFixture(_ body: (Fixture, String, PolicyRuntimeLayout) throws -> Void) throws {
+        guard let framework = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_FRAMEWORK"],
+              let source = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_SOURCE"],
+              framework.hasPrefix("/private/tmp/"), source.hasPrefix("/private/tmp/") else {
+            throw Failure.assertion("explicit test resources missing")
+        }
+        let layout = try PolicyRuntimeLayout.decode(
+            Data(contentsOf: URL(fileURLWithPath: framework + "/" + PolicyRuntimeLayout.manifest)),
+            source: Data(contentsOf: URL(fileURLWithPath: source)))
+        let fixture = try Fixture(layout: layout); defer { try? fixture.remove() }
+        let app = fixture.path + "/ShadowSync.app"
+        for relative in PublisherBundleLayout.testingDirectories.sorted() where relative != PublisherBundleLayout.frameworkRelative {
+            let path = relative.isEmpty ? app : app + "/" + relative
+            try require(mkdir(path, 0o755) == 0 && chmod(path, 0o755) == 0, "bundle fixture directory")
+        }
+        try require(rename(fixture.framework, app + "/" + PublisherBundleLayout.frameworkRelative) == 0, "embed fixture framework")
+        for relative in PublisherBundleLayout.testingExecutables.union(PublisherBundleLayout.testingResources) {
+            let path = app + "/" + relative
+            try Data("fixture".utf8).write(to: URL(fileURLWithPath: path), options: .withoutOverwriting)
+            try require(chmod(path, PublisherBundleLayout.testingExecutables.contains(relative) ? 0o755 : 0o644) == 0,
+                        "bundle fixture file mode")
+        }
+        let info: [String: String] = [
+            "CFBundleIdentifier": ReleaseIdentity.bundleIdentifier, "CFBundleExecutable": "ShadowSync",
+            "CFBundleShortVersionString": "0.10.0", "CFBundleVersion": "15", "LSMinimumSystemVersion": "26.0",
+            "ShadowSyncReleaseSchema": ReleaseIdentity.schemaName, "ShadowSyncArchitecture": "arm64",
+            "ShadowSyncBuildMode": "production", "ShadowSyncSourceRevision": String(repeating: "a", count: 40),
+            "ShadowSyncSourceInputSHA256": String(repeating: "b", count: 64),
+            "ShadowSyncReleaseContractSHA256": String(repeating: "c", count: 64),
+        ]
+        try Data(contentsOf: URL(fileURLWithPath: framework + "/" + PolicyRuntimeLayout.manifest))
+            .write(to: URL(fileURLWithPath: app + "/" + PublisherBundleLayout.frameworkRelative + "/" + PolicyRuntimeLayout.manifest))
+        try Data(contentsOf: URL(fileURLWithPath: source))
+            .write(to: URL(fileURLWithPath: app + "/Contents/Resources/policy-runtime-source.json"))
+        let bytes = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+        try bytes.write(to: URL(fileURLWithPath: app + "/Contents/Info.plist"))
+        try body(fixture, app, layout)
+        try fixture.remove()
     }
 
     private static func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {

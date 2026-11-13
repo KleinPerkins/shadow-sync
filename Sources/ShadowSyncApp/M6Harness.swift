@@ -807,9 +807,29 @@ private final class ProcessLaunchAgent: LaunchAgentControlling, @unchecked Senda
             )
         )
         data.append(0x0A)
-        try data.write(to: URL(fileURLWithPath: statePath), options: .atomic)
-        guard chmod(statePath, 0o600) == 0 else {
-            throw M6HarnessError.message("could not secure simulated launchd state")
+        // Foundation's atomic writer may use an ambient temporary directory.
+        // Keep the simulated service's replacement in its validated fixture.
+        let directory = try TestIsolation.validateRoot(root)
+        let parent = Darwin.open(directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw M6HarnessError.message("could not open simulated launchd fixture") }
+        defer { close(parent) }
+        let temporary = ".simulated-launchd-" + RunIdentity.make()
+        let fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw M6HarnessError.message("could not stage simulated launchd state") }
+        defer { close(fd); _ = unlinkat(parent, temporary, 0) }
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let written = Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if written < 0 && errno == EINTR { continue }
+                guard written > 0 else { throw M6HarnessError.message("could not write simulated launchd state") }
+                offset += written
+            }
+        }
+        guard fsync(fd) == 0,
+              renameat(parent, temporary, parent, "simulated-launchd.json") == 0,
+              fsync(parent) == 0 else {
+            throw M6HarnessError.message("could not commit simulated launchd state")
         }
     }
 }
@@ -2098,19 +2118,25 @@ enum M6AppDriver {
                     + "disposition=\(String(describing: observedDisposition))\n",
                 stderr
             )
-            guard case let .loaded(program, processID) = observedState else {
-                throw M6HarnessError.message(
-                    "rollback \(name) did not restore a loaded LaunchAgent"
-                )
+            if expectTimeout {
+                // The timeout case invoked explicit repair above. Its newly
+                // requested activation must still converge on the exact host.
+                guard case let .loaded(program, processID) = observedState else {
+                    throw M6HarnessError.message("explicit rollback repair did not load the host")
+                }
+                try check(program == executable && processID == observedReady?.processID
+                    && observedDisposition == .matching,
+                    "explicit rollback repair did not converge on the verified host")
+            } else {
+                try check(observedState == .absent && observedReady == nil
+                    && launcher.kickstarts == 2,
+                    "rollback \(name) restarted or registered the prior host")
+                try expectFailure("stopped rollback was reported ready") {
+                    _ = try validationLifecycle.doctor()
+                }
             }
-            try check(
-                program == executable
-                    && processID == observedReady?.processID
-                    && observedDisposition == .matching
-                    && sha256(executable) == appBefore
-                    && sha256(paths.launchAgent) == plistBefore,
-                "rollback \(name) did not preserve the original release"
-            )
+            try check(sha256(executable) == appBefore && sha256(paths.launchAgent) == plistBefore,
+                "rollback \(name) did not preserve the original release")
             try validationLifecycle.uninstall()
             fputs("rollback-order case=\(name) PASS\n", stderr)
         }
@@ -3783,6 +3809,18 @@ enum M6AppDriver {
 
         _ = try lifecycle.doctor()
 
+        func requireStoppedRollback(_ reason: String) throws {
+            let restored = try ReleaseIdentity.load(bundlePath: paths.app)
+            try check(restored == first.release
+                && launcher.state(label: InstallationPaths.label) == .absent
+                && !host.isReady(location: paths.state, executable: installedExecutable,
+                                 release: first.release, timeout: 0),
+                "\(reason) did not restore stopped preimages")
+            try expectFailure("\(reason) reported stopped rollback ready") {
+                _ = try lifecycle.doctor()
+            }
+        }
+
         for stage in [
             "after-gates",
             "after-drain",
@@ -3819,49 +3857,49 @@ enum M6AppDriver {
                     "post-commit fault \(stage) rolled back N+1"
                 )
                 _ = try lifecycle.install(sourceBundle: sourceN)
-            } else {
+            } else if stage == "after-gates" {
+                // Refusal before drainage leaves the untouched current host.
                 let restored = try lifecycle.doctor()
                 try check(
                     restored.release.sourceInputSHA256 == first.release.sourceInputSHA256,
                     "fault \(stage) did not restore N"
                 )
+            } else {
+                try requireStoppedRollback("fault \(stage)")
             }
             try check(
                 try durableEvidenceIsExact(),
                 "fault \(stage) changed durable state evidence"
             )
             passed.append("rollback-\(stage)")
+            if stage != "after-gates" && stage != "after-commit" && stage != "after-cleanup" {
+                _ = try lifecycle.install(sourceBundle: sourceN, intent: .repair)
+            }
         }
 
         launcher.failBootstrapOnce()
         try expectFailure("bootstrap failure was accepted") {
             _ = try lifecycle.install(sourceBundle: sourceN1)
         }
-        let restored = try lifecycle.doctor()
-        try check(
-            restored.release.sourceInputSHA256 == first.release.sourceInputSHA256,
-            "launch failure did not restore N"
-        )
+        try requireStoppedRollback("launch failure")
         try check(
             try durableEvidenceIsExact(),
             "launch rollback changed durable state evidence"
         )
         passed.append("launch-failure-rollback")
+        _ = try lifecycle.install(sourceBundle: sourceN, intent: .repair)
 
         host.failReadinessOnce()
         try expectFailure("readiness failure was accepted") {
             _ = try lifecycle.install(sourceBundle: sourceN1)
         }
-        let readinessRestored = try lifecycle.doctor()
-        try check(
-            readinessRestored.release.sourceInputSHA256 == first.release.sourceInputSHA256,
-            "readiness failure did not restore N"
-        )
+        try requireStoppedRollback("readiness failure")
         try check(
             try durableEvidenceIsExact(),
             "readiness rollback changed durable state evidence"
         )
         passed.append("readiness-failure-rollback")
+        _ = try lifecycle.install(sourceBundle: sourceN, intent: .repair)
 
         let currentRelease = try ReleaseIdentity.load(
             bundlePath: paths.app

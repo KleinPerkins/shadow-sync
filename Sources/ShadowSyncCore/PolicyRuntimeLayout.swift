@@ -137,9 +137,54 @@ struct PolicyRuntimeTree: Equatable, Sendable {
             ctime = s.st_ctimespec.tv_sec; ctimeNS = s.st_ctimespec.tv_nsec
             self.acl = acl; self.target = target
         }
+        // An ancestor may gain or lose unrelated children. Its identity,
+        // access policy and flags must stay fixed; child-count/timestamps/size
+        // belong to the sealed framework inventory, not its parent directories.
+        func matchesAncestorIdentityAndAccess(_ other: Self) -> Bool {
+            device == other.device && inode == other.inode && owner == other.owner
+                && group == other.group && mode == other.mode && flags == other.flags && acl == other.acl
+        }
+    }
+    private struct InspectionObserver {
+        #if SHADOW_SYNC_TESTING
+        var afterAncestorRead: ((String) throws -> Void)? = nil
+        var beforeDirectoryRead: ((String) throws -> Void)? = nil
+        var afterEntryRead: ((String, String, Bool) throws -> Void)? = nil
+        var substituteEntry: ((String, String, stat?, Bool) throws -> (String, stat?))? = nil
+        #endif
     }
     let nodes: [String: Node]
     let machOFiles: [String]
+    // Immutable lookup data only. It never contains a fresh observation or a
+    // permission to access a candidate. Initial capture has already checked
+    // every full path and layout entry; repeated scans need only match each
+    // freshly enumerated name to that exact authenticated entry.
+    private struct InspectionEntry: Equatable, Sendable {
+        let path: String
+        let ordinal: Int
+        let layout: PolicyRuntimeLayout.Entry
+        let node: Node
+    }
+    private let capturedLayout: PolicyRuntimeLayout
+    private let children: [String: [String: InspectionEntry]]
+
+    private init(nodes: [String: Node], machOFiles: [String], layout: PolicyRuntimeLayout) throws {
+        var children: [String: [String: InspectionEntry]] = [:]
+        // Stable ordering makes each directory-local ordinal independent of
+        // Dictionary insertion order, including independent full captures.
+        for (path, entry) in layout.entries.sorted(by: { $0.key < $1.key }) {
+            guard PolicyRuntimeLayout.validPath(path), let node = nodes[path] else {
+                throw PublisherPolicyError.unavailable
+            }
+            let slash = path.lastIndex(of: "/")
+            let parent = slash.map { String(path[..<$0]) } ?? ""
+            let name = slash.map { String(path[path.index(after: $0)...]) } ?? path
+            let ordinal = children[parent]?.count ?? 0
+            children[parent, default: [:]][name] = InspectionEntry(path: path, ordinal: ordinal, layout: entry, node: node)
+        }
+        self.nodes = nodes; self.machOFiles = machOFiles
+        self.capturedLayout = layout; self.children = children
+    }
 
     static func capture(root: String, owner: uid_t, layout: PolicyRuntimeLayout) throws -> Self {
         try inspect(root: root, owner: owner, layout: layout, expected: nil)
@@ -151,7 +196,37 @@ struct PolicyRuntimeTree: Equatable, Sendable {
         }
     }
 
-    private static func inspect(root: String, owner: uid_t, layout: PolicyRuntimeLayout, expected: Self?) throws -> Self {
+    #if SHADOW_SYNC_TESTING
+    func testingRevalidate(root: String, owner: uid_t, layout: PolicyRuntimeLayout,
+                           afterAncestorRead: @escaping (String) throws -> Void) throws {
+        guard try Self.inspect(root: root, owner: owner, layout: layout, expected: self,
+            observer: InspectionObserver(afterAncestorRead: afterAncestorRead)) == self else {
+            throw PublisherPolicyError.unavailable
+        }
+    }
+    /// Observe the actual production enumeration route. Hooks run only after
+    /// the directory's initial identity check. The optional substitution is
+    /// testing-only fault injection for malformed enumeration records.
+    // Keep this testing-only entry visible to compiled symbol verification.
+    @inline(never)
+    func testingRevalidateScan(root: String, owner: uid_t, layout: PolicyRuntimeLayout,
+                               beforeDirectoryRead: ((String) throws -> Void)? = nil,
+                               afterEntryRead: ((String, String, Bool) throws -> Void)? = nil,
+                               substituteEntry: ((String, String, stat?, Bool) throws -> (String, stat?))? = nil) throws {
+        guard try Self.inspect(root: root, owner: owner, layout: layout, expected: self,
+            observer: InspectionObserver(beforeDirectoryRead: beforeDirectoryRead,
+                                         afterEntryRead: afterEntryRead, substituteEntry: substituteEntry)) == self else {
+            throw PublisherPolicyError.unavailable
+        }
+    }
+    #endif
+
+    private static func inspect(root: String, owner: uid_t, layout: PolicyRuntimeLayout, expected: Self?,
+                                observer: InspectionObserver = InspectionObserver()) throws -> Self {
+        // A caller cannot pair retained nodes with a different layout. Normal
+        // calls share the immutable Dictionary storage; no filesystem result is
+        // cached, and every directory/name/node below is still freshly observed.
+        if let expected, expected.capturedLayout != layout { throw PublisherPolicyError.unavailable }
         let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
         let components = root.utf8.split(separator: 47, omittingEmptySubsequences: false)
             .map { String(decoding: $0, as: UTF8.self) }
@@ -165,13 +240,14 @@ struct PolicyRuntimeTree: Equatable, Sendable {
         func addParent(_ fd: Int32) throws {
             guard fd >= 0 else { throw PublisherPolicyError.unavailable }
             descriptors.append(fd)
-            var s = stat()
-            guard fstat(fd, &s) == 0, s.st_mode & S_IFMT == S_IFDIR,
+            let observed = try PolicyAuthorityFile.safeACLObservation(fd)
+            let s = observed.info
+            guard s.st_mode & S_IFMT == S_IFDIR,
                   s.st_uid == 0 || s.st_uid == owner,
                   s.st_mode & 0o022 == 0 || (s.st_uid == 0 && s.st_mode & S_ISVTX != 0) else {
                 throw PublisherPolicyError.unavailable
             }
-            parents.append(Node(s, acl: try PolicyAuthorityFile.safeACL(fd)))
+            parents.append(Node(s, acl: observed.acl))
         }
         try addParent(Darwin.open("/", flags | O_DIRECTORY))
         for name in components.dropFirst() { try addParent(openat(descriptors.last!, name, flags | O_DIRECTORY)) }
@@ -187,33 +263,84 @@ struct PolicyRuntimeTree: Equatable, Sendable {
         var nodes: [String: Node] = expected == nil ? ["": parents.last!] : [:]
         var observedCount = 1
         var machO: [String] = []
+        // Invocation-local scratch. Active parent batches remain checked out
+        // while children run; only completed/unwinding siblings share storage.
+        var bulkReaders = PolicyRuntimeBulkDirectory.Pool()
         func scan(_ fd: Int32, prefix: String) throws {
-            let duplicate = fcntl(fd, F_DUPFD_CLOEXEC, 10)
-            guard duplicate >= 0 else { throw PublisherPolicyError.unavailable }
-            let stream = expected == nil ? fdopendir(duplicate) : nil
-            if expected == nil, stream == nil { close(duplicate); throw PublisherPolicyError.unavailable }
-            defer { if let stream { closedir(stream) } else { close(duplicate) } }
-            var bulk = PolicyRuntimeBulkDirectory()
+            let expectedChildren = expected?.children[prefix] ?? [:]
+            // Bulk attributes amortize many regular-file observations. Tiny
+            // directories instead enumerate names and query each named node;
+            // they need no bulk record buffer/decoder. This changes only the
+            // observation mechanism: even an expected empty directory is read
+            // to EOF and every fresh name must match the captured inventory.
+            let useBulk = expected != nil && expectedChildren.count > 8
+            #if SHADOW_SYNC_TESTING
+            try observer.beforeDirectoryRead?(prefix)
+            #endif
+            let stream: UnsafeMutablePointer<DIR>?
+            if useBulk { stream = nil }
+            else {
+                let duplicate = fcntl(fd, F_DUPFD_CLOEXEC, 10)
+                guard duplicate >= 0 else { throw PublisherPolicyError.unavailable }
+                guard let opened = fdopendir(duplicate) else {
+                    close(duplicate); throw PublisherPolicyError.unavailable
+                }
+                stream = opened
+            }
+            defer { if let stream { closedir(stream) } }
+            var bulk: PolicyRuntimeBulkDirectory? = useBulk ? bulkReaders.take() : nil
+            defer { if useBulk { bulkReaders.put(&bulk) } }
             var seen: Set<String> = []
+            // Fresh visitation state belongs to this recursive directory frame;
+            // immutable ordinals replace a second hash of each observed name.
+            var visited = [Bool](repeating: false, count: expectedChildren.count)
             while true {
-                let name: String
+                var name: String
                 var batched: stat?
                 if let stream {
                     errno = 0
                     guard let entry = readdir(stream) else {
                         guard errno == 0 else { throw PublisherPolicyError.unavailable }; break
                     }
+                    let length = Int(entry.pointee.d_namlen)
+                    guard (1...255).contains(length) else { throw PublisherPolicyError.unavailable }
                     name = withUnsafePointer(to: entry.pointee.d_name) {
-                        $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) { String(cString: $0) }
+                        $0.withMemoryRebound(to: CChar.self, capacity: length + 1) { String(cString: $0) }
                     }
+                    if name == "." || name == ".." { continue }
+                    // Bulk decode enforces this same exact ASCII leaf grammar.
+                    // Do not let Unicode equivalence or replacement decoding
+                    // turn an unexpected readdir name into an indexed name.
+                    guard name.utf8.count == length, PolicyRuntimeLayout.validPath(name),
+                          !name.utf8.contains(47) else { throw PublisherPolicyError.unavailable }
                 } else {
-                    guard let entry = try bulk.next(fd: duplicate) else { break }
+                    // The caller opened this descriptor for this traversal;
+                    // getattrlistbulk advances it but does not take ownership.
+                    // A duplicate would share the same open-file offset anyway.
+                    guard let entry = try bulk!.next(fd: fd) else { break }
                     name = entry.name; batched = entry.regularFile
                 }
-                if name == "." || name == ".." { continue }
-                let path = prefix.isEmpty ? name : prefix + "/" + name
-                guard seen.insert(name).inserted, observedCount <= 4096, PolicyRuntimeLayout.validPath(path),
-                      let entryLayout = layout.entries[path] else { throw PublisherPolicyError.unavailable }
+                #if SHADOW_SYNC_TESTING
+                if let substitute = observer.substituteEntry {
+                    (name, batched) = try substitute(prefix, name, batched, useBulk)
+                }
+                try observer.afterEntryRead?(prefix, name, useBulk)
+                #endif
+                let path: String, entryLayout: PolicyRuntimeLayout.Entry, retained: Node?
+                if expected != nil {
+                    guard observedCount <= 4096, let entry = expectedChildren[name], !visited[entry.ordinal] else {
+                        throw PublisherPolicyError.unavailable
+                    }
+                    visited[entry.ordinal] = true
+                    path = entry.path; entryLayout = entry.layout; retained = entry.node
+                } else {
+                    guard seen.insert(name).inserted, observedCount <= 4096 else { throw PublisherPolicyError.unavailable }
+                    path = prefix.isEmpty ? name : prefix + "/" + name
+                    guard PolicyRuntimeLayout.validPath(path), let entry = layout.entries[path] else {
+                        throw PublisherPolicyError.unavailable
+                    }
+                    entryLayout = entry; retained = nil
+                }
                 observedCount += 1
                 var before = stat()
                 if let batched { before = batched }
@@ -223,7 +350,6 @@ struct PolicyRuntimeTree: Equatable, Sendable {
                 }
                 let expectedType = entryLayout.kind == .directory ? S_IFDIR : entryLayout.kind == .file ? S_IFREG : S_IFLNK
                 guard before.st_mode & S_IFMT == expectedType else { throw PublisherPolicyError.unavailable }
-                let retained = expected?.nodes[path]
                 if expected != nil {
                     guard let retained, Node(before, acl: retained.acl, target: retained.target) == retained else {
                         throw PublisherPolicyError.unavailable
@@ -310,19 +436,28 @@ struct PolicyRuntimeTree: Equatable, Sendable {
         // Ancestors can change unrelated contents. Compare their identity and
         // access policy, not mtime; the framework root itself is fully stable.
         for index in descriptors.indices {
-            var opened = stat(), named = stat()
-            guard fstat(descriptors[index], &opened) == 0 else { throw PublisherPolicyError.unavailable }
-            let now = Node(opened, acl: try PolicyAuthorityFile.safeACL(descriptors[index])), old = parents[index]
-            guard now.device == old.device, now.inode == old.inode, now.owner == old.owner,
-                  now.group == old.group, now.mode == old.mode, now.acl == old.acl else {
-                throw PublisherPolicyError.unavailable
-            }
+            var named = stat()
+            let opened = try PolicyAuthorityFile.safeACLObservation(descriptors[index])
+            let now = Node(opened.info, acl: opened.acl), old = parents[index]
+            guard now.matchesAncestorIdentityAndAccess(old) else { throw PublisherPolicyError.unavailable }
             if index > 0 {
-                guard fstatat(descriptors[index - 1], components[index], &named, AT_SYMLINK_NOFOLLOW) == 0,
-                      Node(named, acl: now.acl) == now else { throw PublisherPolicyError.unavailable }
+                #if SHADOW_SYNC_TESTING
+                try observer.afterAncestorRead?(components.prefix(index + 1).joined(separator: "/"))
+                #endif
+                guard fstatat(descriptors[index - 1], components[index], &named, AT_SYMLINK_NOFOLLOW) == 0 else {
+                    throw PublisherPolicyError.unavailable
+                }
+                // Read access policy again instead of relying on ctime to
+                // detect ACL changes between the held and named observations.
+                let namedNode = Node(named, acl: try PolicyAuthorityFile.safeACL(descriptors[index]))
+                guard namedNode.matchesAncestorIdentityAndAccess(now) else { throw PublisherPolicyError.unavailable }
+                if index == descriptors.count - 1 {
+                    guard namedNode == now else { throw PublisherPolicyError.unavailable }
+                }
             }
             if index == descriptors.count - 1 { guard now == old else { throw PublisherPolicyError.unavailable } }
         }
-        return Self(nodes: expected?.nodes ?? nodes, machOFiles: machO.sorted())
+        if let expected { return expected }
+        return try Self(nodes: nodes, machOFiles: machO.sorted(), layout: layout)
     }
 }

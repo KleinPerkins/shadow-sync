@@ -914,13 +914,13 @@ enum M1AppKitDriver {
         let missing = presentation(for: M1FailingDiscovery())
         let overBudget = presentation(for: M2BudgetFailingDiscovery())
         let empty = presentation(for: IsolatedRepositoryDiscovery(candidate: nil))
-        return missing?.0 == "Required ~/dev Folder Unavailable"
-            && missing?.1.contains("Restore or check out ~/dev") == true
+        return missing?.0 == "Repository Location Unavailable"
+            && missing?.1.contains("Check the configured location") == true
             && overBudget?.0 == "Repository Search Limit Reached"
             && overBudget?.1
-                == "ShadowSync stopped before offering repositories because ~/dev contains more folders than can be safely inspected in one run. Move unnecessary folders outside ~/dev, then try again. No update was started."
+                == "ShadowSync stopped before offering repositories because the configured locations contain more folders than can be safely inspected in one run. Narrow the configured locations, then try again. No update was started."
             && empty?.0 == "No Eligible Repository Found"
-            && empty?.1.contains("found ~/dev") == true
+            && empty?.1.contains("in the configured locations") == true
             && empty?.1.contains("No update was started") == true
     }
 

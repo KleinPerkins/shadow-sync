@@ -48,8 +48,12 @@ struct DiscoveryMetadataAccess: Sendable {
                   let selected = service.scope.repositories.first(where: {
                       $0.repositoryID == candidate.id && $0.repositoryPath.utf8.elementsEqual(candidate.path.utf8)
                   }) else { throw SelectedRepositoryScopeError.changed }
-            try service.requireSelected(selected)
+            // Lexical policy preparation performs no candidate I/O. Start
+            // with known read prefixes, retaining the existing batch bounds;
+            // requireSelected still admits its exact prefixes and verifies
+            // physical identities before the read body can run.
             try service.prepareAccess(paths)
+            try service.requireSelected(selected)
             try service.validate()
             let result = try body()
             try service.requireSelected(selected)

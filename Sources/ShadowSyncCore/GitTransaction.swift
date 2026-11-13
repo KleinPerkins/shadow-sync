@@ -56,6 +56,7 @@ public struct TransportMapping: Codable, Equatable, Sendable {
 #endif
 
 public struct GitTransactionConfiguration: Sendable {
+    var commandContext: CommandCustodyContext? = nil
     public let trampolineExecutable: String?
     public let operationLeaseDescriptor: Int32?
     #if SHADOW_SYNC_TESTING
@@ -242,9 +243,10 @@ public final class GitTransaction: @unchecked Sendable {
             detail: String? = nil,
             failureReason: FetchFailureReason? = nil
         ) -> RepositoryResult {
-            RepositoryResult(
+            let pending = configuration.commandContext?.hasCleanupPending == true
+            return RepositoryResult(
                 repository: candidate,
-                code: code,
+                code: pending ? .cleanupPending : code,
                 fetched: fetched,
                 mainUpdated: updated,
                 beforeCommit: beforeCommit,
@@ -255,7 +257,7 @@ public final class GitTransaction: @unchecked Sendable {
                 startedAt: startedAt,
                 endedAt: WallClock.timestamp(),
                 durationMilliseconds: MonotonicInstant.now().milliseconds(since: started),
-                explanation: explanation,
+                explanation: pending ? "Cleanup is still pending. Further repository work is blocked." : explanation,
                 technicalDetail: detail.map(Redactor.sanitize),
                 failureReason: failureReason
             )
@@ -281,10 +283,15 @@ public final class GitTransaction: @unchecked Sendable {
             #else
             let additionalConfiguration: String? = nil
             #endif
-            let frozenConfiguration = try handle.freezeConfiguration(
-                account: account,
-                additionalConfiguration: additionalConfiguration
-            )
+            let frozenConfiguration: FrozenGitConfiguration
+            if let context = configuration.commandContext {
+                frozenConfiguration = try handle.freezeConfiguration(account: account,
+                    retainedConfigurationProbe: SystemGitConfigurationProbe(context: context, cancellation: cancellation),
+                    additionalConfiguration: additionalConfiguration)
+            } else {
+                frozenConfiguration = try handle.freezeConfiguration(account: account,
+                    additionalConfiguration: additionalConfiguration)
+            }
             _ = try validateOriginAndTransport(
                 handle: handle,
                 frozenConfiguration: frozenConfiguration,
@@ -927,13 +934,18 @@ public final class GitTransaction: @unchecked Sendable {
             trampolineExecutable: configuration.trampolineExecutable,
             executionSnapshot: snapshot
         )
-        let result = try runner.run(request, cancellation: cancellation)
+        let result: ProcessResult
+        if let context = configuration.commandContext {
+            result = try runner.runRepository(arguments: admittedArguments, context: context, handle: handle,
+                frozen: frozenConfiguration, snapshot: snapshot, timeout: timeout, cancellation: cancellation)
+        } else { result = try runner.run(request, cancellation: cancellation) }
         let mayChangePackedRefs = admittedArguments.contains("fetch")
             || admittedArguments.contains("merge")
         try handle.validateExecutionSnapshot(
             snapshot,
             account: account,
-            requirePackedIdentity: !mayChangePackedRefs
+            requirePackedIdentity: !mayChangePackedRefs,
+            frozenConfiguration: frozenConfiguration
         )
         try RepositoryHandle.validateFrozenConfiguration(
             descriptor: frozenConfiguration.descriptor,

@@ -25,15 +25,15 @@ public struct RepositoryDiscoveryFailurePresentation: Equatable, Sendable {
             )
         case .requiredRootUnavailable, .locationUnavailable, .unsupportedLayout:
             return Self(
-                messageText: "Required ~/dev Folder Unavailable",
+                messageText: "Repository Location Unavailable",
                 informativeText:
-                    "ShadowSync could not find or safely open the required ~/dev folder. Restore or check out ~/dev in your home folder, make sure you can open it, then try again."
+                    "ShadowSync could not safely open the configured repository location. Check the configured location and its availability, then try again."
             )
         case .invalidRepositoryMetadata:
             return Self(
                 messageText: "Repository Could Not Be Verified",
                 informativeText:
-                    "ShadowSync found ~/dev but could not verify its supported M1 Git metadata and origin. Check the repository, then try again."
+                    "ShadowSync could not verify the selected repository's Git metadata and origin. Check the repository, then try again."
             )
         case .policyUnavailable:
             return Self(
@@ -45,13 +45,13 @@ public struct RepositoryDiscoveryFailurePresentation: Equatable, Sendable {
             return Self(
                 messageText: "Repository Search Limit Reached",
                 informativeText:
-                    "ShadowSync stopped before offering repositories because ~/dev contains more folders than can be safely inspected in one run. Move unnecessary folders outside ~/dev, then try again. No update was started."
+                    "ShadowSync stopped before offering repositories because the configured locations contain more folders than can be safely inspected in one run. Narrow the configured locations, then try again. No update was started."
             )
         case nil:
             return Self(
                 messageText: "Repository Check Failed",
                 informativeText:
-                    "ShadowSync could not inspect the M1 ~/dev repository. Review its local layout and Git metadata, then try again."
+                    "ShadowSync could not inspect the repository. Review its local layout and Git metadata, then try again."
             )
         }
     }
@@ -64,7 +64,7 @@ public struct RepositoryDiscoveryEmptyPresentation: Equatable, Sendable {
     public static let noEligibleCandidate = Self(
         messageText: "No Eligible Repository Found",
         informativeText:
-            "ShadowSync found ~/dev, but no repository could be safely offered for selection. No update was started."
+            "No repository in the configured locations could be safely offered for selection. No update was started."
     )
 
     public static let m1NoCandidate = noEligibleCandidate

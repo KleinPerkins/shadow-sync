@@ -765,6 +765,7 @@ public enum ResultCode: String, Codable, CaseIterable, Sendable {
     case skippedOriginChanged = "SKIPPED_ORIGIN_CHANGED"
     case skippedIgnoredFileCollision = "SKIPPED_IGNORED_FILE_COLLISION"
     case updatedWithWarning = "UPDATED_WITH_WARNING"
+    case cleanupPending = "CLEANUP_PENDING"
     case failedInspection = "FAILED_INSPECTION"
     case failedFetchAuthentication = "FAILED_FETCH_AUTHENTICATION"
     case failedFetchNetwork = "FAILED_FETCH_NETWORK"
@@ -789,7 +790,7 @@ public enum ResultCode: String, Codable, CaseIterable, Sendable {
              .updatedWithWarning:
             return .warning
         case .failedInspection, .failedFetchAuthentication, .failedFetchNetwork,
-             .failedFetch, .failedUpdate, .needsAttention:
+             .failedFetch, .failedUpdate, .needsAttention, .cleanupPending:
             return .failure
         case .cancelledPending, .cancelledDuringFetch, .cancelledNoUpdate:
             return .cancelled
@@ -957,7 +958,10 @@ public struct RunReport: Codable, Equatable, Sendable {
         results.filter { $0.resultClass == .warning || $0.resultClass == .failure }.count
     }
 
+    public var hasCleanupPending: Bool { results.contains { $0.code == .cleanupPending } }
+
     public var summary: String {
+        if hasCleanupPending { return "Cleanup is still pending. Further repository work is blocked." }
         if let summaryOverride {
             return summaryOverride
         }
@@ -1008,6 +1012,8 @@ public struct MonotonicDeadline: Sendable {
         let sum = now.addingReportingOverflow(duration)
         deadlineNanoseconds = sum.overflow ? .max : sum.partialValue
     }
+
+    var absoluteUptimeNanoseconds: UInt64 { deadlineNanoseconds }
 
     public var hasExpired: Bool {
         DispatchTime.now().uptimeNanoseconds >= deadlineNanoseconds

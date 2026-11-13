@@ -265,6 +265,38 @@ public final class OwnedDirectChild: @unchecked Sendable {
         }
     }
 
+    #if SHADOW_SYNC_TESTING
+    /// Observation only: never prepares a signal token or releases the anchor.
+    /// The output sample is bracketed by live original-child/image/ancestry checks.
+    func testingRetentionLiveWindow<T>(before deadline: UInt64,
+        sample: () throws -> T) throws -> (TestingRetentionLiveGraph, T) {
+        func liveLocked() -> Bool {
+            observeTerminalLocked()
+            guard reapPolicy == .afterGroupDrain && !neverResumed && state == .running,
+                  heldTerminalStatus == nil, !graphFault, DispatchTime.now().uptimeNanoseconds < deadline else { return false }
+            // Unlike a custody-running snapshot, a successful empty WNOWAIT
+            // result is positive evidence. EINTR/unknown is not a live witness.
+            var terminal = siginfo_t()
+            return waitid(P_PID, id_t(identity.processID), &terminal, WEXITED | WNOHANG | WNOWAIT) == 0
+                && terminal.si_pid == 0
+        }
+        mutex.lock(); let admitted = liveLocked(); mutex.unlock()
+        guard admitted, let graph = qualifiedGraph,
+              case .validated(let image) = graph.observe(original: identity) else { throw CustodyResourceError.invalidResource }
+        let observation = try TestingRetentionLiveGraph.capture(original: identity, image: image, before: deadline)
+        let value = try sample()
+        try observation.revalidate(before: deadline)
+        guard case .validated(let after) = graph.observe(original: identity), after == image else {
+            throw CustodyResourceError.invalidResource
+        }
+        mutex.lock(); defer { mutex.unlock() }
+        guard liveLocked(), image.sameOriginalChild(as: identity), image.isCurrent() else {
+            throw CustodyResourceError.invalidResource
+        }
+        return (observation, value)
+    }
+    #endif
+
     private func send(_ signal: Int32, before deadline: MonotonicDeadline?) -> Bool {
         guard signal == SIGCONT || signal == SIGTERM || signal == SIGKILL else { return false }
         mutex.lock()
@@ -447,6 +479,24 @@ public final class OwnedDirectChild: @unchecked Sendable {
     private var neverResumedSnapshot: Bool {
         mutex.lock(); defer { mutex.unlock() }; return neverResumed
     }
+    /// Scheduling coordination only. Observe the same retained original
+    /// child's terminal availability without consuming it or changing custody.
+    /// No PID argument, held status, signal, proof, or ownership repair exists.
+    @_silgen_name("shadowSyncTesting_originalTerminationAvailable")
+    @inline(never)
+    func testingOriginalTerminationAvailable() -> Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        guard testingOriginalSuspendedSpawn, !neverResumed, state == .running,
+              reapPolicy == .immediate else { return false }
+        var info = siginfo_t()
+        let result = waitid(P_PID, id_t(identity.processID), &info, WEXITED | WNOHANG | WNOWAIT)
+        // EINTR, ECHILD and every other error yield no coordination signal.
+        // No result (si_pid zero) also cannot release the fixture's barrier.
+        guard result == 0, info.si_pid != 0, info.si_pid == identity.processID else { return false }
+        return (info.si_code == CLD_EXITED && (0...255).contains(info.si_status))
+            || ((info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
+                && info.si_status > 0 && info.si_status < 0x7f)
+    }
     public func testingObserveNextPoll(_ attempt: OwnedDirectChildTestingPollAttempt) {
         testingObservationLock.lock()
         testingPollAttempt = attempt
@@ -577,5 +627,89 @@ public final class OwnedDirectChildTestingBarrier: @unchecked Sendable {
     }
     public func waitUntilEntered() -> Bool { entered.wait(timeout: .now() + 3) == .success }
     public func release() { proceed.signal() }
+}
+#endif
+
+#if SHADOW_SYNC_TESTING
+/// Bounded process observation, never a PID-adoption or signal capability.
+struct TestingRetentionLiveGraph: Codable {
+    struct Member: Codable, Equatable {
+        let identity: ProcessIdentity
+        let parent: pid_t
+        static func capture(_ pid: pid_t, generation: String) throws -> Self {
+            let identity = try ProcessIdentity.capture(processID: pid, generation: generation)
+            var b = proc_bsdinfo()
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &b, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size,
+                  b.pbi_pid == UInt32(pid), b.pbi_status != UInt32(SZOMB), b.pbi_uid == identity.userID,
+                  UInt64(b.pbi_start_tvsec) == identity.startSeconds, UInt64(b.pbi_start_tvusec) == identity.startMicroseconds,
+                  identity.isCurrent(requireGroupLeader: false) else { throw CustodyResourceError.invalidResource }
+            return Self(identity: identity, parent: pid_t(b.pbi_ppid))
+        }
+    }
+    let original: ProcessIdentity
+    let image: ProcessIdentity
+    let completeGroupCount: Int
+    let descendants: [Member]
+    let ancestry: [Member]
+    // Full membership is retained only in memory for the second enumeration;
+    // the bounded witness publishes count and the positively proved subset.
+    private let complete: [Member]
+    enum CodingKeys: String, CodingKey { case original, image, completeGroupCount, descendants, ancestry }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        original = try c.decode(ProcessIdentity.self, forKey: .original)
+        image = try c.decode(ProcessIdentity.self, forKey: .image)
+        completeGroupCount = try c.decode(Int.self, forKey: .completeGroupCount)
+        descendants = try c.decode([Member].self, forKey: .descendants)
+        ancestry = try c.decode([Member].self, forKey: .ancestry); complete = []
+    }
+    private init(original: ProcessIdentity, image: ProcessIdentity, complete: [Member], descendants: [Member], ancestry: [Member]) {
+        self.original = original; self.image = image; self.complete = complete
+        completeGroupCount = complete.count; self.descendants = descendants; self.ancestry = ancestry
+    }
+    private static func members(original: ProcessIdentity, before deadline: UInt64) throws -> [Member] {
+        guard DispatchTime.now().uptimeNanoseconds < deadline else { throw CustodyResourceError.limit }
+        // Reuse the production complete-enumeration ceiling; a full buffer refuses.
+        var pids = [pid_t](repeating: 0, count: OwnedProcessGroupSnapshot.maximumPIDs)
+        errno = 0
+        let n = pids.withUnsafeMutableBytes {
+            proc_listpids(UInt32(PROC_PGRP_ONLY), UInt32(original.processID), $0.baseAddress, Int32($0.count))
+        }
+        guard OwnedProcessGroupSnapshot.validate(anchor: original.processID, storage: pids, bytesWritten: Int(n), error: errno) != .unavailable else {
+            throw CustodyResourceError.invalidResource
+        }
+        return try pids.prefix(Int(n) / MemoryLayout<pid_t>.stride).sorted().map {
+            guard DispatchTime.now().uptimeNanoseconds < deadline else { throw CustodyResourceError.limit }
+            let m = try Member.capture($0, generation: original.generation)
+            guard m.identity.userID == original.userID, m.identity.processGroupID == original.processID else {
+                throw CustodyResourceError.invalidResource
+            }
+            return m
+        }
+    }
+    static func capture(original: ProcessIdentity, image: ProcessIdentity, before deadline: UInt64) throws -> Self {
+        let all = try members(original: original, before: deadline)
+        guard image.sameOriginalChild(as: original), all.count > 1,
+              let first = all.first(where: { $0.identity.processID != original.processID }) else { throw CustodyResourceError.invalidResource }
+        var chain = [first], seen: Set<pid_t> = [first.identity.processID]
+        while chain.last!.parent != original.processID {
+            guard chain.count < 16, DispatchTime.now().uptimeNanoseconds < deadline,
+                  let parent = all.first(where: { $0.identity.processID == chain.last!.parent }),
+                  seen.insert(parent.identity.processID).inserted else { throw CustodyResourceError.invalidResource }
+            chain.append(parent)
+        }
+        let result = Self(original: original, image: image, complete: all, descendants: [first], ancestry: chain)
+        try result.revalidate(before: deadline); return result
+    }
+    func revalidate(before deadline: UInt64) throws {
+        guard !complete.isEmpty, try Self.members(original: original, before: deadline) == complete else {
+            throw CustodyResourceError.invalidResource
+        }
+        for member in ancestry {
+            guard try Member.capture(member.identity.processID, generation: original.generation) == member else {
+                throw CustodyResourceError.invalidResource
+            }
+        }
+    }
 }
 #endif

@@ -431,6 +431,9 @@ final class ShadowSyncAppDelegate:
     }
 
     private let executablePath: String
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    private var signedFixtureLifecycle = false
+    #endif
     #if SHADOW_SYNC_TESTING
     private let discovery: any RepositoryDiscovering
     #endif
@@ -640,6 +643,11 @@ final class ShadowSyncAppDelegate:
     }
     #endif
 
+    // Installed only by the actual pre-AppKit startup owner. Testing initializers
+    // retain their existing behavior; no fixture can mint staged admission.
+    var installationInitialized: (() throws -> Void)?
+    var installationApplicationDrained: (() throws -> Void)?
+
     init(executablePath: String) {
         self.executablePath = executablePath
         let resolveState = { try StateLocation.production() }
@@ -687,13 +695,35 @@ final class ShadowSyncAppDelegate:
     }
     #endif
 
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    /// This entry can only be obtained after the actual signed staged host
+    /// consumed commit. It runs real AppKit chrome and the established drain
+    /// gate, with isolated dependencies and no OS-global shortcut/login writes.
+    init(executablePath: String, signedFixture entry: InstalledHostStartup.SignedFixtureEntry) {
+        self.executablePath = executablePath
+        discovery = IsolatedRepositoryDiscovery(candidate: nil)
+        testingRoot = URL(fileURLWithPath: entry.paths.home).deletingLastPathComponent().path
+        testingMapping = nil
+        testingConfirmation = nil
+        testingQuitHandler = nil
+        testingHostChrome = false
+        stateLocationResolver = { entry.paths.state }
+        logLocation = { entry.paths.state }
+        logOpener = { _ in false }
+        signedFixtureLifecycle = true
+    }
+    #endif
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if SHADOW_SYNC_TESTING
         if testingHostChrome {
             return
         }
         #endif
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if !signedFixtureLifecycle { NSApp.disableRelaunchOnLogin() }
+        #else
         NSApp.disableRelaunchOnLogin()
+        #endif
         installMainMenu()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = ShadowSyncStatusItemIcon.make()
@@ -702,6 +732,29 @@ final class ShadowSyncAppDelegate:
         item.menu = menu
         statusItem = item
 
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if signedFixtureLifecycle {
+            // This dependency supplies no global-shortcut qualification.
+            shortcutAvailable = true; shortcutCollisionPresentation = .none
+        } else {
+            configureGlobalShortcut(item)
+        }
+        #else
+        configureGlobalShortcut(item)
+        #endif
+        do {
+            try installationInitialized?()
+            installationInitialized = nil
+        } catch {
+            // No repository/recovery/policy work follows failed startup.
+            requestLifecycleExit()
+            return
+        }
+        loadRecoveryPresentation()
+        scheduleStatusItemVisibilityCheck(for: item)
+    }
+
+    private func configureGlobalShortcut(_ item: NSStatusItem) {
         let shortcut = GlobalShortcut { [weak self] in
             self?.requestForegroundCurrentSurface(action: .hotkey)
         }
@@ -716,8 +769,6 @@ final class ShadowSyncAppDelegate:
             )
         }
         self.shortcut = shortcut
-        loadRecoveryPresentation()
-        scheduleStatusItemVisibilityCheck(for: item)
     }
 
     private func installMainMenu() {
@@ -825,6 +876,12 @@ final class ShadowSyncAppDelegate:
     private func configureOpenAtLoginItem(
         _ item: NSMenuItem
     ) {
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if signedFixtureLifecycle {
+            item.state = .off; item.isEnabled = false
+            return
+        }
+        #endif
         switch SMAppService.mainApp.status {
         case .enabled:
             item.state = .on
@@ -844,6 +901,9 @@ final class ShadowSyncAppDelegate:
     @objc private func toggleOpenAtLogin(
         _ sender: NSMenuItem
     ) {
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        guard !signedFixtureLifecycle else { return }
+        #endif
         do {
             switch SMAppService.mainApp.status {
             case .enabled:
@@ -4088,12 +4148,21 @@ final class ShadowSyncAppDelegate:
         }
     }
 
+    private func recoveryAccount() throws -> EffectiveAccount {
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if signedFixtureLifecycle, let testingRoot {
+            return try EffectiveAccount.isolated(homeDirectory: testingRoot + "/home")
+        }
+        #endif
+        return try EffectiveAccount.current()
+    }
+
     private func body3RecoveryState()
         -> Body3RunRecoveryState {
         do {
             return Body3RunRecoveryInspector.inspect(
                 at: try logLocation(),
-                account: try EffectiveAccount.current()
+                account: try recoveryAccount()
             )
         } catch {
             return .needsAttention
@@ -5424,6 +5493,11 @@ final class ShadowSyncAppDelegate:
             lifecycleRouter.deferQuit()
             return route
         }
+        do { try installationApplicationDrained?() }
+        catch {
+            lifecycleRouter.deferQuit()
+            return .quitPaused(["Installation host drainage remains pending"])
+        }
         guard lifecycleRouter.consumeTermination(
             generation: generation
         ) else {
@@ -5828,6 +5902,16 @@ final class ShadowSyncAppDelegate:
     private func requestApplicationActivation(
         for request: ForegroundRequest
     ) {
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        // The signed fixture already has its original directly owned host.
+        // LaunchServices cannot confer that ownership on a brokered launch.
+        // Refuse activation without inventing success or skipping AppKit's
+        // actual initialization, contention presentation or drain callbacks.
+        guard !signedFixtureLifecycle else {
+            finishForeground(request, outcome: .denied)
+            return
+        }
+        #endif
         #if SHADOW_SYNC_TESTING
         testingActivationCallCount += 1
         if let activationAccepted = testingActivationAcceptedOverride {
@@ -9798,7 +9882,13 @@ final class RunWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func wirePayloadIsValid(_ message: WorkerWireMessage) -> Bool {
+        guard (message.kind == .repositoryCommand) == (message.repositoryCommand != nil) else { return false }
         switch message.kind {
+        case .repositoryCommand:
+            return message.repositoryCommand.map { RunIdentity.isValid($0.requestID) } == true
+                && message.event == nil && message.report == nil && message.error == nil
+                && message.workerIdentity == nil && message.childIdentity == nil
+                && message.workerPID == nil && message.runID == nil
         case .ownership:
             return message.workerIdentity != nil
                 && message.runID == expectedRunID

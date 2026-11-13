@@ -144,14 +144,20 @@ enum SystemGitConfigurationCommand {
 /// or reacquire a shared lock underneath an existing mutation lease.
 final class SystemGitConfigurationProbe {
     private weak var context: CommandCustodyContext?
+    private let phaseFailure: CommandCustodyPhaseFailure
     private let cancellation: CancellationToken
     private let failureLock = NSLock()
     private var failure: SystemGitConfigurationError?
     #if SHADOW_SYNC_TESTING
+    var testingFrozenAccess: (@Sendable () -> Void)? = nil
+    var testingFrozenRecoveryBoundary: ((String) throws -> Void)?
+    var testingFrozenRecoveryAccess: ((String) -> Void)?
+    var testingFreezeBudget: CustodyBudget?
+    var testingBeforeConfigurationAdmission: ((CustodyBudget) throws -> Void)?
     private let testingResolve: (() throws -> String?)?
     #endif
     init(context: CommandCustodyContext, cancellation: CancellationToken) {
-        self.context = context; self.cancellation = cancellation
+        self.context = context; self.phaseFailure = context.phaseFailure; self.cancellation = cancellation
         #if SHADOW_SYNC_TESTING
         testingResolve = nil
         #endif
@@ -159,14 +165,34 @@ final class SystemGitConfigurationProbe {
     #if SHADOW_SYNC_TESTING
     init(testingContext context: CommandCustodyContext, cancellation: CancellationToken,
          resolve: @escaping () throws -> String?) {
-        self.context = context; self.cancellation = cancellation; testingResolve = resolve
+        self.context = context; self.phaseFailure = context.phaseFailure; self.cancellation = cancellation; testingResolve = resolve
     }
     #endif
+    func frozenConfigurationAdmission(expectedPolicySHA256: String?, scratch: Int32, budget: CustodyBudget,
+                                      account: EffectiveAccount) throws -> (admit: ([String]) throws -> Void, revalidate: () throws -> Void) {
+        do {
+            let context = try repositoryContext(account: account)
+            let admission = try context.frozenConfigurationAdmission(expectedPolicySHA256: expectedPolicySHA256,
+                scratch: scratch, budget: budget, cancellation: cancellation)
+            return (admit: { [self] paths in
+                do { try validate(account: account); try admission.admit(paths); try validate(account: account) }
+                catch { throw recordFailure(error) }
+            }, revalidate: { [self] in
+                do { try validate(account: account); try admission.revalidate(); try validate(account: account) }
+                catch { throw recordFailure(error) }
+            })
+        } catch { throw recordFailure(error) }
+    }
+    func repositoryContext(account: EffectiveAccount) throws -> CommandCustodyContext {
+        try validate(account: account)
+        guard let context else { throw SystemGitConfigurationError.unavailable }
+        return context
+    }
     func validate(account: EffectiveAccount) throws {
         try validate()
         guard let context else { throw SystemGitConfigurationError.unavailable }
         do { try context.validatePhaseAdmission(account: account) }
-        catch { throw SystemGitConfigurationError.unavailable }
+        catch { try throwIfFailed(); throw SystemGitConfigurationError.unavailable }
     }
     func validate() throws {
         try throwIfFailed()
@@ -174,7 +200,16 @@ final class SystemGitConfigurationProbe {
             throw SystemGitConfigurationError.unavailable
         }
         do { try context.validatePhaseAdmission() }
-        catch { throw SystemGitConfigurationError.unavailable }
+        catch { try throwIfFailed(); throw SystemGitConfigurationError.unavailable }
+    }
+    /// Only validates already collected evidence. This neither resolves a new
+    /// configuration source nor reopens command admission after cancellation.
+    func validateRetainedEvidence(account: EffectiveAccount) throws {
+        try throwIfFailed()
+        guard let context else { throw SystemGitConfigurationError.unavailable }
+        do { try context.validatePhaseAdmission(account: account) }
+        catch { try throwIfFailed(); throw SystemGitConfigurationError.unavailable }
+        try throwIfFailed()
     }
     func activePath(account: EffectiveAccount) throws -> String? {
         try validate(account: account)
@@ -183,10 +218,10 @@ final class SystemGitConfigurationProbe {
         return path
     }
 
-    func capturePreflight(account: EffectiveAccount) throws -> GitConfigurationPreflight {
+    func capturePreflight(account: EffectiveAccount, budget: CustodyBudget? = nil) throws -> GitConfigurationPreflight {
         do {
             try validate(account: account)
-            let value = try GitConfigurationPreflight(systemPath: activePath(account: account), account: account)
+            let value = try GitConfigurationPreflight(systemPath: resolvePath(budget: budget), account: account)
             try validate(account: account)
             return value
         } catch { throw recordFailure(error) }
@@ -212,20 +247,23 @@ final class SystemGitConfigurationProbe {
         } catch { throw recordFailure(error) }
     }
     private func recordFailure(_ error: Error) -> SystemGitConfigurationError {
-        let reason = error as? SystemGitConfigurationError ?? .unavailable
+        let reason: SystemGitConfigurationError = phaseFailure.cleanupPending
+            ? .cleanupPending : (error as? SystemGitConfigurationError ?? .unavailable)
         failureLock.lock()
         if failure == nil || reason == .cleanupPending { failure = reason }
         let retained = failure!
         failureLock.unlock()
-        context?.close()
+        if retained == .cleanupPending { context?.recordCleanupPending() }
+        else { context?.close() }
         cancellation.closeFutureChildAdmissions()
         return retained
     }
     private func throwIfFailed() throws {
+        if phaseFailure.cleanupPending { throw SystemGitConfigurationError.cleanupPending }
         failureLock.lock(); let value = failure; failureLock.unlock()
         if let value { throw value }
     }
-    private func resolvePath() throws -> String? {
+    private func resolvePath(budget enclosing: CustodyBudget? = nil) throws -> String? {
         guard let context, !cancellation.isCancelled, !cancellation.areFutureChildAdmissionsClosed else {
             throw SystemGitConfigurationError.unavailable
         }
@@ -245,7 +283,8 @@ final class SystemGitConfigurationProbe {
             }
         }
         #endif
-        let budget = try CustodyBudget.make(kind: .systemGitConfig, workSeconds: 5)
+        let budget = try enclosing.map { try $0.repositoryPreflight(.systemConfiguration) }
+            ?? CustodyBudget.make(kind: .systemGitConfig, workSeconds: 5)
         let command = try context.prepareSystemConfiguration(budget: budget, cancellation: cancellation)
         let handle = try RetainedCleanupRegistry.shared.start(command)
         let observer = cancellation.observeCustodyCancellation(handle)

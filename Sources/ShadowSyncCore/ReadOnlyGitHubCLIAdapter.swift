@@ -4,6 +4,7 @@ import Foundation
 public enum PullRequestUnavailableReason:
     String, Codable, Equatable, Sendable {
     case adapterAbsent
+    case unqualified
     case executableDrift
     case invalidInput
     case authentication
@@ -19,6 +20,8 @@ public enum PullRequestUnavailableReason:
         switch self {
         case .adapterAbsent:
             return "Pull-request status is unavailable because the approved GitHub CLI is not installed."
+        case .unqualified:
+            return "Pull-request status is unavailable in this build."
         case .executableDrift:
             return "Pull-request status is unavailable because the GitHub CLI identity could not be verified."
         case .invalidInput:
@@ -481,18 +484,10 @@ public final class ReadOnlyGitHubCLIAdapter:
             )
         }
         #endif
-        for path in Self.approvedPaths {
-            var info = stat()
-            if lstat(path, &info) == 0 {
-                return try admitExecutable(
-                    path,
-                    requireApprovedPath: true
-                )
-            } else if errno != ENOENT {
-                throw AdapterAdmissionError.unavailable(.executableDrift)
-            }
-        }
-        throw AdapterAdmissionError.unavailable(.adapterAbsent)
+        // No production GitHub graph is qualified. Refuse before inspecting an
+        // installed executable; a pathname or signature observation cannot enroll
+        // this optional adapter. Explicit isolated fixtures above remain separate.
+        throw AdapterAdmissionError.unavailable(.unqualified)
     }
 
     private func admitExecutable(

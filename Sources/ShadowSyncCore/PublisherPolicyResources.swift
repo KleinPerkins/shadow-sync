@@ -109,6 +109,90 @@ enum PublisherCodeVerifier {
         }
     }
 
+    /// A point-in-time authenticated socket-peer observation. This value carries
+    /// neither installation ownership nor command authority; every consequential
+    /// session transition must authenticate the retained socket again and compare
+    /// the observation with its original session binding.
+    struct AuditPeerObservation: Equatable, Sendable {
+        let uid: uid_t
+        let gid: gid_t
+        let pid: pid_t
+        let pidVersion: Int32
+        let auditToken: Data
+
+        fileprivate init(uid: uid_t, gid: gid_t, pid: pid_t, pidVersion: Int32, auditToken: Data) {
+            self.uid = uid; self.gid = gid; self.pid = pid
+            self.pidVersion = pidVersion; self.auditToken = auditToken
+        }
+    }
+
+    /// The caller must obtain `expected` from its authenticated exact candidate
+    /// installation binding. A peer message, serialized observation or same-team
+    /// identity cannot supply that authority. Socket peers never use the owned
+    /// suspended-child PID lookup below.
+    static func livePeer(socket: OwnedFileDescriptor, expected: Identity,
+                         expectedUID: uid_t) throws -> AuditPeerObservation {
+        do {
+            // No temporary descriptor can outlive the real session's close.
+            // The short native queries exclude close/reuse on the original;
+            // Security verification runs outside that descriptor mutex.
+            let before = try socket.withOriginalSocket { try peerObservation($0, expectedUID: expectedUID) }
+            let required = try requirement(identifier: expected.identifier,
+                team: expected.team, codeDirectory: expected.codeDirectory)
+            let attributes = [kSecGuestAttributeAudit as String: before.auditToken as CFData] as CFDictionary
+            var peer: SecCode?
+            guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &peer) == errSecSuccess,
+                  let peer, SecCodeCheckValidity(peer, noNetwork, required) == errSecSuccess else {
+                throw PublisherPolicyError.unavailable
+            }
+            guard try socket.withOriginalSocket({ try peerObservation($0, expectedUID: expectedUID) }) == before else {
+                throw PublisherPolicyError.unavailable
+            }
+            return before
+        } catch { throw PublisherPolicyError.unavailable }
+    }
+
+    private static func peerObservation(_ descriptor: Int32, expectedUID: uid_t) throws -> AuditPeerObservation {
+        var kind: Int32 = 0
+        var kindSize = socklen_t(MemoryLayout<Int32>.size)
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFSOCK,
+              getsockopt(descriptor, SOL_SOCKET, SO_TYPE, &kind, &kindSize) == 0,
+              Int(kindSize) == MemoryLayout<Int32>.size, kind == SOCK_STREAM else {
+            throw PublisherPolicyError.unavailable
+        }
+        // getpeername refuses an unconnected/listening socket. Check both
+        // endpoints' families; an Internet stream is never a readiness channel.
+        func unixAddress(peer: Bool) throws {
+            var address = sockaddr_un()
+            var size = socklen_t(MemoryLayout<sockaddr_un>.size)
+            let result = withUnsafeMutablePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    peer ? getpeername(descriptor, $0, &size) : getsockname(descriptor, $0, &size)
+                }
+            }
+            guard result == 0, Int(size) >= MemoryLayout<UInt8>.size + MemoryLayout<sa_family_t>.size, Int(size) <= MemoryLayout<sockaddr_un>.size,
+                  address.sun_family == sa_family_t(AF_UNIX) else { throw PublisherPolicyError.unavailable }
+        }
+        try unixAddress(peer: false)
+        try unixAddress(peer: true)
+        var token = audit_token_t()
+        var tokenSize = socklen_t(MemoryLayout<audit_token_t>.size)
+        var uid: uid_t = 0, gid: gid_t = 0, pid: pid_t = 0
+        var pidSize = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &tokenSize) == 0,
+              Int(tokenSize) == MemoryLayout<audit_token_t>.size,
+              getpeereid(descriptor, &uid, &gid) == 0,
+              getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &pid, &pidSize) == 0,
+              Int(pidSize) == MemoryLayout<pid_t>.size,
+              uid == expectedUID, uid == audit_token_to_euid(token), gid == audit_token_to_egid(token),
+              pid > 0, pid == audit_token_to_pid(token) else { throw PublisherPolicyError.unavailable }
+        // Decode using SDK accessors, never guessed audit_token_t word offsets.
+        // Preserve all token bytes, including the process-generation binding.
+        return AuditPeerObservation(uid: uid, gid: gid, pid: pid,
+            pidVersion: audit_token_to_pidversion(token), auditToken: withUnsafeBytes(of: token) { Data($0) })
+    }
+
     static func suspendedChild(_ pid: pid_t, expected: Identity) throws {
         // Only the runner supplies its own live, unreaped, suspended child PID.
         // No PID from disk, a socket, or a user preference reaches this method.
@@ -164,30 +248,35 @@ struct PublisherExecutableSnapshot: Equatable {
         func append(_ fd: Int32) throws {
             guard fd >= 0 else { throw PublisherPolicyError.unavailable }
             descriptors.append(fd)
-            var info = stat()
-            guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+            let observed = try PolicyAuthorityFile.safeACLObservation(fd)
+            let info = observed.info
+            guard info.st_mode & S_IFMT == S_IFDIR,
                   info.st_uid == 0 || info.st_uid == owner,
                   info.st_mode & 0o022 == 0 || (info.st_uid == 0 && info.st_mode & S_ISVTX != 0) else {
                 throw PublisherPolicyError.unavailable
             }
-            parents.append(Parent(info, try PolicyAuthorityFile.safeACL(fd)))
+            parents.append(Parent(info, observed.acl))
         }
         try append(Darwin.open("/", flags | O_DIRECTORY))
         for name in names.dropFirst().dropLast() { try append(openat(descriptors.last!, name, flags | O_DIRECTORY)) }
         file = openat(descriptors.last!, names.last!, flags)
-        var before = stat(), after = stat(), named = stat()
-        guard file >= 0, fstat(file, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
+        guard file >= 0 else { throw PublisherPolicyError.unavailable }
+        let observed = try PolicyAuthorityFile.safeACLObservation(file)
+        let before = observed.info
+        var named = stat()
+        guard before.st_mode & S_IFMT == S_IFREG,
               before.st_uid == owner, before.st_mode & 0o7777 == 0o755,
               before.st_nlink == 1 || (systemGitLauncher && path == "/usr/bin/git" && owner == 0 && before.st_nlink > 0),
               (1...536_870_912).contains(before.st_size) else { throw PublisherPolicyError.unavailable }
-        let node = PolicyRuntimeTree.Node(before, acl: try PolicyAuthorityFile.safeACL(file))
-        guard fstat(file, &after) == 0, fstatat(descriptors.last!, names.last!, &named, AT_SYMLINK_NOFOLLOW) == 0,
-              node == PolicyRuntimeTree.Node(after, acl: try PolicyAuthorityFile.safeACL(file)),
+        let node = PolicyRuntimeTree.Node(before, acl: observed.acl)
+        let after = try PolicyAuthorityFile.safeACLObservation(file)
+        guard fstatat(descriptors.last!, names.last!, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              node == PolicyRuntimeTree.Node(after.info, acl: after.acl),
               node == PolicyRuntimeTree.Node(named, acl: node.acl) else { throw PublisherPolicyError.unavailable }
         for index in descriptors.indices {
+            let observed = try PolicyAuthorityFile.safeACLObservation(descriptors[index])
             var info = stat()
-            guard fstat(descriptors[index], &info) == 0,
-                  Parent(info, try PolicyAuthorityFile.safeACL(descriptors[index])) == parents[index] else {
+            guard Parent(observed.info, observed.acl) == parents[index] else {
                 throw PublisherPolicyError.unavailable
             }
             if index > 0 {
@@ -199,8 +288,8 @@ struct PublisherExecutableSnapshot: Equatable {
     }
 }
 
-/// Constructible in production only from the currently running canonical,
-/// Developer ID application. All inputs are fixed application resources;
+/// Constructible from the currently running canonical Developer ID application
+/// or a nonconstructible capsule owned by its authenticated distribution coordinator. All inputs are fixed application resources;
 /// source checkouts, PATH, environment overrides and policy candidate paths
 /// cannot select the interpreter or establish publisher authority.
 final class PublisherPolicyResources: @unchecked Sendable {
@@ -215,6 +304,7 @@ final class PublisherPolicyResources: @unchecked Sendable {
     private let appExecutable: String
     private let appExecutableIdentity: PublisherExecutableSnapshot
     private let interpreterIdentity: PublisherCodeVerifier.Identity?
+    private var coordinatorSource: LifecyclePublisher.PolicyResourcesSource?
     #if SHADOW_SYNC_TESTING
     private var fixtureInterpreter: DiscoveryFixtureCode?
     #endif
@@ -288,15 +378,83 @@ final class PublisherPolicyResources: @unchecked Sendable {
         } catch { throw PublisherPolicyError.unavailable }
     }
 
+    /// Only the authenticated running distribution can supply this capsule.
+    /// The installed-app production factory remains a separate strict path.
+    static func coordinator(source: LifecyclePublisher.PolicyResourcesSource) throws -> PublisherPolicyResources {
+        #if SHADOW_SYNC_TESTING
+        throw PublisherPolicyError.unavailable
+        #else
+        do {
+            try source.revalidate()
+            let location = try source.resourceLocation()
+            let app = location.app
+            let owner = location.owner
+            func resource(_ relative: String, limit: Int = 1_048_576) throws -> PolicyAuthorityFile {
+                try PolicyAuthorityFile.read(path: app + "/Contents/" + relative, owner: owner, maximumBytes: limit)
+            }
+            let info = try resource("Info.plist", limit: 65_536)
+            let adapter = try resource("Resources/PolicyAdapter.py")
+            let contract = try resource("Resources/awa-contract.json", limit: 16_384)
+            let runtimeSource = try resource("Resources/policy-runtime-source.json", limit: 16_384)
+            let releaseContract = try resource("Resources/release-contract.json", limit: 65_536)
+            let codeResources = try resource("_CodeSignature/CodeResources")
+            let appExecutable = app + "/Contents/MacOS/ShadowSync"
+            let appExecutableIdentity = try PublisherExecutableSnapshot.capture(path: appExecutable, owner: owner)
+            let framework = app + "/Contents/Frameworks/Python.framework"
+            let manifest = try PolicyAuthorityFile.read(path: framework + "/" + PolicyRuntimeLayout.manifest,
+                owner: owner, maximumBytes: 1_048_576)
+            let layout = try PolicyRuntimeLayout.decode(manifest.bytes, source: runtimeSource.bytes)
+            let before = try PolicyRuntimeTree.capture(root: framework, owner: owner, layout: layout)
+            let (appCode, publisher) = try PublisherCodeVerifier.verifiedStatic(path: app,
+                identifier: ReleaseIdentity.bundleIdentifier, team: location.publisher.team)
+            guard publisher == location.publisher else { throw PublisherPolicyError.unavailable }
+            for (file, path) in [(adapter, "Resources/PolicyAdapter.py"), (contract, "Resources/awa-contract.json"),
+                                  (runtimeSource, "Resources/policy-runtime-source.json"), (releaseContract, "Resources/release-contract.json")] {
+                try PublisherCodeVerifier.sealed(file, relativePath: path, code: appCode)
+            }
+            let (frameworkCode, _) = try PublisherCodeVerifier.verifiedStatic(path: framework,
+                identifier: "com.kleinperkins.shadow-sync.python-runtime", team: publisher.team)
+            try PublisherCodeVerifier.sealed(manifest, relativePath: "Resources/ShadowSyncRuntimeLayout.json", code: frameworkCode)
+            var interpreterIdentity: PublisherCodeVerifier.Identity?
+            for file in before.machOFiles {
+                let (_, identity) = try PublisherCodeVerifier.verifiedStatic(path: framework + "/" + file,
+                    identifier: file == PolicyRuntimeLayout.interpreter ? "com.kleinperkins.shadow-sync.policy-helper" : nil,
+                    team: publisher.team)
+                if file == PolicyRuntimeLayout.interpreter { interpreterIdentity = identity }
+            }
+            guard let dictionary = try PropertyListSerialization.propertyList(from: info.bytes, format: nil) as? [String: Any] else {
+                throw PublisherPolicyError.unavailable
+            }
+            let release = try ReleaseIdentity(infoDictionary: dictionary)
+            try release.validate(requireProduction: true)
+            guard release == source.installation.candidate.release,
+                  release.releaseContractSHA256 == releaseContract.sha256 else { throw PublisherPolicyError.unavailable }
+            _ = try QualifiedAWAContract.decode(contract.bytes)
+            guard let interpreterIdentity else { throw PublisherPolicyError.unavailable }
+            let result = Self(interpreter: framework + "/" + PolicyRuntimeLayout.interpreter,
+                adapter: adapter.bytes, contract: contract.bytes, framework: framework, owner: owner,
+                layout: layout, tree: before, resources: [info, adapter, contract, runtimeSource, releaseContract, manifest, codeResources],
+                appExecutable: appExecutable, appExecutableIdentity: appExecutableIdentity, interpreterIdentity: interpreterIdentity)
+            result.coordinatorSource = source
+            try result.revalidate(); try source.revalidate()
+            return result
+        } catch { throw PublisherPolicyError.unavailable }
+        #endif
+    }
+
     func revalidate() throws {
         #if SHADOW_SYNC_TESTING
         let diagnosticStart = DispatchTime.now().uptimeNanoseconds
         let diagnosticSample = DiscoveryFixtureDiagnostic.samplePublisherRevalidation()
+        let diagnosticAdmission = DiscoveryFixtureDiagnostic.currentAdmission
+        let diagnosticCollect = diagnosticSample || diagnosticAdmission != nil
         var diagnosticStage = DiscoveryFixtureDiagnostic.Stage.resourceFiles
         var diagnosticMilestones: [UInt64] = []
         var diagnosticPassed = false
         defer {
-            if diagnosticSample {
+            diagnosticAdmission?.capture(.publisher, stage: diagnosticStage,
+                started: diagnosticStart, passed: diagnosticPassed, milestones: diagnosticMilestones)
+            if !diagnosticPassed || diagnosticSample {
                 DiscoveryFixtureDiagnostic.record(.publisher, stage: diagnosticStage,
                     started: diagnosticStart, deadline: nil, succeeded: diagnosticPassed,
                     milestones: diagnosticMilestones)
@@ -304,19 +462,21 @@ final class PublisherPolicyResources: @unchecked Sendable {
         }
         #endif
         do {
+            try coordinatorSource?.revalidate()
             try PolicyAuthorityFile.revalidate(resources)
             #if SHADOW_SYNC_TESTING
-            if diagnosticSample { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
+            if diagnosticCollect { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
             diagnosticStage = .appExecutable
             #endif
             guard try PublisherExecutableSnapshot.capture(path: appExecutable, owner: owner) == appExecutableIdentity else {
                 throw PublisherPolicyError.unavailable
             }
             #if SHADOW_SYNC_TESTING
-            if diagnosticSample { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
+            if diagnosticCollect { diagnosticMilestones.append(DispatchTime.now().uptimeNanoseconds) }
             diagnosticStage = .runtimeTree
             #endif
             try tree.revalidate(root: framework, owner: owner, layout: layout)
+            try coordinatorSource?.revalidate()
             #if SHADOW_SYNC_TESTING
             // Three intervals: resource files, app identity, then runtime-tree
             // validation and defer overhead. All observed inputs stay private.

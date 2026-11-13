@@ -32,6 +32,8 @@ spec.loader.exec_module(fixture)
 INTERRUPTED = False
 MAX_LOG = 8 * 1024 * 1024
 MAX_RESPONSE = 1024 * 1024
+SOURCE_CONTRACTS = {'AppDelegate.swift': 'Sources/ShadowSyncApp/AppDelegate.swift',
+                    'native-acceptance.md': 'docs/runbooks/native-acceptance.md'}
 HELPERS = {'ui-m4-worker-stop': ('worker-stop', 9), 'ui-m4-takeover': ('takeover', 15),
            'ui-worker-owner-ordering': ('owner-ordering', 0),
            'ui-worker-owner-refusal': ('owner-custody-loss', 0)}
@@ -332,13 +334,35 @@ def sandbox_profile(home, binary, root):
             '(deny file-write*)\n(allow file-write* (subpath ' + quote(root) + '))\n').encode()
 
 
+def stage_source_contracts(root, expected):
+    """Only the two source assertions needed by the isolated native fixture."""
+    private_directory(root)
+    directory = root / 'source'
+    directory.mkdir(mode=0o700)
+    for name, source in SOURCE_CONTRACTS.items():
+        data = native.read_regular(ROOT / source)
+        require(sha(data) == expected[source], 'Source contract changed before staging')
+        write_new(directory / name, data)
+    verify_source_contracts(root, expected)
+
+
+def verify_source_contracts(root, expected):
+    directory = root / 'source'
+    private_directory(directory)
+    require(set(os.listdir(directory)) == set(SOURCE_CONTRACTS), 'Unexpected source contract entry')
+    for name, source in SOURCE_CONTRACTS.items():
+        require(sha(native.read_regular(directory / name)) == expected[source],
+                'Staged source contract changed')
+
+
 def execute(row, binary, expected, evidence, old, manifest):
     before = binary_identity(binary, expected)
     inputs = {name: sha(native.read_regular(ROOT / name)) for name in (
         'scripts/run-native-appkit.py', 'scripts/native-ui-suites.py',
         'scripts/native-appkit-contract.py', 'scripts/native-fixture-contract.py',
         'Tests/Fixtures/native-ui-suites.json',
-        'Tests/Fixtures/native-appkit-contract.json', 'Sources/ShadowSyncApp/M5Harness.swift')}
+        'Tests/Fixtures/native-appkit-contract.json', 'Sources/ShadowSyncApp/M5Harness.swift',
+        *SOURCE_CONTRACTS.values())}
     suite = row['id']
     directory = evidence / suite
     directory.mkdir(mode=0o700)
@@ -362,6 +386,7 @@ def execute(row, binary, expected, evidence, old, manifest):
     try:
         retain('fixture.json', encoded({'root': str(root), 'identity': initial}))
         stage_binary(binary, staged, expected)
+        stage_source_contracts(root, inputs)
         write_new(root / 'profile.sb', profile)
         canary = child(prefix + [str(staged), '--shadow-sync-native-fixture-isolation'],
                        cwd=root, env=env, timeout=15)
@@ -396,6 +421,7 @@ def execute(row, binary, expected, evidence, old, manifest):
         require(binary_identity(binary, expected) == before, 'Testing binary identity changed')
         require(all(sha(native.read_regular(ROOT / name)) == digest for name, digest in inputs.items()),
                 'Native runner or contract changed')
+        verify_source_contracts(root, inputs)
         require(private_directory(root) == initial and shutil.rmtree.avoids_symlink_attacks,
                 'Fixture identity changed or safe cleanup unavailable')
         shutil.rmtree(root)

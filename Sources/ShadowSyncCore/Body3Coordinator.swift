@@ -354,6 +354,7 @@ public extension RunCoordinator {
             Int,
             ProcessIdentity?
         ) -> Bool = { _, _ in true },
+        repositoryObserver: @escaping @Sendable (Int, RepositoryCommandObservation) -> Bool = { _, _ in true },
         eventSink: @escaping @Sendable (
             Body3CoordinatorEvent
         ) -> Void
@@ -364,6 +365,7 @@ public extension RunCoordinator {
             cancellation: cancellation,
             inventoryProvider: nil,
             processObserver: processObserver,
+            repositoryObserver: repositoryObserver,
             eventSink: eventSink
         )
     }
@@ -381,6 +383,7 @@ public extension RunCoordinator {
             Int,
             ProcessIdentity?
         ) -> Bool = { _, _ in true },
+        repositoryObserver: @escaping @Sendable (Int, RepositoryCommandObservation) -> Bool = { _, _ in true },
         eventSink: @escaping @Sendable (
             Body3CoordinatorEvent
         ) -> Void
@@ -391,6 +394,7 @@ public extension RunCoordinator {
             cancellation: cancellation,
             inventoryProvider: inventoryProvider,
             processObserver: processObserver,
+            repositoryObserver: repositoryObserver,
             eventSink: eventSink
         )
     }
@@ -408,6 +412,7 @@ public extension RunCoordinator {
             Int,
             ProcessIdentity?
         ) -> Bool = { _, _ in true },
+        repositoryObserver: @escaping @Sendable (Int, RepositoryCommandObservation) -> Bool = { _, _ in true },
         eventSink: @escaping @Sendable (
             Body3CoordinatorEvent
         ) -> Void
@@ -567,7 +572,16 @@ public extension RunCoordinator {
                 operationLeaseDescriptor: lease
             )
         }
-        let gitConfiguration = transactionConfiguration()
+        let configurationContext: CommandCustodyContext?
+        #if SHADOW_SYNC_TESTING
+        configurationContext = try borrowRepositoryContext(authority)
+        #else
+        configurationContext = try CommandCustodyContext.borrowing(authority)
+        #endif
+        defer { configurationContext?.close() }
+        var preparedGitConfiguration = transactionConfiguration()
+        preparedGitConfiguration.commandContext = configurationContext
+        let gitConfiguration = preparedGitConfiguration
         let effectiveAccount = account
         let coordinatorConfiguration = configuration
         let protectedPaths = [
@@ -722,6 +736,11 @@ public extension RunCoordinator {
             },
             runner: { node, worker, token in
                 let nodeStarted = MonotonicInstant.now()
+                if configurationContext?.hasCleanupPending == true {
+                    let detail = "Cleanup is still pending. Further repository work is blocked."
+                    try? emit(node: node, worker: worker, type: "node_cleanup_pending", status: .cleanupPending, detail: detail)
+                    return Body3BatchNodeOutcome(status: .cleanupPending, detail: detail)
+                }
                 do {
                     try emit(
                         node: node,
@@ -758,7 +777,8 @@ public extension RunCoordinator {
                                 .completeRepositoryOutputLimit,
                         processObserver: {
                             processObserver(worker, $0)
-                        }
+                        },
+                        repositoryObserver: { repositoryObserver(worker, $0) }
                     )
                     let result: RepositoryResult
                     if operation.kind == .fastForward {
@@ -896,18 +916,22 @@ public extension RunCoordinator {
                             account: effectiveAccount,
                             runner: ClosedProcessRunner(
                                 audit: commandAudit
-                            )
+                            ),
+                            configurationContext: configurationContext
                         )
+                    #if SHADOW_SYNC_TESTING
+                    retention.testingCustodyHooks = self.configuration.testingRetentionCustodyHooks
+                    #endif
                     do {
-                        try RepositoryDiscovery
-                            .validateRemovalRuntimeEligibility(
-                                selection.candidate.clone
-                                    .sourceSnapshot,
-                                repositoryID:
-                                    selection.candidate
-                                        .repository.id,
-                                account: effectiveAccount
-                            )
+                        guard let configurationContext else { throw SelectedRepositoryScopeError.policyUnavailable }
+                        let exactScope = try selectedScope.exactRepositoryScope(
+                            repositoryID: selection.candidate.repository.id)
+                        try configurationContext.withRemovalDiscoveryPolicy(exactScope,
+                            account: effectiveAccount, cancellation: token) { policy in
+                            try RepositoryDiscovery.validateRemovalRuntimeEligibility(
+                                selection.candidate.clone.sourceSnapshot,
+                                repositoryID: selection.candidate.repository.id, policy: policy)
+                        }
                     } catch {
                         outcome = Body3BatchNodeOutcome(
                             status: .refused,
@@ -942,7 +966,11 @@ public extension RunCoordinator {
                     } else {
                         preparation = nil
                     }
-                    if case .cancelled? = preparation {
+                    if case .cleanupPending? = preparation {
+                        token.closeFutureChildAdmissions()
+                        outcome = Body3BatchNodeOutcome(status: .cleanupPending,
+                            detail: "Recovery work is still stopping; incomplete artifacts remain protected and removal is unavailable.")
+                    } else if case .cancelled? = preparation {
                         outcome = Body3BatchNodeOutcome(
                             status: .cancelled,
                             detail:
@@ -1230,7 +1258,8 @@ public extension RunCoordinator {
                                     // rejected before filesystem access.
                                     "",
                                 protectedPaths:
-                                    protectedPaths
+                                    protectedPaths,
+                                selectedScope: selectedScope
                             )
                         try coordinatorConfiguration
                             .installationAdmission?()
@@ -1377,6 +1406,14 @@ public extension RunCoordinator {
                         }
                     }
                 }
+                if configurationContext?.hasCleanupPending == true || outcome.status == .cleanupPending {
+                    let pending = Body3BatchNodeOutcome(status: .cleanupPending,
+                        detail: "Cleanup is still pending. Further repository work is blocked.")
+                    do { try emit(node: node, worker: worker, type: "node_cleanup_pending",
+                        status: pending.status, detail: pending.detail) }
+                    catch { cancellation.cancel() }
+                    return pending
+                }
                 do {
                     try emit(
                         node: node,
@@ -1408,6 +1445,15 @@ public extension RunCoordinator {
                 return outcome
             }
         )
+        if report.cleanupPending || configurationContext?.hasCleanupPending == true {
+            let pending = try log.append(type: "run_cleanup_pending", phase: "Cleanup pending",
+                status: .cleanupPending,
+                detail: "Command cleanup remains unresolved; retained resources and incomplete artifacts remain protected.",
+                report: report)
+            eventSink(Body3CoordinatorEvent(record: pending))
+            try log.flush()
+            return report
+        }
         let finalStatus: Body3BatchNodeStatus
         if report.cancelled {
             finalStatus = .cancelled

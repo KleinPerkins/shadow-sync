@@ -82,6 +82,7 @@ struct Body3RunMetadataPresentation:
             .refused,
             .failed,
             .cancelled,
+            .cleanupPending,
         ]
         let labels: [Body3BatchNodeStatus: String] = [
             .succeeded: "succeeded",
@@ -89,6 +90,7 @@ struct Body3RunMetadataPresentation:
             .refused: "refused",
             .failed: "failed",
             .cancelled: "cancelled",
+            .cleanupPending: "cleanup pending",
         ]
         let outcomeText = statusOrder.compactMap {
             status -> String? in
@@ -100,7 +102,7 @@ struct Body3RunMetadataPresentation:
         }.joined(separator: " · ")
         return Body3RunMetadataPresentation(
             timing:
-                "Started \(try localTimestamp(metadata.startedAt, timeZone: timeZone)) · Ended \(try localTimestamp(metadata.endedAt, timeZone: timeZone)) · Duration \(duration(metadata.durationMilliseconds))",
+                "Started \(try localTimestamp(metadata.startedAt, timeZone: timeZone)) · \(report.cleanupPending ? "Observed" : "Ended") \(try localTimestamp(metadata.endedAt, timeZone: timeZone)) · Duration \(duration(metadata.durationMilliseconds))",
             summary:
                 "\(metadata.repositoryIDs.count) repositor\(metadata.repositoryIDs.count == 1 ? "y" : "ies") · "
                 + "\(metadata.attemptedActionCount) attempted action\(metadata.attemptedActionCount == 1 ? "" : "s")"
@@ -172,6 +174,7 @@ enum RunRowStatus: Equatable, Sendable {
     case updatedWithWarning
     case failed
     case needsAttention
+    case cleanupPending
     case stopping
     case cancelled
 
@@ -187,6 +190,7 @@ enum RunRowStatus: Equatable, Sendable {
         case .updatedWithWarning: return "Updated with Warning"
         case .failed: return "Failed"
         case .needsAttention: return "Needs Attention"
+        case .cleanupPending: return "Cleanup Pending"
         case .stopping: return "Stopping…"
         case .cancelled: return "Cancelled"
         }
@@ -197,7 +201,7 @@ enum RunRowStatus: Equatable, Sendable {
         case .updated, .alreadyCurrent, .skipped, .updatedWithWarning,
              .failed, .needsAttention, .cancelled:
             return true
-        case .pending, .checking, .fetching, .updating, .stopping:
+        case .pending, .checking, .fetching, .updating, .stopping, .cleanupPending:
             return false
         }
     }
@@ -215,6 +219,8 @@ enum RunRowStatus: Equatable, Sendable {
             return .failed
         case .needsAttention:
             return .needsAttention
+        case .cleanupPending:
+            return .cleanupPending
         case .cancelledPending, .cancelledDuringFetch, .cancelledNoUpdate:
             return .cancelled
         case .skippedAhead, .skippedDiverged, .skippedDirty, .skippedBusy,
@@ -269,6 +275,7 @@ enum ShadowSyncStatusSymbol {
         case .updatedWithWarning: return ("exclamationmark.triangle.fill", status.label)
         case .failed: return ("xmark.octagon", status.label)
         case .needsAttention: return ("exclamationmark.octagon", status.label)
+        case .cleanupPending: return ("clock.badge.exclamationmark", status.label)
         case .stopping: return ("stop.circle", "Stopping")
         case .cancelled: return ("stop.circle.fill", status.label)
         }

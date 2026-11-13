@@ -2,6 +2,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import ShadowSyncCatalog
 
 public enum V2Body3SelfTestRunner {
     public typealias Observer = (String) -> Void
@@ -318,9 +319,9 @@ public enum V2Body3SelfTestRunner {
                 "pinned pre-v0.6 v2 fixture drifted or stopped decoding"
             )
 
-            var malformedLines = oldV2.split(
-                separator: 0x0A
-            ).map(Data.init)
+            var malformedLines = Array(oldV2).split(
+                separator: UInt8(0x0A)
+            ).map { Data($0) }
             var malformedObject =
                 try JSONSerialization.jsonObject(
                     with: malformedLines[2]
@@ -896,9 +897,524 @@ public enum V2Body3SelfTestRunner {
         )
     }
 
+    /// These cuts retain the exact fixture-created descriptors while mutating
+    /// permissions/flags. Only that fixture can restore its original metadata;
+    /// production cleanup never clears a protected node to make progress.
+    private static func retentionCleanupMetadataCuts(fixture: Body3Fixture, selection: RemovalSelection,
+                                                     completedCount: Int) throws {
+        for cut in ["protected-later-leaf", "late-directory-flags", "unsafe-root-mode", "unsafe-node-mode"] {
+            let store = try fixture.retentionStore()
+            var hooks = RetentionArtifactStore.TestingCleanupHooks()
+            var slot: Int32 = -1, parent: Int32 = -1, slotName = ""
+            var changed: OwnedFileDescriptor?, original = stat(), changedName = ""
+            var changedParent: Int32 = -1, mutatedFlags: UInt32?, mutatedMode: mode_t?
+            var lastDeleted = 0, mutationObserved = false
+            func makeFile(_ parent: Int32, _ name: String) throws -> OwnedFileDescriptor {
+                let fd = openat(parent, name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                try expect(fd >= 0, "metadata cut exclusive file")
+                let held = OwnedFileDescriptor(fd)
+                var byte: UInt8 = 0x61
+                try expect(Darwin.write(fd, &byte, 1) == 1 && fsync(fd) == 0, "metadata cut file bytes")
+                return held
+            }
+            func validateChanged() throws {
+                guard let changed else { throw Body3SelfTestError("metadata cut lost original descriptor") }
+                var held = stat(), named = stat()
+                try expect(fstat(changed.value, &held) == 0
+                    && fstatat(changedParent, changedName, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                    "metadata cut original observations")
+                for current in [held, named] {
+                    try expect(current.st_dev == original.st_dev && current.st_ino == original.st_ino
+                        && current.st_uid == original.st_uid && current.st_gid == original.st_gid
+                        && current.st_nlink == original.st_nlink
+                        && current.st_mode == (mutatedMode ?? original.st_mode)
+                        && current.st_flags == (mutatedFlags ?? original.st_flags),
+                        "metadata cut identity or mutation differs")
+                }
+            }
+            hooks.afterOpen = { p, d, n in
+                parent = p; slot = d; slotName = n
+                _ = try makeFile(d, "a")
+                if cut == "late-directory-flags" {
+                    try expect(mkdirat(d, "nested", 0o700) == 0, "metadata cut nested directory")
+                    let fd = openat(d, "nested", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "metadata cut retained directory")
+                    changed = OwnedFileDescriptor(fd); changedParent = d; changedName = "nested"
+                    _ = try makeFile(fd, "b")
+                } else if cut == "unsafe-root-mode" {
+                    changed = OwnedFileDescriptor(try RetentionArchiveCommandAuthority.copy(d))
+                    changedParent = p; changedName = n
+                } else {
+                    changed = try makeFile(d, "z-later")
+                    changedParent = d; changedName = "z-later"
+                }
+                try expect(fstat(changed!.value, &original) == 0 && original.st_uid == fixture.account.uid,
+                    "metadata cut original owner")
+                try validateChanged()
+                if cut == "protected-later-leaf" {
+                    mutatedFlags = original.st_flags | UInt32(UF_IMMUTABLE)
+                    try expect(fchflags(changed!.value, mutatedFlags!) == 0, "metadata cut protect later leaf")
+                    mutationObserved = true
+                    try validateChanged()
+                } else if cut.hasPrefix("unsafe-") {
+                    let permission: mode_t = cut == "unsafe-root-mode" ? 0o770 : 0o664
+                    mutatedMode = (original.st_mode & S_IFMT) | permission
+                    try expect(fchmod(changed!.value, permission) == 0, "metadata cut unsafe mode")
+                    mutationObserved = true
+                    try validateChanged()
+                }
+                throw Body3SelfTestError("metadata cut ordinary failure after owned slot")
+            }
+            hooks.beforeDelete = { _, _, deleted in
+                lastDeleted = deleted
+                if cut == "late-directory-flags", deleted == 1, !mutationObserved {
+                    try validateChanged()
+                    mutatedFlags = original.st_flags ^ UInt32(UF_NODUMP)
+                    try expect(fchflags(changed!.value, mutatedFlags!) == 0, "metadata cut late directory flag")
+                    mutationObserved = true
+                    try validateChanged()
+                }
+            }
+            store.testingCleanupHooks = hooks
+            let result = store.prepare(selection: selection, cancellation: CancellationToken())
+            store.testingCleanupHooks = nil
+            try expect(result == .cleanupPending && mutationObserved, "metadata cut did not retain original pending attempt")
+            try validateChanged()
+            if cut == "protected-later-leaf" || cut == "unsafe-node-mode" {
+                try expect(try store.testingUnsealedCleanupPlanRetained(),
+                    "failed complete preflight lost actual anonymous plan writers")
+            }
+            let other = try fixture.retentionStore()
+            try expect(other.prepare(selection: selection, cancellation: CancellationToken()) == .cleanupPending,
+                "metadata cut reopened fenced admission")
+            var info = stat()
+            try expect(fstat(slot, &info) == 0 && info.st_nlink > 0
+                && fstatat(parent, slotName, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                "metadata cut lost original slot")
+            if cut == "late-directory-flags" {
+                let progress = try store.testingCleanupPlanObservation()
+                try expect(progress.retired == 1 && progress.anonymousReadOnly,
+                    "late flag drift lost exact sealed-plan progress")
+                try expect(lastDeleted == 1 && fstatat(slot, "a", &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT
+                    && fstatat(changed!.value, "b", &info, AT_SYMLINK_NOFOLLOW) == 0,
+                    "late flag drift changed exact deletion progress or remaining child")
+            } else {
+                try expect(lastDeleted == 0 && fstatat(slot, "a", &info, AT_SYMLINK_NOFOLLOW) == 0,
+                    "unsafe complete preflight removed an earlier file")
+            }
+            // Check exact named/held identity and observed mutation immediately
+            // before restoring only this fixture's original flags/mode.
+            try validateChanged()
+            if mutatedFlags != nil {
+                try expect(fchflags(changed!.value, original.st_flags) == 0, "metadata cut restore exact original flags")
+                mutatedFlags = nil
+            }
+            if mutatedMode != nil {
+                try expect(fchmod(changed!.value, original.st_mode & 0o7777) == 0, "metadata cut restore exact original mode")
+                mutatedMode = nil
+            }
+            try validateChanged()
+            try store.testingRetireOriginalAttempt()
+            try expect(try store.list().count == completedCount, "metadata cut left a slot or changed published artifacts")
+        }
+    }
+
+    /// An accepted 10,000-entry payload plus actual cloned Git metadata must
+    /// fit retirement accounting. No deadline is extended for this fixture.
+    private static func retentionMaximumPayload(executable: String) throws {
+        let fixture = try Body3Fixture(repositoryName: "body3-t09-capacity")
+        defer { fixture.remove() }
+        let path = try fixture.addWorktree("maximum-payload", managedByAWA: false)
+        let root = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        try expect(root >= 0, "maximum payload root descriptor")
+        defer { close(root) }
+        let initialNames = try FileManager.default.contentsOfDirectory(atPath: path).sorted()
+        try expect(initialNames == [".git", ".gitignore", "tracked.txt"], "maximum payload fixture initial envelope")
+        // Two existing files, two directories and 9,996 new files = 10,000.
+        for directoryName in ["payload-a", "payload-b"] {
+            try expect(mkdirat(root, directoryName, 0o700) == 0, "maximum payload directory creation")
+            let directory = openat(root, directoryName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try expect(directory >= 0, "maximum payload directory descriptor")
+            defer { close(directory) }
+            for index in 0..<4_998 {
+                let name = "file-\(index)"
+                let file = openat(directory, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                try expect(file >= 0, "maximum payload exclusive file creation")
+                try expect(close(file) == 0, "maximum payload file close")
+            }
+            try expect(fsync(directory) == 0, "maximum payload directory durability")
+        }
+        try expect(fsync(root) == 0, "maximum payload root durability")
+        let inventory = try fixture.cleanupInventory(executable: executable)
+        let preview = RemovalPreviewOracle.worktree(isResolvedDefaultClaim: false,
+            policyCategory: .writable, verification: .verified,
+            fileState: WorktreeFileState(trackedChanges: 0, untrackedFiles: 9_996, ignoredFiles: 0,
+                hiddenIndexState: false, operationState: .clear),
+            awa: .notManaged, purpose: .completed, activity: .idle, branchTipPreserved: true)
+        let candidate = try fixture.worktreeCandidate(inventory: inventory, path: path, preview: preview)
+        let selection = try RemovalSelection(candidate: candidate, intent: .removeWithRecovery, includePossibleSecrets: true)
+        let store = try fixture.retentionStore()
+        var hooks = RetentionArtifactStore.TestingCleanupHooks()
+        var metadataObserved = false
+        hooks.afterPreflight = { _, proof, name in
+            guard name == ".restore-proof" else { return }
+            let observedPlan = try store.testingCleanupPlanObservation()
+            try expect(observedPlan.nodes > 10_003 && observedPlan.retired == 0 && observedPlan.anonymousReadOnly,
+                "maximum payload plan omitted metadata or retained a writer")
+            let repository = openat(proof, "repository", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try expect(repository >= 0, "maximum payload actual proof repository")
+            defer { close(repository) }
+            let git = openat(repository, ".git", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            try expect(git >= 0, "maximum payload actual Git metadata")
+            defer { close(git) }
+            var head = stat()
+            try expect(fstatat(git, "HEAD", &head, AT_SYMLINK_NOFOLLOW) == 0
+                && head.st_uid == fixture.account.uid && (head.st_mode & S_IFMT) == S_IFREG
+                && head.st_nlink == 1, "maximum payload generated metadata overhead missing")
+            metadataObserved = true
+        }
+        store.testingCleanupHooks = hooks
+        let result = store.prepare(selection: selection, cancellation: CancellationToken())
+        store.testingCleanupHooks = nil
+        guard case let .completed(summary) = result else {
+            store.testingRecordMaximumPayloadFailure(result, metadataObserved: metadataObserved)
+            throw Body3SelfTestError("accepted maximum payload failed mandatory proof retirement")
+        }
+        let manifest = try JSONDecoder().decode(RetentionManifest.self,
+            from: Data(contentsOf: URL(fileURLWithPath: summary.path + "/manifest.json")))
+        try expect(manifest.entries.count == 10_000 && metadataObserved && manifest.restoreProof.isComplete,
+            "maximum payload did not exercise all accepted entries plus generated metadata")
+        try expect(try store.verify(summary) && store.list().count == 1,
+            "maximum payload published artifact failed validation")
+        let names = try FileManager.default.contentsOfDirectory(atPath: fixture.stateLocation.path + "/retention")
+        try expect(!names.contains { $0.hasPrefix(".incomplete-") }, "maximum payload left an incomplete slot")
+    }
+
+    private static func retentionCleanupFinalizationCuts(fixture: Body3Fixture, selection: RemovalSelection,
+                                                         completedCount: Int) throws {
+        for cut in ["postflight-expiry", "close-expiry"] {
+            let store = try fixture.retentionStore()
+            var hooks = RetentionArtifactStore.TestingCleanupHooks()
+            var reached = false
+            hooks.afterOpen = { _, _, _ in
+                throw Body3SelfTestError("retention finalization ordinary failure after owned slot")
+            }
+            func crossOriginalDeadline(_ deadline: MonotonicDeadline) {
+                reached = true
+                // Expire the actual original five-second budget at the real
+                // finalization boundary; do not inject an exception or clock.
+                while !deadline.hasExpired { usleep(1_000) }
+            }
+            if cut == "postflight-expiry" {
+                hooks.afterPostflightDurability = { deadline in crossOriginalDeadline(deadline) }
+            } else {
+                hooks.afterPlanClose = { deadline in crossOriginalDeadline(deadline) }
+            }
+            store.testingCleanupHooks = hooks
+            let result = store.prepare(selection: selection, cancellation: CancellationToken())
+            store.testingCleanupHooks = nil
+            try expect(reached && result == .cleanupPending, "retention finalization expiry retained owner")
+            let progress = try store.testingCleanupFinalizationObservation()
+            try expect(progress.rootRemoved && progress.nodes > 0 && progress.retired == progress.nodes,
+                "retention finalization original unlink progress lost")
+            if cut == "postflight-expiry" {
+                try expect(progress.pendingPostflight && !progress.endpointsClosed,
+                    "retention finalization pending postflight changed")
+            } else {
+                try expect(!progress.pendingPostflight && progress.endpointsClosed,
+                    "retention finalization closed endpoint state lost")
+            }
+            let other = try fixture.retentionStore()
+            try expect(other.prepare(selection: selection, cancellation: CancellationToken()) == .cleanupPending,
+                "retention finalization expiry released state fence")
+            // Existing fixture-only recovery uses this same retained owner and
+            // actual closed endpoint states; no recorded descriptor is retried.
+            try store.testingRetireOriginalAttempt()
+            try expect(try store.list().count == completedCount,
+                "retention finalization expiry changed completed artifacts")
+        }
+    }
+
+    /// Actual-effect cuts inside the existing DM2-T09 case; no runtime case or
+    /// deadline is removed. Every fault belongs to this fixture's retained nodes.
+    private static func retentionOwnedCleanup(fixture: Body3Fixture, selection: RemovalSelection,
+                                               completedCount: Int) throws {
+        let enumerationStore = try fixture.retentionStore()
+        let beforeEnumeration = try FileManager.default.contentsOfDirectory(atPath: fixture.stateLocation.path).sorted()
+        var expiredEnumerationRefused = false
+        do {
+            _ = try enumerationStore.testingCleanupDirectoryNames(deadline: MonotonicDeadline(seconds: 0))
+        } catch SelectedRepositoryScopeError.cleanupPending {
+            expiredEnumerationRefused = true
+        }
+        try expect(expiredEnumerationRefused, "retention cleanup enumeration expiry refused")
+        let actualEnumeration = try enumerationStore.testingCleanupDirectoryNames(deadline: MonotonicDeadline(seconds: 5))
+        let afterEnumeration = try FileManager.default.contentsOfDirectory(atPath: fixture.stateLocation.path).sorted()
+        try expect(actualEnumeration == beforeEnumeration && !actualEnumeration.isEmpty
+            && afterEnumeration == beforeEnumeration,
+            "retention cleanup enumeration preserves current owned state")
+        try retentionCleanupMetadataCuts(fixture: fixture, selection: selection, completedCount: completedCount)
+        try retentionCleanupFinalizationCuts(fixture: fixture, selection: selection, completedCount: completedCount)
+        for cut in ["ordinary", "wide-tree", "cancel", "collision", "root-replacement", "internal-replacement",
+                    "hardlink", "symlink", "unsafe", "partial"] {
+            let store = try fixture.retentionStore()
+            var hooks = RetentionArtifactStore.TestingCleanupHooks()
+            var parent: Int32 = -1, slot: Int32 = -1, name = ""
+            var foreign: OwnedFileDescriptor?, foreignIdentity: FileIdentity?
+            var replacement: OwnedFileDescriptor?, replacementIdentity: FileIdentity?
+            var originalNested: OwnedFileDescriptor?
+            func makeFile(_ parent: Int32, _ name: String) throws -> OwnedFileDescriptor {
+                let fd = openat(parent, name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                try expect(fd >= 0, "retention cleanup fixture file creation")
+                let held = OwnedFileDescriptor(fd)
+                var byte: UInt8 = 0x61
+                try expect(Darwin.write(fd, &byte, 1) == 1 && fsync(fd) == 0, "retention cleanup fixture write")
+                return held
+            }
+            func identity(_ fd: Int32) throws -> FileIdentity {
+                var info = stat()
+                try expect(fstat(fd, &info) == 0, "retention cleanup fixture identity")
+                return FileIdentity(info)
+            }
+            func removeFixtureNode(_ parent: Int32, _ name: String, _ held: OwnedFileDescriptor,
+                                   _ expected: FileIdentity, directory: Bool = false) throws {
+                var named = stat()
+                try expect(fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0
+                    && FileIdentity(named).matchesStableNode(expected)
+                    && (try identity(held.value)).matchesStableNode(expected), "fixture replacement identity changed")
+                try expect(unlinkat(parent, name, directory ? AT_REMOVEDIR : 0) == 0,
+                    "fixture replacement removal failed")
+            }
+            let token = CancellationToken()
+            if cut == "collision" {
+                hooks.beforeCreate = { p, n in
+                    parent = p; name = n
+                    try expect(mkdirat(p, n, 0o700) == 0, "collision fixture creation")
+                    let fd = openat(p, n, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "collision fixture original descriptor")
+                    foreign = OwnedFileDescriptor(fd); foreignIdentity = try identity(fd)
+                }
+            }
+            hooks.afterOpen = { p, d, n in
+                parent = p; slot = d; name = n
+                _ = try makeFile(d, "a")
+                if cut == "wide-tree" {
+                    for index in 0..<300 { _ = try makeFile(d, "file-\(index)") }
+                }
+                if cut == "root-replacement" {
+                    try expect(renameat(p, n, p, n + "-saved") == 0 && mkdirat(p, n, 0o700) == 0,
+                        "root replacement fixture setup")
+                    let fd = openat(p, n, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "replacement original descriptor")
+                    replacement = OwnedFileDescriptor(fd); replacementIdentity = try identity(fd)
+                }
+                if cut == "internal-replacement" {
+                    try expect(mkdirat(d, "nested", 0o700) == 0, "internal fixture creation")
+                    let fd = openat(d, "nested", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "internal original descriptor")
+                    originalNested = OwnedFileDescriptor(fd)
+                    _ = try makeFile(fd, "inside")
+                }
+                if cut == "hardlink" {
+                    try expect(linkat(d, "a", p, "outside-owned", 0) == 0, "hardlink fixture creation")
+                    let fd = openat(p, "outside-owned", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "hardlink original descriptor")
+                    foreign = OwnedFileDescriptor(fd); foreignIdentity = try identity(fd)
+                }
+                if cut == "symlink" {
+                    foreign = try makeFile(p, "outside-owned"); foreignIdentity = try identity(foreign!.value)
+                    try expect(symlinkat("../outside-owned", d, "link") == 0, "symlink fixture creation")
+                }
+                if cut == "unsafe" { try expect(mkfifoat(d, "z-fifo", 0o600) == 0, "unsafe fixture creation") }
+                if cut == "partial" { _ = try makeFile(d, "b") }
+                if cut == "cancel" { token.cancel(); throw GitSafetyError.cancelled }
+                throw Body3SelfTestError("retention cleanup injected ordinary failure")
+            }
+            if cut == "internal-replacement" {
+                hooks.afterPreflight = { _, d, _ in
+                    try expect(renameat(d, "nested", d, "nested-saved") == 0 && mkdirat(d, "nested", 0o700) == 0,
+                        "internal replacement setup")
+                    let fd = openat(d, "nested", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    try expect(fd >= 0, "internal replacement descriptor")
+                    replacement = OwnedFileDescriptor(fd); replacementIdentity = try identity(fd)
+                }
+            }
+            if cut == "partial" {
+                hooks.beforeDelete = { _, _, deleted in
+                    if deleted == 1 { throw Body3SelfTestError("retention cleanup partial refusal") }
+                }
+            }
+            store.testingCleanupHooks = hooks
+            let result = store.prepare(selection: selection, cancellation: token)
+            store.testingCleanupHooks = nil
+            let pending = ["root-replacement", "internal-replacement", "hardlink", "unsafe", "partial"].contains(cut)
+            if pending {
+                try expect(result == .cleanupPending, "unsafe cleanup was reported ordinary")
+                let other = try fixture.retentionStore()
+                try expect(other.prepare(selection: selection, cancellation: CancellationToken()) == .cleanupPending,
+                    "new Store bypassed original owner's state fence")
+                var info = stat()
+                try expect(fstat(slot, &info) == 0 && info.st_nlink > 0, "unresolved original slot descriptor lost")
+                if cut == "partial" {
+                    try expect(fstatat(slot, "a", &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT
+                        && fstatat(slot, "b", &info, AT_SYMLINK_NOFOLLOW) == 0,
+                        "partial cleanup did not preserve remaining actual file")
+                } else if cut != "internal-replacement" {
+                    try expect(fstatat(slot, "a", &info, AT_SYMLINK_NOFOLLOW) == 0,
+                        "unsafe preflight deleted original file")
+                }
+                if cut == "root-replacement" {
+                    try removeFixtureNode(parent, name, replacement!, replacementIdentity!, directory: true)
+                    try expect(renameat(parent, name + "-saved", parent, name) == 0, "restore original root")
+                }
+                if cut == "internal-replacement" {
+                    try removeFixtureNode(slot, "nested", replacement!, replacementIdentity!, directory: true)
+                    try expect(renameat(slot, "nested-saved", slot, "nested") == 0
+                        && originalNested != nil, "restore original internal directory")
+                }
+                if cut == "hardlink" { try removeFixtureNode(parent, "outside-owned", foreign!, foreignIdentity!) }
+                if cut == "unsafe" {
+                    try expect(fstatat(slot, "z-fifo", &info, AT_SYMLINK_NOFOLLOW) == 0
+                        && (info.st_mode & S_IFMT) == S_IFIFO && info.st_uid == fixture.account.uid
+                        && unlinkat(slot, "z-fifo", 0) == 0, "remove fixture-owned FIFO")
+                }
+                try store.testingRetireOriginalAttempt()
+            } else if cut == "cancel" {
+                try expect(result == .cancelled, "ordinary cancellation did not clean its slot")
+            } else {
+                guard case .incomplete = result else { throw Body3SelfTestError("ordinary cleanup did not complete") }
+            }
+            if cut == "collision" {
+                // The Store never acquired this node; only its fixture creator removes it.
+                let state = try SecureStateDirectory.open(fixture.stateLocation)
+                let p = openat(state.descriptor.value, "retention", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try expect(p >= 0, "collision teardown parent"); defer { close(p) }
+                try removeFixtureNode(p, name, foreign!, foreignIdentity!, directory: true)
+            }
+            if cut == "symlink" {
+                let state = try SecureStateDirectory.open(fixture.stateLocation)
+                let p = openat(state.descriptor.value, "retention", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                try expect(p >= 0, "symlink teardown parent"); defer { close(p) }
+                try removeFixtureNode(p, "outside-owned", foreign!, foreignIdentity!)
+            }
+            try expect(try store.list().count == completedCount, "cleanup cut changed completed artifacts or left a slot")
+        }
+        // A successfully verified payload still cannot publish if proof-tree
+        // retirement fails. Conversely, publication cannot be undone on a later
+        // durability failure. Both cuts use the real successful preparation path.
+        for cut in ["proof-cleanup", "after-publish"] {
+            let store = try fixture.retentionStore()
+            var hooks = RetentionArtifactStore.TestingCleanupHooks()
+            if cut == "proof-cleanup" {
+                hooks.beforeDelete = { _, name, _ in
+                    if name == ".restore-proof" { throw Body3SelfTestError("proof cleanup fault") }
+                }
+            } else {
+                hooks.afterPublish = { throw SecureStateError.systemCall("fixture publication durability fault", EIO) }
+            }
+            store.testingCleanupHooks = hooks
+            try expect(store.prepare(selection: selection, cancellation: CancellationToken()) == .cleanupPending,
+                "cleanup or publication uncertainty reported ordinary completion")
+            store.testingCleanupHooks = nil
+            let names = try FileManager.default.contentsOfDirectory(atPath: fixture.stateLocation.path + "/retention")
+            if cut == "proof-cleanup" {
+                try expect(names.filter { $0.hasPrefix(".incomplete-") }.count == 1
+                    && names.filter { $0.hasPrefix("ret-") }.count == completedCount,
+                    "failed proof cleanup published an artifact")
+            } else {
+                try expect(!names.contains { $0.hasPrefix(".incomplete-") }
+                    && (try store.list()).count == completedCount + 1,
+                    "post-publication failure deleted the completed artifact")
+            }
+            try store.testingRetireOriginalAttempt()
+            try expect((try store.list()).count == completedCount + (cut == "after-publish" ? 1 : 0),
+                "original-owner fixture retirement changed published artifacts")
+        }
+    }
+
+    /// Pure native-layout decoding cuts; no live owner or retirement authority.
+    private static func retentionCleanupRecordDecoding() throws {
+        let recordSize = 16 + MemoryLayout<stat>.size + Int(MAXNAMLEN) + 1
+        var metadata = stat()
+        metadata.st_dev = 7; metadata.st_ino = 19; metadata.st_uid = 42; metadata.st_gid = 43
+        metadata.st_mode = mode_t(S_IFREG | 0o600); metadata.st_nlink = 1
+        metadata.st_size = 123; metadata.st_flags = UInt32(UF_NODUMP)
+        metadata.st_mtimespec.tv_sec = 456; metadata.st_mtimespec.tv_nsec = 789
+        func record(_ name: [UInt8], parent: Int64 = 0, depth: UInt32 = 1,
+                    length: UInt32? = nil) -> Data {
+            var parent = parent, depth = depth, length = length ?? UInt32(name.count), before = metadata
+            var bytes = Data()
+            withUnsafeBytes(of: &parent) { bytes.append(contentsOf: $0) }
+            withUnsafeBytes(of: &depth) { bytes.append(contentsOf: $0) }
+            withUnsafeBytes(of: &length) { bytes.append(contentsOf: $0) }
+            withUnsafeBytes(of: &before) { bytes.append(contentsOf: $0) }
+            bytes.append(contentsOf: name)
+            bytes.append(Data(count: recordSize - bytes.count))
+            return bytes
+        }
+        for name in ["entry", "caf\u{00e9}", String(repeating: "x", count: Int(MAXNAMLEN))] {
+            let bytes = record(Array(name.utf8))
+            // Exercise truly unaligned storage, not merely a Data slice whose
+            // implementation is permitted to make an aligned copy.
+            let storage = UnsafeMutableRawPointer.allocate(byteCount: bytes.count + 1, alignment: 8)
+            defer { storage.deallocate() }
+            bytes.copyBytes(to: UnsafeMutableRawBufferPointer(start: storage.advanced(by: 1), count: bytes.count))
+            let unaligned = Data(bytesNoCopy: storage.advanced(by: 1), count: bytes.count, deallocator: .none)
+            let value = try RetentionArtifactStore.testingDecodeCleanupRecord(unaligned, index: 2)
+            try expect(value.name == name && value.parent == 0 && value.depth == 1
+                && value.before.st_dev == metadata.st_dev && value.before.st_ino == metadata.st_ino
+                && value.before.st_uid == metadata.st_uid && value.before.st_gid == metadata.st_gid
+                && value.before.st_mode == metadata.st_mode && value.before.st_nlink == metadata.st_nlink
+                && value.before.st_size == metadata.st_size && value.before.st_flags == metadata.st_flags
+                && value.before.st_mtimespec.tv_sec == metadata.st_mtimespec.tv_sec
+                && value.before.st_mtimespec.tv_nsec == metadata.st_mtimespec.tv_nsec,
+                "cleanup record borrowed decode changed original values")
+            withExtendedLifetime(unaligned) {}
+        }
+        let root = try RetentionArtifactStore.testingDecodeCleanupRecord(
+            record(Array("root".utf8), parent: -1, depth: 0), index: 0)
+        try expect(root.parent == -1 && root.depth == 0 && root.name == "root", "cleanup record root decode")
+        let valid = record(Array("entry".utf8))
+        let malformed: [(Data, Int64)] = [
+            (Data(valid.dropLast()), 2), (valid + Data([0]), 2), (valid, -1),
+            (record([], length: 0), 2), (record([120], length: UInt32(MAXNAMLEN) + 1), 2),
+            (record([120], depth: 512), 2), (record([120], depth: 0), 2),
+            (record([120], parent: -1), 2), (record([120], parent: 2), 2),
+            (record([120], parent: 3), 2), (record([120]), 0),
+            (record([120], parent: -1, depth: 1), 0),
+            (record([0xff]), 2), (record([0xc3]), 2), (record([0]), 2),
+            (record(Array("..".utf8)), 2), (record(Array("a/b".utf8)), 2)
+        ]
+        for (bytes, index) in malformed {
+            var refused = false
+            do { _ = try RetentionArtifactStore.testingDecodeCleanupRecord(bytes, index: index) }
+            catch SelectedRepositoryScopeError.cleanupPending { refused = true }
+            try expect(refused, "malformed cleanup record accepted")
+        }
+        // Returned values must survive overwrite and release of the borrowed
+        // input, just as they must survive the reader's temporary-buffer scope.
+        let ownedName = String(repeating: "caf\u{00e9}", count: 30)
+        let owned: (name: String, before: stat, parent: Int64, depth: Int)
+        do {
+            let bytes = record(Array(ownedName.utf8))
+            let storage = UnsafeMutableRawPointer.allocate(byteCount: bytes.count, alignment: 8)
+            defer { storage.deallocate() }
+            bytes.copyBytes(to: UnsafeMutableRawBufferPointer(start: storage, count: bytes.count))
+            let borrowed = Data(bytesNoCopy: storage, count: bytes.count, deallocator: .none)
+            owned = try RetentionArtifactStore.testingDecodeCleanupRecord(borrowed, index: 2)
+            storage.initializeMemory(as: UInt8.self, repeating: 0, count: bytes.count)
+            withExtendedLifetime(borrowed) {}
+        }
+        _ = try RetentionArtifactStore.testingDecodeCleanupRecord(record(Array("replacement".utf8)), index: 2)
+        try expect(owned.name == ownedName && owned.parent == 0 && owned.depth == 1
+            && owned.before.st_ino == metadata.st_ino && owned.before.st_size == metadata.st_size,
+            "cleanup record values escaped as borrowed storage")
+    }
+
     private static func recoveryArtifact(
         executable: String
     ) throws {
+        try retentionCleanupRecordDecoding()
         let fixture = try Body3Fixture(
             repositoryName: "body3-t09"
         )
@@ -909,6 +1425,26 @@ public enum V2Body3SelfTestRunner {
             uniqueCommit: true
         )
         try fixture.makeRecoveryState(at: path)
+        // Exercise the actual archive/extract/proof/publication path with an
+        // already-supported owner-owned, single-link group-writable payload.
+        let supportedModeFD = open(path + "/untracked.txt", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        try expect(supportedModeFD >= 0, "supported payload mode descriptor")
+        defer { close(supportedModeFD) }
+        var supportedModeInfo = stat()
+        try expect(fstat(supportedModeFD, &supportedModeInfo) == 0
+            && supportedModeInfo.st_uid == fixture.account.uid && supportedModeInfo.st_nlink == 1
+            && (supportedModeInfo.st_mode & S_IFMT) == S_IFREG
+            && fchmod(supportedModeFD, 0o664) == 0,
+            "supported payload mode setup")
+        let supportedDirectoryFD = open(path + "/empty", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        try expect(supportedDirectoryFD >= 0, "supported payload directory mode descriptor")
+        defer { close(supportedDirectoryFD) }
+        var supportedDirectoryInfo = stat()
+        try expect(fstat(supportedDirectoryFD, &supportedDirectoryInfo) == 0
+            && supportedDirectoryInfo.st_uid == fixture.account.uid
+            && (supportedDirectoryInfo.st_mode & S_IFMT) == S_IFDIR
+            && fchmod(supportedDirectoryFD, 0o775) == 0,
+            "supported payload directory mode setup")
         let inventory = try fixture.cleanupInventory(
             executable: executable
         )
@@ -987,6 +1523,8 @@ public enum V2Body3SelfTestRunner {
             switch preparation {
             case let .incomplete(_, _, reason):
                 diagnostic = reason
+            case .cleanupPending:
+                diagnostic = "cleanup pending"
             case .cancelled:
                 diagnostic = "cancelled"
             case .completed:
@@ -1085,6 +1623,10 @@ public enum V2Body3SelfTestRunner {
             from: Data(contentsOf: manifestURL)
         )
         let paths = Set(manifest.entries.map(\.path))
+        try expect(manifest.entries.first { $0.path == "untracked.txt" }?.mode == 0o664,
+            "supported payload mode was altered or omitted from successful proof")
+        try expect(manifest.entries.first { $0.path == "empty" }?.mode == 0o775,
+            "supported payload directory mode was altered or omitted from successful proof")
         try expect(
             manifest.schema == shadowSyncRetentionSchema
                 && manifest.possibleSecretsAuthorized
@@ -1338,6 +1880,7 @@ public enum V2Body3SelfTestRunner {
             },
             "failed recovery left an owned incomplete slot"
         )
+        try retentionOwnedCleanup(fixture: fixture, selection: accepted, completedCount: completedCount)
         try InstallationLifecycle
             .testingPreserveAuthorityDuringRemoval(
                 at: fixture.stateLocation
@@ -1371,6 +1914,7 @@ public enum V2Body3SelfTestRunner {
             corruptionRejected,
             "corrupted completed artifact remained trusted"
         )
+        try retentionMaximumPayload(executable: executable)
     }
 
     private static func awaAdvisoryOverride(
@@ -1491,26 +2035,95 @@ public enum V2Body3SelfTestRunner {
                     ),
                 ]
             )
+        // Prove the closed fixture gate admits the unchanged snapshot before
+        // each refusal. Failed setup must not masquerade as a negative pass.
+        let fixtureAdmission = fixture.removalAdmission(for: successCandidate.clone)
+        let policyURL = URL(fileURLWithPath:
+            fixture.home + "/dev/_ops/policy/worktree-policy.yml")
+        let authorityURL = URL(fileURLWithPath: fixture.stateLocation.path)
+            .appendingPathComponent(RepositoryAuthorityStore.filename)
+        let policyBytes = try Data(contentsOf: policyURL)
+        let authorityBytes = try Data(contentsOf: authorityURL)
+        let logBytes = try Data(contentsOf: URL(fileURLWithPath: log))
+        let registration = try fixture.gitText(["worktree", "list", "--porcelain"])
+        func restoreAdmissionInputs() throws {
+            try policyBytes.write(to: policyURL)
+            try authorityBytes.write(to: authorityURL)
+            guard chmod(authorityURL.path, 0o600) == 0 else {
+                throw Body3SelfTestError("could not restore fixture authority mode")
+            }
+        }
+        for refusal in ["missing-callback", "missing-policy", "drifted-policy",
+                        "missing-authority", "changed-authority"] {
+            try fixtureAdmission.validate(successCandidate.clone.sourceSnapshot)
+            do {
+                switch refusal {
+                case "missing-policy": try FileManager.default.removeItem(at: policyURL)
+                case "drifted-policy":
+                    let changed = String(decoding: policyBytes, as: UTF8.self)
+                        .replacingOccurrences(of: "- blocked/*", with: "- changed/*")
+                    try expect(Data(changed.utf8) != policyBytes, "policy drift fixture did not change")
+                    try Data(changed.utf8).write(to: policyURL)
+                case "missing-authority": try FileManager.default.removeItem(at: authorityURL)
+                case "changed-authority":
+                    let changed = String(decoding: authorityBytes, as: UTF8.self)
+                        .replacingOccurrences(of: fixture.repositoryPath,
+                            with: fixture.repositoryPath + "-different")
+                    try expect(Data(changed.utf8) != authorityBytes, "authority drift fixture did not change")
+                    try Data(changed.utf8).write(to: authorityURL)
+                default: break
+                }
+                let refused = try fixture.remove(successPrepared,
+                    confirmation: successConfirmation, executable: executable,
+                    supplyFixtureAdmission: refusal != "missing-callback")
+                try expect(refused.status == .failed && refused.commands.isEmpty
+                    && refused.awaDisposition == .notApplicable
+                    && FileManager.default.fileExists(atPath: successPath)
+                    && (try Data(contentsOf: URL(fileURLWithPath: log))) == logBytes
+                    && (try fixture.gitText(["worktree", "list", "--porcelain"])) == registration,
+                    "fixture admission \(refusal) reached a child or changed the removal target")
+            } catch {
+                try restoreAdmissionInputs()
+                throw error
+            }
+            try restoreAdmissionInputs()
+            try fixtureAdmission.validate(successCandidate.clone.sourceSnapshot)
+        }
         let successResult = try fixture.remove(
             successPrepared,
             confirmation: successConfirmation,
             executable: executable
         )
-        try expect(
-            successResult.status == .succeeded
+        var successPathObservation: Bool?
+        let preferredPostflightSucceeded = successResult.status == .succeeded
                 && successResult.awaDisposition
                     == .succeeded
                 && successResult.commands.count == 1
                 && successResult.commands[0].executable
                     == fixture.home
-                        + "/dev/_ops/bin/dev-worktree.sh"
-                && !FileManager.default.fileExists(
-                    atPath: successPath
-                )
-                && successResult.residue
-                    .worktreeRegistrationPresent == false,
-            "successful preferred AWA removal was not independently postflighted"
-        )
+                        + "/fixture-tools/cleanup.sh"
+                && {
+                    let absent = !FileManager.default.fileExists(atPath: successPath)
+                    successPathObservation = absent
+                    return absent
+                }()
+                && successResult.residue.worktreeRegistrationPresent == false
+        if !preferredPostflightSucceeded, DiscoveryFixtureDiagnostic.isEnabled {
+            let savedDiagnosticErrno = errno
+            defer { errno = savedDiagnosticErrno }
+            var fields: UInt16 = 0
+            if successResult.status != .succeeded { fields |= 1 << 0 }
+            if successResult.awaDisposition != .succeeded { fields |= 1 << 1 }
+            if successResult.commands.count != 1 { fields |= 1 << 2 }
+            if successResult.commands.first?.executable != fixture.home + "/fixture-tools/cleanup.sh" { fields |= 1 << 3 }
+            if successPathObservation == false { fields |= 1 << 4 }
+            if successPathObservation == nil { fields |= 1 << 5 }
+            if successResult.residue.worktreeRegistrationPresent != false { fields |= 1 << 6 }
+            fputs("BODY3 PREFERRED AWA FIRST MISMATCH status=\(successResult.status.rawValue) awa=\(successResult.awaDisposition.rawValue) fields=\(fields)\n", stderr)
+            fflush(stderr)
+        }
+        try expect(preferredPostflightSucceeded,
+            "successful preferred AWA removal was not independently postflighted")
     }
 
     private static func batchCancelPolicy(
@@ -2220,6 +2833,8 @@ public enum V2Body3SelfTestRunner {
         fixture: Body3Fixture,
         executable: String
     ) throws {
+        RetentionArtifactStore.testingBeginMixedCleanupObservation()
+        defer { RetentionArtifactStore.testingEndMixedCleanupObservation() }
         let worktreePath = try fixture.addWorktree(
             "mixed-cancel",
             managedByAWA: true,
@@ -2231,9 +2846,7 @@ public enum V2Body3SelfTestRunner {
         )
         try fixture.makeRecoveryState(at: worktreePath)
         _ = try fixture.installAWA(exitStatus: 1)
-        let inventory = try fixture.cleanupInventory(
-            executable: executable
-        )
+        let (inventory, selectedScope) = try fixture.currentPolicyCleanupInventory(executable: executable)
         let candidates =
             RepositoryInventoryRemovalCandidates.make(
                 from: inventory,
@@ -2319,20 +2932,27 @@ public enum V2Body3SelfTestRunner {
         let plan = try Body3BatchPlanner.make(
             run: RunIdentity.make(),
             operations: [],
-            removals: [selection, cleanSelection]
+            removals: [selection, cleanSelection],
+            governedRoot: try selectedScope.requireGovernedRootRole()
         )
         let sawConfirmation = LockedFlag()
-        let coordinator = RunCoordinator(
-            configuration: CoordinatorConfiguration(
-                stateLocation: fixture.stateLocation,
-                trampolineExecutable: executable,
-                transportMapping: fixture.mapping
-            ),
-            account: fixture.account
+        let custody = Body3MixedCustodyObservation()
+        var configuration = CoordinatorConfiguration(
+            stateLocation: fixture.stateLocation,
+            trampolineExecutable: executable,
+            transportMapping: fixture.mapping,
+            governedRootRole: try selectedScope.requireGovernedRootRole()
         )
+        configuration.testingRepositoryCustodyRoot = fixture.temporary.path
+        configuration.testingRepositoryContextObserved = { custody.observe($0) }
+        var hooks = RetentionArtifactStore.TestingCustodyHooks()
+        hooks.beforePrepare = { _ in custody.preparing() }
+        hooks.afterStart = { command, handle, _ in custody.started(command, handle) }
+        configuration.testingRetentionCustodyHooks = hooks
+        let coordinator = RunCoordinator(configuration: configuration, account: fixture.account)
         let report = try coordinator.runBody3(
             plan: plan,
-            selectedScope: try .testing(plan: plan),
+            selectedScope: selectedScope,
             cancellation: CancellationToken(),
             inventoryProvider: { _ in inventory }
         ) { event in
@@ -2341,6 +2961,7 @@ public enum V2Body3SelfTestRunner {
                 request.cancel()
             }
         }
+        try custody.verifyRetired(root: fixture.temporary.path)
         let artifacts = try fixture.retentionStore().list()
         let awaLog = fixture.temporary.path + "/awa.log"
         let recovered = Body3RunRecoveryInspector.inspect(
@@ -2359,37 +2980,58 @@ public enum V2Body3SelfTestRunner {
         } else {
             recoveredRun = nil
         }
-        try expect(
-            sawConfirmation.value
-                && report.cancelled
-                && report.results.allSatisfy {
-                    $0.status.isTerminal
-                }
-                && FileManager.default.fileExists(
-                    atPath: worktreePath
-                )
-                && FileManager.default.fileExists(
-                    atPath: cleanWorktreePath
-                )
-                && artifacts.count == 1
-                && artifacts[0].restoreProven
-                && retentionNames.allSatisfy {
-                    !$0.hasPrefix(".incomplete-")
-                }
-                && !FileManager.default.fileExists(
-                    atPath: awaLog
-                )
-                && !FileManager.default.fileExists(
-                    atPath:
-                        fixture.stateLocation.path
-                            + "/host.sock"
-                )
-                && recoveredRun?.plan == plan
-                && recoveredRun?.report == report
-                && recoveredRun?.requiresReview
-                    == true,
-            "isolated mixed recovery/cancel journey mutated source or left owned residue"
-        )
+        do {
+            try expect(
+                sawConfirmation.value
+                    && report.cancelled
+                    && report.results.allSatisfy {
+                        $0.status.isTerminal
+                    }
+                    && FileManager.default.fileExists(
+                        atPath: worktreePath
+                    )
+                    && FileManager.default.fileExists(
+                        atPath: cleanWorktreePath
+                    )
+                    && artifacts.count == 1
+                    && artifacts[0].restoreProven
+                    && retentionNames.allSatisfy {
+                        !$0.hasPrefix(".incomplete-")
+                    }
+                    && !FileManager.default.fileExists(
+                        atPath: awaLog
+                    )
+                    && !FileManager.default.fileExists(
+                        atPath:
+                            fixture.stateLocation.path
+                                + "/host.sock"
+                    )
+                    && recoveredRun?.plan == plan
+                    && recoveredRun?.report == report
+                    && recoveredRun?.requiresReview
+                        == true,
+                "isolated mixed recovery/cancel journey mutated source or left owned residue"
+            )
+        } catch {
+            // Re-observe outcomes only after the unchanged assertion fails.
+            // These closed observations do not replace its original evaluation.
+            RetentionArtifactStore.testingEmitMixedCleanupFailure([
+                sawConfirmation.value,
+                report.cancelled,
+                report.results.allSatisfy { $0.status.isTerminal },
+                FileManager.default.fileExists(atPath: worktreePath),
+                FileManager.default.fileExists(atPath: cleanWorktreePath),
+                artifacts.count == 1,
+                artifacts.first?.restoreProven == true,
+                retentionNames.allSatisfy { !$0.hasPrefix(".incomplete-") },
+                !FileManager.default.fileExists(atPath: awaLog),
+                !FileManager.default.fileExists(atPath: fixture.stateLocation.path + "/host.sock"),
+                recoveredRun?.plan == plan,
+                recoveredRun?.report == report,
+                recoveredRun?.requiresReview == true,
+            ])
+            throw error
+        }
     }
 
     private static func nativeRemovalOverride(
@@ -3171,6 +3813,103 @@ private struct Body3FixturePullRequestLookup: PullRequestLookingUp, Sendable {
     }
 }
 
+// This legacy unit fixture has no installed policy publisher or command
+// context. Its testing-only callback admits only its own canonical clone under
+// freshly read fixture policy and authority. Production admission and the real
+// REMOVAL-ADMISSION integration fixtures remain separate and unchanged.
+fileprivate struct Body3RemovalFixtureAdmission: Sendable {
+    let root: String
+    let home: String
+    let repositoryPath: String
+    let logicalURL: String
+    let stateLocation: StateLocation
+    let clone: LocalClone
+
+    func validate(_ candidate: RepositoryCandidate) throws {
+        let validatedRoot = try TestIsolation.validateRoot(root)
+        guard home == validatedRoot + "/home",
+              stateLocation.path == (try StateLocation.isolated(root: validatedRoot)).path,
+              repositoryPath.hasPrefix(home + "/dev/personal/"),
+              candidate == clone.sourceSnapshot,
+              candidate.path == repositoryPath,
+              candidate.isEligible,
+              candidate.originIdentity == GitHubIdentity.parse(logicalURL),
+              candidate.id == candidate.originIdentity?.canonicalName else {
+            throw Body3SelfTestError("fixture removal selection or containment changed")
+        }
+        let state = try SecureStateDirectory.openExisting(stateLocation)
+        let authority = RepositoryAuthorityStore(state: state).snapshot()
+        guard authority.status == .available,
+              authority.usableRecords.filter({ $0.matches(clone) }).count == 1 else {
+            throw Body3SelfTestError("fixture removal canonical authority changed")
+        }
+        // Repository-centric discovery matches cleanup's scope. The older
+        // clone-wide update gate excludes an unrelated default-attached
+        // worktree, which is not a reason to authorize or reject this target.
+        let discovered = try RepositoryDiscovery(testingHomeDirectory: home,
+            repositoryCentric: true).discover()
+        let matches = discovered.filter { $0.path == repositoryPath }
+        guard matches.count == 1, let fresh = matches.first,
+              fresh.isEligible,
+              fresh.id == candidate.id,
+              fresh.rawOrigin == candidate.rawOrigin,
+              fresh.originIdentity == candidate.originIdentity,
+              fresh.presentationLocation == candidate.presentationLocation,
+              fresh.rootIdentity == candidate.rootIdentity,
+              fresh.gitDirectoryIdentity == candidate.gitDirectoryIdentity,
+              fresh.commonDirectoryIdentity == candidate.commonDirectoryIdentity,
+              fresh.configIdentity == candidate.configIdentity,
+              fresh.policyAdmissionSHA256 == candidate.policyAdmissionSHA256,
+              fresh.hookAdmissionSHA256 == candidate.hookAdmissionSHA256,
+              fresh.linkedWorktreePaths == candidate.linkedWorktreePaths,
+              fresh.linkedWorktrees == candidate.linkedWorktrees else {
+            throw Body3SelfTestError("fixture removal policy, identity, or topology changed")
+        }
+        let finalAuthority = RepositoryAuthorityStore(state: state).snapshot()
+        guard finalAuthority.status == .available,
+              finalAuthority.fileIdentity == authority.fileIdentity,
+              finalAuthority.usableRecords.filter({ $0.matches(clone) }).count == 1,
+              try RepositoryPolicyLoader.load(rootPath: home + "/dev").admissionSHA256
+                == candidate.policyAdmissionSHA256 else {
+            throw Body3SelfTestError("fixture removal admission changed during reinspection")
+        }
+    }
+}
+
+private final class Body3MixedCustodyObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var contextCount = 0
+    private weak var context: CommandCustodyContext?
+    private var mutationOnly = true
+    private var preparationCount = 0
+    private var commands: [PreparedCustodyCommand] = []
+    private var handles: [RetainedCleanupRegistry.Handle] = []
+
+    func observe(_ value: CommandCustodyContext) {
+        lock.lock(); defer { lock.unlock() }
+        contextCount += 1; context = value; mutationOnly = mutationOnly && value.mode == .mutation
+    }
+    func preparing() { lock.lock(); preparationCount += 1; lock.unlock() }
+    func started(_ command: PreparedCustodyCommand, _ handle: RetainedCleanupRegistry.Handle) {
+        lock.lock(); commands.append(command); handles.append(handle); lock.unlock()
+    }
+    func verifyRetired(root: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard contextCount == 1, mutationOnly, preparationCount > 0, !commands.isEmpty,
+              handles.count == commands.count,
+              handles.allSatisfy({ $0.snapshot().phase == .finished }),
+              commands.allSatisfy({ $0.resources.testingResourcesRetired }),
+              context == nil || context!.isClosed,
+              !RetainedCleanupRegistry.shared.hasRetainedWork,
+              try FileManager.default.contentsOfDirectory(atPath: root + "/owner-resources").isEmpty,
+              try CustodyCatalog.decode(PolicyAuthorityFile.read(
+                path: StateLocation.isolated(root: root).path + "/custody/catalog.json",
+                owner: geteuid(), maximumBytes: CustodyCatalog.maximumBytes).bytes).entries.isEmpty else {
+            throw Body3SelfTestError("mixed journey did not borrow one mutation owner and retire actual retention commands")
+        }
+    }
+}
+
 final class Body3Fixture {
     let temporary: M1TemporaryDirectory
     let home: String
@@ -3198,6 +3937,13 @@ final class Body3Fixture {
             atPath: devUmbrella
                 ? home : home + "/dev/personal",
             withIntermediateDirectories: true
+        )
+        // The same fixture intentionally reinstalls its advisory script for
+        // refusal, unavailable and success cases. Create its private directory
+        // once with the fresh fixture, before any script can be installed.
+        try FileManager.default.createDirectory(
+            atPath: home + "/fixture-tools", withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
         )
         try Self.installPolicy(home: home)
         try Self.gitProcess([
@@ -3516,6 +4262,79 @@ final class Body3Fixture {
         return try inventory(executable: executable)
     }
 
+    /// This journey needs policy-bound metadata before the coordinator borrows
+    /// its own original mutation owner. The older transport fixtures stay intact.
+    func currentPolicyCleanupInventory(executable: String)
+        throws -> (RepositoryInventory, ValidatedSelectedRepositoryScope) {
+        guard let framework = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_FRAMEWORK"],
+              let sourcePath = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_POLICY_SOURCE"],
+              framework.hasPrefix("/private/tmp/shadow-sync-"),
+              sourcePath.hasPrefix("/private/tmp/shadow-sync-"),
+              chmod(home, 0o700) == 0 else {
+            throw Body3SelfTestError("mixed journey explicit fixture runtime resources missing")
+        }
+        try FileManager.default.createDirectory(atPath: temporary.path + "/owner-resources",
+            withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        _ = try DiscoveryCallerSelfTestRunner.installPolicyResources(home: home,
+            framework: framework, sourcePath: sourcePath, layout: .body3)
+        let discovery = try RepositoryInventoryDiscovery(executablePath: executable,
+            isolatedRoot: temporary.path, transportMapping: mapping,
+            pullRequestLookup: Body3FixturePullRequestLookup())
+        let selected: (RepositoryInventory, ValidatedSelectedRepositoryScope) = try {
+            let owner = try RunAuthority.acquireRun(at: stateLocation)
+            defer { owner.release() }
+            try CustodyCatalogStore.testingInitialize(leases: owner.retainCommandLeases(), root: temporary.path)
+            let context = try CommandCustodyContext.testing(leases: owner.retainCommandLeases(),
+                location: stateLocation, root: temporary.path, authority: owner, discoveryFixture: true)
+            defer { context.close() }
+            let lease = try owner.duplicateOperationLease()
+            defer { close(lease) }
+            let binder = try context.currentPolicyBinder(cancellation: CancellationToken())
+            let catalog = try binder.processFreeCatalog(preferences: nil, generation: 1)
+            guard catalog.isComplete,
+                  let entry = catalog.catalog.candidates.first(where: { $0.id == "owner/body3-t12" }) else {
+                throw Body3SelfTestError("mixed journey current-policy catalog incomplete")
+            }
+            let scope = try binder.bind(intent: RepositorySelectionIntent(catalog: catalog.catalog,
+                entries: [try entry.preferenceEntry]))
+            let state = owner.stateDirectory
+            let initial = try discovery.discoverInventory(scope: scope, state: state,
+                leaseDescriptor: lease, discoveryBinder: binder)
+            guard let clone = initial.cards.first?.clones.first(where: { $0.primaryRoot == repositoryPath }),
+                  clone.isAuthorityEligible, scope.admits(clone.sourceSnapshot),
+                  clone.sourceSnapshot.policyAdmissionSHA256 == scope.policyDigest else {
+                throw Body3SelfTestError("mixed journey inventory lacks current-policy admitted metadata")
+            }
+            // Reproduce the obsolete zero-policy selection at the actual
+            // mutation-policy call root: it must refuse, never mint authority.
+            var legacyScopeRefused = false
+            do {
+                try context.withRemovalDiscoveryPolicy(.testing(candidates: [clone.sourceSnapshot]),
+                    account: account, cancellation: CancellationToken()) { _ in
+                    throw Body3SelfTestError("mixed journey accepted unbound legacy scope")
+                }
+            } catch SelectedRepositoryScopeError.changed { legacyScopeRefused = true }
+            guard legacyScopeRefused else { throw Body3SelfTestError("mixed journey legacy scope did not refuse") }
+            _ = try RepositoryAuthorityStore(state: state).confirmOnboarding(
+                proposals: [CanonicalAuthorityProposal(clone: clone)],
+                selectedRepositoryIDs: [clone.repositoryID], freshClones: [clone],
+                expectedFileIdentity: initial.authorityFileIdentity)
+            let authorized = try discovery.discoverInventory(scope: scope, state: state,
+                leaseDescriptor: lease,
+                discoveryBinder: context.currentPolicyBinder(cancellation: CancellationToken()))
+            return (authorized, scope)
+        }()
+        // All preparation context/lease aliases are closed before cleanup's own
+        // read phase, and both phases finish before runBody3 acquires its owner.
+        let capability = try VerifiedRepositoryAuthorityCapability(scope: selected.1, inventory: selected.0)
+        let inventory = try discovery.inspectCleanup(inventory: selected.0,
+            repositoryIDs: selected.1.repositoryIDs, capability: capability)
+        guard inventory.cards.flatMap(\.clones).allSatisfy({
+            selected.1.admits($0.sourceSnapshot) && $0.sourceSnapshot.policyAdmissionSHA256 == selected.1.policyDigest
+        }) else { throw Body3SelfTestError("mixed journey cleanup lost bound metadata") }
+        return (inventory, selected.1)
+    }
+
     func worktree(
         inventory: RepositoryInventory,
         path: String
@@ -3708,12 +4527,12 @@ final class Body3Fixture {
         removeOnSuccess: Bool = false
     ) throws -> String {
         let path =
-            home + "/dev/_ops/bin/dev-worktree.sh"
+            home + "/fixture-tools/cleanup.sh"
         let log = temporary.path + "/awa.log"
         let script = """
         #!/bin/bash
-        [ "$AWA_POLICY" = "\(home)/dev/_ops/policy/worktree-policy.yml" ] || exit 91
-        [ "$AWA_GOVERNED_ROOT" = "\(home)/dev" ] || exit 92
+        [ "$AWA_POLICY" = "\(home)/fixture-policy.yml" ] || exit 91
+        [ "$AWA_GOVERNED_ROOT" = "\(home)/fixture-workspace" ] || exit 92
         printf '%s|%s|%s\\n' "$1" "$2" "$3" >> "\(log)"
         \(removeOnSuccess ? #"/usr/bin/git worktree remove "$3" || exit $?"# : "")
         exit \(exitStatus)
@@ -3754,11 +4573,18 @@ final class Body3Fixture {
         return log
     }
 
+    fileprivate func removalAdmission(for clone: LocalClone) -> Body3RemovalFixtureAdmission {
+        Body3RemovalFixtureAdmission(root: temporary.path, home: home,
+            repositoryPath: repositoryPath, logicalURL: logicalURL,
+            stateLocation: stateLocation, clone: clone)
+    }
+
     func remove(
         _ prepared: PreparedRemoval,
         confirmation: GroupedRemovalConfirmation,
         executable: String,
-        additionalProtectedPaths: [String] = []
+        additionalProtectedPaths: [String] = [],
+        supplyFixtureAdmission: Bool = true
     ) throws -> RemovalExecutionResult {
         let authority = try RunAuthority.acquireRun(
             at: stateLocation
@@ -3766,10 +4592,18 @@ final class Body3Fixture {
         defer { authority.release() }
         let lease = try authority.duplicateOperationLease()
         defer { close(lease) }
+        let admission = removalAdmission(for: prepared.selection.candidate.clone)
+        let check: (@Sendable (RepositoryCandidate) throws -> Void)?
+        if supplyFixtureAdmission {
+            check = { try admission.validate($0) }
+        } else {
+            check = nil
+        }
         let git = GitTransactionConfiguration(
             trampolineExecutable: executable,
             operationLeaseDescriptor: lease,
-            transportMapping: mapping
+            transportMapping: mapping,
+            runtimeEligibilityCheck: check
         )
         return RemovalTransaction(
             runner: DescriptorProcessRunner(),
@@ -3779,7 +4613,7 @@ final class Body3Fixture {
                     stateLocation: stateLocation,
                     awaExecutablePath:
                         home
-                            + "/dev/_ops/bin/dev-worktree.sh",
+                            + "/fixture-tools/cleanup.sh",
                     protectedPaths: [
                         stateLocation.path,
                         executable,

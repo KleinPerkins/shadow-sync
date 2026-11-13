@@ -1,0 +1,26 @@
+name: Private release source contracts
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contracts:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'KleinPerkins/shadow-sync' &&
+      github.repository_id == '1442961455' &&
+      github.ref == 'refs/heads/main' &&
+      github.sha == github.workflow_sha
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted main source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Verify synthetic private release contracts
+        run: python3 -I -B -m unittest discover -s Tests/Tooling -p 'test_release_candidate.py' -v
+      # This workflow proves source contracts only. The explicit owner-local
+      # release-candidate command owns private signing and qualification delivery.
+      # No credentials, private outputs, binary uploads or evidence artifacts.

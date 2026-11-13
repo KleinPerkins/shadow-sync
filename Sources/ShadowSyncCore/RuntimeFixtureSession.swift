@@ -10,6 +10,7 @@ enum RuntimeFixtureSession {
         var current: RuntimeFixtureCustody?
         var ancestors: [RuntimeFixtureCustody] = []
         var guardian: RuntimeSuiteGuardian?
+        var installationRoots: [String: (InstallationReadinessFixtureCustody, RuntimeFixtureCustody?)] = [:]
     }
     private static let binding = Binding()
     // Serialize legacy top-level discovery operations, not their parallel Git
@@ -43,7 +44,7 @@ enum RuntimeFixtureSession {
     static func fixturePrefix(_ name: String,
         namespace: String? = ProcessInfo.processInfo.environment["SHADOW_SYNC_RUNTIME_FIXTURE_NAMESPACE"]) throws -> String {
         guard ["shadow-sync-m2.", "shadow-sync-m4.", "shadow-sync-self-tests.", "shadow-sync-custody-anchor-",
-               "shadow-sync-m6-self.", "shadow-sync-custody-leases.", "shadow-sync-custody-catalog.",
+               "shadow-sync-m6-self.", "shadow-sync-custody-leases.", "shadow-sync-custody-catalog.", "shadow-sync-ic.",
                "shadow-sync-fresh-state.", "shadow-sync-registry.", "shadow-sync-state-admission.",
                "shadow-sync-policy-input-", "shadow-sync-policy-transport-",
                "shadow-sync-policy-authority-", "shadow-sync-catalog-admission-",
@@ -87,6 +88,25 @@ enum RuntimeFixtureSession {
         }
         return result
     }
+    static func registerInstallationRoot(_ root: InstallationReadinessFixtureCustody) throws {
+        binding.lock.lock(); defer { binding.lock.unlock() }
+        guard binding.installationRoots[root.root] == nil else { throw RuntimeFixtureCustody.Failure.invalidContract }
+        binding.installationRoots[root.root] = (root, binding.current)
+    }
+    static func installationRoot(_ root: String) throws -> InstallationReadinessFixtureCustody {
+        binding.lock.lock(); defer { binding.lock.unlock() }
+        guard let value = binding.installationRoots[root]?.0 else { throw RuntimeFixtureCustody.Failure.invalidContract }
+        return value
+    }
+    static func didFinishInstallationRoot(_ root: InstallationReadinessFixtureCustody) {
+        binding.lock.lock(); defer { binding.lock.unlock() }
+        if binding.installationRoots[root.root]?.0 === root { binding.installationRoots.removeValue(forKey: root.root) }
+    }
+    private static func installationRoots(for registry: RuntimeFixtureCustody) -> [InstallationReadinessFixtureCustody] {
+        binding.lock.lock(); defer { binding.lock.unlock() }
+        return binding.installationRoots.values.filter { $0.1 === registry }.map { $0.0 }
+    }
+
     static func drain(_ anchor: OwnedSpawnAnchor) {
         anchor.testingRequestRuntimeDrain()
         var reported = false
@@ -155,8 +175,15 @@ enum RuntimeFixtureSession {
         catch { failure = failure ?? error; registry.cancel(.assertion, now: now) }
         var reported = false
         let diagnostic = MonotonicDeadline(seconds: 6)
-        while !registry.snapshot().cleanupComplete {
+        // Child retirement alone cannot retire an installation session queue.
+        // Keep the actual root owners visible to the guardian until their joins
+        // and identity-bound cleanup succeed; no boolean escape or timer expiry.
+        while !registry.snapshot().cleanupComplete || !installationRoots(for: registry).isEmpty {
             registry.tick(now: now)
+            for root in installationRoots(for: registry) {
+                do { try root.finish(deadline: .init(seconds: 0.02)); didFinishInstallationRoot(root) }
+                catch { failure = failure ?? error; registry.cancel(.assertion, now: now) }
+            }
             if diagnostic.hasExpired && !reported {
                 fputs("RUNTIME CASE CLEANUP PENDING\n", stderr); fflush(stderr); reported = true
             }

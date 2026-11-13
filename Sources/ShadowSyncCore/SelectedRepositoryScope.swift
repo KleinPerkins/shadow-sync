@@ -47,6 +47,19 @@ public struct ValidatedSelectedRepository:
     public let repositoryPath: String
     public let rootIdentity: FileIdentity
     public let repositoryIdentity: FileIdentity
+
+    // A directory's child count is an observation, not its generation. Keep
+    // full FileIdentity values as observations and repository identity exact;
+    // only a live directory root compares its stable inode/protection.
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        let a = lhs.rootIdentity, b = rhs.rootIdentity
+        let rootMatches = a.isDirectory && b.isDirectory && a.linkCount > 0 && b.linkCount > 0
+            ? a.matchesStableNode(b) : a == b
+        return lhs.repositoryID == rhs.repositoryID && lhs.locator == rhs.locator
+            && lhs.governedRootPath == rhs.governedRootPath && lhs.policyRootPath == rhs.policyRootPath
+            && lhs.repositoryPath == rhs.repositoryPath && rootMatches
+            && lhs.repositoryIdentity == rhs.repositoryIdentity
+    }
 }
 
 public struct ValidatedSelectedRepositoryScope:
@@ -202,6 +215,8 @@ final class RepositoryDiscoveryPolicy {
     private var failure: SelectedRepositoryScopeError?
     #if SHADOW_SYNC_TESTING
     var testingBeforeAccess: ((String) -> Void)?
+    var testingBeforeSelectedAccess: (() -> Void)?
+    var testingSelectedIdentityIOEntry: (() -> Void)?
     var testingProtectedPath: ((String, UInt64) -> Void)?
     #endif
 
@@ -214,12 +229,21 @@ final class RepositoryDiscoveryPolicy {
         policy = try RepositoryPolicy(snapshot: snapshot)
         guard scope.policyDigest == snapshot.admissionSHA256,
               !scope.repositories.isEmpty else { throw SelectedRepositoryScopeError.changed }
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.initial)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         try validate()
     }
 
     fileprivate func close() { closed = true }
 
     func validate() throws {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticHadCaller = DiscoveryFixtureDiagnostic.hasCaller
+        let diagnosticCaller = diagnosticHadCaller ? nil : DiscoveryFixtureDiagnostic.enterCaller(.validate)
+        defer { if !diagnosticHadCaller { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) } }
+        #endif
         try validateLocalAuthority()
         do { try admission.validate(deadline: deadline) }
         catch { throw record(error) }
@@ -267,6 +291,10 @@ final class RepositoryDiscoveryPolicy {
     func requireAllowed(_ path: String) throws { try requireAllowed([path]) }
 
     func requireAllowed(_ paths: [String]) throws {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.requireAllowed)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         try validateLocalAuthority()
         do {
             try classifyAllowed(paths)
@@ -293,6 +321,10 @@ final class RepositoryDiscoveryPolicy {
     /// A permitted leaf does not grant access through a protected ancestor.
     /// Keep every prefix request inside the original metadata-stage deadline.
     func prepareAccess(_ paths: [String]) throws {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.prepareAccess)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         try validateLocalAuthority()
         do {
             try classifyAccessPrefixes(paths)
@@ -325,23 +357,45 @@ final class RepositoryDiscoveryPolicy {
     /// obligation that the former entry validation would have observed.
     /// This full check performs no candidate classification or access.
     private func preparationFailure(_ original: Error) -> SelectedRepositoryScopeError {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.preparationFailure)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         do { try validate() } catch { _ = record(error) }
         return record(original)
     }
 
-    func willAccess(_ path: String) throws {
+    func willAccess(_ path: String) throws { try willAccess([path]) }
+
+    /// Consecutive lexical admissions may share one boundary only when no
+    /// candidate I/O intervenes. Preserve each ordered hook and complete fresh
+    /// validation after all hooks, immediately before the caller's candidate I/O.
+    func willAccess(_ paths: [String]) throws {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.willAccess)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         try validateLocalAuthority()
         do {
-            try classifyAccessPrefixes([path])
+            try classifyAccessPrefixes(paths)
             #if SHADOW_SYNC_TESTING
-            testingBeforeAccess?(path)
+            for path in paths { testingBeforeAccess?(path) }
             #endif
             try validate()
         } catch { throw preparationFailure(error) }
     }
 
     func policyRelativePath(_ path: String) throws -> String {
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.policyRelativePath)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
         try validate()
+        return try lexicalPolicyRelativePath(path)
+    }
+
+    /// Pure lexical conversion; enclosing admission owns fresh authority checks.
+    private func lexicalPolicyRelativePath(_ path: String) throws -> String {
         let relative = try homeRelative(path), prefix = snapshot.projection.rootComponents
         guard relative.count >= prefix.count,
               zip(relative.prefix(prefix.count), prefix).allSatisfy({ $0.utf8.elementsEqual($1.utf8) }) else {
@@ -357,24 +411,50 @@ final class RepositoryDiscoveryPolicy {
     }
 
     func requireSelected(_ selected: ValidatedSelectedRepository) throws {
-        try validate()
-        let relative = try homeRelative(selected.repositoryPath)
-        let root = account.homeDirectory + "/" + snapshot.projection.rootComponents.joined(separator: "/")
-        guard scope.repositories.contains(selected),
-              selected.governedRootPath.utf8.elementsEqual(account.homeDirectory.utf8),
-              selected.policyRootPath.utf8.elementsEqual(root.utf8),
-              selected.locator.governedRoot == "~",
-              relative.count == selected.locator.components.count,
-              zip(relative, selected.locator.components).allSatisfy({ $0.utf8.elementsEqual($1.utf8) }) else {
-            throw SelectedRepositoryScopeError.changed
+        #if SHADOW_SYNC_TESTING
+        let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.requireSelected)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+        #endif
+        try validateLocalAuthority()
+        do {
+            let relative = try homeRelative(selected.repositoryPath)
+            let root = account.homeDirectory + "/" + snapshot.projection.rootComponents.joined(separator: "/")
+            guard scope.repositories.contains(selected),
+                  selected.governedRootPath.utf8.elementsEqual(account.homeDirectory.utf8),
+                  selected.policyRootPath.utf8.elementsEqual(root.utf8),
+                  selected.locator.governedRoot == "~",
+                  relative.count == selected.locator.components.count,
+                  zip(relative, selected.locator.components).allSatisfy({ $0.utf8.elementsEqual($1.utf8) }) else {
+                throw SelectedRepositoryScopeError.changed
+            }
+            _ = try lexicalPolicyRelativePath(selected.repositoryPath)
+        } catch {
+            // Lexical failure cannot conceal cleanup or current authority drift.
+            // Preserve the original changed/path error only while authority lives.
+            try validate()
+            throw error
         }
-        _ = try policyRelativePath(selected.repositoryPath)
-        // Classification precedes traversal, including each intermediate node.
-        try prepareAccess([selected.repositoryPath])
+        do {
+            // No candidate I/O intervenes in the lexical preparation above.
+            // Classification retains full resource validation on both sides,
+            // including cached evaluations, then a complete fresh preflight.
+            try classifyAccessPrefixes([selected.repositoryPath])
+            #if SHADOW_SYNC_TESTING
+            testingBeforeSelectedAccess?()
+            #endif
+            try validate()
+        } catch { throw preparationFailure(error) }
+        #if SHADOW_SYNC_TESTING
+        testingSelectedIdentityIOEntry?()
+        #endif
         try RepositoryRootPathIdentity.withVerifiedDirectory(path: account.homeDirectory,
             expected: RepositoryDirectoryIdentity(selected.rootIdentity)) { opened in
             var info = stat()
-            guard fstat(opened.descriptor, &info) == 0, FileIdentity(info) == selected.rootIdentity else {
+            guard fstat(opened.descriptor, &info) == 0 else { throw SelectedRepositoryScopeError.changed }
+            let observed = FileIdentity(info)
+            guard observed.isDirectory, observed.linkCount > 0,
+                  selected.rootIdentity.isDirectory, selected.rootIdentity.linkCount > 0,
+                  observed.matchesStableNode(selected.rootIdentity) else {
                 throw SelectedRepositoryScopeError.changed
             }
         }
@@ -537,6 +617,11 @@ public final class SelectedRepositoryScopeBinder:
     private let setupDeadline: UInt64?
     private let revalidatePhase: @Sendable () throws -> Void
 
+    #if SHADOW_SYNC_TESTING
+    // Per-binder, synchronous seam; never a production source of authority.
+    var testingAfterRebindCatalog: (() throws -> Void)?
+    #endif
+
     public static func withProductionReadPhase<Value>(cancellation: CancellationToken,
         _ body: (SelectedRepositoryScopeBinder) throws -> Value
     ) throws -> Value {
@@ -589,20 +674,8 @@ public final class SelectedRepositoryScopeBinder:
     }
 
     private static func production(context: CommandCustodyContext, cancellation: CancellationToken) throws -> SelectedRepositoryScopeBinder {
-        do {
-            try context.validatePhaseAdmission()
-            let deadline = DispatchTime.now().uptimeNanoseconds &+ RepositorySelectionCatalogLimits().elapsedNanoseconds
-            let account = try EffectiveAccount.current()
-            let resources = try PublisherPolicyResources.production(account: account)
-            guard DispatchTime.now().uptimeNanoseconds < deadline else { throw SelectedRepositoryScopeError.policyUnavailable }
-            let snapshot = try HostPolicySnapshot.load(account: account,
-                contract: QualifiedAWAContract.decode(resources.contract))
-            let state = try SecureStateDirectory.openExisting(StateLocation.production())
-            let validate = context.phaseAdmissionCheck()
-            return try PolicyCatalogSession(snapshot: snapshot, publisher: resources, context: context,
-                scratchDescriptor: state.descriptor.value, cancellation: cancellation)
-                .binder(setupDeadline: deadline, revalidatePhase: validate)
-        } catch { throw Self.policyFailure(error) }
+        do { return try context.currentPolicyBinder(cancellation: cancellation) }
+        catch { throw Self.policyFailure(error) }
     }
 
     #if SHADOW_SYNC_TESTING
@@ -700,10 +773,12 @@ public final class SelectedRepositoryScopeBinder:
     private func processFreeCatalogBound(preferences: RepositorySelectionPreferenceDocument?,
         canonicalLocators: [String: RepositorySelectionLocator] = [:],
         sessionEntries: [RepositorySelectionPreferenceEntry] = [], generation: UInt64,
-        deadlineLimit: UInt64?
+        deadlineLimit: UInt64?, firstAdmissionHints: [RepositorySelectionLocator] = []
     ) throws -> RepositorySelectionCatalogResult {
         let deadline = boundedMetadataDeadline(deadlineLimit)
         #if SHADOW_SYNC_TESTING
+        let previousDiagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.catalog)
+        defer { DiscoveryFixtureDiagnostic.leaveCaller(previousDiagnosticCaller) }
         let diagnosticStart = DispatchTime.now().uptimeNanoseconds
         var diagnosticStage = DiscoveryFixtureDiagnostic.Stage.root
         var diagnosticPassed = false
@@ -712,7 +787,7 @@ public final class SelectedRepositoryScopeBinder:
                 started: diagnosticStart, deadline: deadline, succeeded: diagnosticPassed)
         }
         #endif
-        let root = try openRoot(deadline: deadline)
+        let root = try openRoot(deadline: deadline, lexicalHints: firstAdmissionHints)
         defer { close(root.descriptor) }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .projection
@@ -766,8 +841,9 @@ public final class SelectedRepositoryScopeBinder:
         return setupDeadline ?? fresh
     }
 
-    private func bindBound(intent: RepositorySelectionIntent,
-                           deadlineLimit: UInt64?) throws -> ValidatedSelectedRepositoryScope {
+    private func bindBound(intent: RepositorySelectionIntent, deadlineLimit: UInt64?,
+                           completedCatalog: RepositorySelectionCatalogResult? = nil)
+        throws -> ValidatedSelectedRepositoryScope {
         guard !intent.entries.isEmpty else {
             throw SelectedRepositoryScopeError.invalidIntent
         }
@@ -781,7 +857,8 @@ public final class SelectedRepositoryScopeBinder:
                 started: diagnosticStart, deadline: deadline, succeeded: diagnosticPassed)
         }
         #endif
-        let root = try openRoot(deadline: deadline)
+        let root = try openRoot(deadline: deadline,
+            lexicalHints: Array(intent.entries.prefix(63).map(\.locator)))
         defer { close(root.descriptor) }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .projection
@@ -807,23 +884,31 @@ public final class SelectedRepositoryScopeBinder:
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .metadata
         #endif
-        let catalog = RepositorySelectionCatalogDiscovery.discoverCatalog(
-            configuration: RepositorySelectionCatalogConfiguration(
-                roots: [catalogRoot],
-                policy: projection,
-                preferences: nil,
-                canonicalLocators: Dictionary(
-                    uniqueKeysWithValues: intent.entries.map {
-                        ($0.repositoryID, $0.locator)
-                    }
-                ),
-                generation: intent.generation,
-                limits: catalogLimits,
-                deadlineUptimeNanoseconds: deadline,
-                admission: admission,
-                inspectRootRepository: snapshot == nil
+        let catalog: RepositorySelectionCatalogResult
+        if let completedCatalog {
+            // Rebind alone supplies its immediately completed catalog. This is
+            // advisory metadata from this call, never a saved access grant.
+            // Live root/policy checks above and exact traversal below still run.
+            catalog = completedCatalog
+        } else {
+            catalog = RepositorySelectionCatalogDiscovery.discoverCatalog(
+                configuration: RepositorySelectionCatalogConfiguration(
+                    roots: [catalogRoot],
+                    policy: projection,
+                    preferences: nil,
+                    canonicalLocators: Dictionary(
+                        uniqueKeysWithValues: intent.entries.map {
+                            ($0.repositoryID, $0.locator)
+                        }
+                    ),
+                    generation: intent.generation,
+                    limits: catalogLimits,
+                    deadlineUptimeNanoseconds: deadline,
+                    admission: admission,
+                    inspectRootRepository: snapshot == nil
+                )
             )
-        )
+        }
         guard catalog.isComplete else {
             if catalog.degradedReason == .cleanupPending { throw SelectedRepositoryScopeError.cleanupPending }
             throw SelectedRepositoryScopeError.catalogDegraded(
@@ -831,7 +916,8 @@ public final class SelectedRepositoryScopeBinder:
                     ?? "catalog incomplete"
             )
         }
-        guard catalog.catalog.policyDigest == intent.policyDigest,
+        guard catalog.catalog.generation == intent.generation,
+              catalog.catalog.policyDigest == intent.policyDigest,
               catalog.catalog.rootIdentities
                 == intent.rootIdentities else {
             throw SelectedRepositoryScopeError.changed
@@ -944,7 +1030,9 @@ public final class SelectedRepositoryScopeBinder:
     /// identity before handing it to repository inspection.
     func rebind(_ scope: ValidatedSelectedRepositoryScope,
                 deadlineLimit: UInt64? = nil) throws -> ValidatedSelectedRepositoryScope {
-        let stageDeadline = deadlineLimit.map { boundedMetadataDeadline($0) }
+        // Catalog discovery and binding share one ceiling, including ordinary
+        // reads with no enclosing command limit. Neither phase renews it.
+        let stageDeadline = boundedMetadataDeadline(deadlineLimit)
         #if SHADOW_SYNC_TESTING
         let diagnosticStart = DispatchTime.now().uptimeNanoseconds
         var diagnosticStage = DiscoveryFixtureDiagnostic.Stage.prepare
@@ -970,7 +1058,8 @@ public final class SelectedRepositoryScopeBinder:
         #endif
         let catalog = try processFreeCatalogBound(preferences: nil,
             canonicalLocators: Dictionary(uniqueKeysWithValues: entries.map { ($0.repositoryID, $0.locator) }),
-            generation: scope.selectionGeneration, deadlineLimit: stageDeadline)
+            generation: scope.selectionGeneration, deadlineLimit: stageDeadline,
+            firstAdmissionHints: Array(entries.prefix(63).map(\.locator)))
         guard catalog.isComplete else {
             if catalog.degradedReason == .cleanupPending { throw SelectedRepositoryScopeError.cleanupPending }
             throw SelectedRepositoryScopeError.catalogDegraded(
@@ -982,8 +1071,16 @@ public final class SelectedRepositoryScopeBinder:
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .decisions
         #endif
-        let rebound = try bindBound(intent: intent, deadlineLimit: stageDeadline)
-        guard rebound == scope else { throw SelectedRepositoryScopeError.changed }
+        #if SHADOW_SYNC_TESTING
+        try testingAfterRebindCatalog?()
+        #endif
+        let rebound = try bindBound(intent: intent, deadlineLimit: stageDeadline, completedCatalog: catalog)
+        guard rebound == scope else {
+            #if SHADOW_SYNC_TESTING
+            DiscoveryFixtureDiagnostic.recordRebindMismatch(original: scope, current: rebound)
+            #endif
+            throw SelectedRepositoryScopeError.changed
+        }
         #if SHADOW_SYNC_TESTING
         diagnosticPassed = true
         #endif
@@ -1035,12 +1132,20 @@ public final class SelectedRepositoryScopeBinder:
             defer { service.close() }
             do {
                 let value = try body(service)
+                #if SHADOW_SYNC_TESTING
+                let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.finalValidation)
+                defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+                #endif
                 try service.validate()
                 #if SHADOW_SYNC_TESTING
                 diagnosticPassed = true
                 #endif
                 return value
             } catch {
+                #if SHADOW_SYNC_TESTING
+                let diagnosticCaller = DiscoveryFixtureDiagnostic.enterCaller(.errorValidation)
+                defer { DiscoveryFixtureDiagnostic.leaveCaller(diagnosticCaller) }
+                #endif
                 try service.validate()
                 throw error
             }
@@ -1149,11 +1254,36 @@ public final class SelectedRepositoryScopeBinder:
         let identity: FileIdentity
     }
 
-    private func openRoot(deadline: UInt64) throws -> OpenedRoot {
+    /// Hints are bounded lexical input only. Reserve the first slot for root
+    /// admission and preserve exact bytes when filtering and deduplicating.
+    /// Inspect at most 63 hints, even when duplicates or unrelated roots occur.
+    static func firstRootAdmissionPaths(root: String, projectionRoot: [String],
+                                        lexicalHints: [RepositorySelectionLocator]) throws
+        -> [RepositorySelectionAdmissionPath] {
+        var paths = [try RepositorySelectionAdmissionPath(root: root, components: [])]
+        var seen = Set<Data>()
+        let prefix = projectionRoot.map { Data($0.utf8) }
+        for hint in lexicalHints.prefix(63) {
+            guard hint.governedRoot.utf8.elementsEqual(root.utf8),
+                  hint.components.map({ Data($0.utf8) }).starts(with: prefix),
+                  seen.insert(Data(hint.relativePath.utf8)).inserted else { continue }
+            paths.append(try RepositorySelectionAdmissionPath(root: root, components: hint.components))
+        }
+        return paths
+    }
+
+    private func openRoot(deadline: UInt64, lexicalHints: [RepositorySelectionLocator] = []) throws -> OpenedRoot {
         try revalidatePhase()
         do {
-            try admission.requireAllowed(
-                RepositorySelectionAdmissionPath(root: logicalRoot, components: []), deadline: deadline)
+            // Bind and rebind supply lexical hints. Classify them with the required root
+            // in this invocation's first batch, before any root filesystem I/O.
+            // Hint decisions never grant access; later exact admissions and
+            // physical identity checks remain mandatory, including for root.
+            let paths = try Self.firstRootAdmissionPaths(root: logicalRoot,
+                projectionRoot: snapshot?.projection.rootComponents ?? [], lexicalHints: lexicalHints)
+            guard case .allowed = try admission.classify(paths, deadline: deadline)[0] else {
+                throw RepositorySelectionAdmissionError.unavailable
+            }
         } catch { throw Self.policyFailure(error) }
         let descriptor = Darwin.open(
             governedRootPath,
@@ -1166,6 +1296,7 @@ public final class SelectedRepositoryScopeBinder:
             var info = stat()
             guard fstat(descriptor, &info) == 0,
                   FileIdentity(info).isDirectory,
+                  info.st_nlink > 0,
                   info.st_uid == expectedUID,
                   (info.st_mode & 0o022) == 0 else {
                 throw SelectedRepositoryScopeError.changed
@@ -1267,15 +1398,15 @@ public final class SelectedRepositoryScopeBinder:
             ? [
                 ["capabilities"],
                 ["personal"],
-                ["affirm", "src"],
-                ["affirm", "vendor"],
+                ["fixture-owner", "src"],
+                ["fixture-owner", "vendor"],
             ]
             : [
                 policyPathPrefix,
                 policyPathPrefix + ["capabilities"],
                 policyPathPrefix + ["personal"],
-                policyPathPrefix + ["affirm", "src"],
-                policyPathPrefix + ["affirm", "vendor"],
+                policyPathPrefix + ["fixture-owner", "src"],
+                policyPathPrefix + ["fixture-owner", "vendor"],
             ]
         return try RepositorySelectionPolicy(
             shelfPaths: shelves,

@@ -9,12 +9,6 @@ struct RepositoryMaintenanceDraft {
     let diagnostics: [String]
 }
 
-#if SHADOW_SYNC_TESTING
-enum RepositoryMaintenanceTesting {
-    @TaskLocal static var registrationObserver: (@Sendable (String) -> Void)?
-}
-#endif
-
 enum RepositoryMaintenancePlanner {
     typealias GitRun = (
         _ arguments: [String],
@@ -57,6 +51,44 @@ enum RepositoryMaintenancePlanner {
         admission: GitAdmissionSnapshot,
         capturedNow: Date,
         validateAdmission: () throws -> Void,
+        run: GitRun
+    ) throws -> RepositoryMaintenanceDraft {
+        try inspectRegistrations(clone: clone, remote: remote, account: account,
+            handle: handle, frozen: frozen, admission: admission, capturedNow: capturedNow,
+            validateAdmission: validateAdmission, observeRegistration: { _ in }, run: run)
+    }
+
+    #if SHADOW_SYNC_TESTING
+    /// Call-scoped observation of the same synchronous planner path. No fixture
+    /// state escapes the invocation or depends on a task-local runtime context.
+    static func testingInspectRegistrations(
+        clone: LocalClone,
+        remote: RemoteRepository,
+        account: EffectiveAccount,
+        handle: RepositoryHandle,
+        frozen: FrozenGitConfiguration,
+        admission: GitAdmissionSnapshot,
+        capturedNow: Date,
+        validateAdmission: () throws -> Void,
+        observeRegistration: (String) -> Void,
+        run: GitRun
+    ) throws -> RepositoryMaintenanceDraft {
+        try inspectRegistrations(clone: clone, remote: remote, account: account,
+            handle: handle, frozen: frozen, admission: admission, capturedNow: capturedNow,
+            validateAdmission: validateAdmission, observeRegistration: observeRegistration, run: run)
+    }
+    #endif
+
+    private static func inspectRegistrations(
+        clone: LocalClone,
+        remote: RemoteRepository,
+        account: EffectiveAccount,
+        handle: RepositoryHandle,
+        frozen: FrozenGitConfiguration,
+        admission: GitAdmissionSnapshot,
+        capturedNow: Date,
+        validateAdmission: () throws -> Void,
+        observeRegistration: (String) -> Void,
         run: GitRun
     ) throws -> RepositoryMaintenanceDraft {
         try validateAdmission()
@@ -123,6 +155,7 @@ enum RepositoryMaintenancePlanner {
             for identifier in identifiers {
                 try validateAdmission()
                 do {
+                    observeRegistration(identifier)
                     let inspected = try inspectRegistration(
                         identifier: identifier,
                         clone: clone,
@@ -518,9 +551,6 @@ enum RepositoryMaintenancePlanner {
         commonDirectory: String,
         account: EffectiveAccount
     ) throws -> InspectedRegistration {
-        #if SHADOW_SYNC_TESTING
-        RepositoryMaintenanceTesting.registrationObserver?(identifier)
-        #endif
         guard validRegistrationID(identifier),
               commonDirectory.hasPrefix("/") else {
             throw MaintenanceInspectionError.diagnostic("common")
@@ -1097,6 +1127,7 @@ enum RepositoryMaintenancePlanner {
         _ path: String,
         account: EffectiveAccount
     ) -> WorktreeLocationKind {
+        #if SHADOW_SYNC_TESTING
         if path.hasPrefix(account.homeDirectory + "/dev/") {
             return .dev
         }
@@ -1110,6 +1141,7 @@ enum RepositoryMaintenancePlanner {
         ) {
             return .awaManaged
         }
+        #endif
         return .external
     }
 
@@ -1205,11 +1237,12 @@ public final class RepositoryMaintenanceTransaction:
             detail: String? = nil,
             failure: FetchFailureReason? = nil
         ) -> RepositoryResult {
-            RepositoryResult(
+            let pending = configuration.commandContext?.hasCleanupPending == true
+            return RepositoryResult(
                 repository: candidate,
                 operationID: operation.id,
                 defaultBranch: branch.name,
-                code: code,
+                code: pending ? .cleanupPending : code,
                 fetched: fetched,
                 mainUpdated: updated,
                 beforeCommit: before,
@@ -1223,7 +1256,7 @@ public final class RepositoryMaintenanceTransaction:
                     MonotonicInstant.now().milliseconds(
                         since: started
                     ),
-                explanation: explanation,
+                explanation: pending ? "Cleanup is still pending. Further repository work is blocked." : explanation,
                 technicalDetail: detail.map(Redactor.sanitize),
                 failureReason: failure
             )
@@ -1253,7 +1286,7 @@ public final class RepositoryMaintenanceTransaction:
             try primary.rejectBusyState(
                 defaultBranch: branch.name
             )
-            let frozen = try helper.freezeConfiguration(primary)
+            let frozen = try helper.freezeConfiguration(primary, cancellation: cancellation)
             let admission = try helper.validateOriginAndTransport(
                 handle: primary,
                 frozen: frozen,
@@ -2749,6 +2782,7 @@ public final class RepositoryMaintenanceTransaction:
     }
 
     private func locationKind(_ path: String) -> WorktreeLocationKind {
+        #if SHADOW_SYNC_TESTING
         if path.hasPrefix(account.homeDirectory + "/dev/") {
             return .dev
         }
@@ -2762,6 +2796,7 @@ public final class RepositoryMaintenanceTransaction:
         ) {
             return .awaManaged
         }
+        #endif
         return .external
     }
 

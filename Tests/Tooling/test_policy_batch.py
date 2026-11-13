@@ -84,6 +84,32 @@ class PolicyBatchTests(unittest.TestCase):
         self.assertEqual([r['index'] for r in result['results']], list(range(64)))
         self.assertEqual(list(self.fixture.temporary.iterdir()), [])
 
+    def test_each_candidate_executes_fresh_module_and_matcher_state(self):
+        source = support.MODULE.replace(
+            b'class HardNoTouchMatcher:\n', b'calls = 0\nclass HardNoTouchMatcher:\n').replace(
+            b'        return Decision(False, "none", True)',
+            b'        global calls\n        calls += 1\n'
+            b'        assert calls == 1\n        return Decision(False, "none", True)')
+        self.fixture.replace_module(source)
+        self.request['binding_sha256'] = self.fixture.request['binding_sha256']
+        self.assertEqual(len(self.run_batch()['results']), 2)
+        self.assertEqual(len(self.run_batch()['results']), 2)
+        self.assertEqual(list(self.fixture.temporary.iterdir()), [])
+
+    def test_later_candidate_authority_postflight_still_refuses(self):
+        source = support.MODULE.replace(
+            b'        return Decision(False, "none", True)',
+            b'        if candidate.endswith("/second"):\n'
+            b'            from pathlib import Path\n'
+            b'            target = Path(candidate).parent / "projection.json"\n'
+            b'            target.write_bytes(target.read_bytes() + b"\\n")\n'
+            b'        return Decision(False, "none", True)')
+        self.fixture.replace_module(source)
+        self.request['binding_sha256'] = self.fixture.request['binding_sha256']
+        with self.assertRaises(adapter.Refusal):
+            self.run_batch()
+        self.assertEqual(list(self.fixture.temporary.iterdir()), [])
+
     def test_dispatch_preserves_single_request_and_rejects_unknown_schemas(self):
         kwargs = {'home': str(self.fixture.home), 'uid': self.fixture.uid,
                   'temporary_parent': str(self.fixture.temporary)}

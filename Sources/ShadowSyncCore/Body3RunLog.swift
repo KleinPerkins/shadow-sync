@@ -451,14 +451,16 @@ public enum Body3RunLogReader {
                 }
                 if previous == nil,
                    status != .running,
-                   status != .cancelled {
+                   status != .cancelled,
+                   status != .cleanupPending {
                     return []
                 }
                 nodeStates[operation] = status
             }
             if let report = record.report {
                 guard !sawReport,
-                      record.type == "run_finished",
+                      ((record.type == "run_finished" && !report.cleanupPending)
+                        || (record.type == "run_cleanup_pending" && report.cleanupPending && record.status == .cleanupPending)),
                       report.schema == recordIdentity.v2Report,
                       report.results.count
                         == immutablePlan?.nodes.count,
@@ -468,7 +470,7 @@ public enum Body3RunLogReader {
                                 ?? []
                         ),
                       report.results.allSatisfy({
-                          $0.status.isTerminal
+                          $0.status.isSettled
                             && immutablePlan?.nodes
                                 .contains($0.node)
                                 == true
@@ -711,7 +713,7 @@ public struct Body3RecoveredNodeDisposition:
         status: Body3BatchNodeStatus,
         detail: String
     ) {
-        precondition(status.isTerminal)
+        precondition(status.isSettled)
         self.status = status
         self.detail = Redactor.sanitize(detail)
     }
@@ -735,7 +737,7 @@ public enum Body3InterruptedRunReconstructor {
            completed.run == plan.run,
            completed.results.count == plan.nodes.count,
            completed.results.allSatisfy({
-               $0.status.isTerminal
+               $0.status.isSettled
            }) {
             return completed
         }
@@ -773,7 +775,7 @@ public enum Body3InterruptedRunReconstructor {
             -> Body3BatchNodeResult in
             if let record = latest[node.id],
                let status = record.status,
-               status.isTerminal {
+               status.isSettled {
                 return Body3BatchNodeResult(
                     node: node,
                     status: status,

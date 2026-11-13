@@ -102,74 +102,45 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 mkdir -m 700 "$TEST_ROOT/home"
-REPO="$(cd "$CAPABILITY/../../.." && pwd)"
-META_DIGEST="$(cd "$REPO" && bash .github/scripts/eco-lock.sh digest "$CAPABILITY/meta.yml" 2>/dev/null || true)"
-if [ "${#META_DIGEST}" -ne 64 ]; then
-  META_DIGEST="$(awk '$1 == "shadow-sync" {print $2}' "$CAPABILITY/../../../.eco-registry.lock")"
-fi
-
+# Standalone fixture source only; no parent repository metadata is consulted.
+META_DIGEST="$(shasum -a 256 "$CAPABILITY/Resources/release-contract.json" | awk '{print $1}')"
 SOURCE_FIXTURE="$TEST_ROOT/source-fixture"
-mkdir -m 700 -p "$SOURCE_FIXTURE/global/tools"
-mkdir -m 700 -p "$SOURCE_FIXTURE/.github/scripts"
-cp -R "$CAPABILITY" "$SOURCE_FIXTURE/global/tools/shadow-sync"
-cp "$REPO/.eco-registry.lock" "$SOURCE_FIXTURE/.eco-registry.lock"
-cp "$REPO/.github/scripts/eco-lock.sh" "$SOURCE_FIXTURE/.github/scripts/eco-lock.sh"
+mkdir -m 700 "$SOURCE_FIXTURE"
+cp -R "$CAPABILITY/." "$SOURCE_FIXTURE/"
 git -C "$SOURCE_FIXTURE" init -q -b main
 git -C "$SOURCE_FIXTURE" config user.name "ShadowSync Test"
 git -C "$SOURCE_FIXTURE" config user.email "shadow-sync@test.invalid"
-git -C "$SOURCE_FIXTURE" add .eco-registry.lock .github/scripts/eco-lock.sh global/tools/shadow-sync
+git -C "$SOURCE_FIXTURE" add -- .
 git -C "$SOURCE_FIXTURE" commit -q -m "fixture source"
-git -C "$SOURCE_FIXTURE" remote add origin git@github.com:fixture-owner/skills.git
+git -C "$SOURCE_FIXTURE" remote add origin git@github.com:fixture-owner/fixture-repo.git
 git -C "$SOURCE_FIXTURE" update-ref refs/remotes/origin/main HEAD
-"$SOURCE_FIXTURE/global/tools/shadow-sync/install.sh" --source-identity >/dev/null
 
-printf 'dirty\n' >>"$SOURCE_FIXTURE/global/tools/shadow-sync/README.md"
-if "$SOURCE_FIXTURE/global/tools/shadow-sync/install.sh" --source-identity >/dev/null 2>&1; then
-  printf 'm6-lifecycle-e2e: dirty source was accepted\n' >&2
-  exit 1
-fi
-git -C "$SOURCE_FIXTURE" checkout -q -- global/tools/shadow-sync/README.md
-touch "$SOURCE_FIXTURE/global/tools/shadow-sync/untracked"
-if "$SOURCE_FIXTURE/global/tools/shadow-sync/install.sh" --source-identity >/dev/null 2>&1; then
-  printf 'm6-lifecycle-e2e: untracked source was accepted\n' >&2
-  exit 1
-fi
-rm "$SOURCE_FIXTURE/global/tools/shadow-sync/untracked"
-printf '# drift\n' >>"$SOURCE_FIXTURE/.eco-registry.lock"
-if "$SOURCE_FIXTURE/global/tools/shadow-sync/install.sh" --source-identity >/dev/null 2>&1; then
-  printf 'm6-lifecycle-e2e: metadata-lock drift was accepted\n' >&2
-  exit 1
-fi
-git -C "$SOURCE_FIXTURE" checkout -q -- .eco-registry.lock
-
-git -C "$SOURCE_FIXTURE" worktree add -q --detach "$TEST_ROOT/source-linked"
-if "$TEST_ROOT/source-linked/global/tools/shadow-sync/install.sh" --source-identity >/dev/null 2>&1; then
-  printf 'm6-lifecycle-e2e: linked-worktree source was accepted\n' >&2
-  exit 1
-fi
-
-RACE_LOG="$TEST_ROOT/source-race.log"
-"$SOURCE_FIXTURE/global/tools/shadow-sync/install.sh" --build-release-check \
-  >"$RACE_LOG" 2>&1 &
-RACE_PID=$!
-for _ in $(seq 1 400); do
-  if grep -q 'captured source revision' "$RACE_LOG"; then
-    break
-  fi
-  kill -0 "$RACE_PID" 2>/dev/null || break
-  sleep 0.05
-done
-grep -q 'captured source revision' "$RACE_LOG" || {
-  wait "$RACE_PID" || true
-  printf 'm6-lifecycle-e2e: source race did not reach captured build\n' >&2
-  exit 1
+assert_source_installer_retired() {
+  local source="$1" status=0
+  shift
+  "$source/install.sh" "$@" >"$TEST_ROOT/source-refusal.log" 2>&1 || status=$?
+  [ "$status" -eq 64 ] || {
+    printf 'm6-lifecycle-e2e: source installer did not refuse with its retired status\n' >&2
+    return 1
+  }
+  grep -q 'Source-built production installation and release attestation are retired' \
+    "$TEST_ROOT/source-refusal.log"
 }
-printf 'drift-during-build\n' >>"$SOURCE_FIXTURE/global/tools/shadow-sync/README.md"
-if wait "$RACE_PID"; then
-  printf 'm6-lifecycle-e2e: source drift before promotion was accepted\n' >&2
-  exit 1
-fi
-git -C "$SOURCE_FIXTURE" checkout -q -- global/tools/shadow-sync/README.md
+assert_source_installer_retired "$SOURCE_FIXTURE" --source-identity
+printf 'dirty\n' >>"$SOURCE_FIXTURE/README.md"
+assert_source_installer_retired "$SOURCE_FIXTURE" --source-identity
+git -C "$SOURCE_FIXTURE" checkout -q -- README.md
+touch "$SOURCE_FIXTURE/untracked"
+assert_source_installer_retired "$SOURCE_FIXTURE" --source-identity
+rm "$SOURCE_FIXTURE/untracked"
+printf '# drift\n' >>"$SOURCE_FIXTURE/Resources/release-contract.json"
+assert_source_installer_retired "$SOURCE_FIXTURE" --source-identity
+git -C "$SOURCE_FIXTURE" checkout -q -- Resources/release-contract.json
+git -C "$SOURCE_FIXTURE" worktree add -q --detach "$TEST_ROOT/source-linked"
+assert_source_installer_retired "$TEST_ROOT/source-linked" --source-identity
+# The removed source-builder race is not a signed-release attestation proof.
+# Exact source-drift and signed-candidate qualification remain separate gates.
+assert_source_installer_retired "$SOURCE_FIXTURE" --build-release-check
 
 TEST_OUTPUT="$TEST_ROOT/testing-output"
 "$CAPABILITY/scripts/build-app.sh" \
@@ -230,9 +201,9 @@ build_release() {
   local name="$1" revision="$2" source_digest="$3" capture captured_capability
   capture="$TEST_ROOT/$name-capture"
   mkdir -m 700 "$capture"
-  git -C "$SOURCE_FIXTURE" archive HEAD global/tools/shadow-sync \
+  git -C "$SOURCE_FIXTURE" archive HEAD \
     | tar -x -C "$capture"
-  captured_capability="$capture/global/tools/shadow-sync"
+  captured_capability="$capture"
   "$captured_capability/scripts/build-app.sh" \
     --scratch-path "$TEST_ROOT/$name-swift" \
     --output-dir "$TEST_ROOT/$name-output" \

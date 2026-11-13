@@ -91,9 +91,76 @@ def inspect(root):
                     and '"m5-secure-log-open-default-app-failure"' in probe)
         else:
             require(kind in ('alias', 'composite') and all(owner in ids for owner in owners))
+    # The observer regression executes real observer methods, separately from
+    # full M6 and the fixed reconciliation/capture routes. No case selector.
+    observer = (root / 'Sources/ShadowSyncCore/ReconciliationDiagnosticSelfTests.swift').read_text()
+    observer_entry = re.findall(r'    public static func runAll\(.*?^    }\n', observer, re.M | re.S)
+    require(observer_entry == [
+        '    public static func runAll(record: (String) -> Void) throws {\n'
+        '        try RuntimeFixtureSession.withCase("reconciliation-observer-capped-exclusion-unwind") {\n'
+        '            try cappedExclusionUnwind()\n'
+        '            try fourReservations()\n'
+        '            try setupAndDisabled()\n'
+        '        }\n'
+        '        record("reconciliation-observer-capped-exclusion-unwind")\n'
+        '    }\n'])
+    require(cases.get('reconciliation-observer') == ['reconciliation-observer-capped-exclusion-unwind'])
+    require(('reconciliation-observer', 'ReconciliationDiagnosticSelfTestRunner', 'runAll') in rows)
     # M6 uses one closed literal run(...) body per mandatory case. Check both
     # sides so a newly added body cannot disappear behind a stale CI roster.
     m6 = (root / 'Sources/ShadowSyncCore/M6SelfTests.swift').read_text()
+    # This additional closed route must invoke the actual four M6 bodies, with
+    # the same per-case session boundary. It never replaces full-M6 discovery.
+    capture_cases = ['m6-live-custody-capture-' + name for name in
+                     ('publication', 'removal', 'retirement', 'refusals')]
+    capture_calls = [
+        'CustodyCatalogSelfTests.liveCustodyCapture("publication")',
+        'CustodyCatalogSelfTests.liveCustodyCapture("removal")',
+        'CustodyCatalogSelfTests.liveCustodyCapture("retirement")',
+        'CustodyCatalogSelfTests.liveCustodyCaptureRefusals()',
+    ]
+    focused = re.findall(r'    public static func runLiveCustodyCapture\(\n.*?^    }\n', m6, re.M | re.S)
+    require(len(focused) == 1)
+    fixed = ('    public static func runLiveCustodyCapture(\n'
+             '        record: (String) -> Void\n'
+             '    ) throws -> [String] {\n'
+             '        var passed: [String] = []\n'
+             '        func run(_ name: String, _ body: () throws -> Void) throws {\n'
+             '            try RuntimeFixtureSession.withCase(name) { try body() }\n'
+             '            passed.append(name)\n'
+             '            record(name)\n'
+             '        }\n\n')
+    fixed += ''.join('        try run("' + case + '") { try ' + call + ' }\n'
+                     for case, call in zip(capture_cases, capture_calls))
+    fixed += '        return passed\n    }\n'
+    require(focused[0] == fixed and cases.get('m6-custody-capture') == capture_cases)
+    require(('m6-custody-capture', 'M6SelfTestRunner', 'runLiveCustodyCapture') in rows)
+    m6 = m6.replace(focused[0], '', 1)
+    for case, call in zip(capture_cases, capture_calls):
+        require(m6.count('try run("' + case + '") { try ' + call + ' }') == 1)
+    # A second fixed route executes the eight original reconciliation bodies.
+    reconciliation_cases = ['m6-installation-staged-reconciliation-unclaimed-absent-stop', 'm6-installation-staged-reconciliation-retired-starts', 'm6-installation-staged-reconciliation-resumed-outcomes', 'm6-installation-staged-reconciliation-semantic-states', 'm6-installation-staged-reconciliation-action-classifier', 'm6-installation-staged-reconciliation-aliases-eof', 'm6-installation-staged-reconciliation-substitutions', 'm6-installation-staged-reconciliation-receipt-cuts']
+    reconciliation_calls = ['InstallationStagedReconciliationFixtures.unclaimedAndAbsentStop()', 'InstallationStagedReconciliationFixtures.retiredStarts()', 'InstallationStagedReconciliationFixtures.resumedOutcomes()', 'InstallationStagedReconciliationFixtures.semanticStates()', 'InstallationStagedReconciliationFixtures.actionClassifier()', 'InstallationStagedReconciliationFixtures.aliasesAndEOF()', 'InstallationStagedReconciliationFixtures.substitutions()', 'InstallationStagedReconciliationFixtures.receiptCuts()']
+    focused = re.findall(r'    public static func runStagedReconciliation\(\n.*?^    }\n', m6, re.M | re.S)
+    require(len(focused) == 1)
+    fixed = ('    public static func runStagedReconciliation(\n'
+             '        record: (String) -> Void\n'
+             '    ) throws -> [String] {\n'
+             '        var passed: [String] = []\n'
+             '        func run(_ name: String, _ body: () throws -> Void) throws {\n'
+             '            try RuntimeFixtureSession.withCase(name) { try body() }\n'
+             '            passed.append(name)\n'
+             '            record(name)\n'
+             '        }\n\n')
+    fixed += ''.join('        try run("' + case + '") { try ' + call + ' }\n'
+                     for case, call in zip(reconciliation_cases, reconciliation_calls))
+    fixed += '        return passed\n    }\n'
+    require(focused[0] == fixed and cases.get('m6-staged-reconciliation') == reconciliation_cases)
+    require(('m6-staged-reconciliation', 'M6SelfTestRunner', 'runStagedReconciliation') in rows)
+    m6 = m6.replace(focused[0], '', 1)
+    for case, call in zip(reconciliation_cases, reconciliation_calls):
+        require(m6.count('try run("' + case + '") { try ' + call + ' }') == 1)
+    require([case for case in cases['m6'] if case in reconciliation_cases] == reconciliation_cases)
     m6_bodies = re.findall(r'\btry\s+run\s*\(\s*"([^"\n]+)"', m6)
     require(len(m6_bodies) == len(re.findall(r'\btry\s+run\s*\(', m6)))
     require(len(m6_bodies) == len(set(m6_bodies)) and set(m6_bodies) == set(cases['m6']))

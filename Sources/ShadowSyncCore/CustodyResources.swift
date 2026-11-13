@@ -16,7 +16,22 @@ enum CustodyResourceTesting {
         }
         try body()
     }
+    private final class Observation {
+        let body: (Point) throws -> Void
+        init(_ body: @escaping (Point) throws -> Void) { self.body = body }
+    }
+    private static let observationKey = "shadow-sync-custody-resource-observation"
+    static func withObservation(_ observer: @escaping (Point) throws -> Void, _ body: () throws -> Void) throws {
+        let prior = Thread.current.threadDictionary[observationKey]
+        Thread.current.threadDictionary[observationKey] = Observation(observer)
+        defer {
+            if let prior { Thread.current.threadDictionary[observationKey] = prior }
+            else { Thread.current.threadDictionary.removeObject(forKey: observationKey) }
+        }
+        try body()
+    }
     static func hit(_ point: Point) throws {
+        try (Thread.current.threadDictionary[observationKey] as? Observation)?.body(point)
         if Thread.current.threadDictionary[key] as? String == point.rawValue { throw CustodyResourceError.systemCall(EIO) }
     }
 }
@@ -182,11 +197,12 @@ enum CustodyPipeRead: Equatable { case bytes(Data), wouldBlock, end }
 
 /// Every endpoint is private, nonblocking, CLOEXEC and normalized above all
 /// inherited destinations. No method duplicates the caller's liveness writer.
-private final class CustodyPipe {
+final class CustodyPipe {
     private let mutex = NSLock()
     private var reader: OwnedFileDescriptor?
     private var writer: OwnedFileDescriptor?
     private let readIdentity: CustodyResourceIdentity, writeIdentity: CustodyResourceIdentity
+    private let ownedEndpoints: [OwnedFileDescriptor]
     private let uid: uid_t
 
     init() throws {
@@ -207,7 +223,7 @@ private final class CustodyPipe {
             #endif
         }
         guard fcntl(copies[1].value, F_SETNOSIGPIPE, 1) == 0 else { throw CustodyResourceError.systemCall(errno) }
-        uid = geteuid(); reader = copies[0]; writer = copies[1]
+        uid = geteuid(); reader = copies[0]; writer = copies[1]; ownedEndpoints = copies
         readIdentity = try CustodyResourceIdentity.capture(copies[0].value, kind: S_IFIFO, access: O_RDONLY, uid: uid)
         writeIdentity = try CustodyResourceIdentity.capture(copies[1].value, kind: S_IFIFO, access: O_WRONLY, uid: uid)
     }
@@ -230,6 +246,20 @@ private final class CustodyPipe {
     #if SHADOW_SYNC_TESTING
     var testingWriter: Int32 { mutex.lock(); defer { mutex.unlock() }; return writer?.value ?? -1 }
     #endif
+    func closeAll() {
+        mutex.lock(); defer { mutex.unlock() }
+        // Taken endpoints retain their original checked-close result even after
+        // the mapping object disappears or a partial mapping construction fails.
+        ownedEndpoints.forEach { $0.closeNow() }; reader = nil; writer = nil
+    }
+    var retiredSuccessfully: Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        return ownedEndpoints.allSatisfy { $0.retirementObservation == .succeeded }
+    }
+    var writerRetiredSuccessfully: Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        return ownedEndpoints[1].retirementObservation == .succeeded
+    }
     func closeWriter() { mutex.lock(); writer?.closeNow(); writer = nil; mutex.unlock() }
     func read(maximum: Int) throws -> CustodyPipeRead {
         guard (1...16_388).contains(maximum) else { throw CustodyResourceError.limit }
@@ -255,7 +285,7 @@ private final class CustodyPipe {
 /// caller's local references. Registry retirement controls this object's lifetime;
 /// no helper duplicate is wrapped in another cleanup-owning configuration object.
 final class CustodyFrozenGitResources: @unchecked Sendable {
-    private let owner: FrozenGitConfiguration
+    private var owner: FrozenGitConfiguration?
     let directory: OwnedFileDescriptor, file: OwnedFileDescriptor
     private let claims: [CustodyDescriptorClaim]
     private let acls: [String]
@@ -291,6 +321,7 @@ final class CustodyFrozenGitResources: @unchecked Sendable {
     }
     func descriptorClaims() throws -> [CustodyDescriptorClaim] { try validate(); return claims }
     func validate() throws {
+        guard let owner else { throw CustodyResourceError.closed }
         let pairs: [(CustodyDescriptorClaim.Role, Int32)] = [(.gitDirectory, directory.value), (.gitFile, file.value)]
         guard try pairs.map({ try Self.claim($0.1, role: $0.0, uid: geteuid()) }) == claims,
               try pairs.map({ try PolicyAuthorityFile.safeACL($0.1) }) == acls else {
@@ -299,13 +330,67 @@ final class CustodyFrozenGitResources: @unchecked Sendable {
         try RepositoryHandle.validateFrozenConfiguration(descriptor: file.value,
             directoryDescriptor: directory.value, snapshot: owner.snapshot)
     }
-    var snapshot: GitConfigurationSnapshot { owner.snapshot }
+    #if SHADOW_SYNC_TESTING
+    var testingRetired: Bool { owner == nil && directory.value == -1 && file.value == -1 }
+    func testingSnapshot() throws -> GitConfigurationSnapshot {
+        guard let owner else { throw CustodyResourceError.closed }; return owner.snapshot
+    }
+    #endif
+    func retire() { directory.closeNow(); file.closeNow(); owner = nil }
 }
 
 /// A helper retains the actual inherited lock descriptions; its target receives
 /// only a separately opened, identity-checked read-only view. That view never
 /// reacquires or substitutes for the lock. This object owns no pathname cleanup.
 final class CustodyInheritedFrozenConfiguration {
+    // The replayable name has only these three ancestors. Root-owned physical
+    // ancestors cannot be replaced by this unprivileged tool graph; tmp's sticky
+    // mode and the retained immutable 0700 child protect its directory entry.
+    // UF_IMMUTABLE is owner-clearable: arbitrary same-UID flag changes or a
+    // privileged ancestor replacement are not a guarantee this API can provide.
+    // Qualification must exclude tool/config graphs that alter these resources.
+    private struct NamedAncestor {
+        let name: String, fd: OwnedFileDescriptor, identity: FileIdentity, acl: String
+    }
+    private let ancestors: [NamedAncestor]
+    private static func namedAncestors() throws -> [NamedAncestor] {
+        var result: [NamedAncestor] = []
+        for (index, name) in ["/", "private", "tmp"].enumerated() {
+            let raw = index == 0 ? open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                : openat(result.last!.fd.value, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard raw >= 0 else { throw CustodyResourceError.systemCall(errno) }
+            let fd = OwnedFileDescriptor(raw); var info = stat()
+            guard fstat(raw, &info) == 0, info.st_uid == 0, info.st_mode & S_IFMT == S_IFDIR,
+                  index == 2 ? info.st_mode & 0o7777 == 0o1777 : info.st_mode & 0o022 == 0 else {
+                throw CustodyResourceError.invalidResource
+            }
+            result.append(NamedAncestor(name: name, fd: fd, identity: FileIdentity(info),
+                acl: try PolicyAuthorityFile.privateStateACL(raw)))
+        }
+        return result
+    }
+    private func validateReplayableName() throws {
+        guard snapshot.frozenDirectoryPath.hasPrefix("/private/tmp/"),
+              !snapshot.frozenDirectoryPath.dropFirst("/private/tmp/".count).contains("/") else {
+            throw CustodyResourceError.invalidResource
+        }
+        for (index, anchor) in ancestors.enumerated() {
+            var opened = stat(), named = stat()
+            let rc = index == 0 ? lstat("/", &named)
+                : fstatat(ancestors[index - 1].fd.value, anchor.name, &named, AT_SYMLINK_NOFOLLOW)
+            guard rc == 0, fstat(anchor.fd.value, &opened) == 0,
+                  FileIdentity(opened).matchesStableNode(anchor.identity),
+                  FileIdentity(named).matchesStableNode(anchor.identity),
+                  try PolicyAuthorityFile.privateStateACL(anchor.fd.value) == anchor.acl else {
+                throw CustodyResourceError.invalidResource
+            }
+        }
+        var named = stat()
+        let name = String(snapshot.frozenDirectoryPath.dropFirst("/private/tmp/".count))
+        guard fstatat(ancestors.last!.fd.value, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              FileIdentity(named) == snapshot.frozenDirectoryIdentity,
+              named.st_flags & UInt32(UF_IMMUTABLE) != 0 else { throw CustodyResourceError.invalidResource }
+    }
     let snapshot: GitConfigurationSnapshot
     let targetReadOnly: OwnedFileDescriptor
     private let file: OwnedFileDescriptor, directory: OwnedFileDescriptor
@@ -313,6 +398,7 @@ final class CustodyInheritedFrozenConfiguration {
 
     init(snapshot: GitConfigurationSnapshot, directory: OwnedFileDescriptor, file: OwnedFileDescriptor) throws {
         self.snapshot = snapshot; self.directory = directory; self.file = file
+        ancestors = try Self.namedAncestors()
         claims = try [CustodyFrozenGitResources.claim(directory.value, role: .gitDirectory, uid: geteuid()),
                       CustodyFrozenGitResources.claim(file.value, role: .gitFile, uid: geteuid())]
         acls = try [PolicyAuthorityFile.safeACL(directory.value), PolicyAuthorityFile.safeACL(file.value)]
@@ -324,7 +410,27 @@ final class CustodyInheritedFrozenConfiguration {
         targetReadOnly = OwnedFileDescriptor(try view.duplicate(minimum: 201))
         try revalidate()
     }
+    /// Every target gets a fresh description. Git selects the immutable named
+    /// resource, so its own repeated fopen calls also start at offset zero.
+    /// Neither this view nor Git's named opens alter the cleanup-owner cursor.
+    func openTargetReadOnly() throws -> OwnedFileDescriptor {
+        try revalidate()
+        let raw = openat(directory.value, "config", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard raw >= 0 else { throw CustodyResourceError.systemCall(errno) }
+        let original = OwnedFileDescriptor(raw)
+        let view = OwnedFileDescriptor(try original.duplicate(minimum: 201))
+        var info = stat()
+        guard fstat(view.value, &info) == 0, FileIdentity(info) == snapshot.frozenIdentity,
+              info.st_size == Int64(snapshot.frozenSize), info.st_flags & UInt32(UF_IMMUTABLE) != 0,
+              fcntl(view.value, F_GETFL) & O_ACCMODE == O_RDONLY,
+              try PolicyAuthorityFile.safeACL(view.value) == acls[1] else {
+            throw CustodyResourceError.invalidResource
+        }
+        try revalidate()
+        return view
+    }
     func revalidate() throws {
+        try validateReplayableName()
         guard try [CustodyFrozenGitResources.claim(directory.value, role: .gitDirectory, uid: geteuid()),
                    CustodyFrozenGitResources.claim(file.value, role: .gitFile, uid: geteuid())] == claims,
               try [PolicyAuthorityFile.safeACL(directory.value), PolicyAuthorityFile.safeACL(file.value)] == acls else {
@@ -378,13 +484,22 @@ final class CustodyRequestResources: @unchecked Sendable {
     private let control: CustodyPipe, status: CustodyPipe, output: CustodyPipe, error: CustodyPipe
     private let trace: CustodyPipe?
     private let frozenConfiguration: CustodyFrozenGitResources?
+    private let retentionDirectories: [(CustodyDescriptorClaim.Role, OwnedFileDescriptor, CustodyResourceIdentity)]
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    private let signedParentChannel: SignedInstallationFixtureParentChannel?
+    private let signedAdapterChannel: SignedInstallationFixtureAdapterChannel?
+    #endif
     private let mutex = NSLock()
     private var transferred = false
+    private var transferring = false
+    private var retirementRequested = false
+    private var retired = false
 
     init(scope: CustodyMetadataScope, kind: CustodyCommandKind, arguments: [String], environment: [String: String],
          budget: CustodyBudget, stdoutLimit: UInt64, stderrLimit: UInt64,
          workingDirectory source: OwnedFileDescriptor, input: Data? = nil, code: Data? = nil,
-         captureDiscoveryTrace: Bool = false, frozenConfiguration: FrozenGitConfiguration? = nil) throws {
+         captureDiscoveryTrace: Bool = false, frozenConfiguration: FrozenGitConfiguration? = nil,
+         retention: RetentionArchiveCommandAuthority? = nil) throws {
         guard scope.observation == .open else { throw CustodyRecordError.fenced }
         guard !captureDiscoveryTrace || kind == .discoveryGit else { throw CustodyResourceError.invalidResource }
         if kind == .policyClassify {
@@ -393,10 +508,18 @@ final class CustodyRequestResources: @unchecked Sendable {
             }
         }
         try budget.validate(kind: kind, permittedWorkSeconds: kind.maximumWorkSeconds, now: DispatchTime.now().uptimeNanoseconds)
-        guard frozenConfiguration == nil || (kind == .discoveryGit && input != nil && code == nil
+        guard frozenConfiguration == nil || ([.discoveryGit, .repositoryGit, .retentionArchive].contains(kind) && input != nil && code == nil
             && (scope.leases.mode == .read || scope.leases.mode == .mutation)) else {
             throw CustodyResourceError.invalidResource
         }
+        guard (retention != nil) == (kind == .retentionArchive), retention == nil || frozenConfiguration != nil else { throw CustodyResourceError.invalidResource }
+        retentionDirectories = try retention.map { authority in
+            try [(CustodyDescriptorClaim.Role.retentionSource, authority.primary.worktreeDescriptor),
+                 (.retentionDestination, authority.destination.value), (.retentionWorktree, authority.worktree.worktreeDescriptor)].map { role, raw in
+                let fd = OwnedFileDescriptor(try RetentionArchiveCommandAuthority.copy(raw))
+                return (role, fd, try CustodyResourceIdentity.capture(fd.value, kind: S_IFDIR, access: O_RDONLY, uid: scope.uid))
+            }
+        } ?? []
         self.frozenConfiguration = try frozenConfiguration.map { try CustodyFrozenGitResources($0, uid: scope.uid) }
         self.scope = scope
         workingDirectory = OwnedFileDescriptor(try source.duplicate(minimum: 201))
@@ -408,6 +531,7 @@ final class CustodyRequestResources: @unchecked Sendable {
         let binding = try scope.binding(nonce: UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())
         var claims = try scope.leases.descriptorClaims() + [control.claim(.control, writing: false), status.claim(.status, writing: true), workingIdentity.claim(.workingDirectory)]
         if let frozenConfiguration = self.frozenConfiguration { claims += try frozenConfiguration.descriptorClaims() }
+        claims += retentionDirectories.map { $0.2.claim($0.0) }
         if let input = self.input { claims.append(try input.claim()) }
         if let code = self.code { claims.append(try code.claim()) }
         if let trace { claims.append(try trace.claim(.traceOutput, writing: true)) }
@@ -422,6 +546,18 @@ final class CustodyRequestResources: @unchecked Sendable {
             let data = try r.encode(); prepared = r; return data
         }
         guard let prepared else { throw CustodyResourceError.invalidResource }; request = prepared
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if case let .signedFixture(profile) = scope.validationProfile {
+            guard [.launchctlRead, .launchctlMutation, .signatureCheck].contains(kind),
+                  scope.leases.mode == .lifecycleMutation || scope.leases.mode.isInstallationStaged,
+                  input != nil, code == nil, frozenConfiguration == nil, retention == nil else {
+                throw CustodyResourceError.invalidResource
+            }
+            signedParentChannel = try profile.makeParentChannel(requestDigest: sealedRequest.sha256)
+            let binding = try InstallationCommandBinding.decode(input!, validationProfile: scope.validationProfile)
+            signedAdapterChannel = try profile.makeAdapterChannel(requestDigest: sealedRequest.sha256, request: request, binding: binding)
+        } else { signedParentChannel = nil; signedAdapterChannel = nil }
+        #endif
         try validate()
     }
     static func resourceDigest(_ claims: [CustodyDescriptorClaim], input: String?, code: String?) throws -> String {
@@ -432,7 +568,13 @@ final class CustodyRequestResources: @unchecked Sendable {
     }
     func validate() throws {
         try scope.leases.validate(); try sealedRequest.validate(); try input?.validate(); try code?.validate()
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        try signedParentChannel?.validate()
+        #endif
         try frozenConfiguration?.validate()
+        for (_, fd, expected) in retentionDirectories {
+            guard try CustodyResourceIdentity.capture(fd.value, kind: S_IFDIR, access: O_RDONLY, uid: scope.uid).sameStableResource(as: expected) else { throw CustodyResourceError.invalidResource }
+        }
         let current = try CustodyResourceIdentity.capture(workingDirectory.value, kind: S_IFDIR, access: O_RDONLY, uid: scope.uid)
         guard current.sameStableResource(as: workingIdentity),
               try sealedRequest.claim() == request.descriptors.first(where: { $0.role == .request }),
@@ -443,9 +585,14 @@ final class CustodyRequestResources: @unchecked Sendable {
     /// One ownership transfer of helper pipe ends. The caller's control writer
     /// is deliberately absent. A registry must retain this value before spawn.
     func takeSpawnResources() throws -> CustodySpawnResources {
-        mutex.lock(); defer { mutex.unlock() }
-        guard !transferred else { throw CustodyResourceError.closed }; try validate()
-        transferred = true
+        mutex.lock()
+        guard !transferred, !retired, !retirementRequested else { mutex.unlock(); throw CustodyResourceError.closed }
+        transferred = true; transferring = true; mutex.unlock()
+        defer {
+            mutex.lock(); transferring = false; let retirePending = retirementRequested; mutex.unlock()
+            if retirePending { retire() }
+        }
+        try validate()
         var sources: [(Int32, OwnedFileDescriptor)] = []
         sources.append((191, try control.take(writing: false)))
         sources.append((192, try status.take(writing: true)))
@@ -454,23 +601,94 @@ final class CustodyRequestResources: @unchecked Sendable {
         if let trace { sources.append((7, try trace.take(writing: true))) }
         var files: [(Int32, OwnedFileDescriptor)] = [(190, sealedRequest.descriptor), (200, workingDirectory)]
         if let frozenConfiguration { files += [(195, frozenConfiguration.directory), (196, frozenConfiguration.file)] }
+        files += retentionDirectories.map { (Int32($0.0.number), $0.1) }
         if let input { files.append((8, input.descriptor)) }
         if let code { files.append((9, code.descriptor)) }
-        return try CustodySpawnResources(resources: self, pipeSources: sources, fileSources: files)
+        var childOwnedSources: [(Int32, OwnedFileDescriptor)] = []
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        if let signedParentChannel { childOwnedSources.append(try signedParentChannel.takeChildMapping()) }
+        if let signedAdapterChannel { childOwnedSources.append(try signedAdapterChannel.takeChildMapping()) }
+        #endif
+        let value = try CustodySpawnResources(resources: self, pipeSources: sources, fileSources: files,
+            childOwnedSources: childOwnedSources)
+        mutex.lock(); let stillOwned = !retired && !retirementRequested && transferring; mutex.unlock()
+        guard stillOwned else { throw CustodyResourceError.closed }
+        return value
+    }
+    /// Called by the sole registry owner only after terminal persistence/reap/EOF,
+    /// or before any metadata/spawn attempt. No descriptor is explicitly unlocked.
+    func retire(installationReceipt: UInt64? = nil) {
+        mutex.lock()
+        guard !retired else { mutex.unlock(); return }
+        if transferring { retirementRequested = true; mutex.unlock(); return }
+        retired = true; mutex.unlock()
+        control.closeAll(); status.closeAll(); output.closeAll(); error.closeAll(); trace?.closeAll()
+        workingDirectory.closeNow(); sealedRequest.descriptor.closeNow()
+        input?.descriptor.closeNow(); code?.descriptor.closeNow(); frozenConfiguration?.retire(); retentionDirectories.forEach { $0.1.closeNow() }
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        signedParentChannel?.retire()
+        signedAdapterChannel?.cancel()
+        try? signedAdapterChannel?.joinAndRetire(deadline: .init(uptimeNanoseconds: min(request.budget.receipt, installationReceipt ?? request.budget.receipt)))
+        #endif
+    }
+    #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+    func testingSignedJoinMatches(_ controller: SignedInstallationFixtureJoinController) -> Bool {
+        controller.matches(request: request) && (signedAdapterChannel?.fixtureMatches(controller) ?? false)
+    }
+    #endif
+    var installationReadyForCheckedRetirement: Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        return request.authority.isInstallationStaged && !transferring && !retired && !retirementRequested
+    }
+    var installationRetiredSuccessfully: Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        guard retired, request.authority.isInstallationStaged,
+              frozenConfiguration == nil, retentionDirectories.isEmpty else { return false }
+        #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+        guard signedParentChannel?.retiredSuccessfully ?? true,
+              signedAdapterChannel?.retiredSuccessfully ?? true else { return false }
+        #endif
+        return [workingDirectory, sealedRequest.descriptor, input?.descriptor, code?.descriptor]
+            .compactMap { $0 }.allSatisfy { $0.retirementObservation == .succeeded }
+            && [control, status, output, error, trace].compactMap { $0 }.allSatisfy { $0.retiredSuccessfully }
+    }
+    #if SHADOW_SYNC_TESTING
+    func testingUncertainStagedResourceClose() throws {
+        guard request.authority.isInstallationStaged else { throw CustodyRecordError.fenced }
+        workingDirectory.testingClose = { raw in
+            guard Darwin.close(raw) == 0 else { return errno }; return EIO
+        }
+    }
+    #endif
+    var originalRefusalControlClosed: Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        return transferred && !transferring && !retired && !retirementRequested && control.writerRetiredSuccessfully
     }
     func closeControl() { control.closeWriter() }
     func writeControl(_ data: Data, offset: Int = 0) throws -> Int { try control.write(data, offset: offset) }
-    func readStatus() throws -> CustodyPipeRead { try status.read(maximum: 16_388) }
-    func readOutput(error isError: Bool = false) throws -> CustodyPipeRead { try (isError ? error : output).read(maximum: 16_388) }
-    func readTrace() throws -> CustodyPipeRead {
+    func readStatus(maximum: Int = 16_388) throws -> CustodyPipeRead { try status.read(maximum: maximum) }
+    func readOutput(error isError: Bool = false, maximum: Int = 16_388) throws -> CustodyPipeRead { try (isError ? error : output).read(maximum: maximum) }
+    func readTrace(maximum: Int = 16_388) throws -> CustodyPipeRead {
         guard let trace else { return .end }
-        return try trace.read(maximum: 16_388)
+        return try trace.read(maximum: maximum)
     }
 
     #if SHADOW_SYNC_TESTING
+    func testingFrozenSnapshot() throws -> GitConfigurationSnapshot {
+        guard let frozenConfiguration else { throw CustodyResourceError.invalidResource }
+        return try frozenConfiguration.testingSnapshot()
+    }
+    var testingRetentionDescriptors: [Int32] { retentionDirectories.map { $0.1.value } }
     var testingControlWriterDescriptor: Int32 { control.testingWriter }
     var testingRequestDescriptor: Int32 { sealedRequest.descriptor.value }
     var testingWorkingDescriptor: Int32 { workingDirectory.value }
+    var testingResourcesRetired: Bool {
+        mutex.lock(); defer { mutex.unlock() }
+        return retired && sealedRequest.descriptor.value == -1 && workingDirectory.value == -1
+            && retentionDirectories.allSatisfy { $0.1.value == -1 }
+            && (frozenConfiguration?.testingRetired ?? true)
+            && (input?.descriptor.value ?? -1) == -1 && (code?.descriptor.value ?? -1) == -1
+    }
     #endif
 }
 
@@ -480,11 +698,16 @@ final class CustodySpawnResources: @unchecked Sendable {
     let resources: CustodyRequestResources
     private let pipeSources: [(Int32, OwnedFileDescriptor)]
     private let fileSources: [(Int32, OwnedFileDescriptor)]
+    private let childOwnedSources: [(Int32, OwnedFileDescriptor)]
     private let pipeIdentities: [CustodyResourceIdentity]
     private let mutex = NSLock()
+    private var mapping = false
+    private var releaseRequested = false
     private var mapped = false, released = false
-    fileprivate init(resources: CustodyRequestResources, pipeSources: [(Int32, OwnedFileDescriptor)], fileSources: [(Int32, OwnedFileDescriptor)]) throws {
+    fileprivate init(resources: CustodyRequestResources, pipeSources: [(Int32, OwnedFileDescriptor)], fileSources: [(Int32, OwnedFileDescriptor)],
+                     childOwnedSources: [(Int32, OwnedFileDescriptor)] = []) throws {
         self.resources = resources; self.pipeSources = pipeSources; self.fileSources = fileSources
+        self.childOwnedSources = childOwnedSources
         pipeIdentities = try pipeSources.map { target, fd in
             let identity = try CustodyResourceIdentity.capture(fd.value, kind: S_IFIFO, access: target == 191 ? O_RDONLY : O_WRONLY, uid: resources.scope.uid)
             if target == 191 || target == 192 || target == 7 {
@@ -495,8 +718,13 @@ final class CustodySpawnResources: @unchecked Sendable {
         }
     }
     func appendActions(to actions: inout posix_spawn_file_actions_t?) throws {
-        mutex.lock(); defer { mutex.unlock() }
-        guard !mapped, !released, actions != nil else { throw CustodyResourceError.closed }
+        mutex.lock()
+        guard !mapped, !released, !releaseRequested, actions != nil else { mutex.unlock(); throw CustodyResourceError.closed }
+        mapped = true; mapping = true; mutex.unlock()
+        defer {
+            mutex.lock(); mapping = false; let releasePending = releaseRequested; mutex.unlock()
+            if releasePending { releaseChildCopies() }
+        }
         try resources.validate(); try resources.scope.leases.appendSpawnActions(to: &actions)
         for (i, source) in pipeSources.enumerated() {
             guard try CustodyResourceIdentity.capture(source.1.value, kind: S_IFIFO, access: source.0 == 191 ? O_RDONLY : O_WRONLY, uid: resources.scope.uid)
@@ -518,14 +746,37 @@ final class CustodySpawnResources: @unchecked Sendable {
             let rc = posix_spawn_file_actions_addclose(&actions, source.value)
             guard rc == 0 else { throw CustodyResourceError.systemCall(rc) }
         }
-        mapped = true
+        // Bootstrap roles are mapped after existing source copies have been
+        // used and closed. A parent's low source descriptor can equal 211;
+        // mapping it earlier could clobber fchdir or close the inherited socket.
+        for (target, source) in childOwnedSources {
+            #if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+            guard [SignedInstallationFixtureParentChannel.inheritedFD, SignedInstallationFixtureAdapterChannel.inheritedFD].contains(target), source.value >= 214 else {
+                throw CustodyResourceError.invalidResource
+            }
+            guard posix_spawn_file_actions_adddup2(&actions, source.value, target) == 0,
+                  posix_spawn_file_actions_addclose(&actions, source.value) == 0 else {
+                throw CustodyResourceError.systemCall(errno)
+            }
+            #else
+            throw CustodyResourceError.invalidResource
+            #endif
+        }
+        mutex.lock(); let valid = !released && !releaseRequested && mapping; mutex.unlock()
+        guard valid else { throw CustodyResourceError.closed }
     }
     /// Call after the actual spawn attempt, including failure. Until then the
     /// registry retains these copies; after release EOF depends only on the child.
     func releaseChildCopies() {
+        mutex.lock()
+        guard !released else { mutex.unlock(); return }
+        if mapping { releaseRequested = true; mutex.unlock(); return }
+        released = true; mutex.unlock()
+        for (_, source) in pipeSources + childOwnedSources { source.closeNow() }
+    }
+    var childCopiesRetiredSuccessfully: Bool {
         mutex.lock(); defer { mutex.unlock() }
-        guard !released else { return }; released = true
-        for (_, source) in pipeSources { source.closeNow() }
+        return released && !mapping && (pipeSources + childOwnedSources).allSatisfy { $0.1.retirementObservation == .succeeded }
     }
     #if SHADOW_SYNC_TESTING
     func testingDescriptor(_ target: Int32) -> Int32? { (pipeSources + fileSources).first { $0.0 == target }?.1.value }

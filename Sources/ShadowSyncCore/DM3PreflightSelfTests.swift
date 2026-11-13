@@ -1024,6 +1024,14 @@ public enum V3PreflightSelfTestRunner {
             }
         }
         report("BETA-V09-CANCEL-DRAIN")
+        try RuntimeFixtureSession.withCase("BETA-V09-CANCEL-AFTER-BRANCH-ASSEMBLY") {
+            let cancelled = try betaV09InspectionFixture(testExecutable: testExecutable,
+                branchCount: 12, worktreeCount: 1, cancelAfterBranchAssembly: true)
+            try require(cancelled.callCount == 11 && cancelled.availableCount == 11
+                && cancelled.activeAfterCompletion == 0 && cancelled.unsafeSelectableCount == 0,
+                "post-assembly cancellation discarded completed pull-request evidence")
+        }
+        report("BETA-V09-CANCEL-AFTER-BRANCH-ASSEMBLY")
         try RuntimeFixtureSession.withCase("BETA-V09-BOUNDS") {
             try require(
                 RepositoryReadSession.pullRequestStageBudget(
@@ -1131,6 +1139,7 @@ public enum V3PreflightSelfTestRunner {
         worktreeCount: Int,
         failureEvery: Int? = nil,
         cancelOnFirst: Bool = false,
+        cancelAfterBranchAssembly: Bool = false,
         cancellationDelay: useconds_t = 20_000
     ) throws -> (
         callCount: Int,
@@ -1222,6 +1231,8 @@ public enum V3PreflightSelfTestRunner {
             cancellation: cancellation,
             lifecycleObserver: { event in
                 progress.record(event)
+                if cancelAfterBranchAssembly, case let .cleanupProgress(value) = event,
+                   value.stage == .candidateAssembly { cancellation.cancel() }
             }
         )
         let started = Date()
@@ -1289,6 +1300,37 @@ public enum V3PreflightSelfTestRunner {
                 "available PR evidence was not retained"
             )
         }
+        if cancelOnFirst || cancelAfterBranchAssembly {
+            // A later clone must not reopen repository or child admission, even
+            // when its input carries previously selectable cleanup decisions.
+            let authority = try RunAuthority.acquireRun(at: StateLocation.isolated(root: fixture.temporary.path))
+            defer { authority.release() }
+            let lease = try authority.duplicateOperationLease()
+            defer { close(lease) }
+            let childCount = LockedInteger()
+            let calls = lookup.callCount
+            let session = try RepositoryReadSession(executablePath: testExecutable,
+                leaseDescriptor: lease,
+                account: EffectiveAccount.isolated(homeDirectory: fixture.temporary.path + "/home"),
+                runner: DescriptorProcessRunner(outputLimit: 65_536, processObserver: { _ in childCount.increment(); return false }),
+                pullRequestLookup: lookup, cancellation: cancellation, transportMapping: fixture.mapping)
+            let retained = try session.inspectCleanup(clone: clone, remote: card.repository, queryPullRequests: true)
+            try require(retained.sourceSnapshot == clone.sourceSnapshot
+                && retained.branches.map(\.id) == clone.branches.map(\.id)
+                && retained.worktrees.map(\.id) == clone.worktrees.map(\.id)
+                && lookup.callCount == calls && childCount.value == 0,
+                "cancelled later clone started work or lost retained identities")
+            for branch in retained.branches {
+                let candidate = try RemovalCandidate(repository: card.repository, clone: retained, branch: branch)
+                try require(!candidate.canSelect && !candidate.selectAllEligible,
+                    "cancelled uninspected branch reused a prior cleanup decision")
+            }
+            for worktree in retained.worktrees {
+                let candidate = try RemovalCandidate(repository: card.repository, clone: retained, worktree: worktree)
+                try require(!candidate.canSelect && !candidate.selectAllEligible,
+                    "cancelled uninspected worktree reused a prior cleanup decision")
+            }
+        }
         let snapshots = progress.snapshots
         try require(
             snapshots.contains {
@@ -1352,7 +1394,8 @@ public enum V3PreflightSelfTestRunner {
             ),
             lookup.activeCount,
             clone.branches.filter {
-                $0.pullRequestAvailability == .available
+                $0.fullRef != "refs/heads/main"
+                    && $0.pullRequestAvailability == .available
             }.count,
             Int64(
                 inspectionEnded.timeIntervalSince(started) * 1_000

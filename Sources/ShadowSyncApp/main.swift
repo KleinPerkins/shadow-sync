@@ -33,6 +33,10 @@ if arguments.count == 2, arguments[1] == "--check" {
     exit(0)
 }
 
+#if SHADOW_SYNC_TESTING && SHADOW_SYNC_SIGNED_FIXTURE
+if let status = SignedInstallationFixtureApp.dispatch(arguments) { exit(status) }
+#endif
+
 #if SHADOW_SYNC_TESTING
 if let status = GitChildTrampoline.dispatch(arguments: arguments) {
     exit(status)
@@ -81,7 +85,7 @@ do {
     }
     let paths = try InstallationPaths.production()
     let launchAgent = SystemLaunchAgentController()
-    guard let authority = try InstalledStateAdmission.enterInstalledApplication(
+    guard let startup = try InstalledHostStartup.enter(
         arguments: arguments,
         paths: paths,
         launchAgent: launchAgent,
@@ -90,14 +94,14 @@ do {
     ) else {
         exit(0)
     }
+    try startup.validateBeforeApplication()
     let relay = HostActivationRelay()
     let application = NSApplication.shared
     let delegate = ShadowSyncAppDelegate(executablePath: executablePath)
     relay.install(target: delegate)
     application.delegate = delegate
     application.setActivationPolicy(.regular)
-    let server = try HostControlServer(
-        authority: authority,
+    let server = try startup.makeServer(
         executablePath: executablePath,
         releaseIdentity: try ReleaseIdentity.load(
             bundlePath: try InstallationPaths.production().app
@@ -111,6 +115,12 @@ do {
         }
     )
     try server.start()
+    delegate.installationInitialized = {
+        try startup.didInitialize(server: server, onStop: {
+            Task { @MainActor in delegate.requestLifecycleExit() }
+        })
+    }
+    delegate.installationApplicationDrained = { try startup.applicationDrained(server: server) }
     defer { server.stop() }
     application.run()
 } catch {

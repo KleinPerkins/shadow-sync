@@ -123,17 +123,20 @@ public struct RemovalTransactionConfiguration:
     public let stateLocation: StateLocation
     public let awaExecutablePath: String
     public let protectedPaths: [String]
+    public let selectedScope: ValidatedSelectedRepositoryScope?
 
     public init(
         git: GitTransactionConfiguration,
         stateLocation: StateLocation,
         awaExecutablePath: String,
-        protectedPaths: [String]
+        protectedPaths: [String],
+        selectedScope: ValidatedSelectedRepositoryScope? = nil
     ) {
         self.git = git
         self.stateLocation = stateLocation
         self.awaExecutablePath = awaExecutablePath
         self.protectedPaths = protectedPaths
+        self.selectedScope = selectedScope
     }
 
     public static func production(
@@ -193,6 +196,16 @@ public final class AWAWorktreeCleanupAdapter:
             return (.notApplicable, nil)
         }
         let arguments = ["clean", "--path", worktree.path]
+        #if !SHADOW_SYNC_TESTING
+        // No private-policy-bound adapter is qualified. Refuse before opening
+        // an executable or constructing a deployment environment.
+        return (.unavailable, RemovalCommandEvidence(
+            executable: executablePath,
+            arguments: arguments,
+            forceLevel: .ordinaryOnly,
+            outcome: "AWA cleanup adapter is unavailable."
+        ))
+        #else
         guard let opened = openAdapterExecutable()
                 else {
             return (
@@ -300,6 +313,7 @@ public final class AWAWorktreeCleanupAdapter:
                 )
             )
         }
+        #endif
     }
 
     private func validateAdapterExecutable()
@@ -429,7 +443,7 @@ public final class RemovalTransaction:
         do {
             try validateHardBoundaries(prepared)
             try validateRuntimeEligibility(
-                prepared.selection.candidate
+                prepared.selection.candidate, cancellation: cancellation
             )
             if prepared.selection.candidate.kind == .worktree {
                 let candidate =
@@ -1034,7 +1048,7 @@ public final class RemovalTransaction:
     }
 
     private func validateRuntimeEligibility(
-        _ candidate: RemovalCandidate
+        _ candidate: RemovalCandidate, cancellation: CancellationToken
     ) throws {
         #if SHADOW_SYNC_TESTING
         if let check = configuration.git
@@ -1057,12 +1071,15 @@ public final class RemovalTransaction:
                 "logical repository authority changed"
             )
         }
-        try RepositoryDiscovery
-            .validateRemovalRuntimeEligibility(
-            candidate.clone.sourceSnapshot,
-            repositoryID: candidate.repository.id,
-            account: account
-        )
+        guard let context = configuration.git.commandContext,
+              let selectedScope = configuration.selectedScope else {
+            throw SelectedRepositoryScopeError.policyUnavailable
+        }
+        let exactScope = try selectedScope.exactRepositoryScope(repositoryID: candidate.repository.id)
+        try context.withRemovalDiscoveryPolicy(exactScope, account: account, cancellation: cancellation) { policy in
+            try RepositoryDiscovery.validateRemovalRuntimeEligibility(candidate.clone.sourceSnapshot,
+                repositoryID: candidate.repository.id, policy: policy)
+        }
     }
 
     private func validateFreshWorktree(
@@ -1191,6 +1208,13 @@ public final class RemovalTransaction:
             account: account,
             capturedNow: Date()
         )
+        #if !SHADOW_SYNC_TESTING
+        guard freshAWA.state != .unavailable else {
+            throw GitSafetyError.unsafeRepository(
+                "External workspace-manager evidence is unavailable; worktree removal is disabled."
+            )
+        }
+        #endif
         guard Self.awaRisk(freshAWA.state)
                 <= Self.awaRisk(
                     expected.awaEvidence?.state
