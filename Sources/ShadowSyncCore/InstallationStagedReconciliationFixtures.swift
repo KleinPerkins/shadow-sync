@@ -262,13 +262,19 @@ enum InstallationStagedReconciliationFixtures {
                 let budget = try CustodyBudget.make(kind: .launchctlMutation,
                     workSeconds: mode == "lifecycle-postflight-timeout" ? 2 : 10)
                 var command: PreparedCustodyCommand? = try context!.testingStagedLifecycle(.bootstrap, budget: budget)
+                if failureMode == .mutationCancel { try registry.testingArmCancellationObservation(command!) }
                 let handle = try registry.start(command!)
                 if mode == "lifecycle-mutation-cancel" {
                     try until(failure: .init(mode: failureMode, wait: .cancellationReady)) { String(decoding: handle.snapshot().stderr, as: UTF8.self)
                         .contains("shadow-sync-fixture-serial:1:ready:") }
                     handle.cancel()
                 }
-                try until(failure: .init(mode: failureMode, wait: .commandFinished)) { handle.snapshot().phase == .finished }
+                do {
+                    try until(failure: .init(mode: failureMode, wait: .commandFinished)) { handle.snapshot().phase == .finished }
+                } catch {
+                    handle.testingTakeCancellationObservation()?.emit()
+                    throw error
+                }
                 let result = handle.snapshot()
                 guard let terminal = result.journal else { throw H.Failure(message: "recovery original terminal missing") }
                 let expected: CustodyReason = mode == "completed" ? .none : mode == "lifecycle-mutation-cancel" ? .cancelled

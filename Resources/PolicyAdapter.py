@@ -408,7 +408,7 @@ class RejectOutput:
         pass
 
 
-def classify(request_bytes, contract_bytes, *, home, uid, temporary_parent):
+def classify(request_bytes, contract_bytes, *, home, uid, temporary_parent, _compiled_module=None):
     """Internal seam accepts explicit fixture roots; production main never does."""
     if len(request_bytes) > MAX_REQUEST:
         raise Refusal()
@@ -458,7 +458,16 @@ def classify(request_bytes, contract_bytes, *, home, uid, temporary_parent):
     sys.modules[module_name] = module
     try:
         with contextlib.redirect_stdout(RejectOutput()), contextlib.redirect_stderr(RejectOutput()):
-            exec(compile(module_input[1], "<verified-awa-policy>", "exec"), module.__dict__)
+            # Reuse only compilation of exact bytes inside this batch. Every
+            # candidate still reads/verifies its authority above, executes a new
+            # module and matcher here, and checks all source identities below.
+            if _compiled_module and _compiled_module[0] == module_input[1]:
+                code = _compiled_module[1]
+            else:
+                code = compile(module_input[1], "<verified-awa-policy>", "exec")
+                if _compiled_module is not None:
+                    _compiled_module[:] = [module_input[1], code]
+            exec(code, module.__dict__)
             if getattr(module, "HARD_NO_TOUCH_SCHEMA", None) != "awa-hard-no-touch/v1":
                 raise Refusal()
             # Darwin's /dev/fd opens the existing regular-file descriptor even
@@ -511,11 +520,13 @@ def classify_batch(request_bytes, contract_bytes, *, home, uid, temporary_parent
                 'managed_namespace': (True, True), 'invalid_candidate': (True, True),
                 'invalid_policy': (True, False)}
     common, decisions = None, []
+    compiled_module = []  # At most one byte/code pair; never authority or decisions.
     for index, candidate in enumerate(request['candidates']):
         single = {'schema': REQUEST_SCHEMA, 'nonce': request['nonce'],
                   'binding_sha256': request['binding_sha256'], 'candidate': candidate}
         response = classify(json.dumps(single, separators=(',', ':')).encode(), contract_bytes,
-                            home=home, uid=uid, temporary_parent=temporary_parent)
+                            home=home, uid=uid, temporary_parent=temporary_parent,
+                            _compiled_module=compiled_module)
         exact(response, ('schema', 'nonce', 'binding_sha256', 'policy_sha256', 'module_sha256',
                          'matched', 'kind', 'policy_valid'))
         identity_fields = {key: response[key] for key in ('binding_sha256', 'policy_sha256', 'module_sha256')}

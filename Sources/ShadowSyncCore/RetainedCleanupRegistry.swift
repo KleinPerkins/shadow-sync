@@ -257,6 +257,9 @@ struct CustodyRegistryResult: Sendable {
     let stdout: Data
     let stderr: Data
     let trace: Data
+    #if SHADOW_SYNC_TESTING
+    var testingCancellationObservation: RetainedCleanupRegistry.TestCancellationObservation? = nil
+    #endif
     init(phase: Phase, reason: CustodyReason?, journal: CustodyJournal?, stdout: Data, stderr: Data, trace: Data = Data()) {
         self.phase = phase; self.reason = reason; self.journal = journal
         self.stdout = stdout; self.stderr = stderr; self.trace = trace
@@ -318,6 +321,9 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             let terminal = result.phase == .finished || result.phase == .cleanupPending
             let wake = !completionPublished && (terminal || receipt != deadline) ? completion : nil
             value = result; receipt = deadline
+            #if SHADOW_SYNC_TESTING
+            if cancellationRequested { value.testingCancellationObservation?.flags |= 1 }
+            #endif
             if terminal { completionPublished = true }
             else if wake != nil {
                 // Cancellation can shorten the receipt while the result is
@@ -334,6 +340,17 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             mutex.lock(); defer { mutex.unlock() }; return (value, receipt, completion)
         }
         #if SHADOW_SYNC_TESTING
+        private var cancellationRequested = false, cancellationObservationTaken = false
+        func noteCancellationRequest() {
+            mutex.lock(); cancellationRequested = true; mutex.unlock()
+        }
+        func takeCancellationObservation() -> TestCancellationObservation? {
+            mutex.lock(); defer { mutex.unlock() }
+            guard !cancellationObservationTaken, var sample = value.testingCancellationObservation else { return nil }
+            cancellationObservationTaken = true
+            if cancellationRequested { sample.flags |= 1 }
+            return sample
+        }
         private var waitBarriers: [CustodyLeaseTestingBarrier] = []
         func pauseWaiters(_ barriers: [CustodyLeaseTestingBarrier]) {
             mutex.lock(); waitBarriers = barriers; mutex.unlock()
@@ -348,6 +365,9 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         fileprivate let key: String
         fileprivate let cell: ResultCell
         fileprivate let registry: RetainedCleanupRegistry
+        #if SHADOW_SYNC_TESTING
+        fileprivate var testingCancellationObservationArmed = false
+        #endif
         fileprivate init(_ entry: Entry, _ registry: RetainedCleanupRegistry) {
             key = entry.resources.request.binding.requestID
             cell = entry.cell; self.registry = registry
@@ -359,7 +379,12 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         func snapshot() -> CustodyRegistryResult { cell.read().0 }
         func stagedCompletion() throws -> StagedCommandCompletion { try cell.readStagedCompletion() }
         func stagedRecoveryRetirement() throws -> StagedRecoveryRetirement { try cell.readStagedRetirement() }
-        func cancel() { registry.queue.async { if let entry = self.registry.entries[self.key] { self.registry.cancel(entry, reason: .cancelled) } } }
+        func cancel() {
+            #if SHADOW_SYNC_TESTING
+            if testingCancellationObservationArmed { cell.noteCancellationRequest() }
+            #endif
+            registry.queue.async { if let entry = self.registry.entries[self.key] { self.registry.cancel(entry, reason: .cancelled) } }
+        }
         /// Never synchronously waits for the registry's durable metadata queue.
         /// A deadline response leaves actual ownership in that registry.
         func wait() -> CustodyRegistryResult {
@@ -382,6 +407,9 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             }
         }
         #if SHADOW_SYNC_TESTING
+        func testingTakeCancellationObservation() -> TestCancellationObservation? {
+            testingCancellationObservationArmed ? cell.takeCancellationObservation() : nil
+        }
         func testingPauseWaiters(_ barriers: [CustodyLeaseTestingBarrier]) { cell.pauseWaiters(barriers) }
         #endif
     }
@@ -454,6 +482,95 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         var archiveCompleted: UInt64?
 
         #if SHADOW_SYNC_TESTING
+        var testingCancellationObservation: TestCancellationObservation?
+        func cancellationSnapshot() -> TestCancellationObservation? {
+            guard var sample = testingCancellationObservation else { return nil }
+            sample.sampled = DispatchTime.now().uptimeNanoseconds
+            switch phase {
+            case .starting: sample.phase = 0
+            case .ready: sample.phase = 1
+            case .running: sample.phase = 2
+            case .cleanupPending: sample.phase = 3
+            case .finished: sample.phase = 4
+            }
+            switch state.phase {
+            case .preparing: sample.protocolPhase = 0
+            case .ready: sample.protocolPhase = 1
+            case .admitted: sample.protocolPhase = 2
+            case .draining: sample.protocolPhase = 3
+            case .terminal: sample.protocolPhase = 4
+            }
+            sample.reason = reason.map { DiscoveryFixtureDiagnostic.pendingBits(reason: $0, owner: nil, state: 0) & 255 } ?? 12
+            sample.work = state.budget.work; sample.term = state.budget.term
+            sample.kill = state.budget.kill; sample.receipt = state.budget.receipt
+            sample.operation = issuanceOperationDeadline ?? 0; sample.cap = issuanceCap ?? 0
+            sample.archiveStarted = archiveStarted ?? 0; sample.archiveCompleted = archiveCompleted ?? 0
+            // Preserve sticky retirement flags; all lower flags are current state.
+            sample.flags &= ~UInt64(0xffffe)
+            if cancelled { sample.flags |= 2 }; if resumed { sample.flags |= 4 }
+            if state.admitted { sample.flags |= 8 }; if metadataAttempted { sample.flags |= 16 }
+            if metadata != nil { sample.flags |= 32 }; if terminal != nil { sample.flags |= 64 }
+            if statusEnded { sample.flags |= 128 }; if stdoutEnded { sample.flags |= 256 }
+            if stderrEnded { sample.flags |= 512 }; if traceEnded { sample.flags |= 1024 }
+            if statusPoisoned { sample.flags |= 2048 }; if outputPoisoned { sample.flags |= 4096 }
+            if !control.isEmpty || !queuedControl.isEmpty { sample.flags |= 8192 }
+            if let resources = retainedResources {
+                if resources.originalRefusalControlClosed { sample.flags |= 16384 }
+                if resources.scope.stagedCleanupPending { sample.flags |= 32768 }
+                if resources.scope.observation != .open { sample.flags |= 65536 }
+            }
+            if let owner {
+                switch owner.observation {
+                case .running: sample.helper = 1
+                case .reaped(let raw): sample.helper = 2; sample.rawStatus = UInt64(UInt32(bitPattern: raw))
+                case .ownershipFailure: sample.helper = 3
+                }
+            }
+            switch stagedFinalization {
+            case .notAttempted: sample.finalization = 0
+            case .attempting: sample.finalization = 1
+            case .archived: sample.finalization = 2
+            case .failed: sample.finalization = 3
+            case .retired: sample.finalization = 4
+            }
+            switch expiredCleanup?.state {
+            case nil: sample.expired = 0
+            case .awaitingOriginalProof?: sample.expired = 1
+            case .verifyingOnce?: sample.expired = 2
+            case .closingOnce?: sample.expired = 3
+            case .removed?: sample.expired = 4
+            case .uncertain?: sample.expired = 5
+            }
+            testingCancellationObservation = sample
+            return sample
+        }
+        func cancellationFailure(_ error: Error? = nil, point: UInt64) {
+            guard testingCancellationObservation?.firstPoint == 0 else { return }
+            testingCancellationObservation?.firstPoint = point
+            let family: UInt64, system: UInt64
+            if let error = error as? CustodyRecordError {
+                switch error {
+                case .invalidRecord: family = 1; system = 0
+                case .invalidTransition: family = 2; system = 0
+                case .conflict: family = 3; system = 0
+                case .fenced: family = 4; system = 0
+                case .busy: family = 5; system = 0
+                case .unsafeMetadata: family = 6; system = 0
+                case .persistence(let value): family = 7; system = UInt64(UInt32(bitPattern: value))
+                case .committedCleanupFailure(let value): family = 8; system = UInt64(UInt32(bitPattern: value))
+                case .injectedFailure: family = 9; system = 0
+                }
+            } else if let error = error as? CustodyResourceError {
+                switch error {
+                case .invalidResource: family = 10; system = 0
+                case .closed: family = 11; system = 0
+                case .limit: family = 12; system = 0
+                case .systemCall(let value): family = 13; system = UInt64(UInt32(bitPattern: value))
+                }
+            } else { family = error == nil ? 0 : 255; system = 0 }
+            testingCancellationObservation?.firstFamily = family
+            testingCancellationObservation?.firstSystem = system
+        }
         var stagedTickSchedulingProbe: StagedTickSchedulingProbe?
         var deferredRead: TestReadDeferral?
         var deferredOriginalRefusal = false
@@ -470,6 +587,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         }
         private var diagnosticFailures: UInt8 = 0
         func diagnosticFailure(_ error: Error, retiring: Bool) {
+            cancellationFailure(error, point: retiring ? 2 : 1)
             guard command != nil, (resources.request.kind == .policyClassify || resources.request.kind == .retentionArchive
                 || resources.request.kind == .repositoryGit) else { return }
             let flag: UInt8 = retiring ? 2 : 1
@@ -542,7 +660,15 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             publish()
         }
         func publish() { cell.publish(result, deadline: state.budget.receipt) }
-        var result: CustodyRegistryResult { CustodyRegistryResult(phase: phase, reason: reason, journal: resultJournal, stdout: stdout, stderr: stderr, trace: trace) }
+        var result: CustodyRegistryResult {
+            #if SHADOW_SYNC_TESTING
+            var value = CustodyRegistryResult(phase: phase, reason: reason, journal: resultJournal, stdout: stdout, stderr: stderr, trace: trace)
+            value.testingCancellationObservation = cancellationSnapshot()
+            return value
+            #else
+            return CustodyRegistryResult(phase: phase, reason: reason, journal: resultJournal, stdout: stdout, stderr: stderr, trace: trace)
+            #endif
+        }
         var outputReservation: UInt64 { resources.request.stdoutLimit + resources.request.stderrLimit + resources.request.traceLimit }
     }
     private let queue = DispatchQueue(label: "com.kleinperkins.shadow-sync.custody-registry")
@@ -710,11 +836,21 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         }
         reservedIDs.insert(key); reservationOutputs[key] = entry.outputReservation
         outputReserved += entry.outputReservation
+        #if SHADOW_SYNC_TESTING
+        if let command, testingCancellationCommand == ObjectIdentifier(command) {
+            testingCancellationCommand = nil
+            entry.testingCancellationObservation = TestCancellationObservation(budget: resources.request.budget)
+            handle.testingCancellationObservationArmed = true
+        }
+        #endif
         if let installationOwner {
             let record = InstallationCommandRetirement(owner: installationOwner, resources: resources, prepared: command)
             installationCommands[key] = record; entry.installationRecord = record
         }
         reservationMutex.unlock()
+        #if SHADOW_SYNC_TESTING
+        if entry.testingCancellationObservation != nil { entry.publish() }
+        #endif
         entry.repositoryObserver = repositoryObserver
         // Resources and the command are already retained and reserved. Consumer
         // acknowledgment runs on the caller, outside registry/authority locks.
@@ -958,7 +1094,13 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                 outcome: nil, waitStatus: nil, receiptSHA256: nil)
             try entry.state.accept(message, now: now); entry.nextControl += 1
             try enqueueControl(entry, message: message)
+            #if SHADOW_SYNC_TESTING
+            entry.testingCancellationObservation?.flags |= 1 << 20
+            #endif
         } catch {
+            #if SHADOW_SYNC_TESTING
+            entry.cancellationFailure(error, point: 13)
+            #endif
             entry.resources.closeControl(); pending(entry, reason: .protocolFault)
         }
         if !entry.resumed { killBootstrap(entry) }; entry.publish()
@@ -1103,7 +1245,12 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             entry.phase = .cleanupPending; entry.reason = entry.reason ?? .timeout
             entry.resources.closeControl(); entry.control.removeAll(); entry.queuedControl.removeAll()
             entry.publish()
-        } catch { pending(entry, reason: .ownershipLost) }
+        } catch {
+            #if SHADOW_SYNC_TESTING
+            entry.cancellationFailure(error, point: 12)
+            #endif
+            pending(entry, reason: .ownershipLost)
+        }
     }
     private func advanceExpiredCleanup(_ entry: Entry) {
         guard let cleanup = entry.expiredCleanup, cleanup.state == .awaitingOriginalProof else { return }
@@ -1128,6 +1275,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             guard ObjectIdentifier(record) == cleanup.record else { throw CustodyRecordError.fenced }
             cleanup.state = .verifyingOnce
             #if SHADOW_SYNC_TESTING
+            if entry.testingCancellationObservation != nil { entry.publish() }
             nextExpiredCleanupObservation?(.beforeRead)
             #endif
             let proof = CustodyRetirementProof(ticket: ticket, resources: entry.resources,
@@ -1140,6 +1288,9 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             #endif
             guard entry.resources.installationReadyForCheckedRetirement else { throw CustodyRecordError.fenced }
             cleanup.state = .closingOnce
+            #if SHADOW_SYNC_TESTING
+            if entry.testingCancellationObservation != nil { entry.publish() }
+            #endif
             let scope = entry.resources.scope, resources = entry.resources, cell = entry.cell
             let receipt = min(cleanup.receipt, entry.state.budget.receipt)
             entry.mapping?.releaseChildCopies()
@@ -1153,6 +1304,9 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             nextExpiredCleanupObservation?(.checkedClose)
             #endif
             guard remove(entry) else { throw CustodyRecordError.fenced }
+            #if SHADOW_SYNC_TESTING
+            _ = entry.cancellationSnapshot()
+            #endif
             entry.resultJournal = journal
             entry.mapping = nil; entry.owner = nil; entry.anchor = nil; entry.metadata = nil
             entry.repositoryObserver = nil
@@ -1165,13 +1319,25 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
             cleanup.state = .removed
             #if SHADOW_SYNC_TESTING
             nextExpiredCleanupObservation?(.removed)
-            #endif
+            var copied = CustodyRegistryResult(phase: .cleanupPending, reason: entry.reason,
+                journal: journal, stdout: entry.stdout, stderr: entry.stderr, trace: entry.trace)
+            if var sample = entry.testingCancellationObservation {
+                sample.sampled = DispatchTime.now().uptimeNanoseconds
+                sample.expired = 4; sample.flags |= (1 << 22) | (1 << 23)
+                copied.testingCancellationObservation = sample
+            }
+            cell.publish(copied, deadline: receipt)
+            #else
             cell.publish(CustodyRegistryResult(phase: .cleanupPending, reason: entry.reason,
                 journal: journal, stdout: entry.stdout, stderr: entry.stderr, trace: entry.trace), deadline: receipt)
+            #endif
         } catch {
             // Every failed metadata/close attempt is one-way. No archive, second
             // read, raw close retry or replacement resource can repair it.
             cleanup.state = .uncertain
+            #if SHADOW_SYNC_TESTING
+            entry.cancellationFailure(error, point: 11)
+            #endif
             pending(entry, reason: .ioFailure)
         }
     }
@@ -1213,11 +1379,20 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                 #if SHADOW_SYNC_TESTING
                 entry.diagnostic(.controlFlushed)
                 #endif
+                #if SHADOW_SYNC_TESTING
+                if entry.cancelled && entry.queuedControl.isEmpty,
+                   let flags = entry.testingCancellationObservation?.flags, flags & (1 << 20) != 0 {
+                    entry.testingCancellationObservation?.flags |= 1 << 21
+                }
+                #endif
                 entry.control.removeAll(); entry.controlOffset = 0
                 if !entry.queuedControl.isEmpty { entry.control = entry.queuedControl.removeFirst() }
                 else if entry.cancelled { entry.resources.closeControl() }
             }
         } catch {
+            #if SHADOW_SYNC_TESTING
+            entry.cancellationFailure(error, point: 14)
+            #endif
             try? entry.state.closeAdmission(now: DispatchTime.now().uptimeNanoseconds)
             entry.resources.scope.close(); entry.resources.closeControl(); entry.cancelled = true
             entry.control.removeAll(); entry.queuedControl.removeAll(); entry.controlOffset = 0
@@ -1549,19 +1724,37 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         }
         #endif
         if let cap = entry.issuanceCap {
-            guard DispatchTime.now().uptimeNanoseconds < cap else { pending(entry, reason: .timeout); return }
-            guard !originalScope.stagedCleanupPending else { pending(entry, reason: .invalidResource); return }
+            guard DispatchTime.now().uptimeNanoseconds < cap else {
+                #if SHADOW_SYNC_TESTING
+                entry.cancellationFailure(point: 3)
+                #endif
+                pending(entry, reason: .timeout); return
+            }
+            guard !originalScope.stagedCleanupPending else {
+                #if SHADOW_SYNC_TESTING
+                entry.cancellationFailure(point: 4)
+                #endif
+                pending(entry, reason: .invalidResource); return
+            }
         }
         reservationMutex.lock()
         if let record, installationCommands[entry.resources.request.binding.requestID] === record {
             record.evidence = staged?.closedStopArchiveEvidence(); record.archiveRequired = entry.metadataAttempted
         }
         reservationMutex.unlock()
+        #if SHADOW_SYNC_TESTING
+        _ = entry.cancellationSnapshot()
+        #endif
         entry.mapping?.releaseChildCopies(); entry.mapping = nil
         entry.resources.retire(); entry.command?.retireRepositoryResources()
         entry.anchor = nil; entry.owner = nil; entry.metadata = nil
         let exactRemoval = remove(entry)
-        guard exactRemoval else { pending(entry, reason: .invalidResource); return }
+        guard exactRemoval else {
+            #if SHADOW_SYNC_TESTING
+            entry.cancellationFailure(point: 5)
+            #endif
+            pending(entry, reason: .invalidResource); return
+        }
         let cell = entry.cell, deadline = entry.state.budget.receipt
         let result = CustodyRegistryResult(phase: .finished, reason: entry.reason,
             journal: entry.resultJournal, stdout: entry.stdout, stderr: entry.stderr, trace: entry.trace)
@@ -1575,8 +1768,16 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                 guard let owner = record.owner else { throw CustodyRecordError.fenced }
                 if let archive { guard archive.owner === owner else { throw CustodyRecordError.fenced } }
                 try owner.validateRetirementRegistry(self); try owner.revalidate()
-            } catch { ownerValid = false; originalScope.markPending() }
+            } catch {
+                #if SHADOW_SYNC_TESTING
+                entry.cancellationFailure(error, point: 6)
+                #endif
+                ownerValid = false; originalScope.markPending()
+            }
         }
+        #if SHADOW_SYNC_TESTING
+        var cancellationSample = entry.cancellationSnapshot()
+        #endif
         entry.releaseCommandAliases()
         // Keep the existing independent five-second readiness anchor at actual
         // alias release. It is never used as a recovery-token clock.
@@ -1605,6 +1806,24 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         if qualified { stagedCompletion?.markActualRetirement(readinessDeadline) }
         let failedReason: CustodyReason = issuanceQualified ? .ioFailure : .timeout
         #if SHADOW_SYNC_TESTING
+        if var sample = cancellationSample {
+            sample.sampled = retiredAt; sample.retiredAt = retiredAt
+            sample.flags |= 1 << 22 // exact removal
+            if installationResourcesClosed { sample.flags |= 1 << 23 }
+            if ownerValid { sample.flags |= 1 << 24 }; if issuanceQualified { sample.flags |= 1 << 25 }
+            sample.finalization = entry.stagedFinalization == .retired ? 4 : (entry.stagedFinalization == .failed ? 3 : sample.finalization)
+            if sample.firstPoint == 0 && !qualified {
+                sample.firstPoint = !installationResourcesClosed ? 7 : (!issuanceQualified ? 8 : 9)
+            }
+            sample.publication = 1
+            cancellationSample = sample
+            // Same phase/deadline, scalar-only copy; never publish finished early.
+            var copied = CustodyRegistryResult(phase: entry.phase, reason: entry.reason,
+                journal: entry.resultJournal, stdout: entry.stdout, stderr: entry.stderr, trace: entry.trace)
+            copied.testingCancellationObservation = sample
+            cell.publish(copied, deadline: deadline)
+        }
+        let publicationSample = cancellationSample
         let barrier = nextRetirementBarrier; nextRetirementBarrier = nil
         let scheduling = nextReadinessSchedulingProbe; nextReadinessSchedulingProbe = nil
         // This cut is BEFORE dispatching delivery, the previously untested gap.
@@ -1631,9 +1850,22 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                 cell.publishStagedCompletion(stagedCompletion)
             }
             if delivered, let recovery { cell.publishStagedRetirement(recovery) }
+            #if SHADOW_SYNC_TESTING
+            var copied = CustodyRegistryResult(phase: qualified ? .finished : .cleanupPending,
+                reason: delivered ? result.reason : (qualified ? .ioFailure : failedReason),
+                journal: result.journal, stdout: result.stdout, stderr: result.stderr, trace: result.trace)
+            if var sample = publicationSample {
+                sample.sampled = DispatchTime.now().uptimeNanoseconds
+                sample.publication = delivered ? 2 : 3
+                if sample.firstPoint == 0 && !observed { sample.firstPoint = 10 }
+                copied.testingCancellationObservation = sample
+            }
+            cell.publish(copied, deadline: deadline)
+            #else
             cell.publish(CustodyRegistryResult(phase: qualified ? .finished : .cleanupPending,
                 reason: delivered ? result.reason : (qualified ? .ioFailure : failedReason),
                 journal: result.journal, stdout: result.stdout, stderr: result.stderr, trace: result.trace), deadline: deadline)
+            #endif
             // Only this following-turn publication follows actual removal and
             // resource/alias release. cleanupPending never publishes this notice.
             if delivered { cell.publishActualRetirement() }
@@ -1669,6 +1901,9 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                 entry.issuanceRoute = entry.originalRefusal != nil ? .originalRefusal : .resumedTerminal
                 entry.issuanceCap = cap; entry.archiveStarted = now
                 entry.stagedFinalization = .attempting
+                #if SHADOW_SYNC_TESTING
+                if entry.testingCancellationObservation != nil { entry.publish() }
+                #endif
             }
             #if SHADOW_SYNC_TESTING
             try nextFinalizationObservation?(.beforeArchive)
@@ -1791,6 +2026,34 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         else { ensureTimer() }
     }
     #if SHADOW_SYNC_TESTING
+    // Closed scalar observation; carries no command/resource/owner identity or authority.
+    struct TestCancellationObservation: Sendable {
+        var sampled: UInt64 = 0, phase: UInt64 = 0, protocolPhase: UInt64 = 0, reason: UInt64 = 12
+        var flags: UInt64 = 0, helper: UInt64 = 0, rawStatus: UInt64 = 0
+        let issued: UInt64, originalWork: UInt64, originalTerm: UInt64, originalKill: UInt64, originalReceipt: UInt64
+        var work: UInt64 = 0, term: UInt64 = 0, kill: UInt64 = 0, receipt: UInt64 = 0
+        var operation: UInt64 = 0, cap: UInt64 = 0, archiveStarted: UInt64 = 0, archiveCompleted: UInt64 = 0
+        var retiredAt: UInt64 = 0, finalization: UInt64 = 0, expired: UInt64 = 0, publication: UInt64 = 0
+        var firstPoint: UInt64 = 0, firstFamily: UInt64 = 0, firstSystem: UInt64 = 0
+        init(budget: CustodyBudget) {
+            issued = budget.issued; originalWork = budget.work; originalTerm = budget.term
+            originalKill = budget.kill; originalReceipt = budget.receipt
+        }
+        func emit() {
+            var line = "M6 CANCEL OBSERVATION v1"
+            line += " sampled=\(sampled) phase=\(phase) protocol=\(protocolPhase) reason=\(reason) flags=\(flags) helper=\(helper) status=\(rawStatus)"
+            line += " issued=\(issued) originalWork=\(originalWork) originalTerm=\(originalTerm) originalKill=\(originalKill) originalReceipt=\(originalReceipt)"
+            line += " work=\(work) term=\(term) kill=\(kill) receipt=\(receipt) operation=\(operation) cap=\(cap) archiveStarted=\(archiveStarted) archiveCompleted=\(archiveCompleted)"
+            line += " retired=\(retiredAt) finalization=\(finalization) expired=\(expired) publication=\(publication) firstPoint=\(firstPoint) firstFamily=\(firstFamily) firstSystem=\(firstSystem)\n"
+            fputs(line, stderr)
+        }
+    }
+    private var testingCancellationCommand: ObjectIdentifier?
+    func testingArmCancellationObservation(_ command: PreparedCustodyCommand) throws {
+        reservationMutex.lock(); defer { reservationMutex.unlock() }
+        guard testingCancellationCommand == nil else { throw CustodyRecordError.fenced }
+        testingCancellationCommand = ObjectIdentifier(command)
+    }
     final class StagedTickSchedulingProbe: @unchecked Sendable {
         let barrier = CustodyLeaseTestingBarrier()
         private let lock = NSLock()

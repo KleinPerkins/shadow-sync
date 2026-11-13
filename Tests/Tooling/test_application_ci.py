@@ -35,9 +35,9 @@ class ApplicationCIRegistrationTests(unittest.TestCase):
             self.assertEqual(value['coverage']['jobs'][job], [prefix + row['id'] for row in source])
             for row in source:
                 self.assertEqual(value['coverage']['suites'][prefix + row['id']]['cases'], row['cases'])
-        self.assertEqual(len(value['coverage']['jobs']['runtime-safety']), 43)
+        self.assertEqual(len(value['coverage']['jobs']['runtime-safety']), 45)
         self.assertEqual(sum(len(value['coverage']['suites'][name]['cases'])
-                             for name in value['coverage']['jobs']['runtime-safety']), 1324)
+                             for name in value['coverage']['jobs']['runtime-safety']), 1349)
         self.assertEqual(len(value['coverage']['jobs']['native-and-lifecycle']), 35)
 
     def test_missing_case_or_unregistered_command_refuses_current_manifest(self):

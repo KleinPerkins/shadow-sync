@@ -560,8 +560,28 @@ public enum HostPolicySnapshotSelfTestRunner {
             try denied { try rootReuse.admission.requireAllowed(rootMarker, deadline: rootDeadline) }
             try require(rootReuseAudit.invocations.count == 1, "cached root marker bypassed current authority")
             try rootContext.fixture.restore()
-            try rootReuse.admission.requireAllowed(rootMarker, deadline: rootDeadline)
-            try require(rootReuseAudit.invocations.count == 2, "root drift refusal retained prefetched decisions")
+            // Restoring bytes does not restore the captured file identities.
+            // The old authority must remain refused before another helper.
+            try denied { try rootReuse.admission.requireAllowed(rootMarker, deadline: rootDeadline) }
+            try require(rootReuseAudit.invocations.count == 1, "restored bytes revived stale root authority")
+
+            // A current snapshot gets its own unchanged scan budget. Keep the
+            // prefetch eviction check independent of irreversible policy drift.
+            let currentRootAudit = CommandAudit()
+            let rootResourceMarker = rootContext.fixture.path + "/resource-marker"
+            let currentRoot = try rootContext.make("root-shelf-prefetch", audit: currentRootAudit, resourceCheck: {
+                if FileManager.default.fileExists(atPath: rootResourceMarker) { throw PolicyHelperError.unavailable }
+            })
+            let currentRootDeadline = deadline()
+            try currentRoot.admission.requireAllowed(rootChild, deadline: currentRootDeadline)
+            try currentRoot.admission.requireAllowed(rootMarker, deadline: currentRootDeadline)
+            try require(currentRootAudit.invocations.count == 1, "current root snapshot did not reclassify and reuse prefetch")
+            try rootContext.fixture.write("resource-marker", Data("changed".utf8))
+            try denied { try currentRoot.admission.requireAllowed(rootMarker, deadline: currentRootDeadline) }
+            try require(currentRootAudit.invocations.count == 1, "cached root marker bypassed revoked resources")
+            try require(unlink(rootResourceMarker) == 0, "root resource marker cleanup")
+            try currentRoot.admission.requireAllowed(rootMarker, deadline: currentRootDeadline)
+            try require(currentRootAudit.invocations.count == 2, "root drift refusal retained prefetched decisions")
 
             let invalidRootAudit = CommandAudit()
             let invalidRoot = try rootContext.make("root-shelf-prefetch-invalid", audit: invalidRootAudit)

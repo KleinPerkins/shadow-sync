@@ -1306,8 +1306,7 @@ enum InstallationBootstrapFixtures {
         }
     }
 
-    private static func startPrepared(_ root: String, _ bootstrap: B,
-        deadline: MonotonicDeadline = .init(seconds: 30)) throws {
+    private static func prepareStartCommandFixture(_ root: String) throws {
         // Existing actual-custodian fixture mode: suppress serial telemetry only;
         // the real three-child graph, EOF, reap and retirement are unchanged.
         _ = try TestIsolation.validateRoot(root)
@@ -1320,6 +1319,10 @@ enum InstallationBootstrapFixtures {
             try H.check(Darwin.write(fd, $0.baseAddress, $0.count) == $0.count && fsync(fd) == 0,
                         "bootstrap start fixture marker durability")
         }
+    }
+    private static func startPrepared(_ root: String, _ bootstrap: B,
+        deadline: MonotonicDeadline = .init(seconds: 30)) throws {
+        try prepareStartCommandFixture(root)
         try readinessPrepared(bootstrap, deadline: deadline)
         try bootstrap.openStagedReadiness()
     }
@@ -4120,7 +4123,10 @@ extension InstallationBootstrapFixtures {
         for operation: LifecycleLaunchCommand.Operation in [.bootstrap, .kickstart] {
             for cut: B.StartCheckpoint in [.claimed, .intentRetained, .contextRetained, .commandRetained,
                                           .submitted, .retirementReceived, .aliasesReleased, .retired, .completed] {
-                try exclusiveFixture { _, location, bootstrap, _ in
+                try exclusiveFixture { root, location, bootstrap, _ in
+                    // The driver owns phase progression; prepare only the
+                    // existing helper telemetry contract before its reserve.
+                    try prepareStartCommandFixture(root)
                     var reached = false
                     try bootstrap.testingConfigureStarts(checkpoint: { actual, point in
                         if actual == operation && point == cut { reached = true; throw InstallationFailure.policy }

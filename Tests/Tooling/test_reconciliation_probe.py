@@ -68,6 +68,30 @@ def parse_records(lines, enums, bootstrap):
     return result
 
 
+CANCELLATION_FIELDS = ('sampled phase protocol reason flags helper status issued originalWork originalTerm '
+    'originalKill originalReceipt work term kill receipt operation cap archiveStarted archiveCompleted '
+    'retired finalization expired publication firstPoint firstFamily firstSystem').split()
+
+
+def parse_cancellation_records(lines):
+    """Diagnostic grammar only; this value sample never proves custody or success."""
+    if len(lines) != 1 or len(lines[0]) > 4096:
+        raise ValueError('record count or bound')
+    pattern = 'M6 CANCEL OBSERVATION v1' + ''.join(' ' + k + r'=([0-9]+)' for k in CANCELLATION_FIELDS) + r'\n'
+    match = re.fullmatch(pattern, lines[0])
+    if not match:
+        raise ValueError('closed grammar')
+    row = dict(zip(CANCELLATION_FIELDS, map(int, match.groups())))
+    bounds = {'phase': 4, 'protocol': 4, 'reason': 12, 'helper': 3, 'status': 2**32-1,
+              'finalization': 4, 'expired': 5, 'publication': 3, 'firstPoint': 14,
+              'firstSystem': 2**32-1}
+    if any(v > bounds.get(k, 2**64-1) for k, v in row.items()):
+        raise ValueError('scalar range')
+    if row['flags'] & ~0x3f1ffff or row['firstFamily'] not in (*range(14), 255):
+        raise ValueError('closed flags or error family')
+    return row
+
+
 class ReconciliationProbeTests(unittest.TestCase):
     def test_closed_record_parser_rejects_private_or_unbounded_evidence(self):
         source = (CORE / 'InstallationReconciliationDiagnostic.swift').read_text()
@@ -230,6 +254,14 @@ class ReconciliationProbeTests(unittest.TestCase):
         # Strip ONLY the approved closed-value failure decoration. The digest pins
         # all prior operations, predicates, cleanup, assertions and fixed budgets.
         source = (CORE / 'InstallationStagedReconciliationFixtures.swift').read_text()
+        source = source.replace('                if failureMode == .mutationCancel { try registry.testingArmCancellationObservation(command!) }\n', '', 1)
+        observed = '''                do {
+                    try until(failure: .init(mode: failureMode, wait: .commandFinished)) { handle.snapshot().phase == .finished }
+                } catch {
+                    handle.testingTakeCancellationObservation()?.emit()
+                    throw error
+                }'''
+        source = source.replace(observed, '                try until(failure: .init(mode: failureMode, wait: .commandFinished)) { handle.snapshot().phase == .finished }', 1)
         start = source.index('    // Failure attribution carries closed values only,')
         end = source.index('    private static func until(', start)
         source = source[:start] + source[end:]
@@ -249,6 +281,61 @@ class ReconciliationProbeTests(unittest.TestCase):
         source = source.replace(', resumedMode: failureMode)', ')', 1)
         self.assertEqual(hashlib.sha256(source.encode()).hexdigest(),
                          '1f83d419da97a94449dad2014d1e5659e5fccd8fcc0e9c123093e9881d39ae72')
+
+
+    def test_cancellation_output_closed_fields_and_refusals(self):
+        registry = (CORE / 'RetainedCleanupRegistry.swift').read_text()
+        emitter = registry[registry.index('        func emit() {', registry.index('struct TestCancellationObservation')):
+                           registry.index('    private var testingCancellationCommand:')]
+        self.assertEqual(re.findall(r' (\w+)=\\\(', emitter), CANCELLATION_FIELDS)
+        line = 'M6 CANCEL OBSERVATION v1' + ''.join(' ' + k + '=0' for k in CANCELLATION_FIELDS) + '\n'
+        self.assertEqual(set(parse_cancellation_records([line])), set(CANCELLATION_FIELDS))
+        for bad in ([], [line, line], [line.rstrip()], [line.replace(' phase=0', ' phase=5')],
+                    [line.replace(' helper=0', ' helper=4')], [line.replace(' firstPoint=0', ' firstPoint=15')],
+                    [line.replace(' firstFamily=0', ' firstFamily=14')], [line.replace(' flags=0', ' flags=131072')],
+                    [line.replace(' status=0', ' status=4294967296')], [line.replace(' sampled=0', ' sampled=-1')],
+                    [line.replace(' sampled=0', ' sampled=18446744073709551616')],
+                    [line.rstrip() + ' pid=42\n'], [line.replace(' phase=0', ' path=/fixture/private')],
+                    [line.replace(' phase=0', ' error=arbitrary')], ['x'*4097]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                parse_cancellation_records(bad)
+
+    def test_cancellation_sample_has_only_scalars_and_original_object_arm(self):
+        registry = (CORE / 'RetainedCleanupRegistry.swift').read_text()
+        sample = registry[registry.index('    struct TestCancellationObservation: Sendable {'):
+                          registry.index('        init(budget: CustodyBudget)', registry.index('    struct TestCancellationObservation'))]
+        for line in sample.splitlines()[1:]:
+            self.assertRegex(line.strip(), r'^(?:var|let) [\w,: =0-9]+UInt64[\w,: =0-9]*$')
+        arm = registry[registry.index('    func testingArmCancellationObservation('):registry.index('    final class StagedTickSchedulingProbe')]
+        self.assertIn('testingCancellationCommand = ObjectIdentifier(command)', arm)
+        self.assertNotIn('queue.sync', arm)
+        self.assertIn('testingCancellationCommand == ObjectIdentifier(command)', registry)
+        fixture = (CORE / 'InstallationStagedReconciliationFixtures.swift').read_text()
+        self.assertEqual(fixture.count('testingArmCancellationObservation(command!)'), 1)
+        self.assertIn('if failureMode == .mutationCancel { try registry.testingArmCancellationObservation(command!) }', fixture)
+        self.assertEqual(fixture.count('testingTakeCancellationObservation()?.emit()'), 1)
+        self.assertIn('catch {\n                    handle.testingTakeCancellationObservation()?.emit()\n                    throw error', fixture)
+
+    def test_cancellation_timeout_reads_published_cell_without_queue_or_authority(self):
+        registry = (CORE / 'RetainedCleanupRegistry.swift').read_text()
+        take = registry[registry.index('        func takeCancellationObservation()'):registry.index('        private var waitBarriers:')]
+        self.assertIn('cancellationObservationTaken = true', take)
+        self.assertIn('value.testingCancellationObservation', take)
+        self.assertNotRegex(take, r'queue|poll|validate|resources|owner|wait\(|open\(|read\(')
+        snapshot = registry[registry.index('        func cancellationSnapshot()'):registry.index('        var stagedTickSchedulingProbe:')]
+        self.assertNotRegex(snapshot, r'queue\.sync|\.poll\(|\.validate\(|\.revalidate\(|\b(?:open|lstat|stat|read|write|waitpid)\(')
+        self.assertIn('guard testingCancellationObservation?.firstPoint == 0 else { return }', snapshot)
+        delivery = registry[registry.index('        // This following turn retains no Entry,'):registry.index('    private func finish(')]
+        self.assertNotRegex(delivery[delivery.index('        queue.async {'):], r'\bentry\b')
+        self.assertIn('if var sample = publicationSample', delivery)
+
+    def test_cancellation_marker_roster_is_strict_superset(self):
+        roster = json.loads((ROOT / 'Tests/Fixtures/production-test-markers.json').read_text())
+        self.assertEqual(len(roster['markers']), len(set(roster['markers'])))
+        self.assertIn('M6 CANCEL OBSERVATION v1', roster['markers'])
+        package = (ROOT / 'scripts/ci-suite.py').read_text()
+        self.assertIn("missing = [value for value in markers['markers'] if value.encode() not in raw]", package)
+        self.assertIn('build.require(not missing,', package)
 
 
 if __name__ == '__main__':

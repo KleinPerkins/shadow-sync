@@ -4015,7 +4015,9 @@
           "test_policy_batch.PolicyBatchTests.test_closed_request_and_size_limits",
           "test_policy_batch.PolicyBatchTests.test_complete_ordered_batch_is_redacted_and_digest_bound",
           "test_policy_batch.PolicyBatchTests.test_dispatch_preserves_single_request_and_rejects_unknown_schemas",
+          "test_policy_batch.PolicyBatchTests.test_each_candidate_executes_fresh_module_and_matcher_state",
           "test_policy_batch.PolicyBatchTests.test_inconsistent_or_incomplete_internal_response_refuses",
+          "test_policy_batch.PolicyBatchTests.test_later_candidate_authority_postflight_still_refuses",
           "test_policy_batch.PolicyBatchTests.test_maximum_batch_keeps_one_result_per_index",
           "test_policy_batch.PolicyBatchTests.test_snapshot_drift_never_returns_partial_allow_results"
         ],
@@ -4159,6 +4161,10 @@
       },
       "tooling-test-reconciliation-probe": {
         "cases": [
+          "test_reconciliation_probe.ReconciliationProbeTests.test_cancellation_marker_roster_is_strict_superset",
+          "test_reconciliation_probe.ReconciliationProbeTests.test_cancellation_output_closed_fields_and_refusals",
+          "test_reconciliation_probe.ReconciliationProbeTests.test_cancellation_sample_has_only_scalars_and_original_object_arm",
+          "test_reconciliation_probe.ReconciliationProbeTests.test_cancellation_timeout_reads_published_cell_without_queue_or_authority",
           "test_reconciliation_probe.ReconciliationProbeTests.test_cleanup_observation_keeps_original_failure_precedence",
           "test_reconciliation_probe.ReconciliationProbeTests.test_closed_record_parser_rejects_private_or_unbounded_evidence",
           "test_reconciliation_probe.ReconciliationProbeTests.test_fixed_suite_rejects_missing_reordered_substituted_or_selected_bodies",
