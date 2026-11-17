@@ -125,14 +125,17 @@ def prepare(root, context, job):
     modes = ('testing', 'production') if job in ('compile-package', 'package-contract') else ('testing',)
     for mode in modes:
         parent = root / mode; parent.mkdir(mode=0o700)
-        command = ['/bin/bash', str(ROOT / 'scripts/build-app.sh'),
+        command = ['/bin/bash', '-x', str(ROOT / 'scripts/build-app.sh'),
             '--scratch-path', str(parent / 'scratch'), '--output-dir', str(parent / 'package'),
             '--source-revision', context['revision'], '--source-input-sha256', context['source_sha256']]
         if mode == 'testing':
             command.append('--testing')
-        result = subprocess.run(command, cwd=ROOT, capture_output=True, timeout=1500)
+        # Only this public fixture build is traced; its fixed arguments contain
+        # source hashes and private runner paths, never credentials or config.
+        result = subprocess.run(command, cwd=ROOT, capture_output=True, timeout=1500,
+            env=dict(os.environ, PS4='+fixture-build:${LINENO}: '))
         (parent / 'build.log').write_bytes(result.stdout + result.stderr)
-        require(result.returncode == 0, 'Application compilation/packaging failed')
+        require(result.returncode == 0, 'Application compilation/packaging failed (exit ' + str(result.returncode) + '); see build.log')
         selftest = ['/usr/bin/xcrun', 'swift', 'build', '--package-path', str(ROOT),
             '--scratch-path', str(parent / 'scratch'), '--configuration', 'release',
             '--disable-index-store', '-Xswiftc', '-file-prefix-map', '-Xswiftc',
