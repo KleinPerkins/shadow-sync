@@ -3489,8 +3489,10 @@ private enum CustodyHelperSelfTests {
             else if mode.hasPrefix("serial-policy-") || timeout || cancelAt == 1 { expectedStages = 2 }
             else { expectedStages = 1 }
             try check(resumed.count == expectedStages, "serial refusal admitted another stage")
-            try check(journal.target?.pid == UInt32(resumed.last![3])
-                && journal.custodian?.pid != journal.target?.pid, "durable target lost its exact owner")
+            let targetPID = journal.target.map { $0.pid }
+            let custodianPID = journal.custodian.map { $0.pid }
+            try check(targetPID == UInt32(resumed.last![3])
+                && custodianPID != targetPID, "durable target lost its exact owner")
             if !mode.hasPrefix("serial-postflight-"), timeout || cancelAt != nil && mode != "serial-between-cancel" {
                 try check(journal.waitStatus == UInt32(SIGKILL), "resistant serial child was not KILL-drained")
             }
