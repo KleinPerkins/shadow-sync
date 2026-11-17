@@ -168,6 +168,35 @@ if mode == 'exit': sys.exit(2)
         self.assertEqual(result['exit_code'], 3)
         self.assertTrue(result['original_reaped'])
 
+    def test_deadline_drains_owned_descendant_after_leader_exit(self):
+        child=self.root/'descendant.py'
+        child.write_text("""import pathlib, signal, sys, time
+root=pathlib.Path(sys.argv[1])
+def cancel(*_):
+    (root/'drained').write_text('TERM received')
+    print('descendant drained',flush=True)
+    sys.exit(0)
+signal.signal(signal.SIGTERM,cancel)
+(root/'ready').write_text('ready')
+time.sleep(2)
+""")
+        parent=self.root/'parent.py'
+        parent.write_text("""import os, pathlib, subprocess, sys, time
+root=pathlib.Path(sys.argv[2])
+subprocess.Popen([sys.executable,'-I','-B',sys.argv[1],str(root)])
+while not (root/'ready').exists(): time.sleep(.01)
+if sys.argv[3]=='exit': os._exit(0)
+time.sleep(3)
+""")
+        for mode in ('exit','wait'):
+            root=self.root/mode;root.mkdir()
+            with self.subTest(mode=mode):
+                result=runner.observe_command([sys.executable,'-I','-B',str(parent),str(child),str(root),mode],
+                    cwd=self.root,environment={'PATH':os.defpath},log=root/'observed.log',timeout_seconds=.4)
+                self.assertEqual(result['errors'],['deadline'])
+                self.assertTrue(result['original_reaped'])
+                self.assertEqual((root/'drained').read_text(),'TERM received')
+                self.assertIn('descendant drained',(root/'observed.log').read_text())
     def test_completion_helper_requires_exact_closed_context_and_no_overwrite(self):
         path = self.root / 'terminal.json'
         context = dict(nonce='d' * 32, suite='fixture', unit_id='runtime-safety-0',

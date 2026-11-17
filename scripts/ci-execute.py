@@ -46,9 +46,9 @@ def command_completed(cleanup_complete, *, environment=None):
 def observe_command(argv, *, cwd, environment, log, timeout_seconds):
     """Bound output, request cooperative cancellation, and reap the original child.
 
-    There is deliberately no kill-after-timeout branch. Runtime commands own the
-    guardian control channel and drain it on TERM. A stuck cleanup cannot produce
-    a complete unit; the hosted job's separate deadline fails that execution.
+    Retain the unreaped leader as the anchor for only its newly created process
+    group. Runtime/native guardians own separate sessions and control channels.
+    There is no kill-after-timeout branch; stuck cleanup fails the hosted deadline.
     """
     started = time.monotonic()
     interrupts, errors = [], []
@@ -61,6 +61,30 @@ def observe_command(argv, *, cwd, environment, log, timeout_seconds):
     exit_code = None
     def interrupted(number, _frame):
         interrupts.append(number)
+    def terminal():
+        observed = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        if observed is None:
+            return None
+        require(observed.si_pid == process.pid and observed.si_code in
+                (os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED))
+        return observed.si_status if observed.si_code == os.CLD_EXITED else -observed.si_status
+    def descendants():
+        require(process.returncode is None)
+        result = subprocess.run(['/usr/bin/pgrep', '-g', str(process.pid)],
+            env={'PATH': '/usr/bin:/bin', 'LANG': 'C'}, capture_output=True, timeout=1)
+        require(result.returncode in (0, 1) and not result.stderr and len(result.stdout) <= 16384)
+        lines = result.stdout.decode('ascii').splitlines()
+        require(all(line.isdecimal() and int(line) > 1 for line in lines)
+                and len(lines) == len(set(lines)) and (result.returncode == 1) == (not lines))
+        return {int(line) for line in lines} - {process.pid}
+    def cancel_group():
+        # Never reap/poll before the last signal. The unreaped leader reserves its
+        # PID/group identity even if it exits before a stdout-holding descendant.
+        require(process.returncode is None)
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     try:
         for number in (signal.SIGINT, signal.SIGTERM):
             previous[number] = signal.signal(number, interrupted)
@@ -69,13 +93,11 @@ def observe_command(argv, *, cwd, environment, log, timeout_seconds):
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, close_fds=True, start_new_session=True)
             os.set_blocking(process.stdout.fileno(), False)
-            while exit_code is None or not eof:
+            while True:
                 if time.monotonic() - started >= timeout_seconds and 'deadline' not in errors:
                     errors.append('deadline')
                 if (interrupts or errors) and not requested:
-                    # Popen retains the unreaped original child; never use a PID
-                    # supplied by a receipt or signal its independently owned groups.
-                    process.send_signal(signal.SIGTERM)
+                    cancel_group()
                     requested = True
                 ready, _, _ = select.select([] if eof else [process.stdout], [], [], .02)
                 if ready:
@@ -89,21 +111,28 @@ def observe_command(argv, *, cwd, environment, log, timeout_seconds):
                         retained += min(len(chunk), remaining)
                         if count > ci.coverage.MAX_LOG and 'output-limit' not in errors:
                             errors.append('output-limit')
-                exit_code = process.poll()
+                exit_code = terminal()
+                if exit_code is not None and eof:
+                    if not descendants():
+                        break
+                    if 'descendants' not in errors:
+                        errors.append('descendants')
+            require(process.wait() == exit_code)
             output.flush()
             os.fsync(output.fileno())
     finally:
         # The normal observation loop owns cancellation and actual reaping. An
         # observer I/O failure must not discard that ownership or assert cleanup.
         if process is not None and process.returncode is None:
-            process.send_signal(signal.SIGTERM)
-            while process.poll() is None:
+            cancel_group()
+            while terminal() is None or descendants():
                 if process.stdout is not None:
                     ready, _, _ = select.select([process.stdout], [], [], .02)
                     if ready:
                         os.read(process.stdout.fileno(), 65536)
                 else:
                     time.sleep(.02)
+            process.wait()
         if process is not None and process.stdout is not None:
             process.stdout.close()
         for number, handler in previous.items():

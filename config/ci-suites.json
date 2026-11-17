@@ -2912,6 +2912,7 @@
           "test_ci_executor.CIExecutorTests.test_completion_helper_never_coerces_truthy_cleanup",
           "test_ci_executor.CIExecutorTests.test_completion_helper_requires_exact_closed_context_and_no_overwrite",
           "test_ci_executor.CIExecutorTests.test_deadline_cooperatively_stops_and_reaps_original",
+          "test_ci_executor.CIExecutorTests.test_deadline_drains_owned_descendant_after_leader_exit",
           "test_ci_executor.CIExecutorTests.test_duplicate_success_fails_coverage",
           "test_ci_executor.CIExecutorTests.test_existing_evidence_is_never_overwritten",
           "test_ci_executor.CIExecutorTests.test_failed_cleanup_stops_admission",
