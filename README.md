@@ -30,6 +30,8 @@ work=$(mktemp -d /private/tmp/shadow-sync-build.XXXXXX)
 
 This produces a development bundle, not a distribution or an installation. `install.sh` refuses production installation, repair and removal. Do not run historical lifecycle/native scripts against a real home or repository inventory. Runtime and native suites require the reviewed isolated runners; plain `swift test` is a compile/package check and does not execute the substantive runtime suite.
 
+The disposable dirty-first fixture is named `00-dirty-first` and is reported as `SKIPPED_DIRTY`. A dirty worktree is skipped before inspection or mutation.
+
 ## Verification and delivery gates
 
 The source inventory includes mandatory runtime cases and sharding/evidence validators. Full current-source runtime coverage and hosted application CI are still being qualified. The existing `CI tooling qualification` workflow tests Python tooling only. The privileged reviewer-App workflow is staged with both jobs disabled until full CI provenance, dependency-content policy and exact-head delivery tests pass.

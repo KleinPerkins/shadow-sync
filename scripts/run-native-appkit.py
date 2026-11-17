@@ -99,6 +99,29 @@ def stage_binary(source, target, expected):
     require(binary_identity(source, expected) == before, 'Binary changed during staging')
 
 
+CONTRACT_SOURCE = ('Sources/ShadowSyncApp/AppDelegate.swift', 'README.md')
+
+
+def stage_contract_source(root, expected):
+    destination = root / 'contract-source'
+    destination.mkdir(mode=0o700)
+    for name in CONTRACT_SOURCE:
+        data = native.read_regular(ROOT / name)
+        require(sha(data) == expected[name], 'Source contract input changed')
+        target = destination / name
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        write_new(target, data)
+    verify_contract_source(root, expected)
+
+
+def verify_contract_source(root, expected):
+    require(set(expected) == set(CONTRACT_SOURCE), 'Source contract coverage changed')
+    for name in CONTRACT_SOURCE:
+        target = root / 'contract-source' / name
+        require(target.resolve(strict=True) == target, 'Staged source contract path changed')
+        require(sha(native.read_regular(target)) == expected[name], 'Staged source contract changed')
+
+
 def catalog():
     old = native.legacy.contract(native.read_regular(ROOT / 'Tests/Fixtures/native-appkit-contract.json'))
     manifest = native.contract(native.read_regular(ROOT / 'Tests/Fixtures/native-ui-suites.json'), old)
@@ -338,7 +361,8 @@ def execute(row, binary, expected, evidence, old, manifest):
         'scripts/run-native-appkit.py', 'scripts/native-ui-suites.py',
         'scripts/native-appkit-contract.py', 'scripts/native-fixture-contract.py',
         'Tests/Fixtures/native-ui-suites.json',
-        'Tests/Fixtures/native-appkit-contract.json', 'Sources/ShadowSyncApp/M5Harness.swift')}
+        'Tests/Fixtures/native-appkit-contract.json', 'Sources/ShadowSyncApp/M5Harness.swift',
+        *CONTRACT_SOURCE)}
     suite = row['id']
     directory = evidence / suite
     directory.mkdir(mode=0o700)
@@ -362,6 +386,8 @@ def execute(row, binary, expected, evidence, old, manifest):
     try:
         retain('fixture.json', encoded({'root': str(root), 'identity': initial}))
         stage_binary(binary, staged, expected)
+        source_contract = {name: inputs[name] for name in CONTRACT_SOURCE}
+        stage_contract_source(root, source_contract)
         write_new(root / 'profile.sb', profile)
         canary = child(prefix + [str(staged), '--shadow-sync-native-fixture-isolation'],
                        cwd=root, env=env, timeout=15)
@@ -396,6 +422,7 @@ def execute(row, binary, expected, evidence, old, manifest):
         require(binary_identity(binary, expected) == before, 'Testing binary identity changed')
         require(all(sha(native.read_regular(ROOT / name)) == digest for name, digest in inputs.items()),
                 'Native runner or contract changed')
+        verify_contract_source(root, source_contract)
         require(private_directory(root) == initial and shutil.rmtree.avoids_symlink_attacks,
                 'Fixture identity changed or safe cleanup unavailable')
         shutil.rmtree(root)

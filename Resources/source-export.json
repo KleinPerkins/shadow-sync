@@ -189,7 +189,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncApp/M5Harness.swift",
-      "sha256": "90f9f167a2ca2025335ba83be3b5356bc0e178ab2ee4f044dd8432532f95b827"
+      "sha256": "0b642c87c2ee96964392581118b24bbf26112fd2e825086ddca1213d426d1b54"
     },
     {
       "mode": "100644",
@@ -944,7 +944,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_native_appkit_runner.py",
-      "sha256": "73c8962c44b6d64b05e7ccdd284b6c77c939600ba167f4e7cfc7b06a801927e0"
+      "sha256": "d8450308c09658d7201c1c5b1086c211617aad506f400f95340a1d397911ae87"
     },
     {
       "mode": "100644",
@@ -1144,7 +1144,7 @@
     {
       "mode": "100644",
       "path": "scripts/run-native-appkit.py",
-      "sha256": "b0cda49cf46e73db7435b5d9dfbf4c36edbd28af38f952b065d91c717cc25056"
+      "sha256": "3543c49f5722cd0151fa4cef81cb756cd3567ecd62d12d2571aa132b9a63ffc3"
     },
     {
       "mode": "100644",

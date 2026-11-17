@@ -3180,6 +3180,7 @@
           "test_native_appkit_runner.NativeExecutorTests.test_profile_restricts_home_network_outside_writes_and_unrelated_exec",
           "test_native_appkit_runner.NativeExecutorTests.test_recovery_observes_present_absent_and_denied_without_signaling",
           "test_native_appkit_runner.NativeExecutorTests.test_request_protocol_keeps_latency_and_ui_contracts",
+          "test_native_appkit_runner.NativeExecutorTests.test_source_contract_snapshot_binds_bytes_and_rejects_tampering",
           "test_native_appkit_runner.NativeExecutorTests.test_spawn_failure_cannot_claim_cleanup_or_success",
           "test_native_appkit_runner.NativeExecutorTests.test_spawn_only_crash_observes_known_identity_but_keeps_failed_fixture"
         ],
