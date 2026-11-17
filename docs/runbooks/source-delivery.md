@@ -8,6 +8,16 @@ The predecessor App workflow stays disabled. New source does not enable the exte
 
 Source admission is a review and CI gate for source changes, including automation changes after initial owner/admin bootstrap. It is not a permanent path allowlist for future source PRs. The current fixture-CI migration excludes held product work, installation, signing and release changes. A later source merge does not authorize running installation, obtaining signing credentials, publishing a release, changing repository administration or activating the App writer; those operations retain their separate authority gates.
 
+Read-only App qualification reports its selected current-main CI run, actual App
+identity and repository token scope, current-token non-bypass proof and observed
+controls. The initial writer-activation procedure separately collects and verifies
+successful transition and routine execution on the admitted main revision, both
+enrolled account origins and the remaining owner-controlled prerequisites before
+enabling the writer. Preserve that separate initial evidence. Ordinary
+requalification of an unchanged registration validates the current run in its
+recomputed required mode; it does not require a new transition on every source
+head. The qualification command performs no activation mutation.
+
 Before approval and again before native delivery, the validated repository-scoped App token must report `current_user_can_bypass: never` for every contributing active main ruleset, with complete, nonduplicated ruleset coverage. Read-only App qualification uses the same checks. An absent or unknown caller-specific status blocks delivery. A redacted `bypass_actors` list remains explicitly unknown; a visible list must still match the declared owner exception. The gate re-reads the exact current App approval after submission and immediately before native delivery, refusing a missing, dismissed, duplicated or changed approval.
 
 `Resources/source-export.json` records transformed product payloads and third-party imports, including their modes and hashes. It is not an inventory of every authored repository file. Update its entries whenever a listed imported payload changes; `verify-source-contract.py` verifies those listed bytes and modes. Newly authored source and CI helpers are bound by the tracked-source digest, exact Git revision and canonical CI registration. Adding an imported payload still requires its provenance entry and applicable review.
