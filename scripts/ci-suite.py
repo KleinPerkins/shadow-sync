@@ -48,9 +48,9 @@ def package_contract(build, work, record):
                    if row['id'] == 'closed-runner')
     testing = Path(record['builds']['testing']['products']) / 'ShadowSyncSelfTest'
     raw = testing.read_bytes()
-    missing = [value for value in markers['markers'] if value.encode() not in raw]
+    missing = [value for value in markers if value.encode() not in raw]
     build.require(not missing, 'Testing positive control missing '
-                  f'({len(missing)}/{len(markers["markers"])}): ' + json.dumps(missing, ensure_ascii=True))
+                  f'({len(missing)}/{len(markers)}): ' + json.dumps(missing, ensure_ascii=True))
     demangler = build.run(['/usr/bin/xcrun', '--find', 'swift-demangle']).strip()
     pattern = re.compile(r'\bShadowSyncCore\.PolicyAuthorityFile\.\(Revalidation in _[A-F0-9]+\)\.afterRead :')
     def fields(path):
@@ -65,7 +65,7 @@ def package_contract(build, work, record):
     for name in build.PRODUCTS:
         path = Path(record['builds']['production']['products']) / name
         data = path.read_bytes()
-        build.require(not any(value.encode() in data for value in markers['markers']), 'Testing string in production')
+        build.require(not any(value.encode() in data for value in markers), 'Testing string in production')
         build.require(not any(pattern.search(line) or '.writeFixtureAtomically(to:' in line for line in fields(path)),
                       'Testing implementation in production')
     print('PASS package/production-seam-exclusion', flush=True)

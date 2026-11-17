@@ -2993,6 +2993,7 @@
           "test_ci_wiring.CIWiringTests.test_incomplete_runtime_attempt_never_fills_missing_cases",
           "test_ci_wiring.CIWiringTests.test_initial_and_routine_plans_keep_all_five_nonempty_groups",
           "test_ci_wiring.CIWiringTests.test_missing_extra_stale_and_linked_artifact_directories_refuse",
+          "test_ci_wiring.CIWiringTests.test_package_contract_checks_inventory_list_and_production_exclusion",
           "test_ci_wiring.CIWiringTests.test_partial_build_is_refused_before_toolchain_or_execution",
           "test_ci_wiring.CIWiringTests.test_policy_pin_staging_is_exact_and_never_overwrites",
           "test_ci_wiring.CIWiringTests.test_registered_commands_are_direct_canonical_entrypoints",

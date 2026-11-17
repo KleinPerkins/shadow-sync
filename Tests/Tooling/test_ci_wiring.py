@@ -1,4 +1,9 @@
 """Current-source CI discovery, hosted contracts and runtime evidence boundaries."""
+import contextlib
+import hashlib
+import io
+import plistlib
+from types import SimpleNamespace
 import importlib.util
 import json
 import os
@@ -167,3 +172,59 @@ class CIWiringTests(unittest.TestCase):
         for job in jobs:
             self.assertIn('  ' + job + ':\n', text)
         self.assertIn('needs: [plan, quality, compile-package, runtime-safety, native-and-lifecycle, package-contract]', text)
+
+
+    def test_package_contract_checks_inventory_list_and_production_exclusion(self):
+        suite = load('ci-suite')
+        markers = next(row['cases'] for row in load('runtime-suite-inventory').inspect(ROOT)['suites']
+                       if row['id'] == 'closed-runner')
+        self.assertTrue(markers)
+        for defect in (None, 'missing-positive', 'production-leak'):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory(prefix='shadow-package-contract-') as tmp:
+                work = Path(tmp)
+                record = {'revision': 'a' * 40, 'source_sha256': 'b' * 64, 'builds': {}}
+                products = ('ShadowSync', 'ShadowSyncLifecycleCoordinator')
+                for mode in ('testing', 'production'):
+                    app = work / mode / 'package/ShadowSync.app'
+                    resources = app / 'Contents/Resources'
+                    resources.mkdir(parents=True)
+                    for name in ('ShadowSync.icns', 'release-contract.json'):
+                        (resources / name).write_bytes((ROOT / 'Resources' / name).read_bytes())
+                    (resources / 'THIRD_PARTY_NOTICES.md').write_bytes((ROOT / 'THIRD_PARTY_NOTICES.md').read_bytes())
+                    info = {'CFBundleIdentifier': 'com.kleinperkins.shadow-sync', 'CFBundleExecutable': 'ShadowSync',
+                            'ShadowSyncBuildMode': mode, 'ShadowSyncSourceRevision': record['revision'],
+                            'ShadowSyncSourceInputSHA256': record['source_sha256'], 'LSMinimumSystemVersion': '26.0'}
+                    (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+                    binaries = work / (mode + '-products')
+                    binaries.mkdir()
+                    record['builds'][mode] = {'products': str(binaries), 'package': []}
+                    for name in (*products, 'ShadowSyncSelfTest'):
+                        data = '\n'.join(markers).encode() if mode == 'testing' else b'production payload'
+                        if defect == 'missing-positive' and mode == 'testing': data = b'missing fixture cases'
+                        if defect == 'production-leak' and mode == 'production': data = markers[0].encode()
+                        (binaries / name).write_bytes(data)
+                def require(ok, message):
+                    if not ok: raise ValueError(message)
+                def native(args):
+                    if args[0] == '/usr/bin/lipo': return 'arm64'
+                    if args[0] == '/usr/bin/otool': return 'minos 26.0'
+                    if args[0] == '/usr/bin/xcrun': return '/fixture/swift-demangle'
+                    self.assertEqual(args[:3], ['/usr/bin/codesign', '--verify', '--strict'])
+                    return ''
+                def symbols(args, **kwargs):
+                    if args[0] == '/usr/bin/nm':
+                        return SimpleNamespace(stdout=b'testing' if 'testing-products' in args[-1] else b'production')
+                    self.assertEqual(args, ['/fixture/swift-demangle'])
+                    raw = (b'ShadowSyncCore.PolicyAuthorityFile.(Revalidation in _ABC).afterRead : fixture\n'
+                           b'.writeFixtureAtomically(to: fixture') if kwargs['input'] == b'testing' else b'production symbols'
+                    return SimpleNamespace(stdout=raw)
+                build = SimpleNamespace(PRODUCTS=products, require=require, run=native,
+                                        sha=lambda path: hashlib.sha256(path.read_bytes()).hexdigest())
+                with patch.object(suite.subprocess, 'run', side_effect=symbols), contextlib.redirect_stdout(io.StringIO()) as out:
+                    if defect:
+                        with self.assertRaisesRegex(ValueError, 'Testing positive control missing' if defect == 'missing-positive' else 'Testing string in production'):
+                            suite.package_contract(build, work, record)
+                    else:
+                        suite.package_contract(build, work, record)
+                        self.assertIn('PASS package/production-seam-exclusion', out.getvalue())
+                        self.assertIn('PASS package/updater-disabled', out.getvalue())
