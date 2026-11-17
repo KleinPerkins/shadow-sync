@@ -13,6 +13,16 @@ The initial count is one shard per group, pending hosted duration measurements.
 No speedup is claimed. Initial registration and every registration change require
 all shards plus a separately executed full run for every group.
 
+The registered per-suite timeouts request cooperative cancellation of a suite;
+they are ceilings, not reserved execution time or a promise that a unit may use
+the sum of every suite maximum. Workflow job deadlines separately bound the whole
+hosted execution, including stuck cleanup. The observer retains its original child
+while cleanup drains; it has no forced-kill-after-timeout path. A job reaching its
+hard deadline has failed qualification and cannot provide complete evidence or
+admit another suite. Current shard counts and hard deadlines are a conservative
+initial configuration; change them only from measured hosted durations while
+preserving full-equivalence and cleanup gates.
+
 Every PR, main push and weekly qualification runs mandatory coverage. Direct argv
 commands retain source/run/attempt-bound receipts and actual case rosters. The
 always-evaluated aggregate recomputes the expected matrix and rejects absent,

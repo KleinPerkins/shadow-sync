@@ -84,6 +84,15 @@ class ReceiptTests(unittest.TestCase):
             self.choose([dict(self.comment,id=2,body=gate.MARKER+json.dumps(second))],[self.producer,other])
         with self.assertRaisesRegex(gate.Rejected,'frozen PR origin'):
             self.choose([self.comment,dict(self.comment,id=2,body=gate.MARKER+json.dumps(second))],[self.producer,other])
+    def test_duplicate_receipt_keys_at_each_depth_refuse(self):
+        for field in ('reviewer_enrollment_id', 'origin_account', 'verdict'):
+            original=json.dumps(self.receipt)
+            value=self.receipt.get(field, self.receipt['tuple'].get(field, self.receipt['review'].get(field)))
+            token=json.dumps(field)+': '+json.dumps(value)
+            self.assertEqual(original.count(token),1)
+            malformed=original.replace(token,json.dumps(field)+': "conflicting", '+token)
+            with self.subTest(field=field),self.assertRaisesRegex(gate.Rejected,'invalid receipt JSON'):
+                self.choose([dict(self.comment,body=gate.MARKER+malformed)])
     def test_latest_failed_review_supersedes_old_pass(self):
         failed=copy.deepcopy(self.receipt);failed['review']['verdict']='fail'
         with self.assertRaises(gate.Rejected):self.choose([self.comment,dict(self.comment,id=2,body=gate.MARKER+json.dumps(failed))])
@@ -122,6 +131,15 @@ class OriginTests(unittest.TestCase):
             old=self.pr[key];self.pr[key]=value
             with self.assertRaises(gate.Rejected):self.choose()
             self.pr[key]=old
+    def test_duplicate_origin_keys_at_each_depth_refuse(self):
+        for field, value in [('origin_account', self.origin['origin_account']),
+                             ('account_checked_after', True)]:
+            original=json.dumps(self.origin);token=json.dumps(field)+': '+json.dumps(value)
+            self.assertEqual(original.count(token),1)
+            malformed=original.replace(token,json.dumps(field)+': "conflicting", '+token)
+            comment=dict(self.comment,body=gate.ORIGIN_MARKER+malformed)
+            with self.subTest(field=field),self.assertRaisesRegex(gate.Rejected,'invalid origin JSON'):
+                self.choose(comments=[comment])
     def test_closed_schema_account_adapter_and_timing_fail_closed(self):
         for key in self.origin:
             bad=copy.deepcopy(self.origin);del bad[key]

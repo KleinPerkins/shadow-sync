@@ -57,6 +57,16 @@ def canonical(value):
 def digest(value):
     return hashlib.sha256(value).hexdigest()
 
+def strict_comment_json(value):
+    def unique_pairs(pairs):
+        result = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError('duplicate JSON key')
+            result[key] = item
+        return result
+    return json.loads(value, object_pairs_hook=unique_pairs)
+
 def timestamp(value):
     result = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
     require(result.tzinfo is not None, 'timestamp has no timezone')
@@ -236,7 +246,7 @@ def choose_origin(comments, enrollments, pr, now):
         require(len(body.encode()) <= MAX_RECEIPT, 'origin exceeds bound')
         require(comment['created_at'] == comment['updated_at'], 'edited creation binding')
         try:
-            record = json.loads(body[len(ORIGIN_MARKER):])
+            record = strict_comment_json(body[len(ORIGIN_MARKER):])
         except ValueError:
             raise Rejected('invalid origin JSON') from None
         records.append((comment, record))
@@ -299,7 +309,7 @@ def choose_receipt(comments, enrollments, current, policy_hash, now, origin):
         require(len(body.encode()) <= MAX_RECEIPT, 'receipt exceeds bound')
         require(comment['created_at'] == comment['updated_at'], 'edited receipt cannot establish origin')
         try:
-            receipt = json.loads(body[len(MARKER):])
+            receipt = strict_comment_json(body[len(MARKER):])
         except ValueError:
             raise Rejected('invalid receipt JSON') from None
         producer = producers.get(receipt.get('reviewer_enrollment_id'))
