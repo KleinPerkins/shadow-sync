@@ -72,6 +72,10 @@ def timestamp(value):
     require(result.tzinfo is not None, 'timestamp has no timezone')
     return result
 
+class NoAPIRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise Rejected('GitHub API redirect refused')
+
 class API:
     def __init__(self, token, writable=False):
         require(bool(token), 'missing API credential')
@@ -88,7 +92,7 @@ class API:
         req = urllib.request.Request('https://api.github.com' + path, headers=headers,
                                      method=method, data=None if data is None else canonical(data))
         try:
-            with urllib.request.urlopen(req, timeout=30) as response:
+            with urllib.request.build_opener(NoAPIRedirect()).open(req, timeout=30) as response:
                 raw = response.read(8000001)
                 require(len(raw) <= 8000000, 'API response exceeds bound')
                 return json.loads(raw) if raw else None

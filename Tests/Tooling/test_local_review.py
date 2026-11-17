@@ -111,9 +111,23 @@ class CaptureTests(unittest.TestCase):
      try:os.kill(int(pidfile.read_text()),signal.SIGKILL)
      except ProcessLookupError:pass
  def test_cleanup_permission_error_requires_observed_group_absence(self):
-  p=Mock(pid=12345)
-  with patch.object(m.os,'killpg',side_effect=[None,PermissionError(),ProcessLookupError()]):m.stop(p)
-  with patch.object(m.os,'killpg',side_effect=PermissionError()),patch.object(m.time,'sleep'),patch.object(m.time,'monotonic',side_effect=[0,1]),self.assertRaises(PermissionError):m.stop(p)
+  p=Mock(pid=12345,returncode=None)
+  with patch.object(m,'terminal_without_reaping',side_effect=[None,0]),patch.object(m,'group_members',return_value=set()),patch.object(m.os,'killpg',side_effect=[PermissionError(),ProcessLookupError()]):m.stop(p)
+  with patch.object(m,'terminal_without_reaping',return_value=None),patch.object(m.os,'killpg',side_effect=PermissionError()),patch.object(m.time,'sleep'),patch.object(m.time,'monotonic',side_effect=[0,1]),self.assertRaises(PermissionError):m.stop(p)
+
+ def test_reaped_capture_anchor_is_never_signalled(self):
+  p=Mock(pid=12345,returncode=0)
+  with patch.object(m.os,'killpg') as signal_group:
+   with self.assertRaisesRegex(m.CaptureError,'released process-group anchor'):m.stop(p)
+  signal_group.assert_not_called()
+ def test_normal_run_retains_anchor_until_cleanup(self):
+  import sys
+  original=m.stop;states=[]
+  def checked(p):
+   states.append(p.returncode);return original(p)
+  with patch.object(m,'stop',side_effect=checked):
+   self.assertEqual(m.run([sys.executable,'-c','print("fixture")']).strip(),b'fixture')
+  self.assertEqual(states,[None])
 
  def test_capture_rechecks_account_and_keeps_email_private(self):
   roots=[]

@@ -3129,8 +3129,10 @@
           "test_local_review.CaptureTests.test_failure_truncation_wrong_output_duplicate_turn_tools",
           "test_local_review.CaptureTests.test_incomplete_or_extra_author_fields_never_pass",
           "test_local_review.CaptureTests.test_missing_wrong_account_workspace_origin",
+          "test_local_review.CaptureTests.test_normal_run_retains_anchor_until_cleanup",
           "test_local_review.CaptureTests.test_pipe_holding_child_ignoring_term_is_killed_on_timeout",
           "test_local_review.CaptureTests.test_process_limits_failure_timeout",
+          "test_local_review.CaptureTests.test_reaped_capture_anchor_is_never_signalled",
           "test_local_review.CaptureTests.test_substituted_policy_rejects_before_account_or_model",
           "test_local_review.CaptureTests.test_unresolved_finding_cannot_pass_or_disappear",
           "test_local_review.GitBindingTests.test_binary_marker_in_source_is_text_but_actual_binary_refuses",
@@ -3348,6 +3350,7 @@
       "tooling-test-reviewer-app": {
         "cases": [
           "test_reviewer_app.APIAndControlsTests.test_additional_human_review_gate_is_rejected",
+          "test_reviewer_app.APIAndControlsTests.test_api_redirects_cannot_forward_authorization",
           "test_reviewer_app.APIAndControlsTests.test_app_redacted_bypass_is_not_treated_as_empty",
           "test_reviewer_app.APIAndControlsTests.test_control_positive",
           "test_reviewer_app.APIAndControlsTests.test_effective_rules_second_page_cannot_hide_an_unexpected_bypass",

@@ -159,11 +159,21 @@ class APIAndControlsTests(unittest.TestCase):
         from unittest.mock import Mock
         response=Mock();response.read.return_value=b'{}'
         response.__enter__=Mock(return_value=response);response.__exit__=Mock(return_value=False)
-        with patch.object(gate.urllib.request,'urlopen',return_value=response) as opened:
+        with patch.object(gate.urllib.request,'urlopen',side_effect=AssertionError('unexpected network')),patch.object(gate.urllib.request,'build_opener') as builder:
+            opened=builder.return_value.open;opened.return_value=response
             gate.API('fixture',writable=True).request('/graphql','POST',{'query':'fixture'})
+            self.assertIsInstance(builder.call_args.args[0],gate.NoAPIRedirect)
         request=opened.call_args.args[0]
         self.assertEqual(request.get_header('Content-type'),'application/json')
         self.assertEqual(request.data,b'{"query":"fixture"}')
+    def test_api_redirects_cannot_forward_authorization(self):
+        request=gate.urllib.request.Request('https://api.github.com/repos/fixed/repo',
+            headers={'Authorization':'Bearer fixture-only'})
+        handler=gate.NoAPIRedirect()
+        for code in (301,302,303,307,308):
+            for target in ('https://other.example.invalid/path','https://api.github.com/relocated','http://api.github.com/path'):
+                with self.subTest(code=code,target=target),self.assertRaisesRegex(gate.Rejected,'redirect refused'):
+                    handler.redirect_request(request,None,code,'redirect',{},target)
     def test_readonly_rejects_post_without_network(self):
         with self.assertRaises(gate.Rejected):gate.API('fake').request('/graphql','POST',{})
     def test_readonly_allows_only_fixed_merge_query(self):
@@ -171,7 +181,8 @@ class APIAndControlsTests(unittest.TestCase):
         response=Mock();response.read.return_value=b'{}'
         response.__enter__=Mock(return_value=response);response.__exit__=Mock(return_value=False)
         api=gate.API('fixture')
-        with patch.object(gate.urllib.request,'urlopen',return_value=response) as opened:
+        with patch.object(gate.urllib.request,'urlopen',side_effect=AssertionError('unexpected network')),patch.object(gate.urllib.request,'build_opener') as builder:
+            opened=builder.return_value.open;opened.return_value=response
             api.request('/graphql','POST',{'query':gate.MERGE_SETTINGS_QUERY})
             self.assertEqual(opened.call_count,1)
             for path,method,data in [('/graphql','POST',{'query':'mutation { unsafe }'}),

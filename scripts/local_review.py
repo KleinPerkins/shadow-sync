@@ -86,7 +86,23 @@ def bind_policy(repo,policy):
 def utc():
  return dt.datetime.now(dt.timezone.utc).isoformat().replace('+00:00','Z')
 
+def terminal_without_reaping(p):
+ require(p.returncode is None,'child already reaped')
+ observed=os.waitid(os.P_PID,p.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+ if observed is None:return None
+ require(observed.si_pid==p.pid and observed.si_code in (os.CLD_EXITED,os.CLD_KILLED,os.CLD_DUMPED),'unexpected child status')
+ return observed.si_status if observed.si_code==os.CLD_EXITED else -observed.si_status
+
+def group_members(p):
+ require(p.returncode is None,'group anchor already reaped')
+ result=subprocess.run(['/usr/bin/pgrep','-g',str(p.pid)],env={'PATH':'/usr/bin:/bin','LANG':'C'},capture_output=True,timeout=1)
+ require(result.returncode in (0,1) and not result.stderr and len(result.stdout)<=16384,'owned group observation failed')
+ lines=result.stdout.decode('ascii').splitlines()
+ require(all(line.isdecimal() and int(line)>1 for line in lines) and len(lines)==len(set(lines)) and (result.returncode==1)==(not lines),'invalid group observation')
+ return {int(line) for line in lines}-{p.pid}
+
 def stop(p):
+ require(p.returncode is None,'cannot signal a released process-group anchor')
  # Every caller starts a private process group. Its descendants may still be
  # alive after the leader exits, so leader completion is not group cleanup.
  def terminate(sig):
@@ -102,12 +118,16 @@ def stop(p):
     except PermissionError:pass
     time.sleep(.01)
    raise
- terminate(signal.SIGTERM)
- try:p.wait(timeout=3)
- except subprocess.TimeoutExpired:pass
- finally:
-  terminate(signal.SIGKILL)
-  p.wait()
+ for sig,seconds in ((signal.SIGTERM,3),(signal.SIGKILL,5)):
+  if terminal_without_reaping(p) is not None and not group_members(p):
+   p.wait();return
+  terminate(sig)
+  deadline=time.monotonic()+seconds
+  while time.monotonic()<deadline:
+   if terminal_without_reaping(p) is not None and not group_members(p):
+    p.wait();return
+   time.sleep(.01)
+ raise CaptureError('owned capture process group did not drain')
 
 # stdout/stderr are bounded together; diagnostics are never emitted (may hold account data).
 def run(argv, *, cwd=None, input_data=b'', timeout=120, env=None):
@@ -125,8 +145,11 @@ def run(argv, *, cwd=None, input_data=b'', timeout=120, env=None):
      if not chunk:selector.unregister(key.fileobj);continue
      outputs[key.fileobj].extend(chunk)
      require(sum(map(len,outputs.values()))<=MAX_OUTPUT,'subprocess output limit; no receipt')
-   p.wait(timeout=max(.1,deadline-time.monotonic()))
-   require(p.returncode==0,'subprocess failed; no receipt')
+   code=terminal_without_reaping(p)
+   while code is None:
+    require(time.monotonic()<deadline,'subprocess timeout')
+    time.sleep(.01);code=terminal_without_reaping(p)
+   require(code==0,'subprocess failed; no receipt')
    return bytes(outputs[p.stdout])
   finally:
    try:stop(p)
