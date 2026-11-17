@@ -374,7 +374,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body3SelfTests.swift",
-      "sha256": "393633cce54dfa382bd93807d57cbf3cfe6a1ec49a397546dc9323070748ef67"
+      "sha256": "3a8a44dcaf0ac6e4b474fedc5f28f13aa69be66393febfe305ff5e0c42e62efb"
     },
     {
       "mode": "100644",
@@ -569,7 +569,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M4SelfTests.swift",
-      "sha256": "f3f3807a9c2badd270692b504b94cfba5bd7653ad34ea37195c8870a882bd4de"
+      "sha256": "e7839345f5f392a5bcf944bce134b745b31c1310b00bac2ab1e462976eeae65c"
     },
     {
       "mode": "100644",
@@ -579,7 +579,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "d273d252f701401e95f7b639c2b77f7edb118efa164f3cd6fc19983e15111a9f"
+      "sha256": "da9acfb58fa196879f627dfad1d1ef2c99734d681ca20568d8aacbd62383de95"
     },
     {
       "mode": "100644",
