@@ -4424,10 +4424,11 @@ private enum SystemConfigCommandSelfTests {
                         var commands = 0
                         do {
                             fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=observer-bind\n", stderr); fflush(stderr)
-                            let draft = try RepositoryMaintenanceTesting.$registrationObserver.withValue({ identifier in
+                            let observer = RepositoryMaintenanceTesting.Observer { identifier in
                                 fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=observer-callback\n", stderr); fflush(stderr)
                                 observed.record(identifier)
-                            }) {
+                            }
+                            let draft = try RepositoryMaintenanceTesting.$registrationObserver.withValue(observer) {
                                 fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=planner-entry\n", stderr); fflush(stderr)
                                 return try RepositoryMaintenancePlanner.inspect(clone: maintenanceClone, remote: remote,
                                     account: account, handle: handle, frozen: frozen, admission: admission,

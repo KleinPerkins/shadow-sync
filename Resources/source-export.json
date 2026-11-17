@@ -579,7 +579,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "d0f041e925cf4dd1c9e1811a832960145bd4d5003b5cb3b9ce8e989fe04e7378"
+      "sha256": "884a78ad5c1804b5c0ec8089c126653f90d534c268e1d93f967ef20e25983a63"
     },
     {
       "mode": "100644",
@@ -729,7 +729,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RepositoryMaintenance.swift",
-      "sha256": "0fa40fdd0f284944248b813fb5ab633fd842de73bd6e6f177a5d15bdfb7ec84c"
+      "sha256": "51b3d1ebd3f0933987ff7ecc86ecdab2f9e584b293aacaace28c72e6fcb353ec"
     },
     {
       "mode": "100644",
