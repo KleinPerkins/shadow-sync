@@ -328,7 +328,7 @@ def bounded_merge_base(command, base, head):
             return merge_base
     raise Rejected('common ancestry exceeds bounded review route')
 
-def git_tuple(head, base, token):
+def inspect_git_objects(head, base, token, inspect):
     for sha in (head, base):
         require(re.fullmatch('[0-9a-f]{40}', sha) is not None, 'invalid Git object')
     with tempfile.TemporaryDirectory(prefix='g1-objects-') as temporary:
@@ -356,8 +356,54 @@ def git_tuple(head, base, token):
                 return data
         command('init', '--bare', '.')
         merge_base = bounded_merge_base(command, base, head)
+        return inspect(command, merge_base)
+
+
+
+def git_tuple(head, base, token):
+    def inspect(command, merge_base):
         patch = command(*DIFF_CONFIG, '-c', 'color.ui=false', 'diff', '--no-ext-diff', '--no-textconv', '--binary', base+'...'+head, '--')
         return merge_base, digest(patch)
+    return inspect_git_objects(head, base, token, inspect)
+
+
+def source_digest_from_objects(command, revision):
+    """Match the tracked-source encoding using immutable Git data only."""
+    ci = ci_module()
+    require(re.fullmatch('[0-9a-f]{40}', revision) is not None, 'invalid source revision')
+    raw = command('ls-tree', '-rz', '--full-tree', revision)
+    require(raw.endswith(b'\0'), 'incomplete source tree')
+    entries = {}
+    for row in raw[:-1].split(b'\0'):
+        fields, name = row.split(b'\t', 1)
+        mode, kind, oid = fields.decode('ascii').split(' ')
+        path = name.decode('utf-8')
+        require(mode in ('100644', '100755') and kind == 'blob'
+                and re.fullmatch('[0-9a-f]{40}', oid) is not None, 'unsafe source tree entry')
+        require(0 < len(name) <= 4096 and path not in entries and not path.startswith('/')
+                and '\\' not in path and not any(ord(c) < 32 or ord(c) == 127 for c in path)
+                and all(part not in ('', '.', '..') for part in path.split('/')), 'unsafe source path')
+        entries[path] = (mode, oid)
+    require(0 < len(entries) <= ci.MAX_FILES, 'source inventory exceeds bound')
+    result = hashlib.sha256(b'shadow-sync-ci-source/v1\0')
+    total = 0
+    for path in sorted(entries):
+        mode, oid = entries[path]
+        data = command('cat-file', 'blob', oid)
+        total += len(data)
+        require(len(data) <= ci.MAX_FILE_BYTES and total <= ci.MAX_SOURCE_BYTES,
+                'source content exceeds bound')
+        require(hashlib.sha1(b'blob ' + str(len(data)).encode('ascii') + b'\0' + data).hexdigest() == oid,
+                'source Git object mismatch')
+        result.update(ci.encode([path, mode == '100755', digest(data)]))
+        result.update(b'\0')
+    return result.hexdigest()
+
+
+def git_source_at(revision, token):
+    return inspect_git_objects(revision, revision, token,
+        lambda command, _: source_digest_from_objects(command, revision))
+
 
 def ci_module():
     # Only trusted default-branch source is loaded. Candidate registrations are data.
@@ -428,7 +474,8 @@ def validated_plan(api, receipt, pr, revision, run):
         base_revision = revision
     head = registration_at(api, head_revision)
     base = registration_at(api, base_revision, optional=True)
-    source = receipt['plan'].get('source_sha256')
+    source = git_source_at(head_revision, api.token)
+    require(receipt['plan'].get('source_sha256') == source, 'aggregate source digest mismatch')
     try:
         plan = ci.make_plan(head, base, revision=head_revision, source_sha256=source,
                             run_id=str(run['id']), run_attempt=str(run['run_attempt']))

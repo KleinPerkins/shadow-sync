@@ -803,6 +803,11 @@ with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
         self.contract(self.load(json.dumps(workflow,indent=4)))
 
 class ShadowCITests(unittest.TestCase):
+    def setUp(self):
+        guard = patch.object(gate, 'git_source_at', return_value='d'*64)
+        self.source_digest = guard.start()
+        self.addCleanup(guard.stop)
+
     def fixture(self, transition=True, main=False):
         ci = gate.ci_module()
         raw = (gate.ROOT / 'config/ci-suites.json').read_bytes()
@@ -847,6 +852,14 @@ class ShadowCITests(unittest.TestCase):
         for transition in (False,True):
             api,pr,revision,*_=self.fixture(transition)
             self.assertEqual(gate.validate_ci(api,'/repos/'+gate.REPOSITORY,pr,revision),(10,2))
+
+    def test_self_consistent_wrong_source_digest_refuses(self):
+        api,pr,revision,run,jobs,checks,receipt=self.fixture()
+        receipt['plan']['source_sha256']='f'*64
+        receipt['result']['plan_sha256']=gate.ci_module().digest(gate.ci_module().encode(receipt['plan']))
+        with self.assertRaisesRegex(gate.Rejected, 'aggregate source digest mismatch'):
+            gate.validate_ci(api,'/repos/'+gate.REPOSITORY,pr,revision)
+        self.source_digest.assert_called_with(pr['head']['sha'],api.token)
 
     def test_main_qualification_uses_actual_push_parent_transition(self):
         api,pr,revision,run,*_=self.fixture(main=True)
@@ -1000,3 +1013,44 @@ class AppNonBypassTests(unittest.TestCase):
         with patch.object(gate,'repository_snapshot',return_value=repo),patch.object(gate,'validate_ci_jobs'), \
              self.assertRaisesRegex(gate.Rejected,'App bypass status'):
             gate.qualify_app(read,app,revision,gate.APP_SLUG,'123',stage='current')
+
+
+class GitObjectSourceTests(unittest.TestCase):
+    def test_git_object_digest_matches_checkout_bytes_modes_and_unicode(self):
+        import os, subprocess, tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve()
+            env={'PATH':os.defpath,'HOME':str(root),'LANG':'C','LC_ALL':'C',
+                 'GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null'}
+            def git(*args):
+                return subprocess.check_output(['/usr/bin/git','-C',str(root),*args],env=env,stderr=subprocess.DEVNULL)
+            git('init','-q')
+            (root/'empty').write_bytes(b'')
+            (root/'unicode-é').write_text('fixture bytes')
+            (root/'candidate.py').write_text('raise RuntimeError("candidate must never execute")\n')
+            (root/'candidate.py').chmod(0o755)
+            git('add','.')
+            git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture')
+            revision=git('rev-parse','HEAD').decode().strip();calls=[]
+            def command(*args):calls.append(args);return git(*args)
+            actual=gate.source_digest_from_objects(command,revision)
+            self.assertEqual(actual,gate.ci_module().git_source_digest(root,revision))
+            self.assertTrue(all(row[0] in ('ls-tree','cat-file') for row in calls))
+            with patch.object(gate,'inspect_git_objects',side_effect=lambda head,base,token,inspect:inspect(command,head)) as isolated:
+                self.assertEqual(gate.git_source_at(revision,'fixture'),actual)
+            self.assertEqual(isolated.call_args.args[:3],(revision,revision,'fixture'))
+
+    def test_unsafe_tree_or_blob_mismatch_refuses(self):
+        data=b'fixture';oid=gate.hashlib.sha1(b'blob 7\0'+data).hexdigest();revision='a'*40
+        def inspect(tree,blob=data):
+            return gate.source_digest_from_objects(lambda *args:tree if args[0]=='ls-tree' else blob,revision)
+        good=('100644 blob '+oid+'\tfixture\0').encode()
+        self.assertRegex(inspect(good),'^[0-9a-f]{64}$')
+        for tree in (b'', good[:-1],good+good,
+                     good.replace(b'100644',b'120000'),good.replace(b'100644 blob',b'160000 commit'),
+                     good.replace(b'\tfixture',b'\t../fixture'),good.replace(b'\tfixture',b'\t/fixture'),
+                     good.replace(b'\tfixture',b'\tbad\\name')):
+            with self.subTest(tree=tree),self.assertRaises((gate.Rejected,ValueError)):
+                inspect(tree)
+        with self.assertRaisesRegex(gate.Rejected,'source Git object mismatch'):
+            inspect(good,b'tampered')
