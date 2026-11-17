@@ -1,0 +1,140 @@
+{
+  "name": "Reviewer App",
+  "on": {
+    "issue_comment": {
+      "types": [
+        "created"
+      ]
+    },
+    "workflow_run": {
+      "workflows": [
+        "CI"
+      ],
+      "types": [
+        "completed"
+      ]
+    },
+    "workflow_dispatch": {
+      "inputs": {
+        "mode": {
+          "description": "Read-only qualification target",
+          "type": "choice",
+          "options": [
+            "receipt",
+            "app",
+            "app-current"
+          ],
+          "default": "receipt"
+        },
+        "pr": {
+          "description": "Pull request number for read-only qualification",
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read",
+    "actions": "read",
+    "checks": "read",
+    "pull-requests": "read"
+  },
+  "concurrency": {
+    "group": "g1-reviewer-app",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "admit": {
+      "if": "github.repository == 'KleinPerkins/shadow-sync' && ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||\n (github.event_name == 'issue_comment' && github.event.issue.pull_request &&\n  github.event.sender.id == 49759187 && startsWith(github.event.comment.body, '<!-- g1-review-receipt:v1 -->')) ||\n (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&\n  github.event.workflow_run.conclusion == 'success' &&\n  github.event.workflow_run.head_repository.id == 1442961455))",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 15,
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.workflow_sha }}",
+            "persist-credentials": false,
+            "sparse-checkout": "scripts/reviewer_app.py\nscripts/ci-shards.py\nscripts/verify-ci-results.py\n.github/review-enrollments.json\n",
+            "sparse-checkout-cone-mode": false
+          }
+        },
+        {
+          "name": "Resolve bounded PR number from event data",
+          "id": "target",
+          "if": "github.event_name != 'workflow_dispatch' || inputs.mode == 'receipt'",
+          "run": "python3 -I -B - <<'PY'\nimport json, os\nevent = json.load(open(os.environ['GITHUB_EVENT_PATH']))\nkind = os.environ['GITHUB_EVENT_NAME']\nif kind == 'issue_comment':\n    number = event['issue']['number']\nelif kind == 'workflow_run':\n    prs = event['workflow_run']['pull_requests']\n    if len(prs) != 1:\n        raise SystemExit('Exactly one PR binding required; use read-only qualification for diagnosis')\n    number = prs[0]['number']\nelse:\n    number = int(event['inputs']['pr'])\nif type(number) is not int or not 0 < number < 1000000000:\n    raise SystemExit('Invalid PR number')\nwith open(os.environ['GITHUB_OUTPUT'], 'a') as output:\n    output.write(f'pr={number}\\n')\nPY\n"
+        },
+        {
+          "name": "Qualify current receipt, CI, controls and trusted source without writes",
+          "if": "github.event_name != 'workflow_dispatch' || inputs.mode == 'receipt'",
+          "env": {
+            "CI_READ_TOKEN": "${{ github.token }}",
+            "TRUSTED_WORKFLOW_SHA": "${{ github.workflow_sha }}",
+            "TARGET_PR": "${{ steps.target.outputs.pr }}"
+          },
+          "run": "python3 -I -B scripts/reviewer_app.py --pr \"$TARGET_PR\""
+        },
+        {
+          "name": "Mint read-only repository App qualification token",
+          "if": "github.event_name == 'workflow_dispatch' && (inputs.mode == 'app' || inputs.mode == 'app-current') && vars.REVIEWER_APP_QUALIFY == 'true' && vars.REVIEWER_APP_ENABLED != 'true'",
+          "id": "qualification",
+          "uses": "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510",
+          "with": {
+            "app-id": "4217367",
+            "private-key": "${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}",
+            "owner": "KleinPerkins",
+            "repositories": "shadow-sync",
+            "permission-contents": "read",
+            "permission-pull-requests": "read",
+            "skip-token-revoke": false
+          }
+        },
+        {
+          "name": "Qualify merged-main CI, live App identity, scope and controls",
+          "if": "github.event_name == 'workflow_dispatch' && (inputs.mode == 'app' || inputs.mode == 'app-current')",
+          "env": {
+            "APP_TOKEN": "${{ steps.qualification.outputs.token }}",
+            "APP_SLUG": "${{ steps.qualification.outputs.app-slug }}",
+            "APP_INSTALLATION_ID": "${{ steps.qualification.outputs.installation-id }}",
+            "CI_READ_TOKEN": "${{ github.token }}",
+            "TRUSTED_WORKFLOW_SHA": "${{ github.workflow_sha }}",
+            "REVIEWER_APP_QUALIFY": "${{ vars.REVIEWER_APP_QUALIFY }}",
+            "REVIEWER_APP_ENABLED": "${{ vars.REVIEWER_APP_ENABLED }}",
+            "QUALIFICATION_STAGE": "${{ inputs.mode == 'app-current' && 'current' || 'bootstrap' }}"
+          },
+          "run": "python3 -I -B scripts/reviewer_app.py --qualify-app --qualification-stage \"$QUALIFICATION_STAGE\""
+        },
+        {
+          "name": "Mint existing repository-scoped reviewer App token",
+          "if": "github.event_name != 'workflow_dispatch' && vars.REVIEWER_APP_ENABLED == 'true'",
+          "id": "app",
+          "uses": "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510",
+          "with": {
+            "app-id": "4217367",
+            "private-key": "${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}",
+            "owner": "KleinPerkins",
+            "repositories": "shadow-sync",
+            "permission-contents": "write",
+            "permission-pull-requests": "write",
+            "skip-token-revoke": false
+          }
+        },
+        {
+          "name": "Approve exact head and request native squash through existing App",
+          "if": "github.event_name != 'workflow_dispatch' && vars.REVIEWER_APP_ENABLED == 'true'",
+          "env": {
+            "APP_TOKEN": "${{ steps.app.outputs.token }}",
+            "APP_SLUG": "${{ steps.app.outputs.app-slug }}",
+            "APP_INSTALLATION_ID": "${{ steps.app.outputs.installation-id }}",
+            "CI_READ_TOKEN": "${{ github.token }}",
+            "TRUSTED_WORKFLOW_SHA": "${{ github.workflow_sha }}",
+            "REVIEWER_APP_ENABLED": "${{ vars.REVIEWER_APP_ENABLED }}",
+            "TARGET_PR": "${{ steps.target.outputs.pr }}"
+          },
+          "run": "python3 -I -B scripts/reviewer_app.py --pr \"$TARGET_PR\" --write"
+        }
+      ]
+    }
+  }
+}

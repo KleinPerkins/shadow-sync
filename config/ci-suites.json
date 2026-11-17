@@ -1038,6 +1038,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-create-review-pr": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_create_review_pr"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-dependency-maintenance": {
       "argv": [
         "python3",
@@ -1095,6 +1107,18 @@
         "tooling",
         "--suite",
         "test_host_projection"
+      ],
+      "timeout_seconds": 300
+    },
+    "tooling-test-local-review": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_local_review"
       ],
       "timeout_seconds": 300
     },
@@ -1230,6 +1254,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-reviewer-app": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_reviewer_app"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-runtime-suite-inventory": {
       "argv": [
         "python3",
@@ -1334,11 +1370,13 @@
         "tooling-test-ci-shards",
         "tooling-test-ci-wiring",
         "tooling-test-coordinator-entry",
+        "tooling-test-create-review-pr",
         "tooling-test-dependency-maintenance",
         "tooling-test-guardian-executor",
         "tooling-test-guardian-protocol",
         "tooling-test-guardian-registration",
         "tooling-test-host-projection",
+        "tooling-test-local-review",
         "tooling-test-native-appkit-contract",
         "tooling-test-native-appkit-runner",
         "tooling-test-native-ui-suites",
@@ -1350,6 +1388,7 @@
         "tooling-test-python-test-suites",
         "tooling-test-release-credential-readiness",
         "tooling-test-release-metadata",
+        "tooling-test-reviewer-app",
         "tooling-test-runtime-suite-inventory",
         "tooling-test-source-export",
         "tooling-test-source-installation-boundary",
@@ -2974,6 +3013,28 @@
         ],
         "kind": "static"
       },
+      "tooling-test-create-review-pr": {
+        "cases": [
+          "test_create_review_pr.CreationTests.test_account_drift_before_or_after_create",
+          "test_create_review_pr.CreationTests.test_ambiguous_create_is_journaled_and_never_retried",
+          "test_create_review_pr.CreationTests.test_comment_failure_retains_partial_pr_without_output",
+          "test_create_review_pr.CreationTests.test_comment_must_match_owner_bytes_and_unedited_identity",
+          "test_create_review_pr.CreationTests.test_created_response_identity_draft_nonce_and_tuple_checked",
+          "test_create_review_pr.CreationTests.test_existing_unknown_pr_and_origin_refused",
+          "test_create_review_pr.CreationTests.test_helper_origin_passes_app_and_wrong_first_review_cannot_select_origin",
+          "test_create_review_pr.CreationTests.test_local_drift_after_creation_blocks_origin",
+          "test_create_review_pr.CreationTests.test_malformed_stale_wrong_binding_receipts",
+          "test_create_review_pr.CreationTests.test_notice_must_be_enrolled_for_matched_producer",
+          "test_create_review_pr.CreationTests.test_positive_direct_witness_exact_public_bytes_and_private_journal",
+          "test_create_review_pr.CreationTests.test_preexisting_output_journal_or_supplied_nonce_prevent_reuse",
+          "test_create_review_pr.CreationTests.test_private_inputs_exclusive_destinations_and_duplicate_keys",
+          "test_create_review_pr.CreationTests.test_transport_uses_absolute_gh_json_stdin_no_shell",
+          "test_create_review_pr.CreationTests.test_unenrolled_adapters_or_disabled_producers_cannot_create_pr",
+          "test_create_review_pr.CreationTests.test_wrong_account_cli_profile_origin_block_before_api",
+          "test_create_review_pr.CreationTests.test_wrong_github_repo_head_base_refuse_before_create"
+        ],
+        "kind": "static"
+      },
       "tooling-test-dependency-maintenance": {
         "cases": [
           "test_dependency_maintenance.DependencyPolicyTests.test_behind_branch_is_refreshed_with_expected_head_and_never_approved",
@@ -3050,6 +3111,31 @@
           "test_host_projection.HostProjectionTests.test_root_paths_labels_and_ids_cannot_inject_or_escape",
           "test_host_projection.HostProjectionTests.test_shelves_must_be_unique_disjoint_relative_directories",
           "test_host_projection.HostProjectionTests.test_source_policy_digest_and_dispatcher_bytes_are_bound"
+        ],
+        "kind": "static"
+      },
+      "tooling-test-local-review": {
+        "cases": [
+          "test_local_review.CaptureTests.test_api_environment_overrides_removed",
+          "test_local_review.CaptureTests.test_capture_rechecks_account_and_keeps_email_private",
+          "test_local_review.CaptureTests.test_cleanup_permission_error_requires_observed_group_absence",
+          "test_local_review.CaptureTests.test_direct_completed_capture",
+          "test_local_review.CaptureTests.test_event_order_must_be_one_fresh_thread_then_turn_and_report",
+          "test_local_review.CaptureTests.test_exact_startup_notices_recorded_but_unknown_errors_rejected",
+          "test_local_review.CaptureTests.test_exited_leader_cannot_leave_live_descendant",
+          "test_local_review.CaptureTests.test_failure_truncation_wrong_output_duplicate_turn_tools",
+          "test_local_review.CaptureTests.test_incomplete_or_extra_author_fields_never_pass",
+          "test_local_review.CaptureTests.test_missing_wrong_account_workspace_origin",
+          "test_local_review.CaptureTests.test_pipe_holding_child_ignoring_term_is_killed_on_timeout",
+          "test_local_review.CaptureTests.test_process_limits_failure_timeout",
+          "test_local_review.CaptureTests.test_unresolved_finding_cannot_pass_or_disappear",
+          "test_local_review.GitBindingTests.test_binary_marker_in_source_is_text_but_actual_binary_refuses",
+          "test_local_review.GitBindingTests.test_exact_tuple_and_untrusted_candidate_data",
+          "test_local_review.GitBindingTests.test_git_inspection_does_not_execute_configured_or_ambient_helpers",
+          "test_local_review.GitBindingTests.test_local_diff_display_configuration_cannot_change_review_bytes",
+          "test_local_review.GitBindingTests.test_profile_binding_and_runtime_version_drift",
+          "test_local_review.GitBindingTests.test_stale_tuple_policy_remote_and_dirty_refused",
+          "test_local_review.GitBindingTests.test_submodule_index_refuses_without_child_traversal"
         ],
         "kind": "static"
       },
@@ -3251,6 +3337,69 @@
           "test_release_metadata.ReleaseMetadataTests.test_contract_has_standalone_authority",
           "test_release_metadata.ReleaseMetadataTests.test_initial_identity_and_platform",
           "test_release_metadata.ReleaseMetadataTests.test_old_source_installation_routes_refuse_before_home_access"
+        ],
+        "kind": "static"
+      },
+      "tooling-test-reviewer-app": {
+        "cases": [
+          "test_reviewer_app.APIAndControlsTests.test_additional_human_review_gate_is_rejected",
+          "test_reviewer_app.APIAndControlsTests.test_app_redacted_bypass_is_not_treated_as_empty",
+          "test_reviewer_app.APIAndControlsTests.test_control_positive",
+          "test_reviewer_app.APIAndControlsTests.test_effective_rules_second_page_cannot_hide_an_unexpected_bypass",
+          "test_reviewer_app.APIAndControlsTests.test_graphql_merge_setting_still_must_meet_controls",
+          "test_reviewer_app.APIAndControlsTests.test_merge_query_missing_errors_identity_type_drift_and_disagreement_fail",
+          "test_reviewer_app.APIAndControlsTests.test_no_protection_gap_or_producer_substitution",
+          "test_reviewer_app.APIAndControlsTests.test_owner_admin_pr_only_exception_preserved",
+          "test_reviewer_app.APIAndControlsTests.test_pagination_never_silently_truncates",
+          "test_reviewer_app.APIAndControlsTests.test_pagination_reads_past_first_page",
+          "test_reviewer_app.APIAndControlsTests.test_readonly_allows_only_fixed_merge_query",
+          "test_reviewer_app.APIAndControlsTests.test_readonly_redacted_rest_merge_settings_are_validated",
+          "test_reviewer_app.APIAndControlsTests.test_readonly_rejects_post_without_network",
+          "test_reviewer_app.APIAndControlsTests.test_write_payload_declares_json_content_type",
+          "test_reviewer_app.DeliveryTests.test_auto_merge_actor_and_readback_state_must_match",
+          "test_reviewer_app.DeliveryTests.test_base_moves_after_final_snapshot_prevents_delivery_write",
+          "test_reviewer_app.DeliveryTests.test_base_race_after_approval_never_arms",
+          "test_reviewer_app.DeliveryTests.test_base_race_before_approval_prevents_all_writes",
+          "test_reviewer_app.DeliveryTests.test_changed_unknown_or_nonready_native_state_never_merges",
+          "test_reviewer_app.DeliveryTests.test_clean_error_never_falls_back_to_arm_or_retries",
+          "test_reviewer_app.DeliveryTests.test_clean_native_squash_verifies_app_actor_parent_tree_and_main",
+          "test_reviewer_app.DeliveryTests.test_disabled_means_no_mutation",
+          "test_reviewer_app.DeliveryTests.test_existing_app_review_unknown_or_changed_state_fails_without_approval_retry",
+          "test_reviewer_app.DeliveryTests.test_head_mismatch_and_graphql_errors_never_report_armed_or_retry",
+          "test_reviewer_app.DeliveryTests.test_lost_approval_response_reuses_current_app_review_without_duplicate_post",
+          "test_reviewer_app.DeliveryTests.test_merge_confirmation_cannot_claim_unverified_or_foreign_delivery",
+          "test_reviewer_app.DeliveryTests.test_more_than_one_required_approval_is_not_qualified",
+          "test_reviewer_app.DeliveryTests.test_ordinary_write_snapshots_enforce_successor_only_controls",
+          "test_reviewer_app.DeliveryTests.test_other_app_or_multirepo_token_cannot_write",
+          "test_reviewer_app.DeliveryTests.test_preexisting_or_unknown_auto_merge_blocks_before_approval",
+          "test_reviewer_app.DeliveryTests.test_success_writes_exact_head_then_native_squash_only",
+          "test_reviewer_app.DeliveryTests.test_visible_owner_exception_cannot_disappear_or_duplicate",
+          "test_reviewer_app.GitAncestryTests.test_deepens_until_common_ancestor_and_stops",
+          "test_reviewer_app.GitAncestryTests.test_missing_ancestry_is_bounded_and_other_errors_do_not_retry",
+          "test_reviewer_app.OriginTests.test_closed_schema_account_adapter_and_timing_fail_closed",
+          "test_reviewer_app.OriginTests.test_creation_binding_is_separate_and_survives_new_source_head",
+          "test_reviewer_app.OriginTests.test_duplicate_edited_foreign_and_wrong_pr_binding_fail",
+          "test_reviewer_app.OriginTests.test_no_review_can_supply_missing_creation_binding",
+          "test_reviewer_app.ReceiptTests.test_complete_current_receipt",
+          "test_reviewer_app.ReceiptTests.test_edited_unknown_oversized_receipts_fail_closed",
+          "test_reviewer_app.ReceiptTests.test_failed_partial_findings_stale_future_runtime_and_digest",
+          "test_reviewer_app.ReceiptTests.test_latest_failed_review_supersedes_old_pass",
+          "test_reviewer_app.ReceiptTests.test_missing_extra_and_wrong_typed_receipt_runtime_fields_refuse",
+          "test_reviewer_app.ReceiptTests.test_owner_receipt_required_untrusted_sender_cannot_bind",
+          "test_reviewer_app.ReceiptTests.test_receipts_cannot_reassign_creation_origin",
+          "test_reviewer_app.ReceiptTests.test_tuple_drift_every_field",
+          "test_reviewer_app.ShadowCITests.test_all_routine_and_transition_units_with_exact_attempt_pass",
+          "test_reviewer_app.ShadowCITests.test_duplicate_or_malformed_aggregate_refuses",
+          "test_reviewer_app.ShadowCITests.test_exactly_one_effective_review_rule_required",
+          "test_reviewer_app.ShadowCITests.test_host_identity_rejects_event_repository_workflow_and_base_drift",
+          "test_reviewer_app.ShadowCITests.test_main_qualification_uses_actual_push_parent_transition",
+          "test_reviewer_app.ShadowCITests.test_missing_skipped_foreign_stale_and_forged_units_refuse",
+          "test_reviewer_app.ShadowCITests.test_predecessor_stays_disabled_and_scope_does_not_release_product",
+          "test_reviewer_app.ShadowCITests.test_registration_tree_and_blob_integrity_refuse",
+          "test_reviewer_app.WorkflowContractTests.test_invalid_scalar_and_duplicate_key_cannot_replace_workflow",
+          "test_reviewer_app.WorkflowContractTests.test_nonsecurity_presentation_changes_are_allowed",
+          "test_reviewer_app.WorkflowContractTests.test_trusted_workflow_security_contract",
+          "test_reviewer_app.WorkflowContractTests.test_workflow_adversarial_mutations_reject"
         ],
         "kind": "static"
       },

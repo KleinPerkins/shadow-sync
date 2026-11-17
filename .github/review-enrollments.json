@@ -1,0 +1,42 @@
+{
+  "schema": "g1-review-enrollments/v1",
+  "repository_id": 1442961455,
+  "enabled": true,
+  "producers": [
+    {
+      "id": "enrollment-24c0a5f2",
+      "enabled": true,
+      "origin_account": "origin-7612de79",
+      "github_user_id": 49759187,
+      "instructions_sha256": "7efd718dd897e06155b8e49eca37d18b15fb1e47610d9cf4b2d26e294a99e10b",
+      "cli_version": "codex-cli 0.148.0",
+      "credential_store": "keyring",
+      "allowed_startup_notice_sha256": [
+        "b2fc6975a5637afa2ac999a3260fc7980db0be97b0474c7a8a14c57e18d4a6e1",
+        "de8c81bdbcbc27db4d16d6ea11b6463544d5351492a5b397d3d31af1fbc78ca3"
+      ],
+      "creation_adapter_sha256": "87a19cb1c5625485ee0d464717096f5988a479440a76fd479c19b21b1568be4d",
+      "capture_adapter_sha256": "ef07a9213e9cccffca0f71adbfd4beadc5a3d1fad95ec1a8f326e0afd41e4dc3"
+    },
+    {
+      "id": "enrollment-e876e8eb",
+      "enabled": true,
+      "origin_account": "origin-6a644d43",
+      "github_user_id": 49759187,
+      "instructions_sha256": "7efd718dd897e06155b8e49eca37d18b15fb1e47610d9cf4b2d26e294a99e10b",
+      "cli_version": "codex-cli 0.148.0",
+      "credential_store": "file",
+      "allowed_startup_notice_sha256": [
+        "b2fc6975a5637afa2ac999a3260fc7980db0be97b0474c7a8a14c57e18d4a6e1"
+      ],
+      "creation_adapter_sha256": "87a19cb1c5625485ee0d464717096f5988a479440a76fd479c19b21b1568be4d",
+      "capture_adapter_sha256": "ef07a9213e9cccffca0f71adbfd4beadc5a3d1fad95ec1a8f326e0afd41e4dc3"
+    }
+  ],
+  "governance": {
+    "scope": "Owner-authorized G1 successor CI/App parity for this repository. Preserve fixture-only public CI, frozen ADR0004/0007, disabled predecessor App, private deployment policy, release, signing, installation and UAT boundaries.",
+    "review_trust": "Owner-enrolled operational local capture, not provider attestation. Work and personal accounts remain distinct. An independent review cannot establish or change the PR creation origin.",
+    "activation": "Prospective source configuration only. Initial protected bootstrap requires owner/admin admission after independent technical review and real exact-head CI. Keep REVIEWER_APP_ENABLED off until current-main CI, controls, both account origins and App read-only qualification succeed. No agent manual merge, auto-merge manipulation or bypass. After separately accepted successor admission, independent review and exact CI govern source automation changes without a recurring human code-review gate.",
+    "accepted_delivery_boundary": "The operator accepted the documented concurrent-writer auto-merge race on 2026-11-17. App-only delivery is an authorization and operating rule, not atomic technical exclusion: another write-capable actor may arm native auto-merge after the last read and before App approval, and that approval may release the other request. Agents remain forbidden from manual merge, pre-arming, cancelling auto-merge or bypass. Fresh originating-account independent review, exact CI, the App own approval and all admission gates remain mandatory. Observed foreign or unknown auto-merge requests still reject. Coexisting unsolicited approvals never substitute for App admission evidence and are not themselves prohibited. Existing-approval reconciliation addresses lost responses, not the first-approval race. This limitation is separately accepted from Q16 receipt trust; no human technical-review gate or broader actor permission is added."
+  }
+}

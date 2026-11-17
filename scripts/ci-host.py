@@ -56,7 +56,35 @@ def normalize_artifact_directories(root, plan):
         (root / name).rename(root / unit_id)
 
 
+def workflow_identity():
+    event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())
+    kind = os.environ['GITHUB_EVENT_NAME']
+    ci.require(os.environ['GITHUB_REPOSITORY'] == 'KleinPerkins/shadow-sync'
+               and os.environ['GITHUB_REPOSITORY_ID'] == '1442961455'
+               and os.environ['GITHUB_WORKFLOW'] == 'CI')
+    revision = os.environ['CI_REVISION']
+    if kind == 'pull_request':
+        pr = event['pull_request']
+        ci.require(pr['head']['sha'] == revision and pr['base']['sha'] == os.environ['CI_BASE_REVISION']
+                   and pr['base']['repo']['id'] == 1442961455)
+        ref = 'refs/pull/' + str(pr['number']) + '/merge'
+        head, base = pr['head']['sha'], pr['base']['sha']
+    else:
+        ci.require(kind in ('push', 'schedule', 'workflow_dispatch')
+                   and revision == os.environ['GITHUB_SHA'])
+        ref, head, base = 'refs/heads/main', '', ''
+        ci.require(os.environ['CI_BASE_REVISION'] == (event['before'] if kind == 'push' else revision))
+    ci.require(os.environ['GITHUB_REF'] == ref
+        and os.environ['GITHUB_WORKFLOW_REF'] == 'KleinPerkins/shadow-sync/.github/workflows/ci.yml@' + ref
+        and os.environ['GITHUB_WORKFLOW_SHA'] == os.environ['GITHUB_SHA'])
+    return dict(repository=os.environ['GITHUB_REPOSITORY'], repository_id=os.environ['GITHUB_REPOSITORY_ID'],
+        event=kind, revision=revision, workflow_sha=os.environ['GITHUB_WORKFLOW_SHA'],
+        run_id=os.environ['GITHUB_RUN_ID'], run_attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+        ref=ref, head_sha=head, base_sha=base, workflow_ref=os.environ['GITHUB_WORKFLOW_REF'], workflow='CI')
+
+
 def inputs():
+    workflow_identity()
     identity = dict(revision=os.environ['CI_REVISION'], run_id=os.environ['GITHUB_RUN_ID'],
                     run_attempt=os.environ['GITHUB_RUN_ATTEMPT'])
     identity['source_sha256'] = ci.git_source_digest(ROOT, identity['revision'])
@@ -104,7 +132,8 @@ def main():
             normalize_artifact_directories(args.artifacts.resolve(strict=True), plan)
             result = ci.aggregate(head, base, os.environ['CI_PLAN'].encode(),
                 os.environ['CI_NEEDS_JSON'].encode(), args.artifacts, **identity)
-            print(ci.encode(result).decode())
+            print('SHADOW_SYNC_CI_AGGREGATE_V1 ' + ci.encode(dict(schema='shadow-sync-ci-aggregate/v1',
+                identity=workflow_identity(), plan=plan, result=result)).decode())
         return 0
     except (ci.InvalidEvidence, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print('Mandatory hosted CI refused: ' + type(error).__name__, file=sys.stderr)

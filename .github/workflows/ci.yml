@@ -42,6 +42,7 @@ jobs:
         name: Discover and plan every mandatory case
         run: python3 -I -B scripts/ci-host.py plan
   quality:
+    name: ${{ matrix.id }}
     needs: plan
     strategy:
       fail-fast: false
@@ -87,6 +88,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   compile-package:
+    name: ${{ matrix.id }}
     needs: plan
     strategy:
       fail-fast: false
@@ -132,6 +134,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   runtime-safety:
+    name: ${{ matrix.id }}
     needs: plan
     strategy:
       fail-fast: false
@@ -181,6 +184,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   native-and-lifecycle:
+    name: ${{ matrix.id }}
     needs: plan
     strategy:
       fail-fast: false
@@ -226,6 +230,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   package-contract:
+    name: ${{ matrix.id }}
     needs: plan
     strategy:
       fail-fast: false
