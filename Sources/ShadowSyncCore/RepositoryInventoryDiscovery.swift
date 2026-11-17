@@ -1475,6 +1475,14 @@ enum RemoteDefaultResolver {
     }
 }
 
+#if SHADOW_SYNC_TESTING
+// Isolate the real bounded PR-stage cancellation from the outer publication
+// authority only in component fixtures; production keeps its original token.
+enum RepositoryReadSessionTesting {
+    @TaskLocal static var pullRequestCancellation: CancellationToken?
+}
+
+#endif
 final class RepositoryReadSession: @unchecked Sendable {
     private let executablePath: String
     private let leaseDescriptor: Int32
@@ -2420,6 +2428,9 @@ final class RepositoryReadSession: @unchecked Sendable {
             Int64
         ) -> Void)?
     ) -> PullRequestBatchOutcome {
+        #if SHADOW_SYNC_TESTING
+        let cancellation = RepositoryReadSessionTesting.pullRequestCancellation ?? self.cancellation
+        #endif
         let requests = branches.compactMap {
             branch -> PullRequestBatchRequest? in
             guard let tipOID = branch.tipOID else { return nil }

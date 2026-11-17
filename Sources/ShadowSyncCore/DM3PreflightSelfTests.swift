@@ -1001,9 +1001,9 @@ public enum V3PreflightSelfTestRunner {
         }
         report("BETA-V09-PARTIAL-SAFETY")
         try RuntimeFixtureSession.withCase("BETA-V09-CANCEL-DRAIN") {
-            // Exercise both ordinary and delayed first completion. The lookup
-            // fixture holds its other initial calls until cancellation is issued;
-            // admission must not depend on which worker the scheduler wakes first.
+            // Exercise actual bounded-stage cancellation with a live outer
+            // phase, then independently prove original parent cancellation
+            // refuses publication. Both schedules retain the evidence checks.
             for firstDelay: useconds_t in [20_000, 120_000] {
                 let cancelled = try betaV09InspectionFixture(
                     testExecutable: testExecutable,
@@ -1021,6 +1021,17 @@ public enum V3PreflightSelfTestRunner {
                         + "(calls=\(cancelled.callCount), active=\(cancelled.activeAfterCompletion), "
                         + "available=\(cancelled.availableCount), unsafe=\(cancelled.unsafeSelectableCount))"
                 )
+                let parentProof = BetaV09OuterCancellationProof()
+                do {
+                    _ = try betaV09InspectionFixture(
+                        testExecutable: testExecutable, branchCount: 12, worktreeCount: 1,
+                        cancelOnFirst: true, cancellationDelay: firstDelay,
+                        cancelOuterOnFirst: true, cancellationProof: parentProof
+                    )
+                    throw Failure("cancelled outer inspection published an inventory")
+                } catch GitSafetyError.cancelled {}
+                try require(parentProof.verified,
+                    "parent cancellation lacked bounded retained evidence, zero children, or publication refusal")
             }
         }
         report("BETA-V09-CANCEL-DRAIN")
@@ -1131,7 +1142,9 @@ public enum V3PreflightSelfTestRunner {
         worktreeCount: Int,
         failureEvery: Int? = nil,
         cancelOnFirst: Bool = false,
-        cancellationDelay: useconds_t = 20_000
+        cancellationDelay: useconds_t = 20_000,
+        cancelOuterOnFirst: Bool = false,
+        cancellationProof: BetaV09OuterCancellationProof? = nil
     ) throws -> (
         callCount: Int,
         maximumActive: Int,
@@ -1207,10 +1220,11 @@ public enum V3PreflightSelfTestRunner {
             ])
         }
         let cancellation = CancellationToken()
+        let stageCancellation = cancelOuterOnFirst ? cancellation : CancellationToken()
         let lookup = BetaV09PullRequestLookup(
             failureEvery: failureEvery,
             cancelParentOnFirst: cancelOnFirst
-                ? cancellation : nil,
+                ? stageCancellation : nil,
             cancellationDelay: cancellationDelay
         )
         let progress = BetaV09ProgressRecorder()
@@ -1225,11 +1239,31 @@ public enum V3PreflightSelfTestRunner {
             }
         )
         let started = Date()
-        let result = try discovery.inspectCleanup(
-            inventory: inventory,
-            repositoryIDs: scope.repositoryIDs,
-            capability: verified.capability
-        )
+        let result: RepositoryInventory
+        do {
+            if cancelOnFirst && !cancelOuterOnFirst {
+                result = try RepositoryReadSessionTesting.$pullRequestCancellation.withValue(stageCancellation) {
+                    try discovery.inspectCleanup(inventory: inventory,
+                        repositoryIDs: scope.repositoryIDs, capability: verified.capability)
+                }
+            } else {
+                result = try discovery.inspectCleanup(inventory: inventory,
+                    repositoryIDs: scope.repositoryIDs, capability: verified.capability)
+            }
+        } catch GitSafetyError.cancelled where cancelOuterOnFirst {
+            let owned = try RuntimeFixtureSession.current().snapshot()
+            try require(cancellation.isCancelled && cancellation.areFutureChildAdmissionsClosed
+                && lookup.callCount > 0 && lookup.callCount <= 4
+                && lookup.maximumActive <= 4 && lookup.activeCount == 0
+                && lookup.completedAvailableCount >= 1
+                && owned.cleanupComplete && owned.spawned == owned.reaped,
+                "parent cancellation lost completed evidence or retained active children")
+            try require(progress.snapshots.contains { $0.stage == .pullRequestEvidence && $0.completed >= 1 }
+                && !progress.snapshots.contains { $0.stage == .candidateAssembly },
+                "cancelled outer inspection published candidate assembly or lost stage evidence")
+            cancellationProof?.verified = true
+            throw GitSafetyError.cancelled
+        }
         let inspectionEnded = Date()
         guard let card = result.cards.first,
               let clone = card.clones.first else {
@@ -3480,6 +3514,7 @@ private final class BetaV09PullRequestLookup:
     private var calls = 0
     private var active = 0
     private var maximum = 0
+    private var completedAvailable = 0
     private let failureEvery: Int?
     private let cancelParentOnFirst: CancellationToken?
     private let cancellationDelay: useconds_t
@@ -3518,6 +3553,7 @@ private final class BetaV09PullRequestLookup:
                 cancellationGate.unlock()
                 lock.lock()
                 active = max(0, active - 1)
+                completedAvailable += 1
                 lock.unlock()
                 // Preserve the first completed result while later admissions
                 // are closed by the real parent cancellation token.
@@ -3569,6 +3605,13 @@ private final class BetaV09PullRequestLookup:
         defer { lock.unlock() }
         return active
     }
+    var completedAvailableCount: Int {
+        lock.lock(); defer { lock.unlock() }; return completedAvailable
+    }
+}
+
+private final class BetaV09OuterCancellationProof {
+    var verified = false
 }
 
 private final class BetaV09ProgressRecorder:

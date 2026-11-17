@@ -384,7 +384,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift",
-      "sha256": "138fb12d63bae1c2d14d0b2aab7b5e7c989721f34bb897fdda0e63891b386315"
+      "sha256": "53e61f63c18d63e23619bd50f916021b3e36eb5850a61ccc51dae05dba8a8674"
     },
     {
       "mode": "100644",
@@ -719,7 +719,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift",
-      "sha256": "09945809b2b580f06b11723a47076a8943ca5177f73efa210bf723c43c7f93ca"
+      "sha256": "aabc379ebd56a856ff535dc1d5cc6287cb7cf9a5a5c956329bb7da6914cb0adf"
     },
     {
       "mode": "100644",
