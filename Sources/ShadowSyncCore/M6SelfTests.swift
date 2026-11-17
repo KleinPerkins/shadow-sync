@@ -4214,6 +4214,9 @@ private enum SystemConfigCommandSelfTests {
     }
     private static func check(_ value: Bool, _ message: String) throws { if !value { throw Failure(message: message) } }
     static func configurationCapture(_ scenario: String) throws {
+        if scenario == "inspection-planner-pending" || scenario == "inspection-planner-ordinary" {
+            fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=configuration-entry\n", stderr); fflush(stderr)
+        }
         // These cases execute the real capture/recapture/file-verification
         // callers. Only system-origin discovery is injected; signed command
         // qualification is a separate gate. Refuse unnamespaced execution.
@@ -4396,6 +4399,7 @@ private enum SystemConfigCommandSelfTests {
                         return
                     }
                     if scenario == "inspection-planner-pending" || scenario == "inspection-planner-ordinary" {
+                        fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=freeze-configuration\n", stderr); fflush(stderr)
                         let frozen = try handle.freezeConfiguration(account: account, configurationProbe: probe)
                         let admission = GitAdmissionSnapshot(effectiveURL: origin, transport: handle.githubIdentity.transport,
                             frozenConfigSHA256: frozen.snapshot.frozenSHA256)
@@ -4419,11 +4423,17 @@ private enum SystemConfigCommandSelfTests {
                         let observed = RegistrationObservations()
                         var commands = 0
                         do {
-                            let draft = try RepositoryMaintenanceTesting.$registrationObserver.withValue({ observed.record($0) }) {
-                                try RepositoryMaintenancePlanner.inspect(clone: maintenanceClone, remote: remote,
+                            fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=observer-bind\n", stderr); fflush(stderr)
+                            let draft = try RepositoryMaintenanceTesting.$registrationObserver.withValue({ identifier in
+                                fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=observer-callback\n", stderr); fflush(stderr)
+                                observed.record(identifier)
+                            }) {
+                                fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=planner-entry\n", stderr); fflush(stderr)
+                                return try RepositoryMaintenancePlanner.inspect(clone: maintenanceClone, remote: remote,
                                     account: account, handle: handle, frozen: frozen, admission: admission,
                                     capturedNow: Date(), validateAdmission: session.validatePhaseCompletion) {
                                         arguments, _, _, _, _ in
+                                        fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=mock-command\n", stderr); fflush(stderr)
                                         commands += 1
                                         if commands == 1 {
                                             try check(arguments.contains("--dry-run"), "planner did not begin with dry-run")
@@ -4434,18 +4444,23 @@ private enum SystemConfigCommandSelfTests {
                                                 terminationRequested: false, processID: -1)
                                         }
                                         try check(arguments.contains("rev-parse"), "unexpected planner command")
-                                        if scenario == "inspection-planner-pending" { _ = try probe.activePath(account: account) }
+                                        if scenario == "inspection-planner-pending" {
+                                            fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=probe-active-path\n", stderr); fflush(stderr)
+                                            _ = try probe.activePath(account: account)
+                                        }
                                         return ProcessResult(status: 1, stdout: Data(), stderr: Data(),
                                             stdoutTruncated: false, stderrTruncated: false, outputByteLimit: 4096,
                                             timedOut: false, cancelled: false, terminationRequested: false, processID: -1)
                                     }
                             }
+                            fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=planner-return\n", stderr); fflush(stderr)
                             try check(scenario == "inspection-planner-ordinary", "planner swallowed pending cleanup")
                             try check(observed.snapshot == identifiers && commands == 3 && calls == 1,
                                       "ordinary proof refusal stopped unrelated registration inspection")
                             try check(draft.prunable.isEmpty && draft.moved.isEmpty && draft.diagnostics.count == 2
                                 && !draft.refusals.isEmpty && !context.isClosed, "ordinary planner warnings changed")
                         } catch SystemGitConfigurationError.cleanupPending {
+                            fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=planner-cleanup-pending\n", stderr); fflush(stderr)
                             try check(scenario == "inspection-planner-pending" && observed.snapshot == ["first"]
                                 && commands == 2 && calls == 2 && context.isClosed && token.areFutureChildAdmissionsClosed,
                                 "planner accessed a later registration after pending cleanup")
