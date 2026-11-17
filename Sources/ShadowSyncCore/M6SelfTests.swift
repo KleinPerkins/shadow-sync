@@ -3312,11 +3312,15 @@ private enum CustodyHelperSelfTests {
                 "retained_count":String(registry.testingCount)]
             guard let journal = result.journal else { throw Failure(message:"missing terminal") }
             try check(journal.outcome == expected && journal.reason == reason,"wrong durable helper result: \(String(describing:journal.outcome)) / \(String(describing:journal.reason))")
-            try check(journal.custodian != nil && journal.custodian?.pid != UInt32(getpid()),"helper identity missing")
+            // Keep optional observation borrows outside assertion autoclosures
+            // by materializing the scalar identities first.
+            let custodianPID = journal.custodian.map { $0.pid }
+            let targetPID = journal.target.map { $0.pid }
+            try check(custodianPID != nil && custodianPID != UInt32(getpid()),"helper identity missing")
             if mode == "after-admit" {
-                try check(journal.target == nil && result.stdout.isEmpty,"target spawned after cancellation")
+                try check(targetPID == nil && result.stdout.isEmpty,"target spawned after cancellation")
             } else {
-                try check(journal.target != nil && journal.target?.pid != journal.custodian?.pid,"target identity not separate")
+                try check(targetPID != nil && targetPID != custodianPID,"target identity not separate")
                 if mode == "before-resume" || mode == "after-preparation" { try check(result.stdout.isEmpty,"cancelled suspended target executed") }
                 else if mode == "system-missing" { try check(result.stdout.isEmpty && journal.waitStatus == 128 << 8, "missing config fixture did not exit normally") }
                 else if mode == "system-complete" || mode == "system-faildata" {
@@ -3333,7 +3337,7 @@ private enum CustodyHelperSelfTests {
             }
             if mode == "fail" { try check(journal.waitStatus == 7 << 8,"raw exit status lost") }
             if reason != .none {
-                try check(journal.ordinal == (journal.target == nil ? 3 : 4),"durable draining transition was skipped")
+                try check(journal.ordinal == (targetPID == nil ? 3 : 4),"durable draining transition was skipped")
             }
             if mode == "trace-complete" || mode == "trace-resist" {
                 let expectedTrace = Data(Array(repeating: Array((0..<256).map(UInt8.init)), count: 128).joined())
