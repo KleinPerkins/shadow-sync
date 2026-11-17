@@ -3905,8 +3905,9 @@ private enum CustodyHelperSelfTests {
         guard let bytes = try? CustodyCatalogSelfTests.bytes(location, ready.id + ".json"),
               let journal = try? CustodyJournal.decode(bytes), journal.phase == .terminal,
               journal.binding.requestID == ready.id,
-              journal.custodian?.pid == UInt32(ready.helper), journal.custodian?.startSeconds == ready.helperStart,
-              journal.target?.pid == UInt32(ready.target), journal.target?.startSeconds == ready.targetStart,
+              let custodian = journal.custodian, let target = journal.target,
+              custodian.pid == UInt32(ready.helper), custodian.startSeconds == ready.helperStart,
+              target.pid == UInt32(ready.target), target.startSeconds == ready.targetStart,
               absent(ready.helper, ready.helperStart), absent(ready.target, ready.targetStart) else { return false }
         // No adoption or signaling of recorded descendants. Their own custodian
         // supplies the terminal journal and releases the original operation lock.
@@ -4812,8 +4813,10 @@ private enum SystemConfigCommandSelfTests {
         try CustodyHelperSelfTests.until { handle.snapshot().phase == .finished && registry.testingCount == 0 }
         let result = handle.snapshot()
         let expected: CustodyOutcome = scenario == "custody-cancel" || scenario == "custody-eof" ? .cancelledDrained : .completed
-        try check(result.journal?.outcome == expected && result.journal?.target != nil,
-            "frozen native target failed: \(String(describing: result.journal?.outcome))")
+        let observedOutcome = result.journal?.outcome
+        let observedTarget = result.journal?.target
+        try check(observedOutcome == expected && observedTarget != nil,
+            "frozen native target failed: \(String(describing: observedOutcome))")
         try check(result.stdout == Data(("frozen-config:" + snapshot.frozenSHA256 + "\n").utf8),
             "native read-only target did not receive exact frozen bytes")
         try CustodyHelperSelfTests.until { owner == nil }
