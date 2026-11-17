@@ -20,6 +20,16 @@ head. The qualification command performs no activation mutation.
 
 Before approval and again before native delivery, the validated repository-scoped App token must report `current_user_can_bypass: never` for every contributing active main ruleset, with complete, nonduplicated ruleset coverage. Read-only App qualification uses the same checks. An absent or unknown caller-specific status blocks delivery. A redacted `bypass_actors` list remains explicitly unknown; a visible list must still match the declared owner exception. The gate re-reads the exact current App approval after submission and immediately before native delivery, refusing a missing, dismissed, duplicated or changed approval.
 
+GitHub documents repository ruleset GETs and effective branch-rule reads with
+[Metadata read permission](https://docs.github.com/en/rest/repos/rules#get-a-repository-ruleset).
+Administration permission is not required for those reads; `bypass_actors` may
+remain redacted without ruleset write access. On 2026-11-17, the selected App's
+[actual read-only qualification](https://github.com/KleinPerkins/intent-router/actions/runs/44165228588)
+returned caller-specific `never` with a token narrowed to contents and pull-request
+read permissions and no Administration permission. That demonstrates API
+permission compatibility; ShadowSync's own read-only qualification remains a
+separate mandatory gate. Preserve the narrowed token permissions.
+
 `Resources/source-export.json` records transformed product payloads and third-party imports, including their modes and hashes. It is not an inventory of every authored repository file. Update its entries whenever a listed imported payload changes; `verify-source-contract.py` verifies those listed bytes and modes. Newly authored source and CI helpers are bound by the tracked-source digest, exact Git revision and canonical CI registration. Adding an imported payload still requires its provenance entry and applicable review.
 
 The live GitHub GraphQL schema checked on 2026-11-17 exposes `expectedHeadOid` in both `MergePullRequestInput` and `EnablePullRequestAutoMergeInput`. Both native delivery branches intentionally pass that field; dropping it would remove the API's expected-head condition. For API diagnosis, re-read those input fields through authenticated read-only GraphQL introspection rather than assuming an older schema. This schema observation does not establish that delivery or activation occurred.
