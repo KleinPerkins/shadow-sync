@@ -84,6 +84,9 @@ class CreationTests(unittest.TestCase):
                 creation_adapter_sha256=m.review.digest(Path(m.__file__).read_bytes()),
                 capture_adapter_sha256=m.review.digest(Path(m.review.__file__).read_bytes()))]}
         self.policy = m.review.canonical(self.policy_value).encode()
+        (self.root / '.github').mkdir()
+        self.registry = self.root / '.github/review-enrollments.json'
+        self.registry.write_bytes(self.policy)
         self.request = {'repository': m.REPOSITORY, 'repository_id': m.REPOSITORY_ID, 'head_sha': 'a' * 40,
                         'base_sha': 'b' * 40, 'merge_base_sha': 'c' * 40, 'diff_sha256': 'd' * 64,
                         'policy_sha256': m.review.digest(self.policy), 'origin_account': 'work'}
@@ -166,11 +169,27 @@ class CreationTests(unittest.TestCase):
         for change in changes:
             value = copy.deepcopy(self.policy_value)
             change(value)
+            self.registry.write_bytes(m.review.canonical(value).encode())
             with self.subTest(policy=value), self.assertRaises(m.review.CaptureError):
                 self.create(policy=m.review.canonical(value).encode())
             self.assertEqual(self.api.calls, [])
             self.assertFalse(self.journal.exists())
 
+    def test_substituted_policy_rejects_before_account_cli_or_api(self):
+        alternate=copy.deepcopy(self.policy_value)
+        alternate['producers'][0]['origin_account']='alternate-origin'
+        policy=m.review.canonical(alternate).encode()
+        enrollment=dict(self.enrollment,origin_account='alternate-origin',email='alternate@example.invalid')
+        request=dict(self.request,origin_account='alternate-origin',policy_sha256=m.review.digest(policy))
+        receipt=copy.deepcopy(self.receipt)
+        receipt['tuple']=copy.deepcopy(request)
+        receipt['reviewer_origin_account']='alternate-origin'
+        self.account_mock.return_value={'type':'chatgpt','email':enrollment['email']}
+        with self.assertRaisesRegex(m.review.CaptureError,'differs from checked-in registry'):
+            self.create(policy=policy,enrollment=enrollment,request=request,receipt=receipt)
+        self.account_mock.assert_not_called();self.run_mock.assert_not_called()
+        self.assertEqual(self.api.calls,[])
+        self.assertFalse(self.output.exists());self.assertFalse(self.journal.exists())
     def test_wrong_github_repo_head_base_refuse_before_create(self):
         cases = [('owner', lambda: self.api.user.update(id=7)), ('repo', lambda: self.api.repo.update(id=7)),
                  ('private', lambda: self.api.repo.update(private=True)), ('default', lambda: self.api.repo.update(default_branch='other')),
@@ -224,6 +243,7 @@ class CreationTests(unittest.TestCase):
         self.assertFalse(self.journal.exists())
         self.policy_value['producers'][0]['allowed_startup_notice_sha256'] = [notice]
         self.policy = m.review.canonical(self.policy_value).encode()
+        self.registry.write_bytes(self.policy)
         self.request['policy_sha256'] = m.review.digest(self.policy)
         self.receipt['tuple'] = copy.deepcopy(self.request)
         self.create()

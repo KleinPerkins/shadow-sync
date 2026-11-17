@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -71,6 +72,16 @@ def digest(data):
 
 def canonical(value):
  return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False)
+
+def bind_policy(repo,policy):
+ path=Path(repo)/'.github/review-enrollments.json'
+ fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+ with os.fdopen(fd,'rb') as source:
+  info=os.fstat(source.fileno())
+  require(stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid() and info.st_size<=MAX_INPUT,'bounded regular registry required')
+  registered=source.read(MAX_INPUT+1)
+  require(len(registered)<=MAX_INPUT,'registry exceeds bound')
+ require(policy==registered,'review policy differs from checked-in registry')
 
 def utc():
  return dt.datetime.now(dt.timezone.utc).isoformat().replace('+00:00','Z')
@@ -178,6 +189,7 @@ def git(repo,*args):
  return run(argv+list(args),timeout=30,env=env)
 
 def frozen_input(repo,request,policy):
+ bind_policy(repo,policy)
  required={'repository','repository_id','head_sha','base_sha','merge_base_sha','diff_sha256','policy_sha256','origin_account'}
  require(set(request)==required,'invalid tuple fields')
  require(type(request['repository_id']) is int and request['repository_id']>0,'repository ID must be positive')
@@ -254,6 +266,7 @@ def captured_report(raw,last):
  return starts[0]['thread_id'],report
 
 def capture(repo,request,policy,enrollment,cli='codex',timeout=600):
+ bind_policy(repo,policy)
  account=account_read(cli,enrollment['credential_store']);validate_enrollment(enrollment,account,request['origin_account'])
  version=run([cli,'--version']).decode().strip()
  require(version==enrollment['cli_version'],'unenrolled CLI version')

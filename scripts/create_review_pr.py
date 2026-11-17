@@ -181,6 +181,7 @@ def validate_policy(policy, enrollment):
 
 
 def create(repo, request, policy, enrollment, receipt, title, body, output, journal, cli='codex', api=None):
+    review.bind_policy(repo, policy)
     output, journal = private_destination(output), private_destination(journal)
     require(output != journal, 'output and journal must differ')
     require(isinstance(title, str) and 0 < len(title.strip()) <= 256
