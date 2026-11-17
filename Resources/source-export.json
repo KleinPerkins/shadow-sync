@@ -16,7 +16,8 @@
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
-    "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
+    "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "scripts/ci-shards.py": "Run mandatory macOS-specific tooling and native fixture groups on standard macOS26 arm64; retain exact-run aggregation and independent full transitions."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
   "files": [
@@ -1063,7 +1064,7 @@
     {
       "mode": "100644",
       "path": "scripts/ci-shards.py",
-      "sha256": "af3fee917d7846a738ea06764f42eab23515c17de60b6cf6dda874e7cbeb2406"
+      "sha256": "d862ed4233b979017c532237ae91fc54cc0ff4c193ef7f43316bcee3203ac4e2"
     },
     {
       "mode": "100644",
