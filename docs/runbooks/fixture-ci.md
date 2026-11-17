@@ -27,8 +27,12 @@ Every PR, main push and weekly qualification runs mandatory coverage. Direct arg
 commands retain source/run/attempt-bound receipts and actual case rosters. The
 always-evaluated aggregate recomputes the expected matrix and rejects absent,
 stale, failed, skipped, cancelled, duplicate, zero-test or incomplete evidence.
-Commands cannot admit the next suite after unverified cleanup. App credentials
-are unavailable to this source workflow. Artifacts retain fixture evidence for
+A suite that reaches its cooperative timeout still fails qualification. After
+its exact bound completion marker and original child reap are verified, the unit
+may collect evidence from subsequent independent suites; the unit remains failed.
+Observer-integrity failures, observer interrupts and unverified cleanup stop
+subsequent admission. This differs from the hosted job hard deadline, which cannot
+supply complete evidence. App credentials are unavailable to this source workflow. Artifacts retain fixture evidence for
 14 days; no local user inventory, credentials, installed state or screenshots are
 inputs.
 

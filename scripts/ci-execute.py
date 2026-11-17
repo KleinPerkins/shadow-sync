@@ -193,8 +193,13 @@ def execute_unit(root, head, base, plan_bytes, unit_id, artifacts, diagnostics, 
             require(type(terminal) is dict and terminal.get('cleanup_complete') is True)
             require(terminal == {'schema': 'shadow-sync-ci-command-completion/v1',
                                 **context, 'cleanup_complete': True})
+            # A suite marker cannot replace the observer's ownership evidence.
+            # A cooperative suite deadline may finish draining; observer-integrity
+            # failures cannot authorize another independent command.
+            require(result['original_reaped'] is True
+                    and all(error == 'deadline' for error in result['errors']))
             cleanup = True
-            require(result['exit_code'] == 0 and result['original_reaped'] is True
+            require(result['exit_code'] == 0
                     and not result['errors'] and not result['interrupts'])
             require(set(ci.coverage.unique_ids(observed['passed_cases'])) == set(expected['cases'])
                     and not observed['failed_cases'] and not observed['skipped_cases'])

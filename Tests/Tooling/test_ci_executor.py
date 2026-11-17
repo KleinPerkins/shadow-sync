@@ -30,6 +30,13 @@ mode = sys.argv[1]
 if mode == 'timeout':
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(3))
     while True: time.sleep(.01)
+if mode == 'deadline-cleanup':
+    cancelled = False
+    def cancel(*_):
+        global cancelled
+        cancelled = True
+    signal.signal(signal.SIGTERM, cancel)
+    while not cancelled: time.sleep(.01)
 if mode != 'missing':
     if mode == 'stale': context['nonce'] = '0' * 32
     receipt = {'schema':'shadow-sync-ci-command-completion/v1', **context,
@@ -43,6 +50,7 @@ if mode == 'extra': print('PASS unknown/case', flush=True)
 if mode == 'failed': print('FAIL ' + name + '/one', flush=True)
 if mode == 'skipped': print('SKIP ' + name + '/one', flush=True)
 if mode == 'exit': sys.exit(2)
+if mode == 'deadline-cleanup': sys.exit(3)
 ''')
         self.contract = {'schema': 'shadow-sync-test-shards/v1', 'coverage': {
             'schema': 'shadow-sync-ci-coverage/v1', 'jobs': {}, 'suites': {}},
@@ -68,7 +76,7 @@ if mode == 'exit': sys.exit(2)
         self.source_calls += 1
         return ('c' if self.source_changed and self.source_calls > 1 else 'b') * 64
 
-    def run_unit(self, *, mode='pass', base='same', alter_plan=None):
+    def run_unit(self, *, mode='pass', base='same', alter_plan=None, observe=runner.observe_command):
         self.contract['commands'][self.first]['argv'][-1] = mode
         head = ci.encode(self.contract)
         base_bytes = head if base == 'same' else None
@@ -77,7 +85,7 @@ if mode == 'exit': sys.exit(2)
             alter_plan(plan)
         return runner.execute_unit(self.root, head, base_bytes, ci.encode(plan), self.unit_id,
             self.artifacts, self.diagnostics, identity=self.identity,
-            environment={'PATH': os.defpath}, source=self.source)
+            environment={'PATH': os.defpath}, source=self.source, observe=observe)
 
     def receipt(self, name=None):
         return json.loads((self.artifacts / self.unit_id / ((name or self.first) + '.json')).read_bytes())
@@ -93,6 +101,39 @@ if mode == 'exit': sys.exit(2)
         self.assertEqual(self.receipt()['exit_code'], 2)
         self.assertEqual(self.receipt('runtime-safety-second')['status'], 'complete')
         self.assertEqual(json.loads((self.artifacts / self.unit_id / 'unit.json').read_bytes())['status'], 'failed')
+
+    def test_reaped_cleanup_after_suite_deadline_continues_failed_unit(self):
+        self.contract['commands'][self.first]['timeout_seconds'] = 1
+        self.assertFalse(self.run_unit(mode='deadline-cleanup'))
+        self.assertTrue(self.receipt()['cleanup_complete'])
+        self.assertEqual(self.receipt()['exit_code'], 3)
+        observer = json.loads((self.diagnostics / self.unit_id / self.first / 'observer.json').read_bytes())
+        self.assertEqual(observer['errors'], ['deadline'])
+        self.assertTrue(observer['original_reaped'])
+        self.assertEqual(self.receipt('runtime-safety-second')['status'], 'complete')
+        self.assertEqual(json.loads((self.artifacts / self.unit_id / 'unit.json').read_bytes())['status'], 'failed')
+
+    def test_suite_cleanup_marker_cannot_replace_original_reap(self):
+        def observe(*args, **kwargs):
+            result = runner.observe_command(*args, **kwargs)
+            result['original_reaped'] = False
+            return result
+        self.assertFalse(self.run_unit(observe=observe))
+        self.assertFalse(self.receipt()['cleanup_complete'])
+        self.assertFalse((self.artifacts / self.unit_id / 'runtime-safety-second.json').exists())
+
+    def test_suite_cleanup_marker_cannot_override_observer_integrity_errors(self):
+        for error in ('output-limit', 'descendants', 'unknown-observer-error'):
+            with self.subTest(error=error):
+                self.artifacts = self.root / ('artifacts-' + error); self.artifacts.mkdir()
+                self.diagnostics = self.root / ('diagnostics-' + error); self.diagnostics.mkdir()
+                def observe(*args, **kwargs):
+                    result = runner.observe_command(*args, **kwargs)
+                    result['errors'] = ['deadline', error]
+                    return result
+                self.assertFalse(self.run_unit(observe=observe))
+                self.assertFalse(self.receipt()['cleanup_complete'])
+                self.assertFalse((self.artifacts / self.unit_id / 'runtime-safety-second.json').exists())
 
     def test_assertion_failure_preserved_and_independent_suite_continues(self):
         self.assertFalse(self.run_unit(mode='failed'))
