@@ -271,6 +271,41 @@ class CreationTests(unittest.TestCase):
         self.assert_no_origin()
         self.assertFalse(any(method == 'POST' and '/comments' in path for method, path, _ in self.api.calls))
 
+    def test_unrelated_comments_allow_unique_creation_origin(self):
+        self.api.comments = [dict(id=41, body='CI queued.', user=dict(id=71, type='Bot')),
+                             dict(id=42, body='Following this change.', user=dict(id=72, type='User'))]
+        self.create()
+        self.assertEqual(json.loads(self.journal.read_text())['status'], 'complete')
+        self.assertEqual(json.loads(self.output.read_bytes())['pull_request'], 19)
+        self.assertEqual(sum(method == 'POST' and '/comments' in path
+                             for method, path, _ in self.api.calls), 1)
+        self.assertTrue(self.api.posted_comment['body'].startswith(m.ORIGIN_MARKER))
+
+    def test_unknown_incomplete_or_origin_comments_refuse_without_post(self):
+        unrelated = dict(id=41, body='CI queued.', user=dict(id=71, type='Bot'))
+        invalid = [None, {}, 'unknown', [None], [{}], [dict(unrelated, body=None)],
+                   [dict(unrelated, id=True)], [dict(unrelated, user=None)],
+                   [dict(unrelated, user=dict(id=True, type='Bot'))],
+                   [dict(unrelated, user=dict(id=71, type='Unknown'))],
+                   [unrelated, unrelated]]
+        invalid.extend([[dict(unrelated, body=body)] for body in
+                        (m.ORIGIN_MARKER + '{}', '<!-- g1-pr-origin:v2 -->\n{}',
+                         'prefix <!-- g1-pr-origin', '<!-- g1-pr-origin:v1 malformed')])
+        invalid.append([dict(unrelated, id=index + 1) for index in range(100)])
+        for comments in invalid:
+            with self.subTest(comments=comments):
+                self.api.comments = comments
+                with self.assertRaises(m.review.CaptureError):
+                    self.create()
+                self.assertIsNotNone(self.api.pr)
+                self.assertFalse(any(method == 'POST' and '/comments' in path
+                                     for method, path, _ in self.api.calls))
+                self.assertEqual(json.loads(self.journal.read_text())['status'], 'incomplete-no-retry')
+                self.assertEqual(json.loads(self.journal.read_text())['status_before_failure'], 'created-unverified')
+                self.output.unlink(missing_ok=True)
+                self.journal.unlink(missing_ok=True)
+                self.api = FakeGithub()
+
     def test_notice_must_be_enrolled_for_matched_producer(self):
         notice = m.review.digest(next(iter(m.review.STARTUP_NOTICES)))
         self.receipt['runtime']['startup_notice_sha256'] = [notice]

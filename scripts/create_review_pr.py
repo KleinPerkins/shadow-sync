@@ -244,7 +244,17 @@ def create(repo, request, policy, enrollment, receipt, title, body, output, jour
                           'capture_adapter_sha256': review.digest(Path(review.__file__).read_bytes())}
                 comments_path = PREFIX + '/issues/' + str(pr['number']) + '/comments'
                 comments = api.call('GET', comments_path + '?per_page=100')
-                require(isinstance(comments, list) and not comments, 'existing or unknown comments; no first origin')
+                # A short first page proves completeness. Unrelated discussion is not an origin.
+                require(isinstance(comments, list) and len(comments) < 100, 'unknown or incomplete comments')
+                comment_ids = set()
+                for existing in comments:
+                    require(isinstance(existing, dict) and type(existing.get('id')) is int and existing['id'] > 0
+                            and existing['id'] not in comment_ids and isinstance(existing.get('body'), str)
+                            and isinstance(existing.get('user'), dict)
+                            and type(existing['user'].get('id')) is int and existing['user']['id'] > 0
+                            and existing['user'].get('type') in ('User', 'Bot'), 'unknown comment shape')
+                    comment_ids.add(existing['id'])
+                    require('<!-- g1-pr-origin' not in existing['body'], 'existing origin marker; no new origin')
                 comment_body = ORIGIN_MARKER + review.canonical(origin)
                 state['status'] = 'comment-attempted'
                 write_state(journal_file, state)

@@ -3040,6 +3040,8 @@
           "test_create_review_pr.CreationTests.test_substituted_policy_rejects_before_account_cli_or_api",
           "test_create_review_pr.CreationTests.test_transport_uses_absolute_gh_json_stdin_no_shell",
           "test_create_review_pr.CreationTests.test_unenrolled_adapters_or_disabled_producers_cannot_create_pr",
+          "test_create_review_pr.CreationTests.test_unknown_incomplete_or_origin_comments_refuse_without_post",
+          "test_create_review_pr.CreationTests.test_unrelated_comments_allow_unique_creation_origin",
           "test_create_review_pr.CreationTests.test_wrong_account_cli_profile_origin_block_before_api",
           "test_create_review_pr.CreationTests.test_wrong_github_repo_head_base_refuse_before_create"
         ],
