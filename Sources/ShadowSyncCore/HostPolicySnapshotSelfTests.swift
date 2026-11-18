@@ -1219,7 +1219,7 @@ public enum HostPolicySnapshotSelfTestRunner {
             try denied {
                 try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
                     service.testingBeforeAccess = { accesses.append($0) }
-                    usleep(800_000)
+                    usleep(useconds_t(RepositorySelectionCatalogLimits().elapsedNanoseconds / 1_000 + 50_000))
                     _ = try RepositoryDiscovery().discoverMetadata(scope: scope, policy: service)
                 }
             }
@@ -1285,7 +1285,7 @@ public enum HostPolicySnapshotSelfTestRunner {
             let command = try discoveryCommand(), budget = try CustodyBudget.make(kind: .discoveryGit, workSeconds: command.workSeconds)
             try binder.withDiscoveryCommandPolicy(scope, selected: scope.repositories[0], command: command,
                 budget: budget, cancellation: CancellationToken()) { service in
-                usleep(800_000)
+                usleep(useconds_t(RepositorySelectionCatalogLimits().elapsedNanoseconds / 1_000 + 50_000))
                 try service.requireCandidate(candidates[0])
                 try service.willAccess(candidates[0].path + "/.git/config")
                 try require(service.budget == budget && service.command.arguments == command.arguments,
