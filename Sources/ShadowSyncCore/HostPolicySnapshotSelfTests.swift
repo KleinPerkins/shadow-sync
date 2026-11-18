@@ -2168,6 +2168,23 @@ public enum HostPolicySnapshotSelfTestRunner {
             try require(candidates.count == 1 && candidates[0].id == "fixture-owner/ready"
                 && candidates[0].isEligible && scope.admits(candidates[0]),
                 "metadata prefetch changed selected repository or eligibility")
+            let candidate = candidates[0]
+            let access = DiscoveryMetadataAccess(binder: binder, scope: scope,
+                cancellation: CancellationToken())
+            let beforeRebind = audit.invocations.count
+            try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { _ in }
+            let rebindHelperCount = audit.invocations.count - beforeRebind
+            try require((1...2).contains(rebindHelperCount), "metadata fixture rebind classification changed")
+            let reads: [DiscoveryMetadataAccess.Read] = [.identity, .busy, .topology, .index,
+                .mainReference, .remoteReference, .looseCommit(String(repeating: "a", count: 40)),
+                .primaryClaim(candidate.path)]
+            for read in reads {
+                let before = audit.invocations.count
+                var entered = false
+                try access.withRead(candidate, read) { entered = true }
+                try require(entered && audit.invocations.count - before == rebindHelperCount + 1,
+                    "metadata read did not use one fresh classification for its known paths")
+            }
             try fixture.remove()
         }
         onPass("POLICY-SESSION-T64-metadata-known-paths-share-first-classification")

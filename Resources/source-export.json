@@ -429,7 +429,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DiscoveryMetadataAccess.swift",
-      "sha256": "a49f46a6ecd375e99f764aa95f59b181b5e5171a44a79e6974079c5255d9c87f"
+      "sha256": "69ad1b13f544eb549de71b4bf7fcd1c1da1504e38c0ef67481447f3699357582"
     },
     {
       "mode": "100644",
@@ -514,7 +514,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/HostPolicySnapshotSelfTests.swift",
-      "sha256": "ef01e6be86f55bbe1b9c5674a536bcd8565d580028d0c3f9993b806166e76e52"
+      "sha256": "15a4c14722233e57635410d77f27a37d125dc579c0d5c5e3432da99a4cbcaad3"
     },
     {
       "mode": "100644",
@@ -979,7 +979,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_python_test_suites.py",
-      "sha256": "a2e8f5df2e3e01cff192bcfadba8715dcaf6b355d5ac50e57ea7f35b3137f2ad"
+      "sha256": "8a42550433c6bb8978ac131fc5f8234a60aa9506d5fce494874deec13e42aa8a"
     },
     {
       "mode": "100644",
@@ -1134,7 +1134,7 @@
     {
       "mode": "100644",
       "path": "scripts/python-test-suites.py",
-      "sha256": "aa632f452743d131144fbe89ee24c39d60e58845587dc7ed785acc724b999ae1"
+      "sha256": "42cfa4df93657d4dab866657c01d1ff0f585965544c65f0fbb5f2169f725d704"
     },
     {
       "mode": "100644",

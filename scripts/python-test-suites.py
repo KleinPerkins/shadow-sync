@@ -126,6 +126,16 @@ class CompletionResult(unittest.TestResult):
             and self.started == expected and self.stopped == expected \
             and self.passed == expected and self.testsRun == len(expected)
 
+    def report_diagnostics(self):
+        # Fixture failures must retain their actual exception/traceback. Keep
+        # diagnostics separate from canonical case markers and JSON-escape each
+        # record so an assertion containing newlines cannot emit a PASS marker.
+        for outcome, entries in (('failure', self.failures), ('error', self.errors),
+                                 ('expected-failure', self.expectedFailures)):
+            for test, detail in entries:
+                print('DIAGNOSTIC ' + json.dumps({'case': test.id(), 'outcome': outcome,
+                      'detail': detail}, ensure_ascii=True), file=sys.stderr, flush=True)
+
 
 def execute(modules, selected, emit):
     if not selected or len(selected) != len(set(selected)) or not set(selected) <= set(modules):
@@ -136,6 +146,7 @@ def execute(modules, selected, emit):
     # unittest continues independent cases after failures; no successful retry is
     # substituted for a failed case, skip, expected failure or class setup error.
     unittest.TestSuite(cases).run(result)
+    result.report_diagnostics()
     return result.complete(expected)
 
 

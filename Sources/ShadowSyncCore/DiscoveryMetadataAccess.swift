@@ -48,8 +48,11 @@ struct DiscoveryMetadataAccess: Sendable {
                   let selected = service.scope.repositories.first(where: {
                       $0.repositoryID == candidate.id && $0.repositoryPath.utf8.elementsEqual(candidate.path.utf8)
                   }) else { throw SelectedRepositoryScopeError.changed }
-            try service.requireSelected(selected)
+            // These names are lexical inputs from the already-bound candidate.
+            // Classify them together before requireSelected traverses the root;
+            // later reads still revalidate their exact decisions and deadline.
             try service.prepareAccess(paths)
+            try service.requireSelected(selected)
             try service.validate()
             let result = try body()
             try service.requireSelected(selected)
