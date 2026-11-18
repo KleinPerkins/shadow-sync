@@ -755,7 +755,7 @@ public final class SelectedRepositoryScopeBinder:
     public func bind(
         intent: RepositorySelectionIntent
     ) throws -> ValidatedSelectedRepositoryScope {
-        try bindBound(intent: intent, deadlineLimit: nil)
+        try bindBound(intent: BindingExpectation(intent), deadlineLimit: nil)
     }
 
     private func boundedMetadataDeadline(_ limit: UInt64?) -> UInt64 {
@@ -766,7 +766,45 @@ public final class SelectedRepositoryScopeBinder:
         return setupDeadline ?? fresh
     }
 
-    private func bindBound(intent: RepositorySelectionIntent,
+    /// Comparison data only: saved selection never supplies current admission
+    /// or a catalog result. Binding still discovers one complete fresh catalog.
+    private struct BindingExpectation {
+        let generation: UInt64
+        let policyDigest: String
+        let rootIdentities: [String: RepositorySelectionCatalogIdentity]
+        let repositoryIdentities: [RepositorySelectionPreferenceEntry: RepositorySelectionCatalogIdentity]
+        let entries: [RepositorySelectionPreferenceEntry]
+        let savedScope: Bool
+
+        init(_ intent: RepositorySelectionIntent) {
+            generation = intent.generation; policyDigest = intent.policyDigest
+            rootIdentities = intent.rootIdentities; repositoryIdentities = intent.repositoryIdentities
+            entries = intent.entries; savedScope = false
+        }
+        init(scope: ValidatedSelectedRepositoryScope, logicalRoot: String) throws {
+            guard let first = scope.repositories.first,
+                  scope.repositories.allSatisfy({ $0.locator.governedRoot == logicalRoot
+                    && $0.rootIdentity == first.rootIdentity }) else { throw SelectedRepositoryScopeError.changed }
+            generation = scope.selectionGeneration; policyDigest = scope.policyDigest
+            rootIdentities = [logicalRoot: RepositorySelectionCatalogIdentity(device: first.rootIdentity.device,
+                inode: first.rootIdentity.inode, owner: first.rootIdentity.owner)]
+            let selected = try scope.repositories.map { repository in
+                (try RepositorySelectionPreferenceEntry(repositoryID: repository.repositoryID, locator: repository.locator),
+                 RepositorySelectionCatalogIdentity(device: repository.repositoryIdentity.device,
+                    inode: repository.repositoryIdentity.inode, owner: repository.repositoryIdentity.owner))
+            }
+            entries = selected.map { $0.0 }.sorted()
+            repositoryIdentities = Dictionary(uniqueKeysWithValues: selected)
+            savedScope = true
+        }
+        func matches(_ current: RepositorySelectionIntent) -> Bool {
+            generation == current.generation && policyDigest == current.policyDigest
+                && rootIdentities == current.rootIdentities && repositoryIdentities == current.repositoryIdentities
+                && entries == current.entries
+        }
+    }
+
+    private func bindBound(intent: BindingExpectation,
                            deadlineLimit: UInt64?) throws -> ValidatedSelectedRepositoryScope {
         guard !intent.entries.isEmpty else {
             throw SelectedRepositoryScopeError.invalidIntent
@@ -830,6 +868,15 @@ public final class SelectedRepositoryScopeBinder:
                 catalog.degradedReason?.operatorExplanation
                     ?? "catalog incomplete"
             )
+        }
+        if intent.savedScope {
+            // Reapply the public intent's pure visibility, eligibility,
+            // generation, uniqueness and identity checks to THIS fresh scan.
+            // A changed/missing selected row retains rebind's changed refusal.
+            do {
+                let current = try RepositorySelectionIntent(catalog: catalog.catalog, entries: intent.entries)
+                guard intent.matches(current) else { throw SelectedRepositoryScopeError.changed }
+            } catch { throw SelectedRepositoryScopeError.changed }
         }
         guard catalog.catalog.policyDigest == intent.policyDigest,
               catalog.catalog.rootIdentities
@@ -962,27 +1009,14 @@ public final class SelectedRepositoryScopeBinder:
               scope.policyDigest == (try activeSelectionPolicy()).digest else {
             throw SelectedRepositoryScopeError.changed
         }
-        let entries = try scope.repositories.map {
-            try RepositorySelectionPreferenceEntry(repositoryID: $0.repositoryID, locator: $0.locator)
-        }.sorted()
-        #if SHADOW_SYNC_TESTING
-        diagnosticStage = .metadata
-        #endif
-        let catalog = try processFreeCatalogBound(preferences: nil,
-            canonicalLocators: Dictionary(uniqueKeysWithValues: entries.map { ($0.repositoryID, $0.locator) }),
-            generation: scope.selectionGeneration, deadlineLimit: stageDeadline)
-        guard catalog.isComplete else {
-            if catalog.degradedReason == .cleanupPending { throw SelectedRepositoryScopeError.cleanupPending }
-            throw SelectedRepositoryScopeError.catalogDegraded(
-                catalog.degradedReason?.operatorExplanation ?? "catalog incomplete")
-        }
-        let intent: RepositorySelectionIntent
-        do { intent = try RepositorySelectionIntent(catalog: catalog.catalog, entries: entries) }
-        catch { throw SelectedRepositoryScopeError.changed }
+        // The prior implementation scanned once only to reconstruct an intent,
+        // then bindBound scanned again. Carry the saved comparison values into
+        // the existing fresh binding scan instead; no old catalog is reused.
+        let expectation = try BindingExpectation(scope: scope, logicalRoot: logicalRoot)
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .decisions
         #endif
-        let rebound = try bindBound(intent: intent, deadlineLimit: stageDeadline)
+        let rebound = try bindBound(intent: expectation, deadlineLimit: stageDeadline)
         guard rebound == scope else { throw SelectedRepositoryScopeError.changed }
         #if SHADOW_SYNC_TESTING
         diagnosticPassed = true

@@ -769,6 +769,8 @@ public enum HostPolicySnapshotSelfTestRunner {
             }
             try require(entered && value == scope.repositoryIDs && !audit.invocations.isEmpty,
                         "operation reused an earlier policy decision without fresh classification")
+            try require(audit.invocations.count <= 2,
+                        "one operation redundantly classified the same fresh catalog twice")
             try context.remove()
         }
         onPass("POLICY-SESSION-T14-fresh-operation-rebind-preserves-exact-selection")

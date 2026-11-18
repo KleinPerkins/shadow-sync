@@ -514,7 +514,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/HostPolicySnapshotSelfTests.swift",
-      "sha256": "bcafe69261f5713a2d9df0c98e3d673b00a4c8ba9626f3689115482108f0e13c"
+      "sha256": "936294bc7da7c56135a35a68c1e7d1cd4df37caaacd90f0b153b53cabb0a8245"
     },
     {
       "mode": "100644",
@@ -814,7 +814,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SelectedRepositoryScope.swift",
-      "sha256": "ed616ac31006c149cbcff3a5cf3baff62da9814e38b661d8c037b87e288c24cf"
+      "sha256": "a87587735df6a8066117f62c49b4f4945f2d390c07fcacdacf61349aa6e8636b"
     },
     {
       "mode": "100644",
