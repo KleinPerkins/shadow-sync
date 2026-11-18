@@ -453,6 +453,7 @@ public enum M6SelfTestRunner {
         try run("m6-helper-trace-command-boundary") { try CustodyHelperSelfTests.traceCommandBoundary() }
         try run("m6-helper-trace-reservation-boundary") { try CustodyHelperSelfTests.traceReservationBoundary() }
         try run("m6-registry-status-eof-without-terminal") { try CustodyRegistrySelfTests.native("status-eof", pending:true) }
+        try run("m6-registry-readiness-without-polling") { try CustodyHelperSelfTests.readinessWithoutPolling() }
         try run("m6-registry-reap-before-status-eof") { try CustodyHelperSelfTests.reapedBeforeReads(.statusAfterAdmission) }
         try run("m6-registry-reap-before-output-eof") { try CustodyHelperSelfTests.reapedBeforeReads(.outputUntilReleased) }
         try run("m6-system-config-fixed-command") { try SystemConfigCommandSelfTests.contract() }
@@ -3519,6 +3520,44 @@ private enum CustodyHelperSelfTests {
                 "serial catalog still active")
             do { _ = try RunAuthority.acquireRun(at: location); throw Failure(message: "serial original lease lost") }
             catch is SecureStateError {}
+        }
+    }
+    /// A disabled fallback timer makes this a causal scheduling regression:
+    /// only owned pipe/exit readiness can advance the ordinary retirement path.
+    /// Two waiters also exercise publication without a read-to-wait lost wakeup.
+    static func readinessWithoutPolling() throws {
+        final class Results: @unchecked Sendable {
+            let lock = NSLock()
+            var values: [CustodyRegistryResult] = []
+            func append(_ value: CustodyRegistryResult) { lock.lock(); values.append(value); lock.unlock() }
+        }
+        try CustodyRegistrySelfTests.fixture { location, registry in
+            let resources = try resources(location, mode: "system-complete", work: 5)
+            registry.testingSuppressTimer(true)
+            defer { registry.testingSuppressTimer(false) }
+            let handle = try registry.start(resources: resources, helper: CustodyHelperExecutable.testingCustodian())
+            let observers = DispatchGroup(), results = Results()
+            for _ in 0..<2 {
+                observers.enter()
+                DispatchQueue.global().async { results.append(handle.wait()); observers.leave() }
+            }
+            let observed = observers.wait(timeout: .now() + .seconds(4))
+            // Even a failed regression restores ordinary deadline/cleanup work
+            // and joins both observers before the owned fixture can be removed.
+            registry.testingSuppressTimer(false)
+            observers.wait()
+            try check(observed == .success && results.values.count == 2,
+                      "owned readiness required the disabled polling timer")
+            try check(results.values.allSatisfy { $0.phase == .finished && $0.reason == nil
+                && $0.journal?.outcome == .completed && $0.journal?.waitStatus == 0
+                && $0.stdout == Data("file:/fixture/system-config\0core.safe\0".utf8)
+                && $0.stderr.isEmpty && $0.trace.isEmpty }, "readiness changed terminal evidence or observer result")
+            try check(registry.testingCount == 0 && !registry.hasRetainedWork,
+                      "readiness publication preceded actual retirement")
+            let receipt = try CustodyCatalogSelfTests.bytes(location,
+                "receipts/" + resources.request.binding.requestID + ".caller.json")
+            let value = try JSONSerialization.jsonObject(with: receipt) as! [String: Any]
+            try check(value["event"] as? String == "custodian-reaped", "readiness substituted for original reaping")
         }
     }
     static func reapedBeforeReads(_ mode: RetainedCleanupRegistry.TestReadDeferral) throws {

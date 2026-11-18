@@ -2197,6 +2197,7 @@
           "m6-helper-trace-command-boundary",
           "m6-helper-trace-reservation-boundary",
           "m6-registry-status-eof-without-terminal",
+          "m6-registry-readiness-without-polling",
           "m6-registry-reap-before-status-eof",
           "m6-registry-reap-before-output-eof",
           "m6-system-config-fixed-command",

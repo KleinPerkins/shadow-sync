@@ -230,6 +230,18 @@ private final class CustodyPipe {
     #if SHADOW_SYNC_TESTING
     var testingWriter: Int32 { mutex.lock(); defer { mutex.unlock() }; return writer?.value ?? -1 }
     #endif
+    /// Readiness is only a scheduling hint; the retained reader and its ordinary
+    /// bounded read still establish bytes/EOF. Keep this pipe alive until the
+    /// dispatch cancellation handler has released the kernel observation.
+    func observeReadiness(on queue: DispatchQueue, handler: @escaping @Sendable () -> Void) throws -> DispatchSourceRead {
+        mutex.lock(); defer { mutex.unlock() }
+        guard let reader else { throw CustodyResourceError.closed }
+        let source = DispatchSource.makeReadSource(fileDescriptor: reader.value, queue: queue)
+        source.setEventHandler(handler: handler)
+        source.setCancelHandler { [self] in withExtendedLifetime(self) {} }
+        source.resume()
+        return source
+    }
     func closeWriter() { mutex.lock(); writer?.closeNow(); writer = nil; mutex.unlock() }
     func read(maximum: Int) throws -> CustodyPipeRead {
         guard (1...16_388).contains(maximum) else { throw CustodyResourceError.limit }
@@ -459,6 +471,19 @@ final class CustodyRequestResources: @unchecked Sendable {
         return try CustodySpawnResources(resources: self, pipeSources: sources, fileSources: files)
     }
     func closeControl() { control.closeWriter() }
+    enum ObservationStream: CaseIterable { case status, output, error, trace }
+    func observeReadiness(_ stream: ObservationStream, on queue: DispatchQueue,
+                          handler: @escaping @Sendable () -> Void) throws -> DispatchSourceRead? {
+        let pipe: CustodyPipe?
+        switch stream {
+        case .status: pipe = status
+        case .output: pipe = output
+        case .error: pipe = error
+        case .trace: pipe = trace
+        }
+        return try pipe?.observeReadiness(on: queue, handler: handler)
+    }
+
     func writeControl(_ data: Data, offset: Int = 0) throws -> Int { try control.write(data, offset: offset) }
     func readStatus() throws -> CustodyPipeRead { try status.read(maximum: 16_388) }
     func readOutput(error isError: Bool = false) throws -> CustodyPipeRead { try (isError ? error : output).read(maximum: 16_388) }

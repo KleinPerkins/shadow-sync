@@ -359,7 +359,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CustodyResources.swift",
-      "sha256": "9d63b0486827cc28b8233ed9c68e37955d4c4ce9c40872f9f55dfd06676656e5"
+      "sha256": "8b215f5213e315648991345df51804fe1a9782b623cfc5331254812e1411ed82"
     },
     {
       "mode": "100644",
@@ -579,7 +579,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "884a78ad5c1804b5c0ec8089c126653f90d534c268e1d93f967ef20e25983a63"
+      "sha256": "7bb32ba9417a932e50138a2647d61bc1ebf5ef8ce0be70ed333347b8b66896a4"
     },
     {
       "mode": "100644",
@@ -754,7 +754,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RetainedCleanupRegistry.swift",
-      "sha256": "1c8b90dc1055412a4815af30775437a20404c606a671fe6d9c96f516a95c245e"
+      "sha256": "c13bdf77d0edfb9309c420b3763ac70984b2236aa351331472dc338fa36d6718"
     },
     {
       "mode": "100644",
@@ -859,7 +859,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "4d74ab65ac3078c092fa7d6d0144fc0c58482b1bd9f6657b924ef6d80b235852"
+      "sha256": "9012b20ac958684c7a4e5b10bb130f946fb40ef6003615dd9e652e9d94caaa5d"
     },
     {
       "mode": "100644",
@@ -994,7 +994,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "2039eb99b23f6d08c12aa5d31ded5683e912f72421f98ff16c0b9b6195121291"
+      "sha256": "39114126dd2793a1e32d64eb71908e8531194ba1edf3ab454e5fce3dffed33ca"
     },
     {
       "mode": "100644",
