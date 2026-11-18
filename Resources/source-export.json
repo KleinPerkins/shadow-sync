@@ -989,7 +989,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_release_metadata.py",
-      "sha256": "78775a6e302c4bf59b85a4edc4247c5454f928b2cfae032e2ed2ab24d425cb29"
+      "sha256": "b27c35816daebf93f62055473b2a1468f5fba4f0b55ab54fbeb8cd5a5008338a"
     },
     {
       "mode": "100644",
@@ -1054,7 +1054,7 @@
     {
       "mode": "100755",
       "path": "scripts/build-app.sh",
-      "sha256": "fdfca09a453f86cc18d230ced37f4187d2a9c5d749e218ebb448e98e8e9307f2"
+      "sha256": "1865b6f2854009d3bf9cfb9b1f347b45f76df12d8890e64908b3843134b2ebb8"
     },
     {
       "mode": "100644",
