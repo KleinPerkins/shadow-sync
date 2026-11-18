@@ -357,7 +357,7 @@ public enum HostPolicySnapshotSelfTestRunner {
             catch RepositorySelectionAdmissionError.unavailable {}
             catch SelectedRepositoryScopeError.policyUnavailable {}
         }
-        func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + 750_000_000 }
+        func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + RepositorySelectionCatalogLimits().elapsedNanoseconds }
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T01-snapshot-helper-and-catalog-composition") {
             let projection = "/fixture/home/workspace", marker = projection + "/ready/.git"
             let roster = [marker] + ["config", "refs", "refs/remotes", "refs/remotes/origin", "refs/remotes/origin/HEAD"].map { marker + "/" + $0 }
@@ -691,7 +691,7 @@ public enum HostPolicySnapshotSelfTestRunner {
             print("METRIC policy-runtime real-layout-catalog-ns=\(measuredDuration)")
             let resourceDurations = resourceMeasurement.durations.dropFirst(initialResourceCalls)
             print("METRIC policy-runtime resource-checks=\(resourceDurations.count) resource-ns=\(resourceDurations.reduce(0, +)) helpers=\(measuredAudit.invocations.count) complete=\(measuredCatalog.isComplete)")
-            try require(measuredCatalog.isComplete && measuredDuration <= 750_000_000,
+            try require(measuredCatalog.isComplete && measuredDuration < RepositorySelectionCatalogLimits().elapsedNanoseconds,
                         "real runtime lease exceeded catalog admission bound")
             guard let measuredReady = measuredCatalog.catalog.candidates.first(where: { $0.id == "fixture-owner/ready" }) else {
                 throw Failure.assertion("measured selected row missing")

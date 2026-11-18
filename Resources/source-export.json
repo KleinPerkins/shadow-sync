@@ -259,7 +259,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCatalog/RepositorySelectionCatalog.swift",
-      "sha256": "2ada92612e35721b23018c201562b0925415f2a05bd76a0ea8f68675424b5986"
+      "sha256": "751b7898fdf76059a2719addab68e4af3877e9badf8564742fbbf5919dd3d8f7"
     },
     {
       "mode": "100644",
@@ -394,7 +394,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DiscoveryCallerSelfTests.swift",
-      "sha256": "537e73d392f1c98c88e0193772b4c8dde58ae688a07bd615bed8b734cf14df06"
+      "sha256": "cd952539534d2d31ee65882a922120c100af72610ed1b90b2478e429b0b92f81"
     },
     {
       "mode": "100644",
@@ -514,7 +514,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/HostPolicySnapshotSelfTests.swift",
-      "sha256": "37bd37858587deca387acf5efacb2f09aee6720f4293018b6fa7d0e2068da658"
+      "sha256": "daa7c72fd65aa80cd9be5d519c69936c54908f927185e4a27aeb02c355283dcd"
     },
     {
       "mode": "100644",
@@ -744,7 +744,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RepositorySelectionAdmissionSelfTests.swift",
-      "sha256": "79e0813ecffca62ee956bcb5fb593383dfd929bd5c7162cf1d3bf2ba0821cd7b"
+      "sha256": "f3eaad5f3ce3c65835a5f3bf59efc70ce7cb02ba5bab377c91a7ab47406474aa"
     },
     {
       "mode": "100644",
@@ -814,7 +814,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SelectedRepositoryScope.swift",
-      "sha256": "f68b4b19be5b9332086d0270aebc46e66f35169695946115b7434e0d6c675190"
+      "sha256": "1d4312b504290d3d9dd819ec0e50567aeca02947f291fddfccbafe74e783cd0f"
     },
     {
       "mode": "100644",

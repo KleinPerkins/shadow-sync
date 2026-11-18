@@ -734,7 +734,8 @@ public final class SelectedRepositoryScopeBinder:
         }
         #endif
         let root = try openRoot(deadline: deadline)
-        defer { close(root.descriptor) }
+        var rootNeedsClose = true
+        defer { if rootNeedsClose { close(root.descriptor) } }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .projection
         #endif
@@ -767,6 +768,12 @@ public final class SelectedRepositoryScopeBinder:
                 inspectRootRepository: snapshot == nil
             )
         )
+        // Completion includes the owned descriptor cleanup. A result that
+        // crossed its original deadline cannot be published as complete.
+        close(root.descriptor); rootNeedsClose = false
+        guard !result.isComplete || DispatchTime.now().uptimeNanoseconds < deadline else {
+            throw SelectedRepositoryScopeError.policyUnavailable
+        }
         #if SHADOW_SYNC_TESTING
         diagnosticPassed = result.isComplete
         #endif
@@ -1111,7 +1118,7 @@ public final class SelectedRepositoryScopeBinder:
     }
 
     /// A command is a separate bounded stage, not an extension of the metadata
-    /// scan's 750ms deadline. The caller creates its budget once; rebinding and
+    /// scan's strict sub-second deadline. The caller creates its budget once; rebinding and
     /// every classifier/identity check consume that same budget. The helper will
     /// independently authenticate policy and resources before actual execution.
     func withDiscoveryCommandPolicy<Value>(_ scope: ValidatedSelectedRepositoryScope,

@@ -17,7 +17,7 @@ public enum RepositorySelectionAdmissionSelfTestRunner {
         try RuntimeFixtureSession.withCase("POLICY-CATALOG-T01-absent-authority-and-invalid-batch-refuse") {
             let a = try RepositorySelectionAdmissionPath(root: "fixture", components: ["a"])
             let b = try RepositorySelectionAdmissionPath(root: "fixture", components: ["b"])
-            func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + 750_000_000 }
+            func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + RepositorySelectionCatalogLimits().elapsedNanoseconds }
             try refuses { _ = try RepositorySelectionPathAdmission.unavailable.classify([a], deadline: deadline()) }
             for invalid in ["", ".", "..", "slash/name", "back\\name", "null\0name", "line\nname"] {
                 try refuses { _ = try RepositorySelectionAdmissionPath(root: "fixture", components: [invalid]) }
@@ -29,7 +29,7 @@ public enum RepositorySelectionAdmissionSelfTestRunner {
         try RuntimeFixtureSession.withCase("POLICY-CATALOG-T02-exact-ordered-byte-response-binding") {
             let a = try RepositorySelectionAdmissionPath(root: "fixture", components: ["a"])
             let b = try RepositorySelectionAdmissionPath(root: "fixture", components: ["b"])
-            func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + 750_000_000 }
+            func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + RepositorySelectionCatalogLimits().elapsedNanoseconds }
             for response in [[], [a], [a,b,a], [b,a]] as [[RepositorySelectionAdmissionPath]] {
                 let gate = RepositorySelectionPathAdmission(evaluate: { _, _ in response.map {
                     RepositorySelectionAdmissionDecision(path: $0, disposition: .allowed)
@@ -47,7 +47,21 @@ public enum RepositorySelectionAdmissionSelfTestRunner {
         try RuntimeFixtureSession.withCase("POLICY-CATALOG-T03-stale-authority-and-expired-deadlines-refuse") {
             let a = try RepositorySelectionAdmissionPath(root: "fixture", components: ["a"])
             let b = try RepositorySelectionAdmissionPath(root: "fixture", components: ["b"])
-            func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + 750_000_000 }
+            let limits = RepositorySelectionCatalogLimits(), start: UInt64 = 100
+            try require(limits.elapsedNanoseconds == 1_000_000_000
+                && limits.testingPermits(started: start, now: start + 999_999_999,
+                    deadline: start + 1_000_000_000)
+                && !limits.testingPermits(started: start, now: start + 1_000_000_000,
+                    deadline: start + 1_000_000_000)
+                && !limits.testingPermits(started: start, now: start + 1_000_000_000,
+                    deadline: start + 2_000_000_000)
+                && !limits.testingPermits(started: start, now: start + 1_000_000_001,
+                    deadline: start + 2_000_000_000)
+                && !limits.testingPermits(started: start, now: start + 5,
+                    deadline: start + 5)
+                && !limits.testingPermits(started: start, now: start - 1,
+                    deadline: start + 1_000_000_000), "strict responsiveness boundary changed")
+            func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + limits.elapsedNanoseconds }
             let staleCalls = Calls()
             let stale = RepositorySelectionPathAdmission(evaluate: { paths, _ in paths.map {
                 RepositorySelectionAdmissionDecision(path: $0, disposition: .allowed)
@@ -168,7 +182,7 @@ public enum RepositorySelectionAdmissionSelfTestRunner {
         try RuntimeFixtureSession.withCase("POLICY-CATALOG-T10-admitted-byte-identity-survives-selection-and-persistence") {
             let a = try RepositorySelectionAdmissionPath(root: "fixture", components: ["a"])
             let b = try RepositorySelectionAdmissionPath(root: "fixture", components: ["b"])
-            func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + 750_000_000 }
+            func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + RepositorySelectionCatalogLimits().elapsedNanoseconds }
             let fixture = try Fixture()
             defer { try? fixture.remove() }
             for index in 0..<130 { try fixture.directory("shelf/repository-\(index)") }
