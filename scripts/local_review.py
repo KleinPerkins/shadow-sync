@@ -74,7 +74,25 @@ def digest(data):
 def canonical(value):
  return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False)
 
-def bind_policy(repo,policy):
+def bind_policy(repo,request,policy,*,owner_bootstrap=False):
+ require(type(owner_bootstrap) is bool,'invalid bootstrap option')
+ require(isinstance(request,dict) and isinstance(request.get('base_sha'),str)
+         and re.fullmatch(r'[0-9a-f]{40}',request['base_sha']),'full base commit SHA required')
+ base=request['base_sha']
+ require(git(repo,'cat-file','-t',base)==b'commit\n','base commit required')
+ entries=git(repo,'ls-tree','-z',base,'--','.github/review-enrollments.json').split(b'\0')
+ entries=[entry for entry in entries if entry]
+ if not owner_bootstrap:
+  require(len(entries)==1,'trusted base registry required')
+  match=re.fullmatch(rb'100(?:644|755) blob ([0-9a-f]{40})\t\.github/review-enrollments\.json',entries[0])
+  require(match is not None,'regular trusted base registry required')
+  registered=git(repo,'cat-file','blob',match[1].decode('ascii'))
+  require(len(registered)<=MAX_INPUT,'registry exceeds bound')
+  require(policy==registered,'review policy differs from trusted base registry')
+  return
+ # Initial source admission has no base registry. This explicit local option only
+ # prepares evidence for the separate owner-controlled bootstrap admission.
+ require(not entries,'bootstrap requires absent base registry')
  path=Path(repo)/'.github/review-enrollments.json'
  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
  with os.fdopen(fd,'rb') as source:
@@ -212,8 +230,8 @@ def git(repo,*args):
  if args and args[0] == 'diff':argv+=list(DIFF_CONFIG)
  return run(argv+list(args),timeout=30,env=env)
 
-def frozen_input(repo,request,policy):
- bind_policy(repo,policy)
+def frozen_input(repo,request,policy,*,owner_bootstrap=False):
+ bind_policy(repo,request,policy,owner_bootstrap=owner_bootstrap)
  required={'repository','repository_id','head_sha','base_sha','merge_base_sha','diff_sha256','policy_sha256','origin_account'}
  require(set(request)==required,'invalid tuple fields')
  require(type(request['repository_id']) is int and request['repository_id']>0,'repository ID must be positive')
@@ -275,6 +293,7 @@ def captured_report(raw,last):
    item=event.get('item') or {}
    notice=item.get('type')=='error' and item.get('message') in STARTUP_NOTICES
    require(not notice or kind=='item.completed','startup notice lacks completed event')
+   require(not notice or phase in ('startup','thread'),'startup notice after turn start')
    require(phase=='turn' or (notice and phase in ('startup','thread')),'review item out of order')
  starts=[e for e in events if e.get('type')=='thread.started']
  require(len(starts)==1 and isinstance(starts[0].get('thread_id'),str) and starts[0]['thread_id'],'fresh thread ID missing')
@@ -289,12 +308,12 @@ def captured_report(raw,last):
  except ValueError:raise CaptureError('report is not complete JSON')
  return starts[0]['thread_id'],report
 
-def capture(repo,request,policy,enrollment,cli='codex',timeout=600):
- bind_policy(repo,policy)
+def capture(repo,request,policy,enrollment,cli='codex',timeout=600,*,owner_bootstrap=False):
+ bind_policy(repo,request,policy,owner_bootstrap=owner_bootstrap)
  account=account_read(cli,enrollment['credential_store']);validate_enrollment(enrollment,account,request['origin_account'])
  version=run([cli,'--version']).decode().strip()
  require(version==enrollment['cli_version'],'unenrolled CLI version')
- payload=frozen_input(repo,request,policy); started=utc()
+ payload=frozen_input(repo,request,policy,owner_bootstrap=owner_bootstrap); started=utc()
  with tempfile.TemporaryDirectory(prefix='g1-review-') as temp:
   root=Path(temp); schema=root/'response.schema.json';last=root/'report.json'; instructions=root/'instructions.txt'
   schema.write_text(canonical(REPORT_SCHEMA));instructions.write_text(INSTRUCTIONS)
@@ -312,7 +331,7 @@ def capture(repo,request,policy,enrollment,cli='codex',timeout=600):
   thread,report=captured_report(raw,last.read_text())
  # Recheck account, immutable local tuple, and policy after completion. Remote state is the App's job.
  require(account_read(cli,enrollment['credential_store'])==account,'account changed during review')
- require(frozen_input(repo,request,policy)==payload,'candidate changed during review')
+ require(frozen_input(repo,request,policy,owner_bootstrap=owner_bootstrap)==payload,'candidate changed during review')
  return {'schema':SCHEMA,'capture_id':str(uuid.uuid4()),'trust_model':'q16-operational-local',
   'tuple':request,'reviewer_enrollment_id':enrollment['id'],'reviewer_origin_account':enrollment['origin_account'],
   'workspace_binding':'owner-declared-enrollment','instructions_sha256':digest(INSTRUCTIONS),
@@ -323,12 +342,13 @@ def main():
  parser=argparse.ArgumentParser(description=__doc__)
  for name in ('repo','request','policy','enrollment','output'):parser.add_argument('--'+name,required=True)
  parser.add_argument('--cli',default='codex');parser.add_argument('--timeout',type=int,default=600)
+ parser.add_argument('--owner-bootstrap-policy',action='store_true',help='Prepare owner-admitted initial source evidence only; base must lack a registry')
  args=parser.parse_args()
  try:
   require(1<=args.timeout<=1800,'timeout out of bounds')
   output=Path(args.output);require(not output.exists(),'output already exists')
   request=json.loads(Path(args.request).read_text());enrollment=json.loads(Path(args.enrollment).read_text());policy=Path(args.policy).read_bytes()
-  result=capture(Path(args.repo).resolve(),request,policy,enrollment,args.cli,args.timeout)
+  result=capture(Path(args.repo).resolve(),request,policy,enrollment,args.cli,args.timeout,owner_bootstrap=args.owner_bootstrap_policy)
   # No receipt is created until all checks pass; exclusive creation avoids overwriting old evidence.
   with tempfile.NamedTemporaryFile(mode='w',dir=output.parent,prefix='.review-',delete=False) as f:
    temporary=Path(f.name)

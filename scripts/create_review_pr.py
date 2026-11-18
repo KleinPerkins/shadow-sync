@@ -180,8 +180,8 @@ def validate_policy(policy, enrollment):
     return producer
 
 
-def create(repo, request, policy, enrollment, receipt, title, body, output, journal, cli='codex', api=None):
-    review.bind_policy(repo, policy)
+def create(repo, request, policy, enrollment, receipt, title, body, output, journal, cli='codex', api=None, *, owner_bootstrap=False):
+    review.bind_policy(repo, request, policy, owner_bootstrap=owner_bootstrap)
     output, journal = private_destination(output), private_destination(journal)
     require(output != journal, 'output and journal must differ')
     require(isinstance(title, str) and 0 < len(title.strip()) <= 256
@@ -193,7 +193,7 @@ def create(repo, request, policy, enrollment, receipt, title, body, output, jour
     review.validate_enrollment(enrollment, account, request['origin_account'])
     version = review.run([cli, '--version']).decode().strip()
     require(version == enrollment['cli_version'], 'unenrolled CLI version')
-    payload = review.frozen_input(repo, request, policy)
+    payload = review.frozen_input(repo, request, policy, owner_bootstrap=owner_bootstrap)
     validate_receipt(receipt, request, enrollment, producer, timestamp(review.utc()))
     branch = review.git(repo, 'symbolic-ref', '--quiet', '--short', 'HEAD').decode().strip()
     require(branch and branch != 'main' and not any(c.isspace() for c in branch), 'delivery branch required')
@@ -208,7 +208,7 @@ def create(repo, request, policy, enrollment, receipt, title, body, output, jour
             with exclusive(output) as output_file:
                 remote_preflight(api, branch, request)
                 require(review.account_read(cli, enrollment['credential_store']) == account, 'account changed before create')
-                require(review.frozen_input(repo, request, policy) == payload, 'tuple changed before create')
+                require(review.frozen_input(repo, request, policy, owner_bootstrap=owner_bootstrap) == payload, 'tuple changed before create')
                 validate_policy(policy, enrollment)
                 state['status'] = 'create-attempted'
                 write_state(journal_file, state)
@@ -224,7 +224,7 @@ def create(repo, request, policy, enrollment, receipt, title, body, output, jour
                 require(review.account_read(cli, enrollment['credential_store']) == account, 'account changed during creation')
                 review.validate_enrollment(enrollment, account, request['origin_account'])
                 require(review.run([cli, '--version']).decode().strip() == version, 'CLI changed during creation')
-                require(review.frozen_input(repo, request, policy) == payload, 'tuple changed during creation')
+                require(review.frozen_input(repo, request, policy, owner_bootstrap=owner_bootstrap) == payload, 'tuple changed during creation')
                 # Current API state must still be the exact created tuple before origin publication.
                 owner(api.call('GET', '/user'))
                 current = api.call('GET', PREFIX + '/pulls/' + str(pr['number']))
@@ -272,11 +272,12 @@ def main():
     for name in ('repo', 'request', 'policy', 'enrollment', 'review', 'title', 'body', 'output', 'journal'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--cli', default='codex')
+    parser.add_argument('--owner-bootstrap-policy', action='store_true', help='Prepare owner-admitted initial source evidence only; base must lack a registry')
     args = parser.parse_args()
     try:
         url, comment_id = create(Path(args.repo).resolve(), strict_json(private_read(args.request)), private_read(args.policy),
                                  strict_json(private_read(args.enrollment)), strict_json(private_read(args.review)),
-                                 private_read(args.title).decode(), private_read(args.body).decode(), args.output, args.journal, args.cli)
+                                 private_read(args.title).decode(), private_read(args.body).decode(), args.output, args.journal, args.cli, owner_bootstrap=args.owner_bootstrap_policy)
         print(url)
         print(comment_id)
     except (review.CaptureError, OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired):

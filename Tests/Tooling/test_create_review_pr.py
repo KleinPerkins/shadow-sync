@@ -84,6 +84,7 @@ class CreationTests(unittest.TestCase):
                 creation_adapter_sha256=m.review.digest(Path(m.__file__).read_bytes()),
                 capture_adapter_sha256=m.review.digest(Path(m.review.__file__).read_bytes()))]}
         self.policy = m.review.canonical(self.policy_value).encode()
+        self.base_policy = self.policy
         (self.root / '.github').mkdir()
         self.registry = self.root / '.github/review-enrollments.json'
         self.registry.write_bytes(self.policy)
@@ -104,7 +105,18 @@ class CreationTests(unittest.TestCase):
         self.account_mock = self.start(patch.object(m.review, 'account_read', return_value=self.account))
         self.run_mock = self.start(patch.object(m.review, 'run', return_value=self.enrollment['cli_version'].encode()))
         self.frozen = self.start(patch.object(m.review, 'frozen_input', return_value={'immutable': True}))
-        self.start(patch.object(m.review, 'git', return_value=b'feat/delivery\n'))
+        self.start(patch.object(m.review, 'git', side_effect=self.base_git))
+
+    def base_git(self, repo, *args):
+        if args[:2] == ('cat-file', '-t'):
+            return b'commit\n'
+        if args[:2] == ('ls-tree', '-z'):
+            return b'100644 blob ' + b'd' * 40 + b'\t.github/review-enrollments.json\0'
+        if args == ('cat-file', 'blob', 'd' * 40):
+            return self.base_policy
+        if args == ('symbolic-ref', '--quiet', '--short', 'HEAD'):
+            return b'feat/delivery\n'
+        raise AssertionError(args)
 
     def start(self, patcher):
         result = patcher.start()
@@ -169,7 +181,8 @@ class CreationTests(unittest.TestCase):
         for change in changes:
             value = copy.deepcopy(self.policy_value)
             change(value)
-            self.registry.write_bytes(m.review.canonical(value).encode())
+            self.base_policy = m.review.canonical(value).encode()
+            self.registry.write_bytes(self.base_policy)
             with self.subTest(policy=value), self.assertRaises(m.review.CaptureError):
                 self.create(policy=m.review.canonical(value).encode())
             self.assertEqual(self.api.calls, [])
@@ -179,17 +192,41 @@ class CreationTests(unittest.TestCase):
         alternate=copy.deepcopy(self.policy_value)
         alternate['producers'][0]['origin_account']='alternate-origin'
         policy=m.review.canonical(alternate).encode()
+        self.registry.write_bytes(policy)  # Proposed HEAD policy cannot replace the trusted base.
         enrollment=dict(self.enrollment,origin_account='alternate-origin',email='alternate@example.invalid')
         request=dict(self.request,origin_account='alternate-origin',policy_sha256=m.review.digest(policy))
         receipt=copy.deepcopy(self.receipt)
         receipt['tuple']=copy.deepcopy(request)
         receipt['reviewer_origin_account']='alternate-origin'
         self.account_mock.return_value={'type':'chatgpt','email':enrollment['email']}
-        with self.assertRaisesRegex(m.review.CaptureError,'differs from checked-in registry'):
+        with self.assertRaisesRegex(m.review.CaptureError,'differs from trusted base registry'):
             self.create(policy=policy,enrollment=enrollment,request=request,receipt=receipt)
         self.account_mock.assert_not_called();self.run_mock.assert_not_called()
         self.assertEqual(self.api.calls,[])
         self.assertFalse(self.output.exists());self.assertFalse(self.journal.exists())
+    def test_proposed_head_registry_does_not_replace_base_policy_for_creation(self):
+        self.registry.write_bytes(b'Untrusted proposed policy.')
+        self.create()
+        self.assertEqual(json.loads(self.output.read_bytes())['origin_account'], 'work')
+
+    def test_missing_base_registry_refuses_before_account_or_output(self):
+        original = self.base_git
+        with patch.object(m.review, 'git', side_effect=lambda repo,*args: b'' if args[:2] == ('ls-tree','-z') else original(repo,*args)):
+            with self.assertRaisesRegex(m.review.CaptureError,'trusted base registry required'):
+                self.create()
+        self.account_mock.assert_not_called()
+        self.assertEqual(self.api.calls, [])
+        self.assertFalse(self.output.exists());self.assertFalse(self.journal.exists())
+
+    def test_explicit_owner_bootstrap_requires_absent_base_registry(self):
+        with self.assertRaisesRegex(m.review.CaptureError,'bootstrap requires absent base registry'):
+            self.create(owner_bootstrap=True)
+        self.account_mock.assert_not_called()
+        original = self.base_git
+        with patch.object(m.review, 'git', side_effect=lambda repo,*args: b'' if args[:2] == ('ls-tree','-z') else original(repo,*args)):
+            self.create(owner_bootstrap=True)
+        self.assertEqual(json.loads(self.output.read_bytes())['origin_account'], 'work')
+
     def test_wrong_github_repo_head_base_refuse_before_create(self):
         cases = [('owner', lambda: self.api.user.update(id=7)), ('repo', lambda: self.api.repo.update(id=7)),
                  ('private', lambda: self.api.repo.update(private=True)), ('default', lambda: self.api.repo.update(default_branch='other')),
@@ -243,6 +280,7 @@ class CreationTests(unittest.TestCase):
         self.assertFalse(self.journal.exists())
         self.policy_value['producers'][0]['allowed_startup_notice_sha256'] = [notice]
         self.policy = m.review.canonical(self.policy_value).encode()
+        self.base_policy = self.policy
         self.registry.write_bytes(self.policy)
         self.request['policy_sha256'] = m.review.digest(self.policy)
         self.receipt['tuple'] = copy.deepcopy(self.request)

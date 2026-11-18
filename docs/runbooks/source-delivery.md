@@ -2,8 +2,16 @@
 
 Every ready PR requires fresh automatic independent review from the enrolled PR-creation account. The authoring agent freezes current head/base and trusted enrollment policy, runs `scripts/local_review.py`, fixes findings, then uses `scripts/create_review_pr.py` to create the PR and separate origin witness. Publish the unedited review receipt prefixed with `<!-- g1-review-receipt:v1 -->`. A changed head, base or trusted policy requires new review. Unknown origin or ambiguous creation preserves the private journal and blocks automatic retry; diagnose actual remote state read-only. The operator is not the technical reviewer.
 
-Local capture and creation require supplied policy bytes to equal the checked-in
-registry before account/model access and on frozen-tuple rechecks. The existing
+Ordinary local capture and creation require supplied policy bytes to equal the
+registry Git blob at the exact request base commit before account/model access and
+on frozen-tuple rechecks. Proposed registry changes remain untrusted candidate diff.
+Use the admitted base capture and creation helpers, with their existing enrolled
+pins, to review and create a PR that changes those helpers or their pins.
+
+For initial owner-admitted source evidence only, `--owner-bootstrap-policy`
+explicitly binds the candidate registry instead. This option requires that the
+base commit has no registry; ordinary mode refuses a missing base registry without
+fallback. It adds no App admission, merge or activation authority. The existing
 runtime account check matches ChatGPT email to the owner-declared private
 enrollment. Policy-byte binding does not authenticate a private enrollment changed
 by a principal with the same local access; that remains Q16's trusted-local limit.
