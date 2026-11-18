@@ -231,12 +231,33 @@ final class RepositoryDiscoveryPolicy {
     /// Avoid repeating that resource scan before pure path construction.
     private func validateLocalAuthority() throws {
         if let failure { throw failure }
+        #if SHADOW_SYNC_TESTING
+        let refusalStart = DispatchTime.now().uptimeNanoseconds
+        var refusalStage = DiscoveryFixtureDiagnostic.Stage.deadlineBefore
+        var refusalPassed = false
+        defer {
+            if !refusalPassed {
+                let bits: UInt64 = (closed ? 1 : 0) | (cancellation.isCancelled ? 2 : 0)
+                    | (cancellation.areFutureChildAdmissionsClosed ? 4 : 0)
+                DiscoveryFixtureDiagnostic.recordRefusal(.localAuthority, stage: refusalStage,
+                    started: refusalStart, deadline: deadline, resultBits: bits)
+            }
+        }
+        #endif
         do {
             guard !closed, !cancellation.isCancelled, !cancellation.areFutureChildAdmissionsClosed,
                   DispatchTime.now().uptimeNanoseconds < deadline else {
                 throw SelectedRepositoryScopeError.policyUnavailable
             }
+            #if SHADOW_SYNC_TESTING
+            refusalStage = .authorityBefore
+            try phase()
+            refusalStage = .snapshot
+            try snapshot.revalidate()
+            refusalPassed = true
+            #else
             try phase(); try snapshot.revalidate()
+            #endif
         } catch { throw record(error) }
     }
 
@@ -1030,6 +1051,11 @@ public final class SelectedRepositoryScopeBinder:
     func withReboundScope<Value>(_ scope: ValidatedSelectedRepositoryScope,
                                 cancellation: CancellationToken, deadlineLimit: UInt64? = nil,
                                 _ body: (ValidatedSelectedRepositoryScope) throws -> Value) throws -> Value {
+        #if SHADOW_SYNC_TESTING
+        DiscoveryFixtureDiagnostic.beginOperation()
+        var refusalOperationPassed = false
+        defer { if refusalOperationPassed { DiscoveryFixtureDiagnostic.completeOperation() } }
+        #endif
         func validate() throws {
             guard !cancellation.isCancelled, !cancellation.areFutureChildAdmissionsClosed else {
                 throw GitSafetyError.cancelled
@@ -1045,6 +1071,9 @@ public final class SelectedRepositoryScopeBinder:
         try validate()
         let value = try body(rebound)
         try validate()
+        #if SHADOW_SYNC_TESTING
+        refusalOperationPassed = true
+        #endif
         return value
     }
 

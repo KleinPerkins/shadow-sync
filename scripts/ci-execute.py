@@ -152,7 +152,9 @@ def case_report(data):
 
 
 def execute_unit(root, head, base, plan_bytes, unit_id, artifacts, diagnostics, *, identity,
-                 environment=None, observe=observe_command, source=ci.git_source_digest):
+                 environment=None, observe=observe_command, source=ci.git_source_digest,
+                 stop_after_failure=False):
+    require(type(stop_after_failure) is bool)
     require(source(root, identity['revision']) == identity['source_sha256'])
     plan = ci.make_plan(head, base, **identity)
     require(ci.coverage.decode(plan_bytes) == plan)
@@ -221,6 +223,10 @@ def execute_unit(root, head, base, plan_bytes, unit_id, artifacts, diagnostics, 
         write_new(command_dir / 'observer.json', result)
         if not cleanup or result is None or result['interrupts']:
             break  # No next suite may inherit unresolved fixture ownership.
+        if stop_after_failure and name not in completed:
+            # The failed receipt and verified original reaping/terminal cleanup
+            # are retained. Missing remaining receipts still fail the aggregate.
+            break
     try:
         require(source(root, identity['revision']) == identity['source_sha256'])
     except (ci.InvalidEvidence, OSError, ValueError, subprocess.SubprocessError):

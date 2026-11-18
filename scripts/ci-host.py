@@ -125,7 +125,9 @@ def main():
             with open(os.environ['GITHUB_ENV'], 'a') as stream:
                 stream.write('CI_WORK_ROOT=' + str(root) + '\n')
             passed = load('ci-execute').execute_unit(ROOT, head, base, ci.encode(plan), args.unit,
-                root / 'receipts', root / 'diagnostics', identity=identity)
+                root / 'receipts', root / 'diagnostics', identity=identity,
+                stop_after_failure=any(unit['id'] == args.unit and unit['job'] == 'runtime-safety'
+                                       for unit in plan['units']))
             return 0 if passed else 1
         else:
             ci.require(args.artifacts is not None)

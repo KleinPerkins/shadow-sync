@@ -1988,15 +1988,55 @@ public enum HostPolicySnapshotSelfTestRunner {
                 disabled.emit(quiet.render("disabled diagnostic\n"))
                 enabled.emit(active.render("bounded diagnostic\n"))
             }
+            disabled.beginOperation()
+            disabled.observeRefusal(.admission, stage: .deadlineBefore, started: 0, deadline: 0)
+            disabled.flushRefusal()
             let (quietLines, quietFormats) = quiet.snapshot()
             try require(quietLines.isEmpty && quietFormats == 0, "disabled tracing performed output or formatting")
             let (activeLines, activeFormats) = active.snapshot()
-            try require(activeFormats == Sink.maximumRecords && activeLines.count == Sink.maximumRecords + 1,
+            try require(activeFormats == Sink.optionalRecords && activeLines.count == Sink.optionalRecords + 1,
                         "concurrent tracing escaped record budget or formatted after suppression")
             try require(activeLines.last == Sink.suppression
                 && activeLines.filter { $0 == Sink.suppression }.count == 1,
                 "diagnostic suppression was missing or repeated")
             try require(activeLines.joined().utf8.count <= Sink.maximumBytes, "diagnostic byte budget exceeded")
+            enabled.observeRefusal(.registry, stage: .queued, started: 0, deadline: 0)
+            enabled.observeRefusal(.localAuthority, stage: .snapshot, started: 0, deadline: UInt64.max, resultBits: 7)
+            enabled.observeRefusal(.discovery, stage: .metadata, started: 0, deadline: 0)
+            enabled.observeRefusal(.admission, stage: .deadlineAfter, started: 0, deadline: 0)
+            enabled.flushRefusal()
+            enabled.emit(active.render("post-terminal formatting must not occur\n"))
+            enabled.beginOperation(); enabled.flushRefusal()
+            let (terminalLines, terminalFormats) = active.snapshot()
+            try require(terminalLines.count == Sink.maximumRecords + 1 && terminalFormats == Sink.optionalRecords
+                && terminalLines.last?.contains("REFUSAL component=localAuthority stage=snapshot") == true
+                && terminalLines.last?.contains("deadline_expired=false result_bits=7") == true
+                && terminalLines.joined().utf8.count <= Sink.maximumBytes
+                && terminalLines.allSatisfy({ $0.utf8.count <= Sink.maximumLineBytes }),
+                "reserved terminal refusal lost its cause, exceeded bounds or reopened formatting")
+            let frozenProbe = TraceProbe(), frozenClock = TraceProbe()
+            let frozen = Sink(enabled: true, writer: { frozenProbe.append($0) }, clock: {
+                _ = frozenClock.render("tick")
+                return UInt64(frozenClock.snapshot().1 * 100)
+            })
+            frozen.observeRefusal(.localAuthority, stage: .deadlineBefore, started: 10, deadline: 150)
+            frozen.flushRefusal(); frozen.flushRefusal()
+            try require(frozenClock.snapshot().1 == 1 && frozenProbe.snapshot().0.count == 1
+                && frozenProbe.snapshot().0[0].contains("elapsed_ns=90 deadline_expired=false"),
+                "terminal timestamp or expiry was recomputed at flush")
+            for clearOnSuccess in [false, true] {
+                let probe = TraceProbe()
+                let checked = Sink(enabled: true, writer: { probe.append($0) })
+                checked.beginOperation()
+                checked.observeRefusal(.localAuthority, stage: .snapshot, started: 0, deadline: 0, resultBits: 1)
+                if clearOnSuccess { checked.completeOperation() } else { checked.beginOperation() }
+                checked.observeRefusal(.admission, stage: .revalidation, started: 0, deadline: UInt64.max, resultBits: 2)
+                checked.flushRefusal()
+                try require(probe.snapshot().0.count == 1
+                    && probe.snapshot().0[0].contains("REFUSAL component=admission stage=revalidation")
+                    && probe.snapshot().0[0].contains("result_bits=2"),
+                    "earlier caught/successful operation masked the actual failed operation")
+            }
             let byteProbe = TraceProbe()
             let byteBounded = Sink(enabled: true, writer: { byteProbe.append($0) })
             for _ in 0..<1_000 { byteBounded.emit(String(repeating: "x", count: Sink.maximumLineBytes)) }
@@ -2004,6 +2044,11 @@ public enum HostPolicySnapshotSelfTestRunner {
             try require(byteLines.count > 1 && byteLines.count < Sink.maximumRecords
                 && byteLines.last == Sink.suppression && byteLines.joined().utf8.count <= Sink.maximumBytes,
                 "byte bound did not independently close diagnostic output")
+            byteBounded.observeRefusal(.admission, stage: .deadlineAfter, started: 0, deadline: 0)
+            byteBounded.flushRefusal()
+            try require(byteProbe.snapshot().0.last?.hasPrefix("DISCOVERY FIXTURE REFUSAL") == true
+                && byteProbe.snapshot().0.joined().utf8.count <= Sink.maximumBytes,
+                "byte saturation consumed the terminal refusal slot")
             for oversized in [String(repeating: "x", count: Sink.maximumLineBytes + 1),
                               String(repeating: "é", count: Sink.maximumLineBytes / 2 + 1)] {
                 let probe = TraceProbe()
@@ -2012,6 +2057,11 @@ public enum HostPolicySnapshotSelfTestRunner {
                 let checked = Sink(enabled: true, writer: { probe.append($0) })
                 checked.emit(oversized); checked.emit("later diagnostic\n")
                 try require(probe.snapshot().0 == [Sink.suppression], "oversized diagnostic escaped UTF-8 bound")
+                checked.observeRefusal(.admission, stage: .deadlineBefore, started: 0, deadline: 0)
+                checked.flushRefusal()
+                try require(probe.snapshot().0.count == 2
+                    && probe.snapshot().0.last?.hasPrefix("DISCOVERY FIXTURE REFUSAL") == true,
+                    "oversized optional record consumed the terminal refusal slot")
             }
         }
         onPass("POLICY-SESSION-T61-diagnostic-opt-in-and-concurrent-output-bounds")

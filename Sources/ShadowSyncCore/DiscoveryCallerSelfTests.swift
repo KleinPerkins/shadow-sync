@@ -15,6 +15,7 @@ public enum DiscoveryCallerSelfTestRunner {
             let id = present ? "DISCOVERY-CALLER-T02-present-system-and-user-config"
                 : "DISCOVERY-CALLER-T01-absent-system-and-user-config"
             try RuntimeFixtureSession.withCase(id) {
+                DiscoveryFixtureDiagnostic.beginOperation()
                 let fixture = try Fixture(systemConfiguration: present)
                 var failure: Error?
                 enum Stage: String { case session, catalog, selection, discovery, cleanupCheck }
@@ -43,6 +44,7 @@ public enum DiscoveryCallerSelfTestRunner {
                         "real-helper discovery left retained commands")
                 } catch { failure = error }
                 if let failure {
+                    DiscoveryFixtureDiagnostic.flushRefusal()
                     fputs("DISCOVERY CALLER BODY FAILURE stage=\(stage.rawValue): \(failure)\n", stderr); fflush(stderr)
                 }
                 do { try fixture.remove(expectDiscovery: failure == nil) }
