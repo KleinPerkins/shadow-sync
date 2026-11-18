@@ -135,6 +135,11 @@ class CaptureTests(unittest.TestCase):
    if '--version' in argv:return self.enrollment['cli_version'].encode()
    self.assertIn('--ignore-user-config',argv);self.assertIn('--ignore-rules',argv)
    self.assertIn('--ephemeral',argv);self.assertNotIn('resume',argv);self.assertNotIn('fork',argv)
+   controls=[argv[i+1] for i,arg in enumerate(argv) if arg=='-c']
+   for control in ('web_search="disabled"',*(f'features.{name}=false' for name in
+     ('shell_tool','plugins','apps','multi_agent','view_image','image_generation','code_mode_host',
+      'goals','memories','skill_search','tool_suggest','workspace_dependencies'))):
+    self.assertEqual(controls.count(control),1,'tool restriction missing or duplicated before model launch')
    root=Path(kwargs['cwd']);roots.append(root)
    self.assertEqual((root/'instructions.txt').read_text(),m.INSTRUCTIONS)
    Path(argv[argv.index('--output-last-message')+1]).write_text(json.dumps(self.report))

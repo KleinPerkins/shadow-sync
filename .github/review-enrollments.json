@@ -16,7 +16,7 @@
         "de8c81bdbcbc27db4d16d6ea11b6463544d5351492a5b397d3d31af1fbc78ca3"
       ],
       "creation_adapter_sha256": "f4904b403fbff4416a0bffe14809c5b4cecaf3925145aee2b1d2ced7c9c19a4b",
-      "capture_adapter_sha256": "cbfc2af239864c59f4af451155fa9716985e0e1ba3b63c78140e9613252ef17c"
+      "capture_adapter_sha256": "9a7c7dfe757e3cbe15217ea69f3e64d9f7de393339d6055ed19bcab79ae4bf14"
     },
     {
       "id": "enrollment-e876e8eb",
@@ -30,7 +30,7 @@
         "b2fc6975a5637afa2ac999a3260fc7980db0be97b0474c7a8a14c57e18d4a6e1"
       ],
       "creation_adapter_sha256": "f4904b403fbff4416a0bffe14809c5b4cecaf3925145aee2b1d2ced7c9c19a4b",
-      "capture_adapter_sha256": "cbfc2af239864c59f4af451155fa9716985e0e1ba3b63c78140e9613252ef17c"
+      "capture_adapter_sha256": "9a7c7dfe757e3cbe15217ea69f3e64d9f7de393339d6055ed19bcab79ae4bf14"
     }
   ],
   "governance": {

@@ -300,7 +300,11 @@ def capture(repo,request,policy,enrollment,cli='codex',timeout=600):
   argv=[cli,'exec','--strict-config','--ignore-user-config','--ignore-rules','--ephemeral','--json','--skip-git-repo-check','--sandbox','read-only','-C',temp,
    '-c','approval_policy="on-request"','-c','cli_auth_credentials_store='+json.dumps(enrollment['credential_store']),'-c','forced_login_method="chatgpt"','-c','project_doc_max_bytes=0',
    '-c','model_instructions_file='+json.dumps(str(instructions)),
-   '-c','features.shell_tool=false','-c','features.plugins=false',
+   '-c','features.shell_tool=false','-c','features.plugins=false','-c','web_search="disabled"',
+   '-c','features.apps=false','-c','features.multi_agent=false','-c','features.view_image=false',
+   '-c','features.image_generation=false','-c','features.code_mode_host=false','-c','features.goals=false',
+   '-c','features.memories=false','-c','features.skill_search=false','-c','features.tool_suggest=false',
+   '-c','features.workspace_dependencies=false',
    '--output-schema',str(schema),'--output-last-message',str(last),'-']
   raw=run(argv,cwd=temp,input_data=canonical(payload).encode(),timeout=timeout)
   require(last.exists() and last.stat().st_size<=MAX_OUTPUT,'missing/oversized final report')
