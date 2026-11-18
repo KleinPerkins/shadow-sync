@@ -13,33 +13,84 @@ enum DiscoveryFixtureDiagnostic {
         static let maximumBytes = 16_384
         static let maximumLineBytes = 512
         static let suppression = "DISCOVERY FIXTURE DIAGNOSTIC suppressed=remaining reason=budget\n"
+        // Reserve one payload and its bytes for the terminal refusal, even
+        // after successful chatter closes the optional observation lane.
+        static let optionalRecords = maximumRecords - 1
+        private struct Refusal {
+            let component: Component, stage: Stage
+            let elapsed: UInt64, expired: Bool, resultBits: UInt64
+        }
         private let lock = NSLock()
         private let enabled: Bool
         private let writer: @Sendable (String) -> Void
+        private let clock: @Sendable () -> UInt64
         private var records = 0
         private var bytes = 0
         private var closed = false
+        private var finished = false
+        private var refusal: Refusal?
 
-        init(enabled: Bool, writer: @escaping @Sendable (String) -> Void) {
+        init(enabled: Bool, writer: @escaping @Sendable (String) -> Void,
+             clock: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) {
             self.enabled = enabled
             self.writer = writer
+            self.clock = clock
         }
 
         func emit(_ line: @autoclosure () -> String) {
             lock.lock(); defer { lock.unlock() }
-            guard enabled, !closed else { return }
-            guard records < Self.maximumRecords else { suppress(); return }
+            guard enabled, !closed, !finished else { return }
+            guard records < Self.optionalRecords else { suppress(); return }
             let text = line(), size = text.utf8.count
             guard size <= Self.maximumLineBytes,
-                  bytes + size + Self.suppression.utf8.count <= Self.maximumBytes else {
+                  bytes + size + Self.suppression.utf8.count + Self.maximumLineBytes <= Self.maximumBytes else {
                 suppress(); return
             }
             records += 1; bytes += size
             writer(text)
         }
 
+        func beginOperation() {
+            lock.lock(); defer { lock.unlock() }
+            guard enabled, !finished else { return }
+            // Reset cause only; never renew the process-wide trace allowance.
+            refusal = nil
+        }
+
+        func completeOperation() {
+            lock.lock(); defer { lock.unlock() }
+            guard enabled, !finished else { return }
+            refusal = nil
+        }
+
+        func observeRefusal(_ component: Component, stage: Stage, started: UInt64,
+                            deadline: UInt64, resultBits: UInt64 = 0) {
+            lock.lock(); defer { lock.unlock() }
+            guard enabled, !finished, refusal == nil else { return }
+            // Explicit refusal observers only. Generic unwinding and registry
+            // succeeded=false progress cannot occupy or replace this slot.
+            switch component { case .admission, .localAuthority: break; default: return }
+            let now = clock()
+            refusal = Refusal(component: component, stage: stage,
+                elapsed: now >= started ? now - started : 0, expired: now >= deadline, resultBits: resultBits)
+        }
+
+        func flushRefusal() {
+            lock.lock(); defer { lock.unlock() }
+            guard enabled, !finished else { return }
+            finished = true
+            guard let refusal else { return }
+            // Timestamp/expiry describe observation, not this later flush.
+            let text = "DISCOVERY FIXTURE REFUSAL component=\(refusal.component.rawValue) stage=\(refusal.stage.rawValue) elapsed_ns=\(refusal.elapsed) deadline_expired=\(refusal.expired) result_bits=\(refusal.resultBits)\n"
+            let size = text.utf8.count
+            guard records < Self.maximumRecords, size <= Self.maximumLineBytes,
+                  bytes + size <= Self.maximumBytes else { return }
+            records += 1; bytes += size; writer(text)
+        }
+
         private func suppress() {
             closed = true
+            bytes += Self.suppression.utf8.count
             writer(Self.suppression)
         }
     }
@@ -73,8 +124,15 @@ enum DiscoveryFixtureDiagnostic {
 
     static func sampleRevalidation() -> Bool { revalidationSamples.take() }
     static func samplePublisherRevalidation() -> Bool { publisherSamples.take() }
+    static func beginOperation() { sink.beginOperation() }
+    static func completeOperation() { sink.completeOperation() }
+    static func flushRefusal() { sink.flushRefusal() }
+    static func recordRefusal(_ component: Component, stage: Stage, started: UInt64,
+                              deadline: UInt64, resultBits: UInt64 = 0) {
+        sink.observeRefusal(component, stage: stage, started: started, deadline: deadline, resultBits: resultBits)
+    }
 
-    enum Component: String { case catalog, transport, custody, registry, admission, binder, selection, rebind, discovery, session, publisher }
+    enum Component: String { case catalog, transport, custody, registry, admission, binder, selection, rebind, discovery, session, publisher, localAuthority }
     enum Stage: String {
         case entry, budget, input, authorityBefore, resources, execution
         case authorityAfter, decode, prepare, start, wait, result, postflight, decisions
@@ -89,7 +147,7 @@ enum DiscoveryFixtureDiagnostic {
         // same fixed budget before a later admission failure can be observed.
         if mode == "boundaries" || mode == "costs" {
             switch component {
-            case .admission, .session, .binder, .selection, .rebind, .discovery, .publisher: break
+            case .admission, .session, .binder, .selection, .rebind, .discovery, .publisher, .localAuthority: break
             case .catalog, .transport, .custody: if succeeded { return }
             case .registry: return
             }

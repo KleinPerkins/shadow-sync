@@ -15,24 +15,32 @@ public enum DiscoveryCallerSelfTestRunner {
             let id = present ? "DISCOVERY-CALLER-T02-present-system-and-user-config"
                 : "DISCOVERY-CALLER-T01-absent-system-and-user-config"
             try RuntimeFixtureSession.withCase(id) {
+                DiscoveryFixtureDiagnostic.beginOperation()
                 let fixture = try Fixture(systemConfiguration: present)
                 var failure: Error?
                 enum Stage: String { case session, catalog, selection, discovery, cleanupCheck }
                 var stage = Stage.session
                 do {
+                    let catalogStarted = DispatchTime.now().uptimeNanoseconds
+                    let catalogLimit = RepositorySelectionCatalogLimits().elapsedNanoseconds
                     let session = try fixture.session()
-                    let binder = try session.binder(revalidatePhase: fixture.context.phaseAdmissionCheck())
+                    let binder = try session.binder(setupDeadline: catalogStarted + catalogLimit,
+                        revalidatePhase: fixture.context.phaseAdmissionCheck())
                     stage = .catalog
                     let catalog = try binder.processFreeCatalog(preferences: nil, generation: 1)
-                    try require(catalog.isComplete, "real-helper catalog incomplete: \(String(describing: catalog.degradedReason)) elapsed_ns=\(catalog.catalog.elapsedNanoseconds)")
+                    let catalogDuration = DispatchTime.now().uptimeNanoseconds - catalogStarted
+                    print("METRIC discovery-caller cold-catalog-ns=\(catalogDuration)")
+                    try require(catalog.isComplete && catalogDuration < catalogLimit,
+                        "real-helper catalog incomplete or late: \(String(describing: catalog.degradedReason)) elapsed_ns=\(catalogDuration)")
                     guard let ready = catalog.catalog.candidates.first(where: { $0.id == "fixture-owner/ready" }) else {
                         throw Failure.assertion("real-helper catalog lost fixture repository")
                     }
                     stage = .selection
-                    let scope = try binder.bind(intent: RepositorySelectionIntent(catalog: catalog.catalog,
+                    let operationBinder = try session.binder(revalidatePhase: fixture.context.phaseAdmissionCheck())
+                    let scope = try operationBinder.bind(intent: RepositorySelectionIntent(catalog: catalog.catalog,
                         entries: [try ready.preferenceEntry]))
                     stage = .discovery
-                    let rows = try RepositoryDiscovery().discover(scope: scope, binder: binder,
+                    let rows = try RepositoryDiscovery().discover(scope: scope, binder: operationBinder,
                         cancellation: fixture.cancellation)
                     try require(rows.count == 1 && rows[0].id == "fixture-owner/ready"
                         && rows[0].path == fixture.repository && rows[0].isEligible
@@ -43,6 +51,7 @@ public enum DiscoveryCallerSelfTestRunner {
                         "real-helper discovery left retained commands")
                 } catch { failure = error }
                 if let failure {
+                    DiscoveryFixtureDiagnostic.flushRefusal()
                     fputs("DISCOVERY CALLER BODY FAILURE stage=\(stage.rawValue): \(failure)\n", stderr); fflush(stderr)
                 }
                 do { try fixture.remove(expectDiscovery: failure == nil) }

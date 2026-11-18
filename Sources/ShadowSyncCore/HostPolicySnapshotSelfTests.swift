@@ -357,7 +357,14 @@ public enum HostPolicySnapshotSelfTestRunner {
             catch RepositorySelectionAdmissionError.unavailable {}
             catch SelectedRepositoryScopeError.policyUnavailable {}
         }
-        func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + 750_000_000 }
+        func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + RepositorySelectionCatalogLimits().elapsedNanoseconds }
+        func waitPastMetadataWindow() {
+            let end = DispatchTime.now().uptimeNanoseconds
+                + RepositorySelectionCatalogLimits().elapsedNanoseconds + 50_000_000
+            while DispatchTime.now().uptimeNanoseconds < end {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T01-snapshot-helper-and-catalog-composition") {
             let projection = "/fixture/home/workspace", marker = projection + "/ready/.git"
             let roster = [marker] + ["config", "refs", "refs/remotes", "refs/remotes/origin", "refs/remotes/origin/HEAD"].map { marker + "/" + $0 }
@@ -691,7 +698,7 @@ public enum HostPolicySnapshotSelfTestRunner {
             print("METRIC policy-runtime real-layout-catalog-ns=\(measuredDuration)")
             let resourceDurations = resourceMeasurement.durations.dropFirst(initialResourceCalls)
             print("METRIC policy-runtime resource-checks=\(resourceDurations.count) resource-ns=\(resourceDurations.reduce(0, +)) helpers=\(measuredAudit.invocations.count) complete=\(measuredCatalog.isComplete)")
-            try require(measuredCatalog.isComplete && measuredDuration <= 750_000_000,
+            try require(measuredCatalog.isComplete && measuredDuration < RepositorySelectionCatalogLimits().elapsedNanoseconds,
                         "real runtime lease exceeded catalog admission bound")
             guard let measuredReady = measuredCatalog.catalog.candidates.first(where: { $0.id == "fixture-owner/ready" }) else {
                 throw Failure.assertion("measured selected row missing")
@@ -769,6 +776,67 @@ public enum HostPolicySnapshotSelfTestRunner {
             }
             try require(entered && value == scope.repositoryIDs && !audit.invocations.isEmpty,
                         "operation reused an earlier policy decision without fresh classification")
+            try require(audit.invocations.count <= 2,
+                        "one operation redundantly classified the same fresh catalog twice")
+            // Optional root-batch hints are byte-exact, bounded lexical input.
+            // Foreign roots, sibling prefixes and nested paths are not queried.
+            func locator(_ components: [String], root: String = "~") throws -> RepositorySelectionLocator {
+                try RepositorySelectionLocator(governedRoot: root, components: components)
+            }
+            let readyHint = try locator(["workspace", "products", "ready"])
+            let unicodeA = try locator(["workspace", "products", "caf\u{00e9}"])
+            let unicodeB = try locator(["workspace", "products", "cafe\u{0301}"])
+            let hints = try SelectedRepositoryScopeBinder.rootAdmissionPaths(logicalRoot: "~",
+                projectionRoot: ["workspace"], shelves: [["products"]], hints: [
+                    readyHint, readyHint, locator(["workspace", "products", "ready"], root: "foreign"),
+                    locator(["workspace-other", "products", "ready"]),
+                    locator(["workspace", "products", "ready", "nested"]),
+                    locator(["workspace", "other", "ready"]), locator(["workspace", "root-child"]), unicodeA, unicodeB,
+                ])
+            try require(hints.count == 5 && hints[0].components.isEmpty
+                && hints[1].components == readyHint.components
+                && hints[3].components.map { Data($0.utf8) } == unicodeA.components.map { Data($0.utf8) }
+                && hints[4].components.map { Data($0.utf8) } == unicodeB.components.map { Data($0.utf8) },
+                "root lexical prefetch broadened, duplicated or normalized its hints")
+            let maximumHints = try SelectedRepositoryScopeBinder.rootAdmissionPaths(logicalRoot: "~",
+                projectionRoot: ["workspace"], shelves: [["products"]], hints: (0..<80).map {
+                    try locator(["workspace", "products", "repo-\($0)"])
+                })
+            try require(maximumHints.count == 64 && maximumHints[0].components.isEmpty
+                && maximumHints.last?.components.last == "repo-62", "optional hints displaced root or exceeded batch bound")
+            let one = try SessionFixture(); defer { try? one.remove() }
+            let blocked = one.fixture.path + "/workspace/products/blocked"
+            var blockedInfo = stat()
+            try require(lstat(blocked, &blockedInfo) == 0 && blockedInfo.st_uid == geteuid()
+                && blockedInfo.st_mode & S_IFMT == S_IFDIR && rmdir(blocked) == 0, "one-repository fixture setup")
+            let oneScope = try selectedScope(one), oneAudit = CommandAudit()
+            let oneBinder = try one.make(audit: oneAudit).binder()
+            for expectedCalls in 1...2 {
+                _ = try oneBinder.withReboundScope(oneScope, cancellation: CancellationToken()) { rebound in
+                    try require(rebound == oneScope, "batched hint substituted for fresh scope identity")
+                }
+                try require(oneAudit.invocations.count == expectedCalls,
+                            "one-repository rebind did not use one fresh classifier per operation")
+            }
+            let unhinted = try oneBinder.processFreeCatalog(preferences: nil, generation: 1)
+            try require(unhinted.isComplete && oneAudit.invocations.count == 4,
+                        "later unhinted catalog reused a prior scan or skipped its discovered names")
+            let reboundEntry = try RepositorySelectionPreferenceEntry(repositoryID: oneScope.repositories[0].repositoryID,
+                locator: oneScope.repositories[0].locator)
+            let ordinaryBind = try oneBinder.bind(intent: RepositorySelectionIntent(catalog: unhinted.catalog,
+                entries: [reboundEntry]))
+            try require(ordinaryBind == oneScope && oneAudit.invocations.count == 5,
+                        "ordinary bind did not obtain one complete fresh classified catalog")
+            // An invalid optional answer refuses the whole root batch. It must
+            // never be ignored to preserve a stale selection's error priority.
+            let malformed = try one.make("invalid-selected-hint").binder()
+            do {
+                _ = try malformed.withReboundScope(oneScope, cancellation: CancellationToken()) { _ in
+                    throw Failure.assertion("malformed hint answer reached selected access")
+                }
+                throw Failure.assertion("malformed optional answer admitted root")
+            } catch SelectedRepositoryScopeError.policyUnavailable {}
+            try one.remove()
             try context.remove()
         }
         onPass("POLICY-SESSION-T14-fresh-operation-rebind-preserves-exact-selection")
@@ -818,6 +886,19 @@ public enum HostPolicySnapshotSelfTestRunner {
             try require(lstat(original, &before) == 0 && FileIdentity(before) == selected.repositoryIdentity,
                         "original selected fixture identity changed")
             try require(rename(original, saved) == 0, "retain original selected fixture")
+            do {
+                _ = try context.make().binder().withReboundScope(scope, cancellation: CancellationToken()) { _ in
+                    throw Failure.assertion("absent selected hint reached downstream inspection")
+                }
+                throw Failure.assertion("absent selected hint rebound")
+            } catch SelectedRepositoryScopeError.changed {}
+            do {
+                _ = try context.make("invalid-selected-hint").binder().withReboundScope(scope,
+                    cancellation: CancellationToken()) { _ in
+                    throw Failure.assertion("stale hint with malformed answer reached downstream inspection")
+                }
+                throw Failure.assertion("stale malformed hint admitted root")
+            } catch SelectedRepositoryScopeError.policyUnavailable {}
             var replacementIdentity: FileIdentity?
             var bodyFailure: Error?
             do {
@@ -1145,7 +1226,7 @@ public enum HostPolicySnapshotSelfTestRunner {
             try denied {
                 try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
                     service.testingBeforeAccess = { accesses.append($0) }
-                    usleep(800_000)
+                    waitPastMetadataWindow()
                     _ = try RepositoryDiscovery().discoverMetadata(scope: scope, policy: service)
                 }
             }
@@ -1211,7 +1292,7 @@ public enum HostPolicySnapshotSelfTestRunner {
             let command = try discoveryCommand(), budget = try CustodyBudget.make(kind: .discoveryGit, workSeconds: command.workSeconds)
             try binder.withDiscoveryCommandPolicy(scope, selected: scope.repositories[0], command: command,
                 budget: budget, cancellation: CancellationToken()) { service in
-                usleep(800_000)
+                waitPastMetadataWindow()
                 try service.requireCandidate(candidates[0])
                 try service.willAccess(candidates[0].path + "/.git/config")
                 try require(service.budget == budget && service.command.arguments == command.arguments,
@@ -1914,15 +1995,55 @@ public enum HostPolicySnapshotSelfTestRunner {
                 disabled.emit(quiet.render("disabled diagnostic\n"))
                 enabled.emit(active.render("bounded diagnostic\n"))
             }
+            disabled.beginOperation()
+            disabled.observeRefusal(.admission, stage: .deadlineBefore, started: 0, deadline: 0)
+            disabled.flushRefusal()
             let (quietLines, quietFormats) = quiet.snapshot()
             try require(quietLines.isEmpty && quietFormats == 0, "disabled tracing performed output or formatting")
             let (activeLines, activeFormats) = active.snapshot()
-            try require(activeFormats == Sink.maximumRecords && activeLines.count == Sink.maximumRecords + 1,
+            try require(activeFormats == Sink.optionalRecords && activeLines.count == Sink.optionalRecords + 1,
                         "concurrent tracing escaped record budget or formatted after suppression")
             try require(activeLines.last == Sink.suppression
                 && activeLines.filter { $0 == Sink.suppression }.count == 1,
                 "diagnostic suppression was missing or repeated")
             try require(activeLines.joined().utf8.count <= Sink.maximumBytes, "diagnostic byte budget exceeded")
+            enabled.observeRefusal(.registry, stage: .queued, started: 0, deadline: 0)
+            enabled.observeRefusal(.localAuthority, stage: .snapshot, started: 0, deadline: UInt64.max, resultBits: 7)
+            enabled.observeRefusal(.discovery, stage: .metadata, started: 0, deadline: 0)
+            enabled.observeRefusal(.admission, stage: .deadlineAfter, started: 0, deadline: 0)
+            enabled.flushRefusal()
+            enabled.emit(active.render("post-terminal formatting must not occur\n"))
+            enabled.beginOperation(); enabled.flushRefusal()
+            let (terminalLines, terminalFormats) = active.snapshot()
+            try require(terminalLines.count == Sink.maximumRecords + 1 && terminalFormats == Sink.optionalRecords
+                && terminalLines.last?.contains("REFUSAL component=localAuthority stage=snapshot") == true
+                && terminalLines.last?.contains("deadline_expired=false result_bits=7") == true
+                && terminalLines.joined().utf8.count <= Sink.maximumBytes
+                && terminalLines.allSatisfy({ $0.utf8.count <= Sink.maximumLineBytes }),
+                "reserved terminal refusal lost its cause, exceeded bounds or reopened formatting")
+            let frozenProbe = TraceProbe(), frozenClock = TraceProbe()
+            let frozen = Sink(enabled: true, writer: { frozenProbe.append($0) }, clock: {
+                _ = frozenClock.render("tick")
+                return UInt64(frozenClock.snapshot().1 * 100)
+            })
+            frozen.observeRefusal(.localAuthority, stage: .deadlineBefore, started: 10, deadline: 150)
+            frozen.flushRefusal(); frozen.flushRefusal()
+            try require(frozenClock.snapshot().1 == 1 && frozenProbe.snapshot().0.count == 1
+                && frozenProbe.snapshot().0[0].contains("elapsed_ns=90 deadline_expired=false"),
+                "terminal timestamp or expiry was recomputed at flush")
+            for clearOnSuccess in [false, true] {
+                let probe = TraceProbe()
+                let checked = Sink(enabled: true, writer: { probe.append($0) })
+                checked.beginOperation()
+                checked.observeRefusal(.localAuthority, stage: .snapshot, started: 0, deadline: 0, resultBits: 1)
+                if clearOnSuccess { checked.completeOperation() } else { checked.beginOperation() }
+                checked.observeRefusal(.admission, stage: .revalidation, started: 0, deadline: UInt64.max, resultBits: 2)
+                checked.flushRefusal()
+                try require(probe.snapshot().0.count == 1
+                    && probe.snapshot().0[0].contains("REFUSAL component=admission stage=revalidation")
+                    && probe.snapshot().0[0].contains("result_bits=2"),
+                    "earlier caught/successful operation masked the actual failed operation")
+            }
             let byteProbe = TraceProbe()
             let byteBounded = Sink(enabled: true, writer: { byteProbe.append($0) })
             for _ in 0..<1_000 { byteBounded.emit(String(repeating: "x", count: Sink.maximumLineBytes)) }
@@ -1930,6 +2051,11 @@ public enum HostPolicySnapshotSelfTestRunner {
             try require(byteLines.count > 1 && byteLines.count < Sink.maximumRecords
                 && byteLines.last == Sink.suppression && byteLines.joined().utf8.count <= Sink.maximumBytes,
                 "byte bound did not independently close diagnostic output")
+            byteBounded.observeRefusal(.admission, stage: .deadlineAfter, started: 0, deadline: 0)
+            byteBounded.flushRefusal()
+            try require(byteProbe.snapshot().0.last?.hasPrefix("DISCOVERY FIXTURE REFUSAL") == true
+                && byteProbe.snapshot().0.joined().utf8.count <= Sink.maximumBytes,
+                "byte saturation consumed the terminal refusal slot")
             for oversized in [String(repeating: "x", count: Sink.maximumLineBytes + 1),
                               String(repeating: "é", count: Sink.maximumLineBytes / 2 + 1)] {
                 let probe = TraceProbe()
@@ -1938,6 +2064,11 @@ public enum HostPolicySnapshotSelfTestRunner {
                 let checked = Sink(enabled: true, writer: { probe.append($0) })
                 checked.emit(oversized); checked.emit("later diagnostic\n")
                 try require(probe.snapshot().0 == [Sink.suppression], "oversized diagnostic escaped UTF-8 bound")
+                checked.observeRefusal(.admission, stage: .deadlineBefore, started: 0, deadline: 0)
+                checked.flushRefusal()
+                try require(probe.snapshot().0.count == 2
+                    && probe.snapshot().0.last?.hasPrefix("DISCOVERY FIXTURE REFUSAL") == true,
+                    "oversized optional record consumed the terminal refusal slot")
             }
         }
         onPass("POLICY-SESSION-T61-diagnostic-opt-in-and-concurrent-output-bounds")
@@ -2105,6 +2236,7 @@ public enum HostPolicySnapshotSelfTestRunner {
                     if mode=='metadata-object-ancestor': matched=matched or path.endswith('/.git/objects')
                     kind='exact_root' if matched else 'none'
                     if mode=='invalid': matched=True; kind='invalid_candidate'
+                    if mode=='invalid-selected-hint' and path.endswith('/products/ready'): matched=True; kind='invalid_candidate'
                     rows.append({'index':i,'matched':matched,'kind':kind,'policy_valid':True})
                 if mode in ('metadata-prefetch-roster','metadata-prefetch-protected'):
                     for marker in [p for p in request['candidates'] if p.endswith('/ready/.git')]:

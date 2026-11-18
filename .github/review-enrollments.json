@@ -1,0 +1,46 @@
+{
+  "schema": "g1-review-enrollments/v1",
+  "repository_id": 1442961455,
+  "enabled": true,
+  "producers": [
+    {
+      "id": "enrollment-24c0a5f2",
+      "enabled": true,
+      "origin_account": "origin-7612de79",
+      "github_user_id": 49759187,
+      "instructions_sha256": "7efd718dd897e06155b8e49eca37d18b15fb1e47610d9cf4b2d26e294a99e10b",
+      "cli_version": "codex-cli 0.148.0",
+      "credential_store": "keyring",
+      "allowed_startup_notice_sha256": [
+        "b2fc6975a5637afa2ac999a3260fc7980db0be97b0474c7a8a14c57e18d4a6e1",
+        "de8c81bdbcbc27db4d16d6ea11b6463544d5351492a5b397d3d31af1fbc78ca3",
+        "098e801ebc95c9c7312a945849442846324dcf639365a297313248993822711b"
+      ],
+      "creation_adapter_sha256": "a8020a20c6d456c03df2def94acf1bb239d7f1033617b424b9098e48a70e23aa",
+      "capture_adapter_sha256": "6b5f6fee6a5b5104cb9e2b67e07c4e7df89ffc97c1a4cd9fa0a1432672788961"
+    },
+    {
+      "id": "enrollment-e876e8eb",
+      "enabled": true,
+      "origin_account": "origin-6a644d43",
+      "github_user_id": 49759187,
+      "instructions_sha256": "7efd718dd897e06155b8e49eca37d18b15fb1e47610d9cf4b2d26e294a99e10b",
+      "cli_version": "codex-cli 0.148.0",
+      "credential_store": "file",
+      "allowed_startup_notice_sha256": [
+        "b2fc6975a5637afa2ac999a3260fc7980db0be97b0474c7a8a14c57e18d4a6e1",
+        "098e801ebc95c9c7312a945849442846324dcf639365a297313248993822711b"
+      ],
+      "creation_adapter_sha256": "a8020a20c6d456c03df2def94acf1bb239d7f1033617b424b9098e48a70e23aa",
+      "capture_adapter_sha256": "6b5f6fee6a5b5104cb9e2b67e07c4e7df89ffc97c1a4cd9fa0a1432672788961"
+    }
+  ],
+  "governance": {
+    "scope": "Owner-authorized G1 successor CI/App parity for this repository. Preserve fixture-only public CI, frozen ADR0004/0007, disabled predecessor App, private deployment policy, release, signing, installation and UAT boundaries. The owner accepted complete catalog responsiveness strictly below 1,000,000,000 monotonic nanoseconds, including setup, fresh validation and owned cleanup, as the current authority in ADR0009. This supersedes the inherited 750 ms responsiveness limit in historical ADR0006 and preserved specifications. Fail-closed policy, cancellation, child custody, complete cleanup, each original command deadline, and all source-only/release boundaries remain mandatory. The outer registered suite timeout requests cooperative cancellation; the original guardian retains cleanup ownership. A hosted job hard deadline yields failed or incomplete qualification and never asserts passing cleanup. ADR0009 is the current successor and incorporates every non-timing ADR0006 rule by reference; index projections cannot deactivate those obligations. A dependency bound to the predecessor ADR may correctly report changed-assumption when its approved successor is observed; this does not drop safety rules.",
+    "review_trust": "Owner-enrolled operational local capture, not provider attestation. Work and personal accounts remain distinct. An independent review cannot establish or change the PR creation origin.",
+    "activation": "Prospective source configuration only. Initial protected bootstrap requires owner/admin admission after independent technical review and real exact-head CI. Keep REVIEWER_APP_ENABLED off until current-main CI, controls, both account origins and App read-only qualification succeed. No agent manual merge, auto-merge manipulation or bypass. After separately accepted successor admission, independent review and exact CI govern source automation changes without a recurring human code-review gate.",
+    "accepted_delivery_boundary": "The operator accepted the documented concurrent-writer auto-merge race on 2026-11-17. App-only delivery is an authorization and operating rule, not atomic technical exclusion: another write-capable actor may arm native auto-merge after the last read and before App approval, and that approval may release the other request. Agents remain forbidden from manual merge, pre-arming, cancelling auto-merge or bypass. Fresh originating-account independent review, exact CI, the App own approval and all admission gates remain mandatory. Observed foreign or unknown auto-merge requests still reject. Coexisting unsolicited approvals never substitute for App admission evidence and are not themselves prohibited. Existing-approval reconciliation addresses lost responses, not the first-approval race. This limitation is separately accepted from Q16 receipt trust; no human technical-review gate or broader actor permission is added.",
+    "reviewer_identity": "The owner selected the existing installed GitHub App4217367, slug chaos-scheduler-automerge, bot299927791, for this repository successor delivery. This is accepted App identity, not a new grant or a request to modify a repository named chaos-scheduler. The disabled predecessor is .github/workflows/app-auto-merge.yml; that workflow remains disabled while the separately gated successor workflow uses the same selected App. No replacement App is required or authorized by this clarification. Repository-scoped tokens, exact App identity, current-token non-bypass proof, writer-off qualification and separate owner-controlled activation remain mandatory.",
+    "native_delivery_paths": "The owner authorized both qualified App-owned native delivery paths: native squash immediately when the PR is already merge-ready, or enabling native squash auto-merge while blocked. Both paths retain the same originating-account independent review, exact current CI/head checks, App-owned approval, current-token non-bypass proof and GitHub protections. This grants no authoring agent manual merge, auto-merge manipulation or bypass authority."
+  }
+}

@@ -9,6 +9,7 @@ Accepted decisions are immutable; semantic changes use successors.
 | [0003](0003-installation-lifecycle-and-update-authority.md) | Accepted | Installation, lifecycle, and update authority |
 | [0004](0004-repository-specific-native-github-delivery.md) | Accepted | Repository-specific native GitHub delivery |
 | [0005](0005-governed-safety-release-without-controller-rebinding.md) | Accepted | Governed safety release without controller rebinding |
-| [0006](0006-bounded-policy-classification-before-repository-selection.md) | Accepted | Bounded policy classification before repository selection |
+| [0006](0006-bounded-policy-classification-before-repository-selection.md) | Superseded by [0009](0009-stable-sub-second-catalog-responsiveness.md) | Bounded policy classification before repository selection |
 | [0007](0007-deterministic-mandatory-ci-sharding.md) | Accepted | Deterministic mandatory CI sharding |
 | [0008](0008-mvp-first-standalone-delivery.md) | Accepted | MVP-first standalone delivery |
+| [0009](0009-stable-sub-second-catalog-responsiveness.md) | Accepted | Stable sub-second catalog responsiveness |

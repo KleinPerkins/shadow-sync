@@ -66,3 +66,7 @@ Do not claim the public foundation is install-ready until standalone source iden
 **Policy:** `~/dev/_ops/doc-warden/POLICY.md`
 **Engine:** `~/dev/_ops/bin/doc-warden.sh doctor repo --repo .`
 <!-- doc-warden:end -->
+
+## Successor source delivery
+
+Follow `docs/runbooks/source-delivery.md` for automatic originating-account review, separate PR-creation witness and the owner-admitted G1 successor App. Existing source/native/release safety boundaries remain in force. Initial protected bootstrap is owner-controlled; new writer activation requires separately verified qualification.

@@ -3412,8 +3412,10 @@ enum M5AppKitDriver {
             fputs("M5 foreground transaction failure: \(stage)\n", stderr)
             return false
         }
-        let sourceDirectory = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
+        let sourceDirectory = URL(fileURLWithPath: root)
+            .appendingPathComponent(
+                "contract-source/Sources/ShadowSyncApp", isDirectory: true
+            )
         guard let delegateSource = try? String(
             contentsOf: sourceDirectory.appendingPathComponent(
                 "AppDelegate.swift"
@@ -4454,8 +4456,10 @@ enum M5AppKitDriver {
             )
         }
         let expectedController = ObjectIdentifier(selection)
-        let sourceDirectory = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
+        let sourceDirectory = URL(fileURLWithPath: root)
+            .appendingPathComponent(
+                "contract-source/Sources/ShadowSyncApp", isDirectory: true
+            )
         guard let delegateSource = try? String(
             contentsOf: sourceDirectory.appendingPathComponent(
                 "AppDelegate.swift"

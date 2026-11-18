@@ -38,6 +38,39 @@ class NativeExecutorTests(unittest.TestCase):
         self.assertEqual(len(cases), len(set(cases)))
         self.assertTrue(all(row['cases'] for row in rows))
 
+    def test_source_contract_snapshot_binds_bytes_and_rejects_tampering(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            source = parent / 'source'; source.mkdir(mode=0o700)
+            for name in runner.CONTRACT_SOURCE:
+                path = source / name; path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(('fixture ' + name).encode())
+            expected = {name: runner.sha((source / name).read_bytes()) for name in runner.CONTRACT_SOURCE}
+            root = parent / 'root'; root.mkdir(mode=0o700)
+            with patch.object(runner, 'ROOT', source):
+                runner.stage_contract_source(root, expected)
+                for name in runner.CONTRACT_SOURCE:
+                    self.assertEqual((root / 'contract-source' / name).read_bytes(), (source / name).read_bytes())
+                (root / 'contract-source/README.md').write_bytes(b'changed')
+                with self.assertRaisesRegex(ValueError, 'Staged source contract changed'):
+                    runner.verify_contract_source(root, expected)
+                sources = root / 'contract-source/Sources'
+                retained = root / 'contract-source/retained-sources'
+                sources.rename(retained)
+                sources.symlink_to(source / 'Sources', target_is_directory=True)
+                with self.assertRaisesRegex(ValueError, 'Staged source contract path changed'):
+                    runner.verify_contract_source(root, expected)
+                sources.unlink(); retained.rename(sources)
+                changed = parent / 'changed'; changed.mkdir(mode=0o700)
+                (source / 'README.md').write_bytes(b'new revision')
+                with self.assertRaisesRegex(ValueError, 'Source contract input changed'):
+                    runner.stage_contract_source(changed, expected)
+                linked = parent / 'linked'; linked.mkdir(mode=0o700)
+                (source / 'README.md').unlink()
+                (source / 'README.md').symlink_to(source / runner.CONTRACT_SOURCE[0])
+                with self.assertRaises((OSError, ValueError)):
+                    runner.stage_contract_source(linked, expected)
+
     def test_request_protocol_keeps_latency_and_ui_contracts(self):
         root = Path('/private/tmp/fixture')
         flag, request = runner.request_for('ui-worker-owner-ordering', root)

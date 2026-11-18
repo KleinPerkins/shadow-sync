@@ -318,9 +318,9 @@ public enum V2Body3SelfTestRunner {
                 "pinned pre-v0.6 v2 fixture drifted or stopped decoding"
             )
 
-            var malformedLines = oldV2.split(
+            var malformedLines: [Data] = oldV2.split(
                 separator: 0x0A
-            ).map(Data.init)
+            )
             var malformedObject =
                 try JSONSerialization.jsonObject(
                     with: malformedLines[2]

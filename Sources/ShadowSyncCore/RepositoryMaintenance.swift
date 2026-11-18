@@ -11,7 +11,12 @@ struct RepositoryMaintenanceDraft {
 
 #if SHADOW_SYNC_TESTING
 enum RepositoryMaintenanceTesting {
-    @TaskLocal static var registrationObserver: (@Sendable (String) -> Void)?
+    final class Observer: Sendable {
+        private let receive: @Sendable (String) -> Void
+        init(_ receive: @escaping @Sendable (String) -> Void) { self.receive = receive }
+        func record(_ identifier: String) { receive(identifier) }
+    }
+    @TaskLocal static var registrationObserver: Observer?
 }
 #endif
 
@@ -519,7 +524,7 @@ enum RepositoryMaintenancePlanner {
         account: EffectiveAccount
     ) throws -> InspectedRegistration {
         #if SHADOW_SYNC_TESTING
-        RepositoryMaintenanceTesting.registrationObserver?(identifier)
+        RepositoryMaintenanceTesting.registrationObserver?.record(identifier)
         #endif
         guard validRegistrationID(identifier),
               commonDirectory.hasPrefix("/") else {

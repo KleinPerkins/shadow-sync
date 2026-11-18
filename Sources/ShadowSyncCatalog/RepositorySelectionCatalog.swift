@@ -22,7 +22,7 @@ public struct RepositorySelectionCatalogLimits: Equatable, Sendable {
         aggregateBytes: Int = 2_097_152,
         directConfigBytes: Int = 65_536,
         candidateRows: Int = 512,
-        elapsedNanoseconds: UInt64 = 750_000_000
+        elapsedNanoseconds: UInt64 = 1_000_000_000
     ) {
         self.governedRoots = governedRoots
         self.relativeDepth = relativeDepth
@@ -34,6 +34,18 @@ public struct RepositorySelectionCatalogLimits: Equatable, Sendable {
         self.candidateRows = candidateRows
         self.elapsedNanoseconds = elapsedNanoseconds
     }
+
+    /// Responsiveness uses a strict upper bound; an absolute parent deadline
+    /// may shorten it, and neither ceiling is renewed by later work.
+    fileprivate func permits(started: UInt64, now: UInt64, deadline: UInt64) -> Bool {
+        now >= started && now < deadline && now - started < elapsedNanoseconds
+    }
+
+    #if SHADOW_SYNC_TESTING
+    public func testingPermits(started: UInt64, now: UInt64, deadline: UInt64) -> Bool {
+        permits(started: started, now: now, deadline: deadline)
+    }
+    #endif
 }
 
 public struct RepositorySelectionCatalogIdentity:
@@ -595,6 +607,8 @@ private final class CatalogBuilder {
         unresolved: [RepositorySelectionPreferenceEntry] = []
     ) -> RepositorySelectionCatalogResult {
         let now = DispatchTime.now().uptimeNanoseconds
+        if !configuration.limits.permits(started: started, now: now,
+                deadline: configuration.deadlineUptimeNanoseconds) { degrade(.deadline) }
         return RepositorySelectionCatalogResult(
             catalog: RepositorySelectionCatalog(
                 generation: configuration.generation,
@@ -1263,8 +1277,8 @@ private final class CatalogBuilder {
 
     private func checkDeadline() -> Bool {
         let now = DispatchTime.now().uptimeNanoseconds
-        guard now <= configuration.deadlineUptimeNanoseconds,
-              now - started <= configuration.limits.elapsedNanoseconds else {
+        guard configuration.limits.permits(started: started, now: now,
+                deadline: configuration.deadlineUptimeNanoseconds) else {
             degrade(.deadline)
             return false
         }

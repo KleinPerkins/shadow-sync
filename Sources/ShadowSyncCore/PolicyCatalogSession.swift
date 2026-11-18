@@ -127,6 +127,8 @@ final class PolicyCatalogSession: @unchecked Sendable {
             }
             DiscoveryFixtureDiagnostic.record(.admission, stage: observation,
                 started: started, deadline: deadline)
+            DiscoveryFixtureDiagnostic.recordRefusal(.admission, stage: observation,
+                started: started, deadline: deadline)
         }
         #else
         return value

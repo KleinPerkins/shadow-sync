@@ -182,9 +182,21 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         private let mutex = NSLock()
         private var value = CustodyRegistryResult(phase: .starting, reason: nil, journal: nil, stdout: Data(), stderr: Data())
         private var receipt: UInt64 = 0
+        private static func notification() -> DispatchGroup {
+            let value = DispatchGroup(); value.enter(); return value
+        }
+        private var changed = ResultCell.notification()
+        deinit { changed.leave() }
         // This lock protects value copies only: no disk I/O, queue waits or callbacks.
         func publish(_ result: CustodyRegistryResult, deadline: UInt64) {
-            mutex.lock(); value = result; receipt = deadline; mutex.unlock()
+            mutex.lock()
+            value = result; receipt = deadline
+            let previous = changed; changed = Self.notification()
+            mutex.unlock()
+            previous.leave()
+        }
+        func observation() -> (CustodyRegistryResult, UInt64, DispatchGroup) {
+            mutex.lock(); defer { mutex.unlock() }; return (value, receipt, changed)
         }
         func read() -> (CustodyRegistryResult, UInt64) {
             mutex.lock(); defer { mutex.unlock() }; return (value, receipt)
@@ -204,7 +216,7 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         /// A deadline response leaves actual ownership in that registry.
         func wait() -> CustodyRegistryResult {
             while true {
-                let (value, deadline) = cell.read()
+                let (value, deadline, changed) = cell.observation()
                 if value.phase == .finished || value.phase == .cleanupPending { return value }
                 if DispatchTime.now().uptimeNanoseconds >= deadline {
                     registry.queue.async {
@@ -213,7 +225,10 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                     return CustodyRegistryResult(phase: .cleanupPending, reason: value.reason ?? .timeout,
                         journal: nil, stdout: value.stdout, stderr: value.stderr, trace: value.trace)
                 }
-                usleep(10_000)
+                // A publication wakes every observer without a polling quantum.
+                // The captured generation prevents a read-to-wait lost wakeup;
+                // the original monotonic receipt deadline still bounds the wait.
+                _ = changed.wait(timeout: DispatchTime(uptimeNanoseconds: deadline))
             }
         }
     }
@@ -240,6 +255,8 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         var terminal: CustodyMessage?
         var resumed = false, spawnAttempted = false, bootstrapKilled = false, cancelled = false
         var metadataAttempted = false
+        var readObservers: [CustodyRequestResources.ObservationStream: DispatchSourceRead] = [:]
+        var exitObserver: DispatchSourceProcess?
         #if SHADOW_SYNC_TESTING
         var deferredRead: TestReadDeferral?
         var reapedObservations = 0
@@ -356,6 +373,9 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
     }
     private func remove(_ entry: Entry) {
         let key = entry.resources.request.binding.requestID
+        for source in entry.readObservers.values { source.cancel() }
+        entry.readObservers.removeAll()
+        entry.exitObserver?.cancel(); entry.exitObserver = nil
         entries.removeValue(forKey: key); order.removeAll { $0 == key }
         reservationMutex.lock()
         if reservedIDs.remove(key) != nil { outputReserved -= entry.outputReservation }
@@ -398,11 +418,46 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
               DispatchTime.now().uptimeNanoseconds < entry.resources.request.budget.work,
               entry.owner!.send(SIGCONT) else { throw CustodyRecordError.fenced }
         entry.resumed = true
+        observeReadiness(entry)
         #if SHADOW_SYNC_TESTING
         entry.diagnostic(.resumed)
         #endif
     }
+    private func observeReadiness(_ entry: Entry) {
+        // Only the latency-bounded policy path needs eager observation. Events
+        // never admit, reap or retire directly: tick retains every original check.
+        var enabled = entry.command != nil && entry.resources.request.kind == .policyClassify
+        #if SHADOW_SYNC_TESTING
+        enabled = enabled || entry.helper.testingAutomaticAdmission
+        #endif
+        guard enabled, let owner = entry.owner else { return }
+        let key = entry.resources.request.binding.requestID, identity = owner.identity
+        for stream in CustodyRequestResources.ObservationStream.allCases {
+            #if SHADOW_SYNC_TESTING
+            if entry.deferredRead != nil { continue }
+            #endif
+            if let source = try? entry.resources.observeReadiness(stream, on: queue, handler: { [weak self] in
+                guard let self, self.entries[key]?.owner?.identity == identity else { return }
+                self.tick()
+            }) { entry.readObservers[stream] = source }
+        }
+        let source = DispatchSource.makeProcessSource(identifier: owner.identity.processID, eventMask: .exit, queue: queue)
+        source.setEventHandler { [weak self] in
+            guard let self, let entry = self.entries[key], entry.owner?.identity == identity else { return }
+            entry.exitObserver?.cancel(); entry.exitObserver = nil
+            self.tick()
+        }
+        entry.exitObserver = source; source.resume()
+    }
+    private func cancelEndedObservers(_ entry: Entry) {
+        let ended: [(CustodyRequestResources.ObservationStream, Bool)] = [(.status, entry.statusEnded),
+            (.output, entry.stdoutEnded), (.error, entry.stderrEnded), (.trace, entry.traceEnded)]
+        for (stream, complete) in ended where complete { entry.readObservers.removeValue(forKey: stream)?.cancel() }
+    }
     private func ensureTimer() {
+        #if SHADOW_SYNC_TESTING
+        guard !testingTimerSuppressed else { return }
+        #endif
         guard timer == nil, !entries.isEmpty else { return }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + .milliseconds(20), repeating: .milliseconds(20), leeway: .milliseconds(5))
@@ -633,10 +688,18 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
                 }
             }
         }
-        for entry in entries.values { entry.publish() }
+        for entry in entries.values { cancelEndedObservers(entry); entry.publish() }
         if entries.isEmpty { timer?.cancel(); timer = nil; cursor = 0 }
     }
     #if SHADOW_SYNC_TESTING
+    private var testingTimerSuppressed = false
+    func testingSuppressTimer(_ value: Bool) {
+        queue.sync {
+            testingTimerSuppressed = value
+            if value { timer?.cancel(); timer = nil }
+            else { ensureTimer() }
+        }
+    }
     enum TestReadDeferral { case statusAfterAdmission, outputUntilReleased }
     private var nextReadDeferral: TestReadDeferral?
     struct TestReadObservation {

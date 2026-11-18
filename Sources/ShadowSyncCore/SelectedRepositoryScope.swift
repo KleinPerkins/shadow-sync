@@ -231,12 +231,33 @@ final class RepositoryDiscoveryPolicy {
     /// Avoid repeating that resource scan before pure path construction.
     private func validateLocalAuthority() throws {
         if let failure { throw failure }
+        #if SHADOW_SYNC_TESTING
+        let refusalStart = DispatchTime.now().uptimeNanoseconds
+        var refusalStage = DiscoveryFixtureDiagnostic.Stage.deadlineBefore
+        var refusalPassed = false
+        defer {
+            if !refusalPassed {
+                let bits: UInt64 = (closed ? 1 : 0) | (cancellation.isCancelled ? 2 : 0)
+                    | (cancellation.areFutureChildAdmissionsClosed ? 4 : 0)
+                DiscoveryFixtureDiagnostic.recordRefusal(.localAuthority, stage: refusalStage,
+                    started: refusalStart, deadline: deadline, resultBits: bits)
+            }
+        }
+        #endif
         do {
             guard !closed, !cancellation.isCancelled, !cancellation.areFutureChildAdmissionsClosed,
                   DispatchTime.now().uptimeNanoseconds < deadline else {
                 throw SelectedRepositoryScopeError.policyUnavailable
             }
+            #if SHADOW_SYNC_TESTING
+            refusalStage = .authorityBefore
+            try phase()
+            refusalStage = .snapshot
+            try snapshot.revalidate()
+            refusalPassed = true
+            #else
             try phase(); try snapshot.revalidate()
+            #endif
         } catch { throw record(error) }
     }
 
@@ -713,7 +734,8 @@ public final class SelectedRepositoryScopeBinder:
         }
         #endif
         let root = try openRoot(deadline: deadline)
-        defer { close(root.descriptor) }
+        var rootNeedsClose = true
+        defer { if rootNeedsClose { close(root.descriptor) } }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .projection
         #endif
@@ -746,6 +768,12 @@ public final class SelectedRepositoryScopeBinder:
                 inspectRootRepository: snapshot == nil
             )
         )
+        // Completion includes the owned descriptor cleanup. A result that
+        // crossed its original deadline cannot be published as complete.
+        close(root.descriptor); rootNeedsClose = false
+        guard !result.isComplete || DispatchTime.now().uptimeNanoseconds < deadline else {
+            throw SelectedRepositoryScopeError.policyUnavailable
+        }
         #if SHADOW_SYNC_TESTING
         diagnosticPassed = result.isComplete
         #endif
@@ -755,7 +783,7 @@ public final class SelectedRepositoryScopeBinder:
     public func bind(
         intent: RepositorySelectionIntent
     ) throws -> ValidatedSelectedRepositoryScope {
-        try bindBound(intent: intent, deadlineLimit: nil)
+        try bindBound(intent: BindingExpectation(intent), deadlineLimit: nil)
     }
 
     private func boundedMetadataDeadline(_ limit: UInt64?) -> UInt64 {
@@ -766,7 +794,45 @@ public final class SelectedRepositoryScopeBinder:
         return setupDeadline ?? fresh
     }
 
-    private func bindBound(intent: RepositorySelectionIntent,
+    /// Comparison data only: saved selection never supplies current admission
+    /// or a catalog result. Binding still discovers one complete fresh catalog.
+    private struct BindingExpectation {
+        let generation: UInt64
+        let policyDigest: String
+        let rootIdentities: [String: RepositorySelectionCatalogIdentity]
+        let repositoryIdentities: [RepositorySelectionPreferenceEntry: RepositorySelectionCatalogIdentity]
+        let entries: [RepositorySelectionPreferenceEntry]
+        let savedScope: Bool
+
+        init(_ intent: RepositorySelectionIntent) {
+            generation = intent.generation; policyDigest = intent.policyDigest
+            rootIdentities = intent.rootIdentities; repositoryIdentities = intent.repositoryIdentities
+            entries = intent.entries; savedScope = false
+        }
+        init(scope: ValidatedSelectedRepositoryScope, logicalRoot: String) throws {
+            guard let first = scope.repositories.first,
+                  scope.repositories.allSatisfy({ $0.locator.governedRoot == logicalRoot
+                    && $0.rootIdentity == first.rootIdentity }) else { throw SelectedRepositoryScopeError.changed }
+            generation = scope.selectionGeneration; policyDigest = scope.policyDigest
+            rootIdentities = [logicalRoot: RepositorySelectionCatalogIdentity(device: first.rootIdentity.device,
+                inode: first.rootIdentity.inode, owner: first.rootIdentity.owner)]
+            let selected = try scope.repositories.map { repository in
+                (try RepositorySelectionPreferenceEntry(repositoryID: repository.repositoryID, locator: repository.locator),
+                 RepositorySelectionCatalogIdentity(device: repository.repositoryIdentity.device,
+                    inode: repository.repositoryIdentity.inode, owner: repository.repositoryIdentity.owner))
+            }
+            entries = selected.map { $0.0 }.sorted()
+            repositoryIdentities = Dictionary(uniqueKeysWithValues: selected)
+            savedScope = true
+        }
+        func matches(_ current: RepositorySelectionIntent) -> Bool {
+            generation == current.generation && policyDigest == current.policyDigest
+                && rootIdentities == current.rootIdentities && repositoryIdentities == current.repositoryIdentities
+                && entries == current.entries
+        }
+    }
+
+    private func bindBound(intent: BindingExpectation,
                            deadlineLimit: UInt64?) throws -> ValidatedSelectedRepositoryScope {
         guard !intent.entries.isEmpty else {
             throw SelectedRepositoryScopeError.invalidIntent
@@ -781,7 +847,7 @@ public final class SelectedRepositoryScopeBinder:
                 started: diagnosticStart, deadline: deadline, succeeded: diagnosticPassed)
         }
         #endif
-        let root = try openRoot(deadline: deadline)
+        let root = try openRoot(deadline: deadline, selectedHints: intent.entries.map(\.locator))
         defer { close(root.descriptor) }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .projection
@@ -830,6 +896,15 @@ public final class SelectedRepositoryScopeBinder:
                 catalog.degradedReason?.operatorExplanation
                     ?? "catalog incomplete"
             )
+        }
+        if intent.savedScope {
+            // Reapply the public intent's pure visibility, eligibility,
+            // generation, uniqueness and identity checks to THIS fresh scan.
+            // A changed/missing selected row retains rebind's changed refusal.
+            do {
+                let current = try RepositorySelectionIntent(catalog: catalog.catalog, entries: intent.entries)
+                guard intent.matches(current) else { throw SelectedRepositoryScopeError.changed }
+            } catch { throw SelectedRepositoryScopeError.changed }
         }
         guard catalog.catalog.policyDigest == intent.policyDigest,
               catalog.catalog.rootIdentities
@@ -962,27 +1037,14 @@ public final class SelectedRepositoryScopeBinder:
               scope.policyDigest == (try activeSelectionPolicy()).digest else {
             throw SelectedRepositoryScopeError.changed
         }
-        let entries = try scope.repositories.map {
-            try RepositorySelectionPreferenceEntry(repositoryID: $0.repositoryID, locator: $0.locator)
-        }.sorted()
-        #if SHADOW_SYNC_TESTING
-        diagnosticStage = .metadata
-        #endif
-        let catalog = try processFreeCatalogBound(preferences: nil,
-            canonicalLocators: Dictionary(uniqueKeysWithValues: entries.map { ($0.repositoryID, $0.locator) }),
-            generation: scope.selectionGeneration, deadlineLimit: stageDeadline)
-        guard catalog.isComplete else {
-            if catalog.degradedReason == .cleanupPending { throw SelectedRepositoryScopeError.cleanupPending }
-            throw SelectedRepositoryScopeError.catalogDegraded(
-                catalog.degradedReason?.operatorExplanation ?? "catalog incomplete")
-        }
-        let intent: RepositorySelectionIntent
-        do { intent = try RepositorySelectionIntent(catalog: catalog.catalog, entries: entries) }
-        catch { throw SelectedRepositoryScopeError.changed }
+        // The prior implementation scanned once only to reconstruct an intent,
+        // then bindBound scanned again. Carry the saved comparison values into
+        // the existing fresh binding scan instead; no old catalog is reused.
+        let expectation = try BindingExpectation(scope: scope, logicalRoot: logicalRoot)
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .decisions
         #endif
-        let rebound = try bindBound(intent: intent, deadlineLimit: stageDeadline)
+        let rebound = try bindBound(intent: expectation, deadlineLimit: stageDeadline)
         guard rebound == scope else { throw SelectedRepositoryScopeError.changed }
         #if SHADOW_SYNC_TESTING
         diagnosticPassed = true
@@ -996,6 +1058,11 @@ public final class SelectedRepositoryScopeBinder:
     func withReboundScope<Value>(_ scope: ValidatedSelectedRepositoryScope,
                                 cancellation: CancellationToken, deadlineLimit: UInt64? = nil,
                                 _ body: (ValidatedSelectedRepositoryScope) throws -> Value) throws -> Value {
+        #if SHADOW_SYNC_TESTING
+        DiscoveryFixtureDiagnostic.beginOperation()
+        var refusalOperationPassed = false
+        defer { if refusalOperationPassed { DiscoveryFixtureDiagnostic.completeOperation() } }
+        #endif
         func validate() throws {
             guard !cancellation.isCancelled, !cancellation.areFutureChildAdmissionsClosed else {
                 throw GitSafetyError.cancelled
@@ -1011,6 +1078,9 @@ public final class SelectedRepositoryScopeBinder:
         try validate()
         let value = try body(rebound)
         try validate()
+        #if SHADOW_SYNC_TESTING
+        refusalOperationPassed = true
+        #endif
         return value
     }
 
@@ -1048,7 +1118,7 @@ public final class SelectedRepositoryScopeBinder:
     }
 
     /// A command is a separate bounded stage, not an extension of the metadata
-    /// scan's 750ms deadline. The caller creates its budget once; rebinding and
+    /// scan's strict sub-second deadline. The caller creates its budget once; rebinding and
     /// every classifier/identity check consume that same budget. The helper will
     /// independently authenticate policy and resources before actual execution.
     func withDiscoveryCommandPolicy<Value>(_ scope: ValidatedSelectedRepositoryScope,
@@ -1149,11 +1219,44 @@ public final class SelectedRepositoryScopeBinder:
         let identity: FileIdentity
     }
 
-    private func openRoot(deadline: UInt64) throws -> OpenedRoot {
+    /// Optional lexical comparison inputs only. No pathname is inspected here,
+    /// and a hint decision never substitutes for the catalog's later exact-path
+    /// admission. Keep the mandatory root first and the existing batch bound.
+    static func rootAdmissionPaths(logicalRoot: String, projectionRoot: [String],
+                                   shelves: [[String]], hints: [RepositorySelectionLocator]) throws
+        -> [RepositorySelectionAdmissionPath] {
+        var result = [try RepositorySelectionAdmissionPath(root: logicalRoot, components: [])]
+        let parents = Set(([projectionRoot] + shelves.map { projectionRoot + $0 })
+            .map { $0.map { Data($0.utf8) } })
+        var seen = Set<Data>()
+        for hint in hints where result.count < 64 {
+            guard hint.governedRoot.utf8.elementsEqual(logicalRoot.utf8),
+                  let leaf = hint.components.last, !leaf.utf8.starts(with: [46]),
+                  parents.contains(hint.components.dropLast().map { Data($0.utf8) }) else { continue }
+            let key = Data(hint.components.joined(separator: "/").utf8)
+            if seen.insert(key).inserted {
+                result.append(try RepositorySelectionAdmissionPath(root: logicalRoot, components: hint.components))
+            }
+        }
+        return result
+    }
+
+    private func openRoot(deadline: UInt64, selectedHints: [RepositorySelectionLocator] = []) throws -> OpenedRoot {
         try revalidatePhase()
         do {
-            try admission.requireAllowed(
-                RepositorySelectionAdmissionPath(root: logicalRoot, components: []), deadline: deadline)
+            let paths: [RepositorySelectionAdmissionPath]
+            if let snapshot {
+                paths = try Self.rootAdmissionPaths(logicalRoot: logicalRoot,
+                    projectionRoot: snapshot.projection.rootComponents,
+                    shelves: snapshot.projection.shelves, hints: selectedHints)
+            } else {
+                paths = [try RepositorySelectionAdmissionPath(root: logicalRoot, components: [])]
+            }
+            let decisions = try admission.classify(paths, deadline: deadline)
+            // Malformed optional answers still refuse the entire closed batch.
+            // Valid hint answers are ignored here, including protected/missing
+            // selections; the complete fresh catalog determines their result.
+            guard case .allowed = decisions[0] else { throw RepositorySelectionAdmissionError.unavailable }
         } catch { throw Self.policyFailure(error) }
         let descriptor = Darwin.open(
             governedRootPath,

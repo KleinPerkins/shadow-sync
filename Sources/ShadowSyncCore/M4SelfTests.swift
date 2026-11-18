@@ -1120,7 +1120,7 @@ public enum M4SelfTestRunner {
             && posix_spawnattr_setpgroup(&attributes, 0) == 0
             && posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_START_SUSPENDED | POSIX_SPAWN_CLOEXEC_DEFAULT
                 | POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)) == 0, "group closed flags")
-        let strings = ["/bin/bash", "-c", kind.script, "fixture", ready].map { strdup($0) }
+        let strings = ["/bin/bash", "-c", kind.script, "fixture", ready].map { argument in argument.withCString { strdup($0) } }
         defer { strings.forEach { free($0) } }
         try check(strings.allSatisfy { $0 != nil }, "group argument allocation")
         var argv = strings + [nil]; var env: [UnsafeMutablePointer<CChar>?] = [nil]
@@ -1253,7 +1253,7 @@ enum CustodyAnchorSelfTests {
             && posix_spawnattr_setsigmask(&attributes, &mask) == 0
             && posix_spawnattr_setpgroup(&attributes, 0) == 0
             && posix_spawnattr_setflags(&attributes, flags) == 0, "fixture attributes")
-        let strings = ([executable] + args).map { strdup($0) }
+        let strings = ([executable] + args).map { argument in argument.withCString { strdup($0) } }
         defer { strings.forEach { free($0) } }
         guard strings.allSatisfy({ $0 != nil }) else { throw Failure(message: "fixture allocation") }
         var argv = strings + [nil]

@@ -453,6 +453,7 @@ public enum M6SelfTestRunner {
         try run("m6-helper-trace-command-boundary") { try CustodyHelperSelfTests.traceCommandBoundary() }
         try run("m6-helper-trace-reservation-boundary") { try CustodyHelperSelfTests.traceReservationBoundary() }
         try run("m6-registry-status-eof-without-terminal") { try CustodyRegistrySelfTests.native("status-eof", pending:true) }
+        try run("m6-registry-readiness-without-polling") { try CustodyHelperSelfTests.readinessWithoutPolling() }
         try run("m6-registry-reap-before-status-eof") { try CustodyHelperSelfTests.reapedBeforeReads(.statusAfterAdmission) }
         try run("m6-registry-reap-before-output-eof") { try CustodyHelperSelfTests.reapedBeforeReads(.outputUntilReleased) }
         try run("m6-system-config-fixed-command") { try SystemConfigCommandSelfTests.contract() }
@@ -950,7 +951,7 @@ private enum CustodyLeaseSelfTests {
         }
         let flags = Int16(POSIX_SPAWN_START_SUSPENDED | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETPGROUP)
         try check(posix_spawnattr_setflags(&attr, flags) == 0 && posix_spawnattr_setpgroup(&attr, 0) == 0, "ACL flags")
-        let strings = (["/bin/chmod", "+a", rule, path] as [String]).map { strdup($0) }
+        let strings = (["/bin/chmod", "+a", rule, path] as [String]).map { argument in argument.withCString { strdup($0) } }
         defer { strings.forEach { free($0) } }
         try check(strings.allSatisfy { $0 != nil }, "ACL arguments")
         var argv = strings + [nil], env: [UnsafeMutablePointer<CChar>?] = [nil]
@@ -2174,7 +2175,7 @@ private enum FreshStateSelfTests {
                     let flags = Int16(POSIX_SPAWN_START_SUSPENDED | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETPGROUP)
                     try H.check(posix_spawnattr_setflags(&attr, flags) == 0 && posix_spawnattr_setpgroup(&attr, 0) == 0, "initializer crash flags")
                     let executable = try ProcessIdentity.capture(processID: getpid(), generation: RunIdentity.make()).executablePath
-                    let strings = [executable, "--shadow-sync-initialization-crash-fixture", root, target, partial].map { strdup($0) }
+                    let strings = [executable, "--shadow-sync-initialization-crash-fixture", root, target, partial].map { argument in argument.withCString { strdup($0) } }
                     defer { strings.forEach { free($0) } }
                     try H.check(strings.allSatisfy { $0 != nil }, "crash fixture argv")
                     var argv = strings + [nil], env: [UnsafeMutablePointer<CChar>?] = [nil]
@@ -2454,7 +2455,7 @@ private enum CustodyResourcesSelfTests {
             try check(posix_spawnattr_setflags(&attr, flags) == 0 && posix_spawnattr_setpgroup(&attr, 0) == 0, "native fixture flags")
             let executable = try ProcessIdentity.capture(processID: getpid(), generation: UUID().uuidString.lowercased()).executablePath
             let absent = mapping.testingSourceDescriptors.map(String.init).joined(separator: ",")
-            let strings = ([executable, "--shadow-sync-custody-resource-fixture", absent]).map { strdup($0) }; defer { strings.forEach { free($0) } }
+            let strings = ([executable, "--shadow-sync-custody-resource-fixture", absent]).map { argument in argument.withCString { strdup($0) } }; defer { strings.forEach { free($0) } }
             try check(strings.allSatisfy { $0 != nil }, "native fixture allocation")
             var argv = strings + [nil], env: [UnsafeMutablePointer<CChar>?] = [nil]
             let drained = NativeStreamDrain()
@@ -3312,11 +3313,15 @@ private enum CustodyHelperSelfTests {
                 "retained_count":String(registry.testingCount)]
             guard let journal = result.journal else { throw Failure(message:"missing terminal") }
             try check(journal.outcome == expected && journal.reason == reason,"wrong durable helper result: \(String(describing:journal.outcome)) / \(String(describing:journal.reason))")
-            try check(journal.custodian != nil && journal.custodian?.pid != UInt32(getpid()),"helper identity missing")
+            // Keep optional observation borrows outside assertion autoclosures
+            // by materializing the scalar identities first.
+            let custodianPID = journal.custodian.map { $0.pid }
+            let targetPID = journal.target.map { $0.pid }
+            try check(custodianPID != nil && custodianPID != UInt32(getpid()),"helper identity missing")
             if mode == "after-admit" {
-                try check(journal.target == nil && result.stdout.isEmpty,"target spawned after cancellation")
+                try check(targetPID == nil && result.stdout.isEmpty,"target spawned after cancellation")
             } else {
-                try check(journal.target != nil && journal.target?.pid != journal.custodian?.pid,"target identity not separate")
+                try check(targetPID != nil && targetPID != custodianPID,"target identity not separate")
                 if mode == "before-resume" || mode == "after-preparation" { try check(result.stdout.isEmpty,"cancelled suspended target executed") }
                 else if mode == "system-missing" { try check(result.stdout.isEmpty && journal.waitStatus == 128 << 8, "missing config fixture did not exit normally") }
                 else if mode == "system-complete" || mode == "system-faildata" {
@@ -3333,7 +3338,7 @@ private enum CustodyHelperSelfTests {
             }
             if mode == "fail" { try check(journal.waitStatus == 7 << 8,"raw exit status lost") }
             if reason != .none {
-                try check(journal.ordinal == (journal.target == nil ? 3 : 4),"durable draining transition was skipped")
+                try check(journal.ordinal == (targetPID == nil ? 3 : 4),"durable draining transition was skipped")
             }
             if mode == "trace-complete" || mode == "trace-resist" {
                 let expectedTrace = Data(Array(repeating: Array((0..<256).map(UInt8.init)), count: 128).joined())
@@ -3485,8 +3490,10 @@ private enum CustodyHelperSelfTests {
             else if mode.hasPrefix("serial-policy-") || timeout || cancelAt == 1 { expectedStages = 2 }
             else { expectedStages = 1 }
             try check(resumed.count == expectedStages, "serial refusal admitted another stage")
-            try check(journal.target?.pid == UInt32(resumed.last![3])
-                && journal.custodian?.pid != journal.target?.pid, "durable target lost its exact owner")
+            let targetPID = journal.target.map { $0.pid }
+            let custodianPID = journal.custodian.map { $0.pid }
+            try check(targetPID == UInt32(resumed.last![3])
+                && custodianPID != targetPID, "durable target lost its exact owner")
             if !mode.hasPrefix("serial-postflight-"), timeout || cancelAt != nil && mode != "serial-between-cancel" {
                 try check(journal.waitStatus == UInt32(SIGKILL), "resistant serial child was not KILL-drained")
             }
@@ -3513,6 +3520,44 @@ private enum CustodyHelperSelfTests {
                 "serial catalog still active")
             do { _ = try RunAuthority.acquireRun(at: location); throw Failure(message: "serial original lease lost") }
             catch is SecureStateError {}
+        }
+    }
+    /// A disabled fallback timer makes this a causal scheduling regression:
+    /// only owned pipe/exit readiness can advance the ordinary retirement path.
+    /// Two waiters also exercise publication without a read-to-wait lost wakeup.
+    static func readinessWithoutPolling() throws {
+        final class Results: @unchecked Sendable {
+            let lock = NSLock()
+            var values: [CustodyRegistryResult] = []
+            func append(_ value: CustodyRegistryResult) { lock.lock(); values.append(value); lock.unlock() }
+        }
+        try CustodyRegistrySelfTests.fixture { location, registry in
+            let resources = try resources(location, mode: "system-complete", work: 5)
+            registry.testingSuppressTimer(true)
+            defer { registry.testingSuppressTimer(false) }
+            let handle = try registry.start(resources: resources, helper: CustodyHelperExecutable.testingCustodian())
+            let observers = DispatchGroup(), results = Results()
+            for _ in 0..<2 {
+                observers.enter()
+                DispatchQueue.global().async { results.append(handle.wait()); observers.leave() }
+            }
+            let observed = observers.wait(timeout: .now() + .seconds(4))
+            // Even a failed regression restores ordinary deadline/cleanup work
+            // and joins both observers before the owned fixture can be removed.
+            registry.testingSuppressTimer(false)
+            observers.wait()
+            try check(observed == .success && results.values.count == 2,
+                      "owned readiness required the disabled polling timer")
+            try check(results.values.allSatisfy { $0.phase == .finished && $0.reason == nil
+                && $0.journal?.outcome == .completed && $0.journal?.waitStatus == 0
+                && $0.stdout == Data("file:/fixture/system-config\0core.safe\0".utf8)
+                && $0.stderr.isEmpty && $0.trace.isEmpty }, "readiness changed terminal evidence or observer result")
+            try check(registry.testingCount == 0 && !registry.hasRetainedWork,
+                      "readiness publication preceded actual retirement")
+            let receipt = try CustodyCatalogSelfTests.bytes(location,
+                "receipts/" + resources.request.binding.requestID + ".caller.json")
+            let value = try JSONSerialization.jsonObject(with: receipt) as! [String: Any]
+            try check(value["event"] as? String == "custodian-reaped", "readiness substituted for original reaping")
         }
     }
     static func reapedBeforeReads(_ mode: RetainedCleanupRegistry.TestReadDeferral) throws {
@@ -3845,9 +3890,9 @@ private enum CustodyHelperSelfTests {
         try check(posix_spawnattr_setflags(&attr, flags) == 0 && posix_spawnattr_setpgroup(&attr, 0) == 0
             && posix_spawnattr_setsigdefault(&attr, &defaults) == 0 && posix_spawnattr_setsigmask(&attr, &empty) == 0, "parent flags")
         let executable = try ProcessIdentity.capture(processID: getpid(), generation: RunIdentity.make()).executablePath
-        let args = [executable, "--shadow-sync-custodian-parent-fixture", root, mode].map { strdup($0) }
+        let args = [executable, "--shadow-sync-custodian-parent-fixture", root, mode].map { argument in argument.withCString { strdup($0) } }
         let environment: [String] = ["PATH=/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR=/private/tmp"]
-        let environmentPointers = environment.map { strdup($0) }
+        let environmentPointers = environment.map { argument in argument.withCString { strdup($0) } }
         defer { (args + environmentPointers).forEach { free($0) } }
         try check((args + environmentPointers).allSatisfy { $0 != nil }, "parent arguments")
         var argv = args + [nil], env = environmentPointers + [nil]
@@ -3899,8 +3944,9 @@ private enum CustodyHelperSelfTests {
         guard let bytes = try? CustodyCatalogSelfTests.bytes(location, ready.id + ".json"),
               let journal = try? CustodyJournal.decode(bytes), journal.phase == .terminal,
               journal.binding.requestID == ready.id,
-              journal.custodian?.pid == UInt32(ready.helper), journal.custodian?.startSeconds == ready.helperStart,
-              journal.target?.pid == UInt32(ready.target), journal.target?.startSeconds == ready.targetStart,
+              let custodian = journal.custodian, let target = journal.target,
+              custodian.pid == UInt32(ready.helper), custodian.startSeconds == ready.helperStart,
+              target.pid == UInt32(ready.target), target.startSeconds == ready.targetStart,
               absent(ready.helper, ready.helperStart), absent(ready.target, ready.targetStart) else { return false }
         // No adoption or signaling of recorded descendants. Their own custodian
         // supplies the terminal journal and releases the original operation lock.
@@ -4207,6 +4253,9 @@ private enum SystemConfigCommandSelfTests {
     }
     private static func check(_ value: Bool, _ message: String) throws { if !value { throw Failure(message: message) } }
     static func configurationCapture(_ scenario: String) throws {
+        if scenario == "inspection-planner-pending" || scenario == "inspection-planner-ordinary" {
+            fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=configuration-entry\n", stderr); fflush(stderr)
+        }
         // These cases execute the real capture/recapture/file-verification
         // callers. Only system-origin discovery is injected; signed command
         // qualification is a separate gate. Refuse unnamespaced execution.
@@ -4389,6 +4438,7 @@ private enum SystemConfigCommandSelfTests {
                         return
                     }
                     if scenario == "inspection-planner-pending" || scenario == "inspection-planner-ordinary" {
+                        fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=freeze-configuration\n", stderr); fflush(stderr)
                         let frozen = try handle.freezeConfiguration(account: account, configurationProbe: probe)
                         let admission = GitAdmissionSnapshot(effectiveURL: origin, transport: handle.githubIdentity.transport,
                             frozenConfigSHA256: frozen.snapshot.frozenSHA256)
@@ -4412,11 +4462,18 @@ private enum SystemConfigCommandSelfTests {
                         let observed = RegistrationObservations()
                         var commands = 0
                         do {
-                            let draft = try RepositoryMaintenanceTesting.$registrationObserver.withValue({ observed.record($0) }) {
-                                try RepositoryMaintenancePlanner.inspect(clone: maintenanceClone, remote: remote,
+                            fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=observer-bind\n", stderr); fflush(stderr)
+                            let observer = RepositoryMaintenanceTesting.Observer { identifier in
+                                fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=observer-callback\n", stderr); fflush(stderr)
+                                observed.record(identifier)
+                            }
+                            let draft = try RepositoryMaintenanceTesting.$registrationObserver.withValue(observer) {
+                                fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=planner-entry\n", stderr); fflush(stderr)
+                                return try RepositoryMaintenancePlanner.inspect(clone: maintenanceClone, remote: remote,
                                     account: account, handle: handle, frozen: frozen, admission: admission,
                                     capturedNow: Date(), validateAdmission: session.validatePhaseCompletion) {
                                         arguments, _, _, _, _ in
+                                        fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=mock-command\n", stderr); fflush(stderr)
                                         commands += 1
                                         if commands == 1 {
                                             try check(arguments.contains("--dry-run"), "planner did not begin with dry-run")
@@ -4427,18 +4484,23 @@ private enum SystemConfigCommandSelfTests {
                                                 terminationRequested: false, processID: -1)
                                         }
                                         try check(arguments.contains("rev-parse"), "unexpected planner command")
-                                        if scenario == "inspection-planner-pending" { _ = try probe.activePath(account: account) }
+                                        if scenario == "inspection-planner-pending" {
+                                            fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=probe-active-path\n", stderr); fflush(stderr)
+                                            _ = try probe.activePath(account: account)
+                                        }
                                         return ProcessResult(status: 1, stdout: Data(), stderr: Data(),
                                             stdoutTruncated: false, stderrTruncated: false, outputByteLimit: 4096,
                                             timedOut: false, cancelled: false, terminationRequested: false, processID: -1)
                                     }
                             }
+                            fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=planner-return\n", stderr); fflush(stderr)
                             try check(scenario == "inspection-planner-ordinary", "planner swallowed pending cleanup")
                             try check(observed.snapshot == identifiers && commands == 3 && calls == 1,
                                       "ordinary proof refusal stopped unrelated registration inspection")
                             try check(draft.prunable.isEmpty && draft.moved.isEmpty && draft.diagnostics.count == 2
                                 && !draft.refusals.isEmpty && !context.isClosed, "ordinary planner warnings changed")
                         } catch SystemGitConfigurationError.cleanupPending {
+                            fputs("M6 PLANNER FIXTURE DIAGNOSTIC stage=planner-cleanup-pending\n", stderr); fflush(stderr)
                             try check(scenario == "inspection-planner-pending" && observed.snapshot == ["first"]
                                 && commands == 2 && calls == 2 && context.isClosed && token.areFutureChildAdmissionsClosed,
                                 "planner accessed a later registration after pending cleanup")
@@ -4806,8 +4868,10 @@ private enum SystemConfigCommandSelfTests {
         try CustodyHelperSelfTests.until { handle.snapshot().phase == .finished && registry.testingCount == 0 }
         let result = handle.snapshot()
         let expected: CustodyOutcome = scenario == "custody-cancel" || scenario == "custody-eof" ? .cancelledDrained : .completed
-        try check(result.journal?.outcome == expected && result.journal?.target != nil,
-            "frozen native target failed: \(String(describing: result.journal?.outcome))")
+        let observedOutcome = result.journal?.outcome
+        let observedTarget = result.journal?.target
+        try check(observedOutcome == expected && observedTarget != nil,
+            "frozen native target failed: \(String(describing: observedOutcome))")
         try check(result.stdout == Data(("frozen-config:" + snapshot.frozenSHA256 + "\n").utf8),
             "native read-only target did not receive exact frozen bytes")
         try CustodyHelperSelfTests.until { owner == nil }

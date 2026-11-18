@@ -16,6 +16,7 @@
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "scripts/ci-shards.py": "Run mandatory macOS-specific tooling and native fixture groups on standard macOS26 arm64; retain exact-run aggregation and independent full transitions.",
     "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
@@ -188,7 +189,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncApp/M5Harness.swift",
-      "sha256": "90f9f167a2ca2025335ba83be3b5356bc0e178ab2ee4f044dd8432532f95b827"
+      "sha256": "0b642c87c2ee96964392581118b24bbf26112fd2e825086ddca1213d426d1b54"
     },
     {
       "mode": "100644",
@@ -258,7 +259,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCatalog/RepositorySelectionCatalog.swift",
-      "sha256": "2ada92612e35721b23018c201562b0925415f2a05bd76a0ea8f68675424b5986"
+      "sha256": "751b7898fdf76059a2719addab68e4af3877e9badf8564742fbbf5919dd3d8f7"
     },
     {
       "mode": "100644",
@@ -358,7 +359,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/CustodyResources.swift",
-      "sha256": "9d63b0486827cc28b8233ed9c68e37955d4c4ce9c40872f9f55dfd06676656e5"
+      "sha256": "8b215f5213e315648991345df51804fe1a9782b623cfc5331254812e1411ed82"
     },
     {
       "mode": "100644",
@@ -373,7 +374,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM2Body3SelfTests.swift",
-      "sha256": "393633cce54dfa382bd93807d57cbf3cfe6a1ec49a397546dc9323070748ef67"
+      "sha256": "3a8a44dcaf0ac6e4b474fedc5f28f13aa69be66393febfe305ff5e0c42e62efb"
     },
     {
       "mode": "100644",
@@ -383,7 +384,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift",
-      "sha256": "138fb12d63bae1c2d14d0b2aab7b5e7c989721f34bb897fdda0e63891b386315"
+      "sha256": "26c06b78717a348b2792684922ebc83fd7ac5e5761f1a7b3637b63d1d4e07da3"
     },
     {
       "mode": "100644",
@@ -393,7 +394,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DiscoveryCallerSelfTests.swift",
-      "sha256": "4d9946e4bd1d5ce990faae62a118278ae5576f8304f776b60e9c0be9064bcda7"
+      "sha256": "cd952539534d2d31ee65882a922120c100af72610ed1b90b2478e429b0b92f81"
     },
     {
       "mode": "100644",
@@ -443,7 +444,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DiscoveryTestingSupport.swift",
-      "sha256": "3627890bedb36dff93e016a5247edc1dfd6d182c5916784377bc09268dcdc264"
+      "sha256": "8717ff3e3cf7bb8461e73b2aaf86b682212096db70c13d0852d583105ad114be"
     },
     {
       "mode": "100644",
@@ -513,7 +514,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/HostPolicySnapshotSelfTests.swift",
-      "sha256": "bcafe69261f5713a2d9df0c98e3d673b00a4c8ba9626f3689115482108f0e13c"
+      "sha256": "ef01e6be86f55bbe1b9c5674a536bcd8565d580028d0c3f9993b806166e76e52"
     },
     {
       "mode": "100644",
@@ -568,7 +569,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M4SelfTests.swift",
-      "sha256": "f3f3807a9c2badd270692b504b94cfba5bd7653ad34ea37195c8870a882bd4de"
+      "sha256": "e7839345f5f392a5bcf944bce134b745b31c1310b00bac2ab1e462976eeae65c"
     },
     {
       "mode": "100644",
@@ -578,7 +579,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/M6SelfTests.swift",
-      "sha256": "d273d252f701401e95f7b639c2b77f7edb118efa164f3cd6fc19983e15111a9f"
+      "sha256": "7bb32ba9417a932e50138a2647d61bc1ebf5ef8ce0be70ed333347b8b66896a4"
     },
     {
       "mode": "100644",
@@ -608,7 +609,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/PolicyCatalogSession.swift",
-      "sha256": "59b15be1bbff86d2e276e0eeb5ca96d26ab924a8c6ae7b78105f3c5c8b37e8f6"
+      "sha256": "5cc47c00fa95ce06e4a7c63921c3b2fb38fff37b808ad91ec15aa6325e0b5c6c"
     },
     {
       "mode": "100644",
@@ -718,7 +719,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RepositoryInventoryDiscovery.swift",
-      "sha256": "09945809b2b580f06b11723a47076a8943ca5177f73efa210bf723c43c7f93ca"
+      "sha256": "aabc379ebd56a856ff535dc1d5cc6287cb7cf9a5a5c956329bb7da6914cb0adf"
     },
     {
       "mode": "100644",
@@ -728,7 +729,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RepositoryMaintenance.swift",
-      "sha256": "0fa40fdd0f284944248b813fb5ab633fd842de73bd6e6f177a5d15bdfb7ec84c"
+      "sha256": "51b3d1ebd3f0933987ff7ecc86ecdab2f9e584b293aacaace28c72e6fcb353ec"
     },
     {
       "mode": "100644",
@@ -743,7 +744,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RepositorySelectionAdmissionSelfTests.swift",
-      "sha256": "79e0813ecffca62ee956bcb5fb593383dfd929bd5c7162cf1d3bf2ba0821cd7b"
+      "sha256": "f3eaad5f3ce3c65835a5f3bf59efc70ce7cb02ba5bab377c91a7ab47406474aa"
     },
     {
       "mode": "100644",
@@ -753,7 +754,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/RetainedCleanupRegistry.swift",
-      "sha256": "1c8b90dc1055412a4815af30775437a20404c606a671fe6d9c96f516a95c245e"
+      "sha256": "3b674ca232cdbb4893fc79914dc9fe148ce31322835adf62604df4260378f0aa"
     },
     {
       "mode": "100644",
@@ -813,7 +814,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SelectedRepositoryScope.swift",
-      "sha256": "ed616ac31006c149cbcff3a5cf3baff62da9814e38b661d8c037b87e288c24cf"
+      "sha256": "1d4312b504290d3d9dd819ec0e50567aeca02947f291fddfccbafe74e783cd0f"
     },
     {
       "mode": "100644",
@@ -858,7 +859,7 @@
     {
       "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "4d74ab65ac3078c092fa7d6d0144fc0c58482b1bd9f6657b924ef6d80b235852"
+      "sha256": "9012b20ac958684c7a4e5b10bb130f946fb40ef6003615dd9e652e9d94caaa5d"
     },
     {
       "mode": "100644",
@@ -943,7 +944,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_native_appkit_runner.py",
-      "sha256": "73c8962c44b6d64b05e7ccdd284b6c77c939600ba167f4e7cfc7b06a801927e0"
+      "sha256": "d8450308c09658d7201c1c5b1086c211617aad506f400f95340a1d397911ae87"
     },
     {
       "mode": "100644",
@@ -993,7 +994,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "2039eb99b23f6d08c12aa5d31ded5683e912f72421f98ff16c0b9b6195121291"
+      "sha256": "39114126dd2793a1e32d64eb71908e8531194ba1edf3ab454e5fce3dffed33ca"
     },
     {
       "mode": "100644",
@@ -1063,7 +1064,7 @@
     {
       "mode": "100644",
       "path": "scripts/ci-shards.py",
-      "sha256": "af3fee917d7846a738ea06764f42eab23515c17de60b6cf6dda874e7cbeb2406"
+      "sha256": "d862ed4233b979017c532237ae91fc54cc0ff4c193ef7f43316bcee3203ac4e2"
     },
     {
       "mode": "100644",
@@ -1143,7 +1144,7 @@
     {
       "mode": "100644",
       "path": "scripts/run-native-appkit.py",
-      "sha256": "b0cda49cf46e73db7435b5d9dfbf4c36edbd28af38f952b065d91c717cc25056"
+      "sha256": "3543c49f5722cd0151fa4cef81cb756cd3567ecd62d12d2571aa132b9a63ffc3"
     },
     {
       "mode": "100644",
