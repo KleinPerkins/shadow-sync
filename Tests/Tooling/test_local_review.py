@@ -69,6 +69,17 @@ class CaptureTests(unittest.TestCase):
   for kind in ('item.started','item.updated'):
    bad=self.events();bad.insert(2,{'type':kind,'item':{'type':'error','message':next(iter(m.STARTUP_NOTICES))}})
    with self.assertRaisesRegex(m.CaptureError,'completed event'):m.captured_report(self.raw(bad),json.dumps(self.report))
+ def test_exact_disabled_code_mode_notice_requires_completed_review(self):
+  notice='Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`.'
+  self.assertIn(notice,m.STARTUP_NOTICES)
+  events=self.events();events.insert(1,{'type':'item.completed','item':{'type':'error','message':notice}})
+  self.assertEqual(m.captured_report(self.raw(events),json.dumps(self.report))[1],self.report)
+  for message in (notice+' ',notice.replace('disabled','enabled')):
+   bad=copy.deepcopy(events);bad[1]['item']['message']=message
+   with self.assertRaises(m.CaptureError):m.captured_report(self.raw(bad),json.dumps(self.report))
+  with self.assertRaises(m.CaptureError):m.captured_report(self.raw(events[:-1]),json.dumps(self.report))
+  bad=copy.deepcopy(events);bad.insert(3,{'type':'item.completed','item':{'type':'web_search','query':'fixture'}})
+  with self.assertRaisesRegex(m.CaptureError,'unexpected tools'):m.captured_report(self.raw(bad),json.dumps(self.report))
  def test_process_limits_failure_timeout(self):
   import sys
   with self.assertRaises(m.CaptureError):m.run([sys.executable,'-c','raise SystemExit(1)'])

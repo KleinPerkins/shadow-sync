@@ -3127,6 +3127,7 @@
           "test_local_review.CaptureTests.test_cleanup_permission_error_requires_observed_group_absence",
           "test_local_review.CaptureTests.test_direct_completed_capture",
           "test_local_review.CaptureTests.test_event_order_must_be_one_fresh_thread_then_turn_and_report",
+          "test_local_review.CaptureTests.test_exact_disabled_code_mode_notice_requires_completed_review",
           "test_local_review.CaptureTests.test_exact_startup_notices_recorded_but_unknown_errors_rejected",
           "test_local_review.CaptureTests.test_exited_leader_cannot_leave_live_descendant",
           "test_local_review.CaptureTests.test_failure_truncation_wrong_output_duplicate_turn_tools",

@@ -13,10 +13,11 @@
       "credential_store": "keyring",
       "allowed_startup_notice_sha256": [
         "b2fc6975a5637afa2ac999a3260fc7980db0be97b0474c7a8a14c57e18d4a6e1",
-        "de8c81bdbcbc27db4d16d6ea11b6463544d5351492a5b397d3d31af1fbc78ca3"
+        "de8c81bdbcbc27db4d16d6ea11b6463544d5351492a5b397d3d31af1fbc78ca3",
+        "098e801ebc95c9c7312a945849442846324dcf639365a297313248993822711b"
       ],
       "creation_adapter_sha256": "f4904b403fbff4416a0bffe14809c5b4cecaf3925145aee2b1d2ced7c9c19a4b",
-      "capture_adapter_sha256": "9a7c7dfe757e3cbe15217ea69f3e64d9f7de393339d6055ed19bcab79ae4bf14"
+      "capture_adapter_sha256": "cc1914daef5ef01ea36ff4c2f989fe457d16f38254f66170fb638948ad7f35cf"
     },
     {
       "id": "enrollment-e876e8eb",
@@ -27,10 +28,11 @@
       "cli_version": "codex-cli 0.148.0",
       "credential_store": "file",
       "allowed_startup_notice_sha256": [
-        "b2fc6975a5637afa2ac999a3260fc7980db0be97b0474c7a8a14c57e18d4a6e1"
+        "b2fc6975a5637afa2ac999a3260fc7980db0be97b0474c7a8a14c57e18d4a6e1",
+        "098e801ebc95c9c7312a945849442846324dcf639365a297313248993822711b"
       ],
       "creation_adapter_sha256": "f4904b403fbff4416a0bffe14809c5b4cecaf3925145aee2b1d2ced7c9c19a4b",
-      "capture_adapter_sha256": "9a7c7dfe757e3cbe15217ea69f3e64d9f7de393339d6055ed19bcab79ae4bf14"
+      "capture_adapter_sha256": "cc1914daef5ef01ea36ff4c2f989fe457d16f38254f66170fb638948ad7f35cf"
     }
   ],
   "governance": {
