@@ -358,6 +358,13 @@ public enum HostPolicySnapshotSelfTestRunner {
             catch SelectedRepositoryScopeError.policyUnavailable {}
         }
         func deadline() -> UInt64 { DispatchTime.now().uptimeNanoseconds + RepositorySelectionCatalogLimits().elapsedNanoseconds }
+        func waitPastMetadataWindow() {
+            let end = DispatchTime.now().uptimeNanoseconds
+                + RepositorySelectionCatalogLimits().elapsedNanoseconds + 50_000_000
+            while DispatchTime.now().uptimeNanoseconds < end {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T01-snapshot-helper-and-catalog-composition") {
             let projection = "/fixture/home/workspace", marker = projection + "/ready/.git"
             let roster = [marker] + ["config", "refs", "refs/remotes", "refs/remotes/origin", "refs/remotes/origin/HEAD"].map { marker + "/" + $0 }
@@ -1219,7 +1226,7 @@ public enum HostPolicySnapshotSelfTestRunner {
             try denied {
                 try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { service in
                     service.testingBeforeAccess = { accesses.append($0) }
-                    usleep(useconds_t(RepositorySelectionCatalogLimits().elapsedNanoseconds / 1_000 + 50_000))
+                    waitPastMetadataWindow()
                     _ = try RepositoryDiscovery().discoverMetadata(scope: scope, policy: service)
                 }
             }
@@ -1285,7 +1292,7 @@ public enum HostPolicySnapshotSelfTestRunner {
             let command = try discoveryCommand(), budget = try CustodyBudget.make(kind: .discoveryGit, workSeconds: command.workSeconds)
             try binder.withDiscoveryCommandPolicy(scope, selected: scope.repositories[0], command: command,
                 budget: budget, cancellation: CancellationToken()) { service in
-                usleep(useconds_t(RepositorySelectionCatalogLimits().elapsedNanoseconds / 1_000 + 50_000))
+                waitPastMetadataWindow()
                 try service.requireCandidate(candidates[0])
                 try service.willAccess(candidates[0].path + "/.git/config")
                 try require(service.budget == budget && service.command.arguments == command.arguments,
