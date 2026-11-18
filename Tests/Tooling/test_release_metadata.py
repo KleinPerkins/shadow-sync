@@ -6,6 +6,7 @@ from pathlib import Path
 import plistlib
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -21,6 +22,26 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertEqual(info["ShadowSyncReleaseSchema"], "shadow-sync-release/v2")
         self.assertEqual(info["ShadowSyncArchitecture"], "arm64")
         self.assertEqual(info["LSMinimumSystemVersion"], "26.0")
+
+        # Exercise the actual build platform probe with more output than a pipe
+        # buffer; a correct minos value must not hide or induce producer failure.
+        build = (ROOT / "scripts/build-app.sh").read_text()
+        probe = build[build.index('MIN_OS="$(otool'):build.index('\ndone', build.index('MIN_OS="$(otool'))]
+        with tempfile.TemporaryDirectory(prefix="shadow-sync-platform-probe-") as temporary:
+            root = Path(temporary)
+            tool = root / "otool"
+            for version, producer_exit, expected in [("26.0", 0, 0), ("25.0", 0, 1),
+                                                      ("26.0", 7, 7)]:
+                with self.subTest(version=version, producer_exit=producer_exit):
+                    tool.write_text("#!" + sys.executable + "\nimport sys\n"
+                        + "sys.stdout.write(" + repr("cmd LC_BUILD_VERSION\nminos " + version + "\n"
+                            + "fixture load command\n" * 100000) + ")\n"
+                        + "sys.stdout.flush()\nsys.exit(" + str(producer_exit) + ")\n")
+                    tool.chmod(0o700)
+                    result = subprocess.run(["/bin/bash", "-c", "set -euo pipefail\n" + probe],
+                        env={"PATH": str(root) + ":/usr/bin:/bin", "SOURCE_BINARY": "fixture"},
+                        capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, expected, result.stderr[-2000:])
 
     def test_contract_has_standalone_authority(self):
         contract = json.loads((ROOT / "Resources/release-contract.json").read_bytes())

@@ -162,7 +162,8 @@ for SOURCE_BINARY in "$SOURCE_BINARY" "$COORDINATOR_BINARY"; do
   printf 'build-app: executable architecture does not match the producing host\n' >&2
   exit 1
 }
-MIN_OS="$(otool -l "$SOURCE_BINARY" | awk '/LC_BUILD_VERSION/{seen=1; next} seen && /minos/{print $2; exit}')"
+# Drain otool after finding minos so pipefail preserves only real tool errors.
+MIN_OS="$(otool -l "$SOURCE_BINARY" | awk '/LC_BUILD_VERSION/{seen=1; next} seen && /minos/ && !printed{print $2; printed=1}')"
 [ "$MIN_OS" = "26.0" ] || {
   printf 'build-app: executable minimum OS is %s, expected 26.0\n' "${MIN_OS:-missing}" >&2
   exit 1

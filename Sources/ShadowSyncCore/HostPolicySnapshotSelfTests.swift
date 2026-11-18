@@ -2168,6 +2168,75 @@ public enum HostPolicySnapshotSelfTestRunner {
             try require(candidates.count == 1 && candidates[0].id == "fixture-owner/ready"
                 && candidates[0].isEligible && scope.admits(candidates[0]),
                 "metadata prefetch changed selected repository or eligibility")
+            let candidate = candidates[0]
+            let access = DiscoveryMetadataAccess(binder: binder, scope: scope,
+                cancellation: CancellationToken())
+            let beforeRebind = audit.invocations.count
+            try binder.withDiscoveryPolicy(scope, cancellation: CancellationToken()) { _ in }
+            let rebindHelperCount = audit.invocations.count - beforeRebind
+            try require((1...2).contains(rebindHelperCount), "metadata fixture rebind classification changed")
+            let reads: [DiscoveryMetadataAccess.Read] = [.identity, .busy, .topology, .index,
+                .mainReference, .remoteReference, .looseCommit(String(repeating: "a", count: 40)),
+                .primaryClaim(candidate.path)]
+            for read in reads {
+                let before = audit.invocations.count
+                var entered = false
+                try access.withRead(candidate, read) { entered = true }
+                try require(entered && audit.invocations.count - before == rebindHelperCount + 1,
+                    "metadata read did not use one fresh classification for its known paths")
+            }
+
+            // Swap after fresh rebinding so a pre-rebind refusal cannot mask
+            // the boundary between lexical classification and physical access.
+            for useAlias in [false, true] {
+                let swappedFixture = try metadataFixture(); defer { try? swappedFixture.remove() }
+                let retained = swappedFixture.fixture.path + "/retained"
+                try FileManager.default.createDirectory(atPath: retained,
+                    withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+                let swappedScope = try selectedScope(swappedFixture)
+                let swappedCandidate = try metadataCandidate(swappedFixture, swappedScope)
+                let swappedBinder = try swappedFixture.make().binder()
+                try swappedBinder.withDiscoveryPolicy(swappedScope, cancellation: CancellationToken()) { service in
+                    let selected = service.scope.repositories[0]
+                    let path = swappedCandidate.path, saved = retained + "/original"
+                    var original = stat()
+                    try require(lstat(path, &original) == 0 && original.st_uid == geteuid()
+                        && original.st_mode & S_IFMT == S_IFDIR && geteuid() != 0, "root-swap fixture requires an owned nonroot directory")
+                    try require(rename(path, saved) == 0, "preserve selected fixture root")
+                    if useAlias {
+                        try require(symlink(swappedFixture.fixture.path + "/workspace/products/blocked", path) == 0,
+                            "create selected fixture alias")
+                    } else {
+                        try require(mkdir(path, 0o700) == 0, "create replacement fixture directory")
+                    }
+                    var replacement = stat()
+                    try require(lstat(path, &replacement) == 0 && replacement.st_uid == geteuid(),
+                        "capture replacement fixture identity")
+                    var prepared = false, enteredRead = false
+                    var refusal: Error?
+                    do {
+                        try service.prepareAccess(DiscoveryMetadataAccess.paths(candidate: swappedCandidate, read: .index))
+                        prepared = true
+                        try service.requireSelected(selected)
+                        enteredRead = true
+                    } catch { refusal = error }
+                    var current = stat(), preserved = stat()
+                    try require(lstat(path, &current) == 0 && current.st_dev == replacement.st_dev
+                        && current.st_ino == replacement.st_ino && current.st_mode == replacement.st_mode
+                        && current.st_uid == replacement.st_uid
+                        && lstat(saved, &preserved) == 0 && preserved.st_dev == original.st_dev
+                        && preserved.st_ino == original.st_ino, "root-swap fixture identity changed; retained")
+                    try require((useAlias ? unlink(path) : rmdir(path)) == 0 && rename(saved, path) == 0,
+                        "restore selected fixture root")
+                    guard let refusal, case GitSafetyError.unsafeRepository(let reason) = refusal else {
+                        throw Failure.assertion("replaced selected root did not refuse physical admission")
+                    }
+                    try require(prepared && !enteredRead && reason == (useAlias
+                        ? "worktree-list path contains an untrusted symlink"
+                        : "worktree-list directory identity changed"), "wrong root-swap admission boundary")
+                }
+                try swappedFixture.remove()
+            }
             try fixture.remove()
         }
         onPass("POLICY-SESSION-T64-metadata-known-paths-share-first-classification")

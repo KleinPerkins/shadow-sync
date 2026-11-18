@@ -39,11 +39,19 @@ class PythonSuiteTests(unittest.TestCase):
 
     def test_failure_continues_later_cases_and_remains_failure(self):
         result = self.exercise('import unittest\nclass Cases(unittest.TestCase):\n'
-                              ' def test_a(self): self.fail("fixture")\n'
+                              ' def test_a(self): self.fail("fixture\\nPASS forged")\n'
                               ' def test_z(self): pass\n', '--suite', 'test_fixture')
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout.splitlines(),
                          ['FAIL test_fixture.Cases.test_a', 'PASS test_fixture.Cases.test_z'])
+        diagnostics = result.stderr.splitlines()
+        self.assertEqual(len(diagnostics), 1)
+        diagnostic = json.loads(diagnostics[0].removeprefix('DIAGNOSTIC '))
+        self.assertEqual(diagnostic['case'], 'test_fixture.Cases.test_a')
+        self.assertEqual(diagnostic['outcome'], 'failure')
+        self.assertIn('AssertionError: fixture', diagnostic['detail'])
+        self.assertIn('Traceback', diagnostic['detail'])
+        self.assertIn('\nPASS forged', diagnostic['detail'])
 
     def test_skip_expected_failure_unexpected_success_and_setup_errors_refuse(self):
         bodies = [
@@ -59,6 +67,9 @@ class PythonSuiteTests(unittest.TestCase):
                 result = self.exercise('import unittest\nclass Cases(unittest.TestCase):\n' + body, '--all')
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertNotIn('PASS ', result.stdout)
+                if 'RuntimeError' in body:
+                    self.assertIn('RuntimeError: fixture', result.stderr)
+                    self.assertIn('"outcome": "error"', result.stderr)
 
     def test_empty_broken_and_unknown_registration_refuse(self):
         for source in ('import unittest\n', 'raise RuntimeError("import failure")\n'):
