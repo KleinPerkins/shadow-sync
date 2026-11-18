@@ -16,6 +16,13 @@ runtime account check matches ChatGPT email to the owner-declared private
 enrollment. Policy-byte binding does not authenticate a private enrollment changed
 by a principal with the same local access; that remains Q16's trusted-local limit.
 
+Git-object inspection has stricter operational budgets than the source schema:
+5,000,000 bytes of captured output per command, 32,000,000 bytes per generated
+file, 30 CPU seconds and 60 wall seconds per command. The schema's 32 MiB per-file
+and 256 MiB total source ceilings are validation upper bounds, not guaranteed
+inspection capacity. Exceeding an operational budget refuses admission, so an
+otherwise valid larger repository can encounter an availability limit.
+
 The successor Reviewer App reads trusted main source, checks enrolled origin and review, exact Actions run/attempt and every canonical unit, strict protections and its repository-scoped identity before App-owned native squash. The frozen ADR0004/0007 remain the native and fixture architecture baseline. The owner-authorized G1 successor extends source admission to independently reviewed automation changes after initial owner/admin bootstrap; it does not authorize a product release. Existing dependency maintenance remains separately governed.
 
 The predecessor App workflow stays disabled. New source does not enable the external `REVIEWER_APP_ENABLED` flag. Initial protected bootstrap, real hosted transition and routine qualification, owner-visible controls, both account origins and read-only current-main App readiness precede writer activation. Keep writer off for read-only `app-current` qualification. Agents never manually merge, arm/cancel auto-merge or bypass checks. Fixture source merge, installation, signing, release and UAT are distinct outcomes.
