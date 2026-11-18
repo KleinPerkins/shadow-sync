@@ -1258,9 +1258,12 @@ public enum V3PreflightSelfTestRunner {
                 && lookup.completedAvailableCount >= 1
                 && owned.cleanupComplete && owned.spawned == owned.reaped,
                 "parent cancellation lost completed evidence or retained active children")
-            try require(progress.snapshots.contains { $0.stage == .pullRequestEvidence && $0.completed >= 1 }
-                && !progress.snapshots.contains { $0.stage == .candidateAssembly },
-                "cancelled outer inspection published candidate assembly or lost stage evidence")
+            try require(progress.snapshots.contains { $0.stage == .pullRequestEvidence && $0.completed >= 1 },
+                "cancelled outer inspection lost retained pull-request stage evidence")
+            // Stage entry is announced before the first branch admission check;
+            // completed assembly, unlike that notification, must remain absent.
+            try require(!progress.snapshots.contains { $0.stage == .candidateAssembly && $0.completed > 0 },
+                "cancelled outer inspection completed candidate assembly")
             cancellationProof?.verified = true
             throw GitSafetyError.cancelled
         }

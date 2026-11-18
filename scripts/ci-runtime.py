@@ -127,7 +127,7 @@ def fixture_environment(suite, root, nonce, python, build_root, framework, polic
         SHADOW_SYNC_TEST_POLICY_FRAMEWORK=str(framework),
         SHADOW_SYNC_TEST_POLICY_SOURCE=str(policy_source))
     if suite == 'discovery-caller':
-        env['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'] = 'boundaries'
+        env['SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS'] = 'costs'
     return env
 
 
