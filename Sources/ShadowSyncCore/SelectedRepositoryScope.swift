@@ -819,7 +819,7 @@ public final class SelectedRepositoryScopeBinder:
                 started: diagnosticStart, deadline: deadline, succeeded: diagnosticPassed)
         }
         #endif
-        let root = try openRoot(deadline: deadline)
+        let root = try openRoot(deadline: deadline, selectedHints: intent.entries.map(\.locator))
         defer { close(root.descriptor) }
         #if SHADOW_SYNC_TESTING
         diagnosticStage = .projection
@@ -1183,11 +1183,44 @@ public final class SelectedRepositoryScopeBinder:
         let identity: FileIdentity
     }
 
-    private func openRoot(deadline: UInt64) throws -> OpenedRoot {
+    /// Optional lexical comparison inputs only. No pathname is inspected here,
+    /// and a hint decision never substitutes for the catalog's later exact-path
+    /// admission. Keep the mandatory root first and the existing batch bound.
+    static func rootAdmissionPaths(logicalRoot: String, projectionRoot: [String],
+                                   shelves: [[String]], hints: [RepositorySelectionLocator]) throws
+        -> [RepositorySelectionAdmissionPath] {
+        var result = [try RepositorySelectionAdmissionPath(root: logicalRoot, components: [])]
+        let parents = Set(([projectionRoot] + shelves.map { projectionRoot + $0 })
+            .map { $0.map { Data($0.utf8) } })
+        var seen = Set<Data>()
+        for hint in hints where result.count < 64 {
+            guard hint.governedRoot.utf8.elementsEqual(logicalRoot.utf8),
+                  let leaf = hint.components.last, !leaf.utf8.starts(with: [46]),
+                  parents.contains(hint.components.dropLast().map { Data($0.utf8) }) else { continue }
+            let key = Data(hint.components.joined(separator: "/").utf8)
+            if seen.insert(key).inserted {
+                result.append(try RepositorySelectionAdmissionPath(root: logicalRoot, components: hint.components))
+            }
+        }
+        return result
+    }
+
+    private func openRoot(deadline: UInt64, selectedHints: [RepositorySelectionLocator] = []) throws -> OpenedRoot {
         try revalidatePhase()
         do {
-            try admission.requireAllowed(
-                RepositorySelectionAdmissionPath(root: logicalRoot, components: []), deadline: deadline)
+            let paths: [RepositorySelectionAdmissionPath]
+            if let snapshot {
+                paths = try Self.rootAdmissionPaths(logicalRoot: logicalRoot,
+                    projectionRoot: snapshot.projection.rootComponents,
+                    shelves: snapshot.projection.shelves, hints: selectedHints)
+            } else {
+                paths = [try RepositorySelectionAdmissionPath(root: logicalRoot, components: [])]
+            }
+            let decisions = try admission.classify(paths, deadline: deadline)
+            // Malformed optional answers still refuse the entire closed batch.
+            // Valid hint answers are ignored here, including protected/missing
+            // selections; the complete fresh catalog determines their result.
+            guard case .allowed = decisions[0] else { throw RepositorySelectionAdmissionError.unavailable }
         } catch { throw Self.policyFailure(error) }
         let descriptor = Darwin.open(
             governedRootPath,

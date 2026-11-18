@@ -771,6 +771,65 @@ public enum HostPolicySnapshotSelfTestRunner {
                         "operation reused an earlier policy decision without fresh classification")
             try require(audit.invocations.count <= 2,
                         "one operation redundantly classified the same fresh catalog twice")
+            // Optional root-batch hints are byte-exact, bounded lexical input.
+            // Foreign roots, sibling prefixes and nested paths are not queried.
+            func locator(_ components: [String], root: String = "~") throws -> RepositorySelectionLocator {
+                try RepositorySelectionLocator(governedRoot: root, components: components)
+            }
+            let readyHint = try locator(["workspace", "products", "ready"])
+            let unicodeA = try locator(["workspace", "products", "caf\u{00e9}"])
+            let unicodeB = try locator(["workspace", "products", "cafe\u{0301}"])
+            let hints = try SelectedRepositoryScopeBinder.rootAdmissionPaths(logicalRoot: "~",
+                projectionRoot: ["workspace"], shelves: [["products"]], hints: [
+                    readyHint, readyHint, locator(["workspace", "products", "ready"], root: "foreign"),
+                    locator(["workspace-other", "products", "ready"]),
+                    locator(["workspace", "products", "ready", "nested"]),
+                    locator(["workspace", "other", "ready"]), locator(["workspace", "root-child"]), unicodeA, unicodeB,
+                ])
+            try require(hints.count == 5 && hints[0].components.isEmpty
+                && hints[1].components == readyHint.components
+                && hints[3].components.map { Data($0.utf8) } == unicodeA.components.map { Data($0.utf8) }
+                && hints[4].components.map { Data($0.utf8) } == unicodeB.components.map { Data($0.utf8) },
+                "root lexical prefetch broadened, duplicated or normalized its hints")
+            let maximumHints = try SelectedRepositoryScopeBinder.rootAdmissionPaths(logicalRoot: "~",
+                projectionRoot: ["workspace"], shelves: [["products"]], hints: (0..<80).map {
+                    try locator(["workspace", "products", "repo-\($0)"])
+                })
+            try require(maximumHints.count == 64 && maximumHints[0].components.isEmpty
+                && maximumHints.last?.components.last == "repo-62", "optional hints displaced root or exceeded batch bound")
+            let one = try SessionFixture(); defer { try? one.remove() }
+            let blocked = one.fixture.path + "/workspace/products/blocked"
+            var blockedInfo = stat()
+            try require(lstat(blocked, &blockedInfo) == 0 && blockedInfo.st_uid == geteuid()
+                && blockedInfo.st_mode & S_IFMT == S_IFDIR && rmdir(blocked) == 0, "one-repository fixture setup")
+            let oneScope = try selectedScope(one), oneAudit = CommandAudit()
+            let oneBinder = try one.make(audit: oneAudit).binder()
+            for expectedCalls in 1...2 {
+                _ = try oneBinder.withReboundScope(oneScope, cancellation: CancellationToken()) { rebound in
+                    try require(rebound == oneScope, "batched hint substituted for fresh scope identity")
+                }
+                try require(oneAudit.invocations.count == expectedCalls,
+                            "one-repository rebind did not use one fresh classifier per operation")
+            }
+            let unhinted = try oneBinder.processFreeCatalog(preferences: nil, generation: 1)
+            try require(unhinted.isComplete && oneAudit.invocations.count == 4,
+                        "later unhinted catalog reused a prior scan or skipped its discovered names")
+            let reboundEntry = try RepositorySelectionPreferenceEntry(repositoryID: oneScope.repositories[0].repositoryID,
+                locator: oneScope.repositories[0].locator)
+            let ordinaryBind = try oneBinder.bind(intent: RepositorySelectionIntent(catalog: unhinted.catalog,
+                entries: [reboundEntry]))
+            try require(ordinaryBind == oneScope && oneAudit.invocations.count == 5,
+                        "ordinary bind did not obtain one complete fresh classified catalog")
+            // An invalid optional answer refuses the whole root batch. It must
+            // never be ignored to preserve a stale selection's error priority.
+            let malformed = try one.make("invalid-selected-hint").binder()
+            do {
+                _ = try malformed.withReboundScope(oneScope, cancellation: CancellationToken()) { _ in
+                    throw Failure.assertion("malformed hint answer reached selected access")
+                }
+                throw Failure.assertion("malformed optional answer admitted root")
+            } catch SelectedRepositoryScopeError.policyUnavailable {}
+            try one.remove()
             try context.remove()
         }
         onPass("POLICY-SESSION-T14-fresh-operation-rebind-preserves-exact-selection")
@@ -820,6 +879,19 @@ public enum HostPolicySnapshotSelfTestRunner {
             try require(lstat(original, &before) == 0 && FileIdentity(before) == selected.repositoryIdentity,
                         "original selected fixture identity changed")
             try require(rename(original, saved) == 0, "retain original selected fixture")
+            do {
+                _ = try context.make().binder().withReboundScope(scope, cancellation: CancellationToken()) { _ in
+                    throw Failure.assertion("absent selected hint reached downstream inspection")
+                }
+                throw Failure.assertion("absent selected hint rebound")
+            } catch SelectedRepositoryScopeError.changed {}
+            do {
+                _ = try context.make("invalid-selected-hint").binder().withReboundScope(scope,
+                    cancellation: CancellationToken()) { _ in
+                    throw Failure.assertion("stale hint with malformed answer reached downstream inspection")
+                }
+                throw Failure.assertion("stale malformed hint admitted root")
+            } catch SelectedRepositoryScopeError.policyUnavailable {}
             var replacementIdentity: FileIdentity?
             var bodyFailure: Error?
             do {
@@ -2107,6 +2179,7 @@ public enum HostPolicySnapshotSelfTestRunner {
                     if mode=='metadata-object-ancestor': matched=matched or path.endswith('/.git/objects')
                     kind='exact_root' if matched else 'none'
                     if mode=='invalid': matched=True; kind='invalid_candidate'
+                    if mode=='invalid-selected-hint' and path.endswith('/products/ready'): matched=True; kind='invalid_candidate'
                     rows.append({'index':i,'matched':matched,'kind':kind,'policy_valid':True})
                 if mode in ('metadata-prefetch-roster','metadata-prefetch-protected'):
                     for marker in [p for p in request['candidates'] if p.endswith('/ready/.git')]:

@@ -16,8 +16,8 @@
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
-    "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
-    "scripts/ci-shards.py": "Run mandatory macOS-specific tooling and native fixture groups on standard macOS26 arm64; retain exact-run aggregation and independent full transitions."
+    "scripts/ci-shards.py": "Run mandatory macOS-specific tooling and native fixture groups on standard macOS26 arm64; retain exact-run aggregation and independent full transitions.",
+    "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
   "files": [
@@ -514,7 +514,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/HostPolicySnapshotSelfTests.swift",
-      "sha256": "936294bc7da7c56135a35a68c1e7d1cd4df37caaacd90f0b153b53cabb0a8245"
+      "sha256": "c3eb3022222daad5a4b87b90810551f2c1d5fc817c549230129b3998e100c8ff"
     },
     {
       "mode": "100644",
@@ -814,7 +814,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/SelectedRepositoryScope.swift",
-      "sha256": "a87587735df6a8066117f62c49b4f4945f2d390c07fcacdacf61349aa6e8636b"
+      "sha256": "fb6d38a30a93667d842a8657eeb80e49c84141778723c1ae59f7079f229a262a"
     },
     {
       "mode": "100644",
