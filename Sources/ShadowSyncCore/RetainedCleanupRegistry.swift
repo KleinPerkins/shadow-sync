@@ -431,18 +431,19 @@ final class RetainedCleanupRegistry: @unchecked Sendable {
         enabled = enabled || entry.helper.testingAutomaticAdmission
         #endif
         guard enabled, let owner = entry.owner else { return }
+        let key = entry.resources.request.binding.requestID, identity = owner.identity
         for stream in CustodyRequestResources.ObservationStream.allCases {
             #if SHADOW_SYNC_TESTING
             if entry.deferredRead != nil { continue }
             #endif
-            if let source = try? entry.resources.observeReadiness(stream, on: queue, handler: { [weak self, weak entry] in
-                guard let self, let entry, self.entries[entry.resources.request.binding.requestID] === entry else { return }
+            if let source = try? entry.resources.observeReadiness(stream, on: queue, handler: { [weak self] in
+                guard let self, self.entries[key]?.owner?.identity == identity else { return }
                 self.tick()
             }) { entry.readObservers[stream] = source }
         }
         let source = DispatchSource.makeProcessSource(identifier: owner.identity.processID, eventMask: .exit, queue: queue)
-        source.setEventHandler { [weak self, weak entry] in
-            guard let self, let entry, self.entries[entry.resources.request.binding.requestID] === entry else { return }
+        source.setEventHandler { [weak self] in
+            guard let self, let entry = self.entries[key], entry.owner?.identity == identity else { return }
             entry.exitObserver?.cancel(); entry.exitObserver = nil
             self.tick()
         }
