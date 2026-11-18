@@ -76,7 +76,8 @@ if mode == 'deadline-cleanup': sys.exit(3)
         self.source_calls += 1
         return ('c' if self.source_changed and self.source_calls > 1 else 'b') * 64
 
-    def run_unit(self, *, mode='pass', base='same', alter_plan=None, observe=runner.observe_command):
+    def run_unit(self, *, mode='pass', base='same', alter_plan=None, observe=runner.observe_command,
+                 stop_after_failure=False):
         self.contract['commands'][self.first]['argv'][-1] = mode
         head = ci.encode(self.contract)
         base_bytes = head if base == 'same' else None
@@ -85,7 +86,8 @@ if mode == 'deadline-cleanup': sys.exit(3)
             alter_plan(plan)
         return runner.execute_unit(self.root, head, base_bytes, ci.encode(plan), self.unit_id,
             self.artifacts, self.diagnostics, identity=self.identity,
-            environment={'PATH': os.defpath}, source=self.source, observe=observe)
+            environment={'PATH': os.defpath}, source=self.source, observe=observe,
+            stop_after_failure=stop_after_failure)
 
     def receipt(self, name=None):
         return json.loads((self.artifacts / self.unit_id / ((name or self.first) + '.json')).read_bytes())
@@ -95,12 +97,43 @@ if mode == 'deadline-cleanup': sys.exit(3)
         self.assertEqual(self.source_calls, 2)
         self.assertEqual(self.receipt()['passed_cases'], [self.first + '/one', self.first + '/two'])
         self.assertTrue(self.receipt()['cleanup_complete'])
+        self.artifacts = self.root / 'early-pass-artifacts'; self.artifacts.mkdir()
+        self.diagnostics = self.root / 'early-pass-diagnostics'; self.diagnostics.mkdir()
+        self.assertTrue(self.run_unit(stop_after_failure=True))
+        unit = json.loads((self.artifacts / self.unit_id / 'unit.json').read_bytes())
+        self.assertEqual(unit['status'], 'complete')
+        self.assertEqual(unit['suites'], ['runtime-safety-first', 'runtime-safety-second'])
+        self.assertEqual(self.receipt('runtime-safety-second')['passed_cases'],
+                         ['runtime-safety-second/one', 'runtime-safety-second/two'])
 
     def test_actual_command_nonzero_continues_independent_drained_suite(self):
         self.assertFalse(self.run_unit(mode='exit'))
         self.assertEqual(self.receipt()['exit_code'], 2)
         self.assertEqual(self.receipt('runtime-safety-second')['status'], 'complete')
         self.assertEqual(json.loads((self.artifacts / self.unit_id / 'unit.json').read_bytes())['status'], 'failed')
+        self.artifacts = self.root / 'early-fail-artifacts'; self.artifacts.mkdir()
+        self.diagnostics = self.root / 'early-fail-diagnostics'; self.diagnostics.mkdir()
+        self.assertFalse(self.run_unit(mode='exit', stop_after_failure=True))
+        self.assertEqual(self.receipt()['exit_code'], 2)
+        self.assertTrue(self.receipt()['cleanup_complete'])
+        observer = json.loads((self.diagnostics / self.unit_id / self.first / 'observer.json').read_bytes())
+        self.assertTrue(observer['original_reaped'])
+        self.assertFalse((self.artifacts / self.unit_id / 'runtime-safety-second.json').exists())
+        head = ci.encode(self.contract); plan = ci.make_plan(head, head, **self.identity)
+        unit = next(row for row in plan['units'] if row['id'] == self.unit_id)
+        self.assertEqual(json.loads((self.artifacts / self.unit_id / 'unit.json').read_bytes())['status'], 'failed')
+        with self.assertRaises(ci.InvalidEvidence):
+            ci.verify_unit(ci.registration(head), plan, unit, self.artifacts / self.unit_id)
+        # Every other actual unit may pass; this partial failed runtime unit
+        # must still prevent ci-required, even if job outcomes claim success.
+        for other in plan['units']:
+            if other['id'] != self.unit_id:
+                self.assertTrue(runner.execute_unit(self.root, head, head, ci.encode(plan), other['id'],
+                    self.artifacts, self.diagnostics, identity=self.identity,
+                    environment={'PATH': os.defpath}, source=self.source))
+        needs = {job: {'result': 'success', 'outputs': {}} for job in ('plan', *ci.coverage.JOBS)}
+        with self.assertRaises(ci.InvalidEvidence):
+            ci.aggregate(head, head, ci.encode(plan), ci.encode(needs), self.artifacts, **self.identity)
 
     def test_reaped_cleanup_after_suite_deadline_continues_failed_unit(self):
         self.contract['commands'][self.first]['timeout_seconds'] = 1
@@ -151,6 +184,13 @@ if mode == 'deadline-cleanup': sys.exit(3)
     def test_partial_success_fails_coverage(self):
         self.assertFalse(self.run_unit(mode='partial'))
         self.assertEqual(len(self.receipt()['passed_cases']), 1)
+        self.artifacts = self.root / 'early-partial-artifacts'; self.artifacts.mkdir()
+        self.diagnostics = self.root / 'early-partial-diagnostics'; self.diagnostics.mkdir()
+        self.assertFalse(self.run_unit(mode='partial', stop_after_failure=True))
+        self.assertTrue(self.receipt()['cleanup_complete'])
+        self.assertEqual(self.receipt()['passed_cases'], [self.first + '/one'])
+        self.assertFalse((self.artifacts / self.unit_id / 'runtime-safety-second.json').exists())
+        self.assertEqual(json.loads((self.artifacts / self.unit_id / 'unit.json').read_bytes())['status'], 'failed')
 
     def test_unregistered_success_fails_coverage(self):
         self.assertFalse(self.run_unit(mode='extra'))
