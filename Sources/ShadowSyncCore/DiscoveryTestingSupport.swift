@@ -126,6 +126,9 @@ enum DiscoveryFixtureDiagnostic {
 
     /// Fixed counters for the synchronous initial inventory callback only.
     /// Nested intervals overlap; these are observations, never a new budget.
+    /// The measured stage starts after rebinding and excludes catalog setup and
+    /// outer cleanup. It is cost attribution only, not catalog responsiveness
+    /// or cleanup qualification; the existing end-to-end assertions still apply.
     final class InventoryCost {
         static let maximumTime: UInt64 = 1_000_000_000_000
         var started: UInt64?, deadline: UInt64 = 0

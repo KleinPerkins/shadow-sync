@@ -27,6 +27,11 @@ overlap. `refusal_access` freezes the first refusing access ordinal. These count
 are synchronous testing-only observations, contain no paths or input bytes, and
 share the existing 64-record/16-KiB budget with a separately reserved first refusal.
 The single original stage deadline and every admission/cleanup check remain intact.
+This interval starts after selection rebinding and excludes earlier catalog setup
+and outer owned cleanup. It cannot qualify the complete catalog responsiveness or
+cleanup requirement. Use it only to attribute cost within the initial metadata
+stage; the existing cold-catalog assertion and guardian cleanup evidence remain
+separate mandatory checks.
 
 Every ready PR requires fresh automatic independent review from the enrolled PR-creation account. The authoring agent freezes current head/base and trusted enrollment policy, runs `scripts/local_review.py`, fixes findings, then uses `scripts/create_review_pr.py` to create the PR and separate origin witness. Publish the unedited review receipt prefixed with `<!-- g1-review-receipt:v1 -->`. A changed head, base or trusted policy requires new review. Unknown origin or ambiguous creation preserves the private journal and blocks automatic retry; diagnose actual remote state read-only. The operator is not the technical reviewer.
 
