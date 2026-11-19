@@ -351,6 +351,9 @@ final class RepositoryDiscoveryPolicy {
     }
 
     func willAccess(_ path: String) throws {
+        #if SHADOW_SYNC_TESTING
+        DiscoveryFixtureDiagnostic.inventoryAccess()
+        #endif
         try validateLocalAuthority()
         do {
             try classifyAccessPrefixes([path])
@@ -1099,9 +1102,14 @@ public final class SelectedRepositoryScopeBinder:
             }
             #endif
             guard let snapshot else { throw SelectedRepositoryScopeError.policyUnavailable }
+            let deadline = DispatchTime.now().uptimeNanoseconds &+ catalogLimits.elapsedNanoseconds
+            #if SHADOW_SYNC_TESTING
+            let inventoryCost = DiscoveryFixtureDiagnostic.beginInventoryStage(deadline: deadline)
+            defer { DiscoveryFixtureDiagnostic.endInventoryStage(inventoryCost, succeeded: diagnosticPassed) }
+            #endif
             let service = try RepositoryDiscoveryPolicy(scope: rebound, snapshot: snapshot,
                 admission: admission, cancellation: cancellation, phase: revalidatePhase,
-                deadline: DispatchTime.now().uptimeNanoseconds &+ catalogLimits.elapsedNanoseconds)
+                deadline: deadline)
             defer { service.close() }
             do {
                 let value = try body(service)

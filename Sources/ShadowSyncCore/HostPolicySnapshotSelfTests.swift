@@ -1995,6 +1995,7 @@ public enum HostPolicySnapshotSelfTestRunner {
                 disabled.emit(quiet.render("disabled diagnostic\n"))
                 enabled.emit(active.render("bounded diagnostic\n"))
             }
+            disabled.emitInventory(quiet.render("disabled inventory\n"))
             disabled.beginOperation()
             disabled.observeRefusal(.admission, stage: .deadlineBefore, started: 0, deadline: 0)
             disabled.flushRefusal()
@@ -2007,6 +2008,11 @@ public enum HostPolicySnapshotSelfTestRunner {
                 && activeLines.filter { $0 == Sink.suppression }.count == 1,
                 "diagnostic suppression was missing or repeated")
             try require(activeLines.joined().utf8.count <= Sink.maximumBytes, "diagnostic byte budget exceeded")
+            // The two fixed inventory slots survive optional saturation, but
+            // cannot consume the first-refusal slot or renew the trace budget.
+            enabled.emitInventory(active.render("inventory one\n"))
+            enabled.emitInventory(active.render("inventory two\n"))
+            enabled.emitInventory(active.render("inventory three must not format\n"))
             enabled.observeRefusal(.registry, stage: .queued, started: 0, deadline: 0)
             enabled.observeRefusal(.localAuthority, stage: .snapshot, started: 0, deadline: UInt64.max, resultBits: 7)
             enabled.observeRefusal(.discovery, stage: .metadata, started: 0, deadline: 0)
@@ -2015,7 +2021,7 @@ public enum HostPolicySnapshotSelfTestRunner {
             enabled.emit(active.render("post-terminal formatting must not occur\n"))
             enabled.beginOperation(); enabled.flushRefusal()
             let (terminalLines, terminalFormats) = active.snapshot()
-            try require(terminalLines.count == Sink.maximumRecords + 1 && terminalFormats == Sink.optionalRecords
+            try require(terminalLines.count == Sink.maximumRecords + 1 && terminalFormats == Sink.optionalRecords + 2
                 && terminalLines.last?.contains("REFUSAL component=localAuthority stage=snapshot") == true
                 && terminalLines.last?.contains("deadline_expired=false result_bits=7") == true
                 && terminalLines.joined().utf8.count <= Sink.maximumBytes
@@ -2051,6 +2057,10 @@ public enum HostPolicySnapshotSelfTestRunner {
             try require(byteLines.count > 1 && byteLines.count < Sink.maximumRecords
                 && byteLines.last == Sink.suppression && byteLines.joined().utf8.count <= Sink.maximumBytes,
                 "byte bound did not independently close diagnostic output")
+            byteBounded.emitInventory(String(repeating: "i", count: Sink.maximumLineBytes))
+            byteBounded.emitInventory(String(repeating: "j", count: Sink.maximumLineBytes))
+            try require(byteProbe.snapshot().0.suffix(2).allSatisfy({ $0.utf8.count == Sink.maximumLineBytes }),
+                        "byte saturation consumed inventory reservations")
             byteBounded.observeRefusal(.admission, stage: .deadlineAfter, started: 0, deadline: 0)
             byteBounded.flushRefusal()
             try require(byteProbe.snapshot().0.last?.hasPrefix("DISCOVERY FIXTURE REFUSAL") == true
@@ -2070,6 +2080,23 @@ public enum HostPolicySnapshotSelfTestRunner {
                     && probe.snapshot().0.last?.hasPrefix("DISCOVERY FIXTURE REFUSAL") == true,
                     "oversized optional record consumed the terminal refusal slot")
             }
+            let cost = DiscoveryFixtureDiagnostic.InventoryCost()
+            cost.started = 100; cost.deadline = 200
+            cost.access(); cost.refusal(); cost.access(); cost.refusal()
+            cost.add(.session, started: 100, ended: 140, milestones: [110, 120, 130])
+            cost.add(.publisher, started: 100, ended: 160, milestones: [120, 140])
+            cost.add(.transport, started: 100, ended: 180, milestones: [])
+            let costLine = cost.line(ended: 210, succeeded: false)
+            try require(costLine.contains("elapsed_ns=110 deadline_expired=true succeeded=false accesses=2 refusal_access=1")
+                && costLine.contains("counts=1,1,1 session_ns=10,10,10,10 publisher_ns=20,20,20 transport_ns=80 capped=false")
+                && costLine.utf8.count <= Sink.maximumLineBytes,
+                "inventory summary lost stage counts, first refusal or elapsed intervals")
+            for _ in 0..<10_001 { cost.access() }
+            cost.add(.session, started: 0, ended: UInt64.max, milestones: [])
+            let boundedCost = cost.line(ended: UInt64.max, succeeded: false)
+            try require(boundedCost.contains("accesses=10000") && boundedCost.contains("capped=true")
+                && boundedCost.utf8.count <= Sink.maximumLineBytes,
+                "inventory counters overflowed their fixed representation")
         }
         onPass("POLICY-SESSION-T61-diagnostic-opt-in-and-concurrent-output-bounds")
         try RuntimeFixtureSession.withCase("POLICY-SESSION-T62-metadata-resource-revocation-before-during-and-after-classification") {

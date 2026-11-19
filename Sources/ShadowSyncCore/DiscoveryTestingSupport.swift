@@ -13,9 +13,9 @@ enum DiscoveryFixtureDiagnostic {
         static let maximumBytes = 16_384
         static let maximumLineBytes = 512
         static let suppression = "DISCOVERY FIXTURE DIAGNOSTIC suppressed=remaining reason=budget\n"
-        // Reserve one payload and its bytes for the terminal refusal, even
-        // after successful chatter closes the optional observation lane.
-        static let optionalRecords = maximumRecords - 1
+        // Reserve two inventory-stage summaries plus the terminal refusal.
+        // Optional chatter cannot consume these records or their bytes.
+        static let optionalRecords = maximumRecords - 3
         private struct Refusal {
             let component: Component, stage: Stage
             let elapsed: UInt64, expired: Bool, resultBits: UInt64
@@ -29,6 +29,7 @@ enum DiscoveryFixtureDiagnostic {
         private var closed = false
         private var finished = false
         private var refusal: Refusal?
+        private var inventoryRecords = 0
 
         init(enabled: Bool, writer: @escaping @Sendable (String) -> Void,
              clock: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) {
@@ -43,11 +44,21 @@ enum DiscoveryFixtureDiagnostic {
             guard records < Self.optionalRecords else { suppress(); return }
             let text = line(), size = text.utf8.count
             guard size <= Self.maximumLineBytes,
-                  bytes + size + Self.suppression.utf8.count + Self.maximumLineBytes <= Self.maximumBytes else {
+                  bytes + size + Self.suppression.utf8.count + (3 - inventoryRecords) * Self.maximumLineBytes <= Self.maximumBytes else {
                 suppress(); return
             }
             records += 1; bytes += size
             writer(text)
+        }
+
+        func emitInventory(_ line: @autoclosure () -> String) {
+            lock.lock(); defer { lock.unlock() }
+            guard enabled, !finished, inventoryRecords < 2,
+                  records < Self.maximumRecords - 1 else { return }
+            let text = line(), size = text.utf8.count
+            guard size <= Self.maximumLineBytes,
+                  bytes + size + (2 - inventoryRecords) * Self.maximumLineBytes <= Self.maximumBytes else { return }
+            inventoryRecords += 1; records += 1; bytes += size; writer(text)
         }
 
         func beginOperation() {
@@ -113,6 +124,75 @@ enum DiscoveryFixtureDiagnostic {
         }
     }
 
+    /// Fixed counters for the synchronous initial inventory callback only.
+    /// Nested intervals overlap; these are observations, never a new budget.
+    final class InventoryCost {
+        static let maximumTime: UInt64 = 1_000_000_000_000
+        var started: UInt64?, deadline: UInt64 = 0
+        private var accesses: UInt64 = 0, refusalAccess: UInt64?
+        private var counts = [UInt64](repeating: 0, count: 3)
+        private var session = [UInt64](repeating: 0, count: 4)
+        private var publisher = [UInt64](repeating: 0, count: 3)
+        private var transport: UInt64 = 0
+        private var capped = false
+
+        private func sum(_ lhs: UInt64, _ rhs: UInt64, limit: UInt64 = maximumTime) -> UInt64 {
+            if rhs > limit || lhs > limit - rhs { capped = true; return limit }
+            return lhs + rhs
+        }
+        func access() { accesses = sum(accesses, 1, limit: 10_000) }
+        func refusal() { if refusalAccess == nil { refusalAccess = accesses } }
+        func add(_ component: Component, started: UInt64, ended: UInt64, milestones: [UInt64]) {
+            let index: Int
+            switch component { case .session: index = 0; case .publisher: index = 1; case .transport: index = 2; default: return }
+            counts[index] = sum(counts[index], 1, limit: 10_000)
+            guard ended >= started else { capped = true; return }
+            if index == 2 { transport = sum(transport, ended - started); return }
+            let count = index == 0 ? 4 : 3
+            guard milestones.count < count else { capped = true; return }
+            let points = [started] + milestones + [ended]
+            for (i, pair) in zip(points, points.dropFirst()).enumerated() {
+                guard pair.1 >= pair.0 else { capped = true; return }
+                if index == 0 { session[i] = sum(session[i], pair.1 - pair.0) }
+                else { publisher[i] = sum(publisher[i], pair.1 - pair.0) }
+            }
+        }
+        func line(ended: UInt64, succeeded: Bool) -> String {
+            let elapsed = sum(0, ended >= (started ?? ended) ? ended - (started ?? ended) : 0)
+            let sessions = session.map(String.init).joined(separator: ",")
+            let publishers = publisher.map(String.init).joined(separator: ",")
+            let calls = counts.map(String.init).joined(separator: ",")
+            return "DISCOVERY FIXTURE INVENTORY elapsed_ns=\(elapsed) deadline_expired=\(ended >= deadline) succeeded=\(succeeded) accesses=\(accesses) refusal_access=\(refusalAccess.map(String.init) ?? "none") counts=\(calls) session_ns=\(sessions) publisher_ns=\(publishers) transport_ns=\(transport) capped=\(capped)\n"
+        }
+    }
+
+    private static let inventoryKey = "shadow-sync-fixture-inventory-cost"
+    private static var inventoryCost: InventoryCost? {
+        Thread.current.threadDictionary[inventoryKey] as? InventoryCost
+    }
+    private static var activeInventoryCost: InventoryCost? {
+        guard let cost = inventoryCost, cost.started != nil else { return nil }
+        return cost
+    }
+    static func requestInventoryCost() -> Bool {
+        guard mode == "costs", inventoryCost == nil else { return false }
+        Thread.current.threadDictionary[inventoryKey] = InventoryCost()
+        return true
+    }
+    static func cancelInventoryCost() { Thread.current.threadDictionary.removeObject(forKey: inventoryKey) }
+    static func beginInventoryStage(deadline: UInt64) -> InventoryCost? {
+        guard let cost = inventoryCost, cost.started == nil else { return nil }
+        cost.started = DispatchTime.now().uptimeNanoseconds; cost.deadline = deadline
+        return cost
+    }
+    static func endInventoryStage(_ cost: InventoryCost?, succeeded: Bool) {
+        guard let cost else { return }
+        cancelInventoryCost()
+        let ended = DispatchTime.now().uptimeNanoseconds
+        sink.emitInventory(cost.line(ended: ended, succeeded: succeeded))
+    }
+    static func inventoryAccess() { activeInventoryCost?.access() }
+
     // Read the testing-only opt-in once. The complete type and environment key
     // are absent from production builds. Disabled traces do not format records.
     private static let mode = ProcessInfo.processInfo.environment["SHADOW_SYNC_TEST_DISCOVERY_DIAGNOSTICS"]
@@ -122,13 +202,14 @@ enum DiscoveryFixtureDiagnostic {
     private static let revalidationSamples = SampleBudget(enabled: mode == "costs")
     private static let publisherSamples = SampleBudget(enabled: mode == "costs")
 
-    static func sampleRevalidation() -> Bool { revalidationSamples.take() }
-    static func samplePublisherRevalidation() -> Bool { publisherSamples.take() }
+    static func sampleRevalidation() -> Bool { activeInventoryCost != nil || revalidationSamples.take() }
+    static func samplePublisherRevalidation() -> Bool { activeInventoryCost != nil || publisherSamples.take() }
     static func beginOperation() { sink.beginOperation() }
     static func completeOperation() { sink.completeOperation() }
     static func flushRefusal() { sink.flushRefusal() }
     static func recordRefusal(_ component: Component, stage: Stage, started: UInt64,
                               deadline: UInt64, resultBits: UInt64 = 0) {
+        if component == .admission || component == .localAuthority { activeInventoryCost?.refusal() }
         sink.observeRefusal(component, stage: stage, started: started, deadline: deadline, resultBits: resultBits)
     }
 
@@ -143,6 +224,12 @@ enum DiscoveryFixtureDiagnostic {
     static func record(_ component: Component, stage: Stage, started: UInt64,
                         deadline: UInt64?, resultBits: UInt64 = 0, succeeded: Bool = false,
                         milestones: [UInt64] = []) {
+        if let cost = activeInventoryCost {
+            cost.add(component, started: started, ended: DispatchTime.now().uptimeNanoseconds, milestones: milestones)
+            // Aggregate every validation in this stage without consuming the
+            // optional trace lane on individual successful revalidations.
+            if component == .session || component == .publisher { return }
+        }
         // Boundary mode keeps successful helper chatter from consuming the
         // same fixed budget before a later admission failure can be observed.
         if mode == "boundaries" || mode == "costs" {

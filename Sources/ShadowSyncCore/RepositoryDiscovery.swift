@@ -172,6 +172,10 @@ public struct RepositoryDiscovery: SelectedRepositoryDiscovering {
     func discover(scope: ValidatedSelectedRepositoryScope,
                   binder: SelectedRepositoryScopeBinder,
                   cancellation: CancellationToken) throws -> [RepositoryCandidate] {
+        #if SHADOW_SYNC_TESTING
+        let inventoryCostRequested = DiscoveryFixtureDiagnostic.requestInventoryCost()
+        defer { if inventoryCostRequested { DiscoveryFixtureDiagnostic.cancelInventoryCost() } }
+        #endif
         let (effectiveAccount, candidates) = try binder.withDiscoveryPolicy(scope, cancellation: cancellation) { service in
             (service.account, try discoverMetadata(scope: scope, policy: service))
         }

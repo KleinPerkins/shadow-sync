@@ -18,6 +18,16 @@ covers all eight read kinds and replacement-directory/symlink swaps after rebind
 requiring refusal before a metadata read while retaining the original deadline.
 
 
+In fixture `costs` mode, the first two initial inventory metadata callbacks each
+emit one bounded `DISCOVERY FIXTURE INVENTORY` summary, even after optional trace
+saturation. `counts` are session, publisher and transport calls; `session_ns` are
+scratch, host snapshot, resources and postflight intervals; `publisher_ns` are
+resource files, executable identity and runtime tree intervals. Nested durations
+overlap. `refusal_access` freezes the first refusing access ordinal. These counters
+are synchronous testing-only observations, contain no paths or input bytes, and
+share the existing 64-record/16-KiB budget with a separately reserved first refusal.
+The single original stage deadline and every admission/cleanup check remain intact.
+
 Every ready PR requires fresh automatic independent review from the enrolled PR-creation account. The authoring agent freezes current head/base and trusted enrollment policy, runs `scripts/local_review.py`, fixes findings, then uses `scripts/create_review_pr.py` to create the PR and separate origin witness. Publish the unedited review receipt prefixed with `<!-- g1-review-receipt:v1 -->`. A changed head, base or trusted policy requires new review. Unknown origin or ambiguous creation preserves the private journal and blocks automatic retry; diagnose actual remote state read-only. The operator is not the technical reviewer.
 
 Ordinary local capture and creation require supplied policy bytes to equal the
