@@ -703,6 +703,23 @@ class ChannelTests(unittest.TestCase):
                     delivery.pinned_node()
                 execute.assert_not_called()
 
+    def test_private_path_git_never_inherits_provider_credentials_or_git_overrides(self):
+        path = self.api.root / 'private-config.json'
+        unsafe = dict(CLOUDFLARE_API_TOKEN='synthetic-token', PATH='/fixture/conflicting',
+                      GIT_DIR='/fixture/git-dir', GIT_CONFIG_COUNT='1')
+        missing = b'fatal: not a git repository (or any parent directories): .git\n'
+        with patch.dict(os.environ, unsafe, clear=True), patch.object(
+                delivery.subprocess, 'run', return_value=subprocess.CompletedProcess([], 128, b'', missing)
+        ) as execute:
+            self.assertEqual(delivery.outside_git(path), path)
+            execute.assert_called_once_with(['/usr/bin/git', '-C', str(path.parent), 'rev-parse', '--show-toplevel'],
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=10,
+                env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'GIT_CONFIG_GLOBAL': os.devnull,
+                     'GIT_CONFIG_NOSYSTEM': '1', 'GIT_TERMINAL_PROMPT': '0'})
+            execute.return_value = subprocess.CompletedProcess([], 128, b'', b'fatal: fixture failure')
+            with self.assertRaisesRegex(delivery.DeliveryError, 'Could not verify private path'):
+                delivery.outside_git(path)
+
     def test_live_toolchain_requires_protected_administrator_custody(self):
         with self.assertRaisesRegex(ValueError, 'trusted physical directories'):
             toolchain.verify_node_binary(node(), privileged=True)
