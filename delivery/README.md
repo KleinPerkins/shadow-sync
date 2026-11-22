@@ -62,11 +62,17 @@ than one hour after observation. Unknown, expired, paid or wrong-account proof
 refuses. There is no paid fallback, plan activation, R2 subscription or
 `--assume-free` bypass. Resource bootstrap requires separate owner authority.
 
-The implementation retains Node 26.4.0 and Wrangler 4.158.0 pins. Provider tooling
-binds the verified absolute Node executable and captures Wrangler authentication
-in process memory. Credentials never enter argv, public config, recipient files
-or output. Synthetic checks use `scripts/delivery-toolchain.py` with an explicit
-task-owned temporary cache; no global runtime installation is performed.
+Provider tooling pins the official Node 26.4.0 Darwin arm64 executable and the
+Wrangler 4.158.0 launcher, package metadata and CLI from the official registry
+archive. Provision Node and the locked Wrangler package with its dependencies
+under administrator-owned paths that the release account cannot modify. The
+configured Wrangler entry is `node_modules/wrangler/bin/wrangler.js` inside that
+installation. Run provider operations as the unprivileged release owner. Each
+launch checks the protected paths and disables global Node module lookup before
+the provider tool receives credentials. The owner authentication stays in
+process memory. Credentials stay out of argv, public config, recipient files
+and output. Synthetic checks use `scripts/delivery-toolchain.py` with an explicit
+task-owned temporary cache.
 
 Qualification requires exact-source mandatory CI and merge, Developer ID signing,
 notarization, stapling, Gatekeeper, detached archive signature verification and

@@ -3421,6 +3421,7 @@
           "test_private_delivery.ChannelTests.test_initial_missing_resource_requires_exact_provider_error",
           "test_private_delivery.ChannelTests.test_interrupted_protocol_publication_retries_without_relabeling_legacy",
           "test_private_delivery.ChannelTests.test_legacy_identity_cannot_be_relabeled_even_for_tiny_artifacts",
+          "test_private_delivery.ChannelTests.test_live_toolchain_requires_protected_administrator_custody",
           "test_private_delivery.ChannelTests.test_maximum_v2_metadata_and_canonical_asset_indexes",
           "test_private_delivery.ChannelTests.test_owner_node_rejects_counterfeit_version_before_execution",
           "test_private_delivery.ChannelTests.test_pinned_wrangler_auth_is_captured_without_argv_secrets",

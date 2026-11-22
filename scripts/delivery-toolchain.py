@@ -20,6 +20,11 @@ NODE_ARCHIVE = f'node-v{NODE_VERSION}-darwin-arm64.tar.xz'
 NODE_SHA256 = 'bef4c7e75087c029835f519a7ba640eba52fa617fadb3a9049828ff3b45b57dd'
 NODE_BINARY_BYTES = 145_172_672
 NODE_BINARY_SHA256 = 'd23e520f5bcd497bdd0c6a6242356a4fd255abaceba7c3549727caacb936ddae'
+WRANGLER_FILES = {
+    'bin/wrangler.js': (3088, '780661a508810f3b65786895b1ca9aacbc4f55d329ae6b8c1e49ec8433569f77'),
+    'package.json': (6937, '9746d6df16da6f6a8d9609d5e5c22a70235ead6278f975fe446ca5edda7eae12'),
+    'wrangler-dist/cli.js': (14870680, '480ecc13facecf9b62ba7fbc51c29df931618ef84b83de149d44e0e374ee4059'),
+}
 MAX_ARCHIVE = 100 * 1024**2
 MAX_EXPANDED = 512 * 1024**2
 
@@ -53,8 +58,8 @@ def node_environment():
     return {name: os.environ[name] for name in names if name in os.environ}
 
 
-def _version(binary):
-    binary = verify_node_binary(binary)
+def _version(binary, *, privileged=False):
+    binary = verify_node_binary(binary, privileged=privileged)
     result = subprocess.run([str(binary), '--version'], capture_output=True, timeout=10, check=True,
                             env=node_environment())
     if result.stdout.strip() != ('v' + NODE_VERSION).encode('ascii'):
@@ -69,50 +74,96 @@ def _cache_directory(path, *, private=False):
         raise ValueError('Toolchain cache must be an owner-private physical directory')
 
 
-def _trusted_parents(path):
+def _trusted_parents(path, *, privileged=False):
+    owners = (0,) if privileged else (0, os.getuid())
     for parent in path.parents:
         info = parent.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid()) or
-                (info.st_mode & 0o022 and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX))):
+        protected = not info.st_mode & 0o022
+        sticky_fixture_parent = not privileged and info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in owners or not (protected or sticky_fixture_parent):
             raise ValueError('Toolchain ancestors must be trusted physical directories')
 
 
-def verify_node_binary(binary):
-    binary = Path(binary).resolve(strict=True)
-    _trusted_parents(binary)
-    fd = os.open(binary, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+def _verify_file(path, expected, *, privileged, executable=False):
+    owners = (0,) if privileged else (0, os.getuid())
+    expected_size, expected_digest = expected
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     with os.fdopen(fd, 'rb') as stream:
         before = os.fstat(fd)
-        if (not stat.S_ISREG(before.st_mode) or before.st_uid not in (0, os.getuid()) or before.st_nlink != 1 or
-                before.st_mode & 0o7022 or not before.st_mode & 0o100 or before.st_size != NODE_BINARY_BYTES):
-            raise ValueError('Pinned Node executable changed')
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid not in owners or before.st_nlink != 1 or
+                before.st_mode & 0o7022 or (executable and not before.st_mode & 0o100) or
+                before.st_size != expected_size):
+            raise ValueError('Pinned toolchain file changed')
         digest = hashlib.sha256()
         remaining = before.st_size
         while remaining:
             chunk = stream.read(min(remaining, 1024 * 1024))
             if not chunk:
-                raise ValueError('Pinned Node executable changed')
+                raise ValueError('Pinned toolchain file changed')
             digest.update(chunk)
             remaining -= len(chunk)
         identity = lambda value: (value.st_dev, value.st_ino, value.st_uid, value.st_mode, value.st_nlink,
                                   value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-        if (stream.read(1) or digest.hexdigest() != NODE_BINARY_SHA256 or
-                identity(before) != identity(os.fstat(fd)) or identity(before) != identity(binary.lstat())):
-            raise ValueError('Pinned Node executable changed')
+        if (stream.read(1) or digest.hexdigest() != expected_digest or
+                identity(before) != identity(os.fstat(fd)) or identity(before) != identity(path.lstat())):
+            raise ValueError('Pinned toolchain file changed')
+
+
+def verify_node_binary(binary, *, privileged=False):
+    binary = Path(binary).resolve(strict=True)
+    _trusted_parents(binary, privileged=privileged)
+    _verify_file(binary, (NODE_BINARY_BYTES, NODE_BINARY_SHA256), privileged=privileged, executable=True)
     return binary
 
 
-def node(cache=None):
+def verify_wrangler(entry):
+    entry = Path(entry).resolve(strict=True)
+    package = entry.parent.parent
+    modules = package.parent
+    if entry != modules / 'wrangler/bin/wrangler.js' or modules.name != 'node_modules':
+        raise ValueError('Wrangler requires its official installed package layout')
+    _trusted_parents(entry, privileged=True)
+    for name, identity in WRANGLER_FILES.items():
+        path = package / name
+        _trusted_parents(path, privileged=True)
+        _verify_file(path, identity, privileged=True)
+    # Trust only administrator-managed dependencies beneath this installation.
+    # Do not follow links during traversal or allow a link out of the tree.
+    pending = [modules]
+    observed = 0
+    while pending:
+        for path in pending.pop().iterdir():
+            observed += 1
+            if observed > 100_000:
+                raise ValueError('Wrangler dependency inventory exceeds its limit')
+            info = path.lstat()
+            if info.st_uid != 0:
+                raise ValueError('Wrangler dependencies must remain administrator-owned')
+            if stat.S_ISLNK(info.st_mode):
+                if not path.resolve(strict=True).is_relative_to(modules):
+                    raise ValueError('Wrangler dependency link escapes the trusted installation')
+            elif info.st_mode & 0o7022:
+                raise ValueError('Wrangler dependencies must remain non-writable')
+            elif stat.S_ISDIR(info.st_mode):
+                pending.append(path)
+            elif not stat.S_ISREG(info.st_mode):
+                raise ValueError('Unexpected Wrangler dependency resource')
+    return entry
+
+
+def node(cache=None, *, privileged=False):
     """Use an exact installed runtime or verify/cache the official distribution."""
     configured = os.environ.get('SHADOW_SYNC_DELIVERY_NODE')
     if configured:
-        return _version(configured)
+        return _version(configured, privileged=privileged)
     installed = shutil.which('node')
     if installed:
         try:
-            return _version(installed)
+            return _version(installed, privileged=privileged)
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
+    if privileged:
+        raise ValueError('An administrator-owned official Node installation is required')
     if (platform.system(), platform.machine()) != ('Darwin', 'arm64'):
         raise RuntimeError('Pinned verification runtime requires macOS Apple Silicon')
     if cache is None:

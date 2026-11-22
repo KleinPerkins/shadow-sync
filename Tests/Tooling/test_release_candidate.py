@@ -669,7 +669,9 @@ class CommandEnvironmentTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(module, 'GitHub', return_value=self.api))
         # Only the synthetic executable identity is substituted. The real
         # child-launch arguments and environment still pass through Popen.
-        self.stack.enter_context(mock.patch.object(module.delivery.toolchain, 'verify_node_binary', side_effect=Path))
+        self.stack.enter_context(mock.patch.object(module.delivery.toolchain, 'verify_node_binary',
+            side_effect=lambda binary, **_: Path(binary)))
+        self.stack.enter_context(mock.patch.object(module.delivery.toolchain, 'verify_wrangler', side_effect=Path))
         self.stack.enter_context(mock.patch.object(module.execution, 'PUBLIC_KEY_SHA256', hashlib.sha256(b'p' * 32).hexdigest()))
         signer = b'fixture detached signer; never executed'
         archive = io.BytesIO()
@@ -735,7 +737,7 @@ class CommandEnvironmentTests(unittest.TestCase):
     def child(self, args, **kwargs):
         args = [str(value) for value in args]
         environment = dict(os.environ if kwargs.get('env') is None else kwargs['env'])
-        wrangler = len(args) > 1 and args[:2] == [str(self.node), str(self.wrangler)]
+        wrangler = args[:3] == [str(self.node), '--no-global-search-paths', str(self.wrangler)]
         forbidden = {'GH_TOKEN', 'OWNER_GITHUB_READ_TOKEN', 'UNRELATED_SECRET', 'NODE_OPTIONS',
                      'PYTHONPATH', 'GIT_CONFIG_GLOBAL', 'WRANGLER_OUTPUT_FILE_PATH', *module.execution.CONFIG}
         if not wrangler: forbidden.add('CLOUDFLARE_API_TOKEN')
@@ -757,9 +759,9 @@ class CommandEnvironmentTests(unittest.TestCase):
         elif args[0] == str(self.node):
             if wrangler:
                 kind = 'wrangler'
-                if args[2:] == ['--version']: output = module.delivery.WRANGLER
+                if args[3:] == ['--version']: output = module.delivery.WRANGLER
                 else:
-                    self.assertEqual(args[2:], ['auth', 'token', '--json'])
+                    self.assertEqual(args[3:], ['auth', 'token', '--json'])
                     output = json.dumps(dict(type='api_token' if 'CLOUDFLARE_API_TOKEN' in self.env else 'oauth',
                         token=self.env.get('CLOUDFLARE_API_TOKEN', 'synthetic-oauth')))
             elif args[1:] == ['--version']: kind, output = 'node-version', 'v26.4.0\n'

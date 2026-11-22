@@ -10,7 +10,10 @@ physical acceptance each require their own evidence.
 ## Before building
 
 Use an owner-controlled macOS 26 arm64 builder with Xcode 26.6 build 17F113
-selected. Use the official Node 26.4.0 Darwin arm64 executable and Wrangler 4.158.0.
+selected. Use the official Node 26.4.0 Darwin arm64 executable and Wrangler 4.158.0
+from administrator-owned paths that the release account cannot modify. The
+[delivery toolchain setup](../../delivery/README.md#qualification-and-owner-operations) describes the
+required Wrangler dependency tree.
 Start in a clean native checkout of the exact merged main commit. Its latest
 mandatory push workflow attempt must have a successful bound aggregate.
 Pass the destination's exact macOS build. Its arm64 command graphs for launchd

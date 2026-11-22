@@ -234,10 +234,14 @@ class Cloudflare:
                     any(ord(character) < 32 for character in value)
                     for value in self._wrangler_auth.values())):
             raise DeliveryError('Only explicit owner Wrangler API-token authentication is supported.')
+        if os.getuid() == 0:
+            raise DeliveryError('Run provider operations as the release owner, without elevated privileges.')
         self.config = config
         self.node = pinned_node()
-        if not Path(config['wrangler']).is_absolute() or not config['wrangler'].endswith('.js'):
-            raise DeliveryError('Select the pinned Wrangler JavaScript entry point with an absolute path.')
+        try:
+            self.wrangler_entry = str(toolchain.verify_wrangler(config['wrangler']))
+        except (OSError, ValueError):
+            raise DeliveryError('The administrator-owned official Wrangler installation is unavailable.') from None
         # Keep HOME/auth unchanged. Never run login or activate a plan here.
         version = self.wrangler('--version').strip()
         if version != WRANGLER:
@@ -280,8 +284,10 @@ class Cloudflare:
         # Preflight Git/Node helpers never inherit this explicit capability.
         environment.update(self._wrangler_auth)
         try:
-            toolchain.verify_node_binary(self.node)
-            result = subprocess.run([self.node, self.config['wrangler'], *args], stdin=subprocess.DEVNULL,
+            toolchain.verify_node_binary(self.node, privileged=True)
+            if str(toolchain.verify_wrangler(self.wrangler_entry)) != self.wrangler_entry:
+                raise ValueError('Wrangler identity changed')
+            result = subprocess.run([self.node, '--no-global-search-paths', self.wrangler_entry, *args], stdin=subprocess.DEVNULL,
                                     capture_output=True, env=environment, cwd=ROOT, timeout=timeout)
         except (OSError, ValueError, subprocess.TimeoutExpired):
             raise DeliveryError('Pinned Wrangler operation failed or timed out.') from None
@@ -662,7 +668,7 @@ def file_digest(path):
 
 def pinned_node():
     try:
-        return str(toolchain.node())
+        return str(toolchain.node(privileged=True))
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         raise DeliveryError('The pinned official Node runtime is unavailable.') from None
 
