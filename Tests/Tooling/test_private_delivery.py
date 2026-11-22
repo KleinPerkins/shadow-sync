@@ -693,14 +693,19 @@ class ChannelTests(unittest.TestCase):
     def test_verification_runtime_rejects_changed_cached_binary_before_execution(self):
         cache = self.api.root / 'verification-cache'
         target = cache / ('node-v' + toolchain.NODE_VERSION)
-        (target / 'bin').mkdir(parents=True)
-        (target / 'bin/node').write_bytes(b'changed synthetic executable')
+        cache.mkdir(mode=0o700)
+        target.mkdir(mode=0o700)
+        (target / 'bin').mkdir(mode=0o700)
+        counterfeit = b'#!/bin/sh\nprintf "v26.4.0\\n"\n'
+        (target / 'bin/node').write_bytes(counterfeit)
+        (target / 'bin/node').chmod(0o700)
         (target / 'verified.json').write_text(json.dumps({
-            'archive_sha256': toolchain.NODE_SHA256, 'binary_sha256': '0' * 64}))
+            'archive_sha256': toolchain.NODE_SHA256, 'binary_sha256': hashlib.sha256(counterfeit).hexdigest()}))
         with patch.dict(os.environ, {}, clear=True), \
                 patch.object(toolchain.shutil, 'which', return_value=None), \
                 patch.object(toolchain.platform, 'system', return_value='Darwin'), \
                 patch.object(toolchain.platform, 'machine', return_value='arm64'), \
+                patch.object(toolchain, 'NODE_BINARY_BYTES', len(counterfeit)), \
                 patch.object(toolchain, '_version') as execute:
             with self.assertRaisesRegex(ValueError, 'Cached verification runtime changed'):
                 toolchain.node(cache=cache)
