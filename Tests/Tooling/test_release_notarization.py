@@ -150,14 +150,42 @@ class ReleaseNotarizationTests(unittest.TestCase):
         for stage in ('validate-app-ticket', 'gatekeeper-app', 'validate-disk-image-ticket',
                       'gatekeeper-disk-image', 'verify-final-image'):
             start = len(self.submissions)
+            calls_start = len(self.calls)
             self.args.output = str(self.root / ('retry-' + stage)); self.args.resume = False; self.fail_stage = stage
             with self.assertRaises(module.Refusal): module.package(self.args)
             self.fail_stage = None; self.args.resume = True
             result = module.package(self.args)
             self.assertTrue(result['notarized'])
             self.assertEqual(len(self.submissions) - start, 2)
+            calls = [stage for stage, _ in self.calls[calls_start:]]
+            self.assertEqual(calls.count('staple-app'), 1)
+            self.assertEqual(calls.count('staple-disk-image'), 1)
             image = Path(self.args.output) / 'submission.dmg'
             self.assertEqual(module.sha(image), module.read_record(Path(self.args.output) / 'image-signed.json')['sha256'])
+
+    def test_unrecorded_staple_refuses_resume(self):
+        original = module.record
+        cases = [('app-stapled.json', 'unrecorded-app-staple'),
+                 ('image-stapled.json', 'unrecorded-disk-image-staple')]
+        for checkpoint, refusal in cases:
+            with self.subTest(checkpoint=checkpoint):
+                self.args.output = str(self.root / checkpoint)
+                self.args.resume = False
+
+                def lose_checkpoint(path, value):
+                    if path.name == checkpoint:
+                        raise OSError('fixture lost checkpoint')
+                    return original(path, value)
+
+                with mock.patch.object(module, 'record', side_effect=lose_checkpoint):
+                    with self.assertRaisesRegex(OSError, 'fixture lost checkpoint'):
+                        module.package(self.args)
+                calls_before_resume = len(self.calls)
+                self.args.resume = True
+                with self.assertRaisesRegex(module.Refusal, refusal):
+                    module.package(self.args)
+                self.assertFalse(any(stage.startswith('staple-') for stage, _ in self.calls[calls_before_resume:]))
+                self.assertFalse((Path(self.args.output) / 'release-package.json').exists())
 
     def test_concurrent_resume_refuses_before_second_submission(self):
         original = self.command; attempted = []

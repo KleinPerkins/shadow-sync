@@ -205,6 +205,10 @@ def image_code(path, team):
     return matches[0]
 
 
+def artifact_identity(path):
+    return {'name': path.name, 'bytes': regular(path).st_size, 'sha256': sha(path)}
+
+
 def locked_package(args, output, existed, before, assembly_digest, auth):
     binding = {'schema': 'shadow-sync-notarization-preparation/v1', 'revision': args.source_revision,
                'source_sha256': args.source_sha256, 'assembly_sha256': assembly_digest,
@@ -224,11 +228,10 @@ def locked_package(args, output, existed, before, assembly_digest, auth):
             and {p.name for p in (output / 'payload').iterdir()} == {'ShadowSync.app'}, 'payload-layout')
     stapled = output / 'app-stapled.json'
     if not stapled.exists():
-        if os.path.lexists(app / TICKET):
-            ticket_inventory(app, before['output_entries'])
-            require((output / 'app-accepted.json').is_file(), 'unqualified-existing-ticket')
-        else:
-            require(app_tree(app) == before['output_entries'], 'unstapled-app-binding')
+        # A ticket without a durable milestone may be from an interrupted
+        # mutating stapler command. Preserve the attempt for reconciliation.
+        require(not os.path.lexists(app / TICKET), 'unrecorded-app-staple')
+        require(app_tree(app) == before['output_entries'], 'unstapled-app-binding')
         archive = output / 'submission.zip'
         archive_record = output / 'app-archive.json'
         if not archive_record.exists():
@@ -239,17 +242,16 @@ def locked_package(args, output, existed, before, assembly_digest, auth):
         require(read_record(archive_record) == {'sha256': sha(archive)}, 'app-archive-binding')
         accepted = notarize(archive, output, 'app', auth)
         command('staple-app', '/usr/bin/xcrun', 'stapler', 'staple', app)
-        command('validate-app-ticket', '/usr/bin/xcrun', 'stapler', 'validate', app)
-        after = ticket_inventory(app, before['output_entries'])
-        assembly.verify_code(app, before['publisher_team'], assembly.APP_ID)
-        command('gatekeeper-app', '/usr/sbin/spctl', '--assess', '--type', 'execute', '--verbose=2', app)
-        record(stapled, {'entries': after, 'notary_id': accepted['id']})
+        record(stapled, {'entries': ticket_inventory(app, before['output_entries']), 'notary_id': accepted['id']})
     app_record = read_record(stapled)
     require(app_tree(app) == app_record['entries']
             and app_record['notary_id'] == read_record(output / 'app-accepted.json')['id'], 'stapled-app-binding')
     ticket_inventory(app, before['output_entries'])
     app_accepted = accepted_record(output, 'app', {'filename': 'submission.zip', 'sha256': sha(output / 'submission.zip')})
     require(app_record['notary_id'] == app_accepted['id'], 'app-notary-binding')
+    assembly.verify_code(app, before['publisher_team'], assembly.APP_ID)
+    command('validate-app-ticket', '/usr/bin/xcrun', 'stapler', 'validate', app)
+    command('gatekeeper-app', '/usr/sbin/spctl', '--assess', '--type', 'execute', '--verbose=2', app)
     basename = 'ShadowSync-' + before['version'] + '-build' + before['build'] + '-macos-arm64'
     dmg = output / (basename + '.dmg')
     submitted_image = output / 'submission.dmg'
@@ -266,19 +268,22 @@ def locked_package(args, output, existed, before, assembly_digest, auth):
     require(image == {'sha256': sha(submitted_image), 'cdhash': image_code(submitted_image, before['publisher_team'])},
             'signed-disk-image-binding')
     final = output / 'release-package.json'
+    image_stapled = output / 'image-stapled.json'
     if not final.exists():
         accepted = notarize(submitted_image, output, 'dmg', auth)
-        # Keep the exact submitted bytes intact. A retry can safely revalidate
-        # and staple the distribution copy after any later failure.
-        if not os.path.lexists(dmg):
-            with submitted_image.open('rb') as src, dmg.open('xb') as dst:
-                shutil.copyfileobj(src, dst)
-                dst.flush(); os.fsync(dst.fileno())
-            dmg.chmod(0o644)
-            require(sha(dmg) == image['sha256'], 'copied-disk-image-binding')
-        regular(dmg)
-        require(image_code(dmg, before['publisher_team']) == image['cdhash'], 'distribution-code-binding')
-        command('staple-disk-image', '/usr/bin/xcrun', 'stapler', 'staple', dmg)
+        if not image_stapled.exists():
+            if not os.path.lexists(dmg):
+                with submitted_image.open('rb') as src, dmg.open('xb') as dst:
+                    shutil.copyfileobj(src, dst)
+                    dst.flush(); os.fsync(dst.fileno())
+                dmg.chmod(0o644)
+            require(artifact_identity(dmg)['sha256'] == image['sha256'], 'unrecorded-disk-image-staple')
+            require(image_code(dmg, before['publisher_team']) == image['cdhash'], 'distribution-code-binding')
+            command('staple-disk-image', '/usr/bin/xcrun', 'stapler', 'staple', dmg)
+            record(image_stapled, {'artifact': artifact_identity(dmg), 'notary_id': accepted['id']})
+        image_receipt = read_record(image_stapled)
+        require(image_receipt == {'artifact': artifact_identity(dmg), 'notary_id': accepted['id']},
+                'stapled-disk-image-binding')
         command('validate-disk-image-ticket', '/usr/bin/xcrun', 'stapler', 'validate', dmg)
         command('gatekeeper-disk-image', '/usr/sbin/spctl', '--assess', '--type', 'open',
                 '--context', 'context:primary-signature', '--verbose=2', dmg)
@@ -286,20 +291,22 @@ def locked_package(args, output, existed, before, assembly_digest, auth):
         assembly.verify_code(app, before['publisher_team'], assembly.APP_ID)
         require(app_tree(app) == app_record['entries'] and handoff(args) == (before, assembly_digest),
                 'preserved-inputs-and-payload')
-        regular(dmg)
         require(image_code(dmg, before['publisher_team']) == image['cdhash'], 'stapled-code-binding')
+        require(artifact_identity(dmg) == image_receipt['artifact'], 'verified-disk-image-changed')
         receipt = dict(binding, schema='shadow-sync-release-package/v1', version=before['version'], build=before['build'],
-                       artifact={'name': dmg.name, 'bytes': dmg.stat().st_size, 'sha256': sha(dmg)},
+                       artifact=image_receipt['artifact'],
                        architecture='arm64', app_notary_id=app_record['notary_id'], dmg_notary_id=accepted['id'],
                        notarized=True, stapled=True, gatekeeper=True, published=False, installed=False, product_accepted=False)
         record(final, receipt)
     result = read_record(final)
     dmg_accepted = accepted_record(output, 'dmg', {'filename': submitted_image.name, 'sha256': image['sha256']})
     expected = dict(binding, schema='shadow-sync-release-package/v1', version=before['version'], build=before['build'],
-                    artifact={'name': dmg.name, 'bytes': regular(dmg).st_size, 'sha256': sha(dmg)},
+                    artifact=artifact_identity(dmg),
                     architecture='arm64', app_notary_id=app_accepted['id'], dmg_notary_id=dmg_accepted['id'],
                     notarized=True, stapled=True, gatekeeper=True, published=False, installed=False, product_accepted=False)
     require(result == expected, 'completed-artifact-binding')
+    require(read_record(image_stapled) == {'artifact': result['artifact'], 'notary_id': dmg_accepted['id']},
+            'completed-stapled-image-binding')
     assembly.verify_code(app, before['publisher_team'], assembly.APP_ID)
     command('validate-app-ticket', '/usr/bin/xcrun', 'stapler', 'validate', app)
     require(image_code(dmg, before['publisher_team']) == image['cdhash'], 'completed-code-binding')

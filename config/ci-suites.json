@@ -3425,6 +3425,7 @@
           "test_release_notarization.ReleaseNotarizationTests.test_resume_revalidates_accepted_log_and_milestone_fields",
           "test_release_notarization.ReleaseNotarizationTests.test_stapler_cannot_change_signed_payload_or_add_other_nodes",
           "test_release_notarization.ReleaseNotarizationTests.test_ticket_modes_links_and_zero_bytes_refuse",
+          "test_release_notarization.ReleaseNotarizationTests.test_unrecorded_staple_refuses_resume",
           "test_release_notarization.ReleaseNotarizationTests.test_unrecorded_upload_id_is_not_automatically_retried",
           "test_release_notarization.ReleaseNotarizationTests.test_wait_failure_retains_id_and_resumes_that_submission"
         ],
