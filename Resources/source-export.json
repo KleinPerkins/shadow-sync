@@ -523,7 +523,7 @@
     {
       "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
       "mode": "100644",
-      "sha256": "728dc2d93515b1f433bbc6d0dee3952f40d20b3560d1c8779eb0972442cdf141"
+      "sha256": "c2af0b886d0ba71f5eab3d31393b21bef5fe90bbba36f041f67f1f4ada51f465"
     },
     {
       "mode": "100644",
@@ -1028,7 +1028,7 @@
     {
       "mode": "100644",
       "path": "config/identity-exceptions.json",
-      "sha256": "2e486ff39a5d78a67ba7cb9c7ea80575f23456b309d393b39ea51201604c7791"
+      "sha256": "f8d8e9adaf7530e342a99f3922abb46ba72fb34fa48ed9c1c4f3cc8b8fc1476f"
     },
     {
       "mode": "100644",

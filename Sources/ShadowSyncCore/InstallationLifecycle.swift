@@ -2449,7 +2449,7 @@ public final class InstallationLifecycle: @unchecked Sendable {
         ) else {
             throw InstallationLifecycleError.unsafeInstallPath(root)
         }
-        var paths = [root]
+        var paths = [root] // The directory enumerator supplies only descendants.
         for case let url as URL in enumerator {
             paths.append(url.path)
         }
