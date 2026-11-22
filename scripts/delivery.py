@@ -793,19 +793,36 @@ def access_file(path, value=None):
         return value, list(custody['identity'][:2])
     path = outside_git(path)
     directory = path.parent.stat(follow_symlinks=False)
-    if directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700:
+    if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid() or
+        stat.S_IMODE(directory.st_mode) != 0o700):
         raise DeliveryError('Access custody requires an owner-private mode-0700 directory.')
-    fd = os.open(path, os.O_NOFOLLOW | os.O_NONBLOCK | os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, 'wb') as stream:
-        info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
-            raise DeliveryError('Access custody requires an unlinked owner-owned mode-0600 regular file.')
-        stream.write(access_bytes(value))
-        stream.flush()
-        os.fsync(stream.fileno())
-    directory_fd = os.open(path.parent, os.O_RDONLY)
-    try: os.fsync(directory_fd)
-    finally: os.close(directory_fd)
+    names = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC
+    with ExitStack() as handles:
+        directory_fd = os.open('/', names)
+        handles.callback(os.close, directory_fd)
+        for component in path.parent.parts[1:]:
+            directory_fd = os.open(component, names, dir_fd=directory_fd)
+            handles.callback(os.close, directory_fd)
+        if access_parent(os.fstat(directory_fd)) != access_parent(directory):
+            raise DeliveryError('Private access directory changed before creation.')
+        flags = os.O_NOFOLLOW | os.O_NONBLOCK | os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+        fd = os.open(path.name, flags, 0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, 'wb') as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                raise DeliveryError('Access custody requires an unlinked owner-owned mode-0600 regular file.')
+            stream.write(access_bytes(value))
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.fsync(directory_fd)
+            retained = os.fstat(stream.fileno())
+            observed = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            if (access_stat(retained) != access_stat(observed) or
+                access_stat(retained) != access_stat(path.stat(follow_symlinks=False)) or
+                access_parent(directory) != access_parent(path.parent.stat(follow_symlinks=False)) or
+                access_parent(directory) != access_parent(os.fstat(directory_fd))):
+                raise DeliveryError('Private access custody changed during creation.')
     return value, [info.st_dev, info.st_ino]
 
 
