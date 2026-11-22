@@ -97,12 +97,16 @@ final class QualifiedCommandGraph: @unchecked Sendable {
         return try PublisherExecutableSnapshot.capture(path: path, owner: owner)
     }
     static func appleGitLauncherARMCode() throws -> SecStaticCode {
+        #if arch(arm64)
         let path = URL(fileURLWithPath: "/usr/bin/git") as CFURL
         let attributes = [kSecCodeAttributeArchitecture as String: "arm64"] as CFDictionary
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPathAndAttributes(path, [], attributes, &code) == errSecSuccess,
               let code else { throw PublisherPolicyError.unavailable }
         return code
+        #else
+        throw PublisherPolicyError.unavailable
+        #endif
     }
 
     private init(entry: CommandGraphCatalog.Entry, resource: PolicyAuthorityFile?,
