@@ -7,12 +7,12 @@ never printed, placed in argv, written to config, or passed to recipient apps.
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import secrets
-import shutil
 import stat
 import subprocess
 import sys
@@ -24,6 +24,9 @@ import urllib.request
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+_toolchain_spec = importlib.util.spec_from_file_location('delivery_toolchain', ROOT / 'scripts/delivery-toolchain.py')
+toolchain = importlib.util.module_from_spec(_toolchain_spec)
+_toolchain_spec.loader.exec_module(toolchain)
 APP = 'com.kleinperkins.shadow-sync'
 WRANGLER = '4.158.0'
 MAX_ARCHIVE = 512 * 1024 * 1024
@@ -267,21 +270,20 @@ class Cloudflare:
                 raise DeliveryError('Existing Worker has no known private deployment receipt.')
             self.preflight_retention(asset_inventory(self.config))
         # Capture all output: even upstream diagnostics must never expose credentials.
-        environment = dict(os.environ, WRANGLER_SEND_METRICS='false', WRANGLER_SEND_ERROR_REPORTS='false',
+        environment = dict(toolchain.node_environment(), WRANGLER_SEND_METRICS='false', WRANGLER_SEND_ERROR_REPORTS='false',
                            WRANGLER_WRITE_LOGS='false', WRANGLER_LOG='log', WRANGLER_LOG_SANITIZE='true',
                            CLOUDFLARE_API_BASE_URL='https://api.cloudflare.com/client/v4',
                            CF_API_BASE_URL='https://api.cloudflare.com/client/v4', CI='true', NO_COLOR='1')
-        for name in ('WRANGLER_OUTPUT_FILE_PATH', 'WRANGLER_OUTPUT_FILE_DIRECTORY', 'CLOUDFLARE_ENV'):
-            environment.pop(name, None)
         if self.config.get('account_id'):
             environment['CLOUDFLARE_ACCOUNT_ID'] = self.config['account_id']
         # Scoped callers retain authentication outside the process environment.
         # Preflight Git/Node helpers never inherit this explicit capability.
         environment.update(self._wrangler_auth)
         try:
+            toolchain.verify_node_binary(self.node)
             result = subprocess.run([self.node, self.config['wrangler'], *args], stdin=subprocess.DEVNULL,
                                     capture_output=True, env=environment, cwd=ROOT, timeout=timeout)
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, ValueError, subprocess.TimeoutExpired):
             raise DeliveryError('Pinned Wrangler operation failed or timed out.') from None
         if result.returncode:
             raise DeliveryError('Pinned Wrangler operation failed. Check owner authentication/resource permissions privately.')
@@ -660,17 +662,9 @@ def file_digest(path):
 
 def pinned_node():
     try:
-        selected = os.environ.get('SHADOW_SYNC_DELIVERY_NODE', 'node')
-        located = shutil.which(selected)
-        if located is None:
-            raise DeliveryError('Pinned Node runtime unavailable.')
-        binary = str(Path(located).resolve(strict=True))
-        version = subprocess.run([binary, '--version'], capture_output=True, check=True, timeout=10).stdout.strip()
-        if version != b'v26.4.0':
-            raise DeliveryError('Node must be exactly 26.4.0.')
-    except (OSError, subprocess.SubprocessError):
-        raise DeliveryError('Pinned Node runtime unavailable.') from None
-    return binary
+        return str(toolchain.node())
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        raise DeliveryError('The pinned official Node runtime is unavailable.') from None
 
 
 def validate_manifest(value):
@@ -679,7 +673,7 @@ def validate_manifest(value):
     try:
         script = "import {manifest} from './delivery/contract.mjs'; let s=''; for await(const c of process.stdin)s+=c; manifest(JSON.parse(s));"
         result = subprocess.run([binary, '--input-type=module', '-e', script], input=json.dumps(value).encode(),
-                                capture_output=True, cwd=ROOT, timeout=10)
+                                capture_output=True, cwd=ROOT, timeout=10, env=toolchain.node_environment())
         if result.returncode:
             raise DeliveryError('Invalid release manifest.')
     except (OSError, subprocess.SubprocessError):
@@ -1106,7 +1100,8 @@ def main():
     args = parser.parse_args()
     try:
         config = load_config(args.config)
-        api = Cloudflare(config)
+        auth = {name: os.environ[name] for name in ('CLOUDFLARE_API_TOKEN',) if name in os.environ}
+        api = Cloudflare(config, wrangler_auth=auth)
         if args.command == 'create-grant':
             grant = create_grant(api, config, args.label, args.output, args.expires_at, args.owner, args.channel)
             print('Created grant ' + grant + '; private access file written with mode 0600.')

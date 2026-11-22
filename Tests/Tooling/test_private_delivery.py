@@ -635,12 +635,17 @@ class ChannelTests(unittest.TestCase):
             if args[-1] == '--version':
                 return subprocess.CompletedProcess(args, 0, b'4.158.0\n', b'')
             return subprocess.CompletedProcess(args, 0, json.dumps({'type': 'oauth', 'token': secret}).encode(), b'')
-        with patch.object(delivery, 'pinned_node', return_value='/fixture/node'), patch.object(delivery.subprocess, 'run', side_effect=fake):
+        binary = node()
+        unsafe_environment = dict(NODE_OPTIONS='--require=/fixture/nonexistent.js', NODE_PATH='/fixture',
+                                  DYLD_INSERT_LIBRARIES='/fixture/nonexistent.dylib')
+        with patch.dict(os.environ, unsafe_environment), patch.object(delivery, 'pinned_node', return_value=binary), \
+                patch.object(delivery.subprocess, 'run', side_effect=fake):
             api = delivery.Cloudflare({'wrangler': '/fixture/wrangler.js'})
         self.assertEqual(api._authorization, 'Bearer ' + secret)
         for args, kwargs in seen:
-            self.assertEqual(args[:2], ['/fixture/node', '/fixture/wrangler.js'])
+            self.assertEqual(args[:2], [binary, '/fixture/wrangler.js'])
             self.assertNotIn(secret, repr(args))
+            self.assertFalse(unsafe_environment.keys() & kwargs['env'].keys())
             self.assertEqual(kwargs['env']['WRANGLER_SEND_METRICS'], 'false')
             self.assertEqual(kwargs['env']['WRANGLER_WRITE_LOGS'], 'false')
             self.assertEqual(kwargs['env']['WRANGLER_LOG'], 'log')
@@ -670,12 +675,25 @@ class ChannelTests(unittest.TestCase):
                    subprocess.CompletedProcess([], 0, b'4.158.0\n', b''),
                    subprocess.CompletedProcess([], 0, b'{"type":"oauth","token":"synthetic-token"}', b'')]
         with patch.dict(os.environ, {'PATH': '/fixture/conflicting'}, clear=True), \
-                patch.object(delivery.shutil, 'which', return_value=binary), \
+                patch.object(delivery.toolchain.shutil, 'which', return_value=binary), \
                 patch.object(delivery.subprocess, 'run', side_effect=outputs) as command:
             api = delivery.Cloudflare({'wrangler': '/fixture/wrangler.js'})
         self.assertEqual(api.node, binary)
         self.assertEqual(command.call_count, 3)
         self.assertTrue(all(call.args[0][0] == binary for call in command.call_args_list))
+
+    def test_owner_node_rejects_counterfeit_version_before_execution(self):
+        imposter = self.api.root / 'node'
+        imposter.write_bytes(b'#!/bin/sh\nprintf "v26.4.0\\n"\n')
+        imposter.chmod(0o700)
+        for requested in ('SHADOW_SYNC_DELIVERY_NODE', 'PATH'):
+            values = {requested: str(imposter if requested == 'SHADOW_SYNC_DELIVERY_NODE' else imposter.parent)}
+            with self.subTest(selection=requested), patch.dict(os.environ, values, clear=True), \
+                    patch.object(delivery.toolchain, 'NODE_BINARY_BYTES', imposter.stat().st_size), \
+                    patch.object(delivery.subprocess, 'run') as execute:
+                with self.assertRaisesRegex(delivery.DeliveryError, 'pinned official Node'):
+                    delivery.pinned_node()
+                execute.assert_not_called()
 
     def test_verification_runtime_rejects_corrupt_download_before_extraction(self):
         cache = self.api.root / 'verification-cache'
@@ -706,8 +724,8 @@ class ChannelTests(unittest.TestCase):
                 patch.object(toolchain.platform, 'system', return_value='Darwin'), \
                 patch.object(toolchain.platform, 'machine', return_value='arm64'), \
                 patch.object(toolchain, 'NODE_BINARY_BYTES', len(counterfeit)), \
-                patch.object(toolchain, '_version') as execute:
-            with self.assertRaisesRegex(ValueError, 'Cached verification runtime changed'):
+                patch.object(toolchain.subprocess, 'run') as execute:
+            with self.assertRaisesRegex(ValueError, 'Pinned Node executable changed'):
                 toolchain.node(cache=cache)
         execute.assert_not_called()
 

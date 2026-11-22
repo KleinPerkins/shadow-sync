@@ -1003,7 +1003,7 @@
     {
       "path": "Tests/Tooling/test_private_delivery.py",
       "mode": "100644",
-      "sha256": "d0ca0bb21842c452d01c78fdcc0ef06c420f6922b4b9b06b706367b11dcdf531"
+      "sha256": "1caa7a0ab17e08c58b369f0278cd92e9064ec9e192407bf62d2a9bf13850b11f"
     },
     {
       "mode": "100644",
@@ -1018,7 +1018,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_release_candidate.py",
-      "sha256": "03def8327f113128d15028a5f280bac52ed61c0c05f9e3af4df0dca05729177d"
+      "sha256": "ac3b53b1b89e03cad82b4c4c1fcd10af25039b6fefa8a6a2a10c390599b37152"
     },
     {
       "mode": "100644",
@@ -1058,7 +1058,7 @@
     {
       "path": "delivery/PROVENANCE.json",
       "mode": "100644",
-      "sha256": "810ffae1cfd2cd618c29fb6e9f0b68f97230976d7aa734c91fcfee9b23196c28"
+      "sha256": "1471f0e63fd91328711d1e433a7f89d902c948e7c127ae2cd307f6846cd5aee0"
     },
     {
       "path": "delivery/README.md",
@@ -1103,7 +1103,7 @@
     {
       "mode": "100644",
       "path": "docs/runbooks/private-release.md",
-      "sha256": "5125419342d9455a3cba112ec24e7772ce5a0614a250e6d9f054420ac1b6507e"
+      "sha256": "45dcb15fb291cd5d647834ea9ec6bbbcbc8318ebb9baceaead11f7d203c23ba8"
     },
     {
       "mode": "100755",
@@ -1168,12 +1168,12 @@
     {
       "path": "scripts/delivery-toolchain.py",
       "mode": "100644",
-      "sha256": "55bd9f31b6fc0936a5be77b412ae91674dc5753d2c081246a91dca6357b961ad"
+      "sha256": "8df5f87d2e41bd9120f5bf3c4e93c5864fbc29e0f3b5d882d5516328541c0ea5"
     },
     {
       "path": "scripts/delivery.py",
       "mode": "100755",
-      "sha256": "1b632e825808748524373b2dbadc3bd3bdc24b84c52795b73114c0b69d1a15e4"
+      "sha256": "d6151fdc8f0dd388103fa56ce69bf5c77dec5ba0bade0da677f5f6db8be30a42"
     },
     {
       "mode": "100644",

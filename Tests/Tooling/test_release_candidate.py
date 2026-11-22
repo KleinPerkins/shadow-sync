@@ -667,6 +667,9 @@ class CommandEnvironmentTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(module, 'qualified_target', return_value=TARGET_BUILD))
         self.stack.enter_context(mock.patch.object(module, 'immutable_enabled', return_value=ADMITTED['owner_controls']))
         self.stack.enter_context(mock.patch.object(module, 'GitHub', return_value=self.api))
+        # Only the synthetic executable identity is substituted. The real
+        # child-launch arguments and environment still pass through Popen.
+        self.stack.enter_context(mock.patch.object(module.delivery.toolchain, 'verify_node_binary', side_effect=Path))
         self.stack.enter_context(mock.patch.object(module.execution, 'PUBLIC_KEY_SHA256', hashlib.sha256(b'p' * 32).hexdigest()))
         signer = b'fixture detached signer; never executed'
         archive = io.BytesIO()
