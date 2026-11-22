@@ -2432,23 +2432,40 @@ public final class InstallationLifecycle: @unchecked Sendable {
         ]
     }
 
-    private static func normalizeAndSyncBundle(_ root: String) throws {
+    #if SHADOW_SYNC_TESTING
+    static func testingSyncPublisherBundle(_ root: String, layout: PolicyRuntimeLayout) throws {
+        try normalizeAndSyncBundle(root, layoutOverride: PublisherBundleLayout.testing(bundlePath: root, layout: layout))
+    }
+    #endif
+
+    private static func normalizeAndSyncBundle(_ root: String, layoutOverride: PublisherBundleLayout? = nil) throws {
+        let publisherLayout = try layoutOverride ?? PublisherBundleLayout.captureIfPresent(root)
+        #if !SHADOW_SYNC_TESTING
+        guard publisherLayout != nil else { throw InstallationLifecycleError.unsafeInstallPath(root) }
+        #endif
         guard let enumerator = FileManager.default.enumerator(
             at: URL(fileURLWithPath: root),
             includingPropertiesForKeys: nil
         ) else {
             throw InstallationLifecycleError.unsafeInstallPath(root)
         }
-        var paths = [root]
+        var paths = [root] // The directory enumerator supplies only descendants.
         for case let url as URL in enumerator {
             paths.append(url.path)
         }
         for path in paths {
+            if let publisherLayout {
+                // Signed distribution modes and reviewed framework links are
+                // already canonical. Never rewrite them to development modes.
+                let relative = path == root ? "" : String(path.dropFirst(root.count + 1))
+                _ = try publisherLayout.validateNode(relative)
+                continue
+            }
             var info = stat()
             guard lstat(path, &info) == 0,
                   info.st_uid == geteuid(),
                   info.st_flags == 0,
-                  BundleArtifactIdentity.hasOnlyPermittedXattrs(path) else {
+                  BundleArtifactIdentity.hasOnlyPermittedXattrs(path, allowRootQuarantine: path == root) else {
                 throw InstallationLifecycleError.unsafeInstallPath(path)
             }
             let type = info.st_mode & S_IFMT
@@ -2464,7 +2481,14 @@ public final class InstallationLifecycle: @unchecked Sendable {
                 throw InstallationLifecycleError.system("chmod staged bundle", errno)
             }
         }
+        try publisherLayout?.requireComplete(Set(paths.map { $0 == root ? "" : String($0.dropFirst(root.count + 1)) }))
+        try publisherLayout?.revalidate()
         for path in paths.reversed() {
+            if let publisherLayout {
+                let relative = path == root ? "" : String(path.dropFirst(root.count + 1))
+                try publisherLayout.syncNode(relative)
+                continue
+            }
             let descriptor = Darwin.open(
                 path,
                 O_RDONLY | O_NOFOLLOW | O_CLOEXEC
@@ -2478,6 +2502,7 @@ public final class InstallationLifecycle: @unchecked Sendable {
                 throw InstallationLifecycleError.system("fsync staged inventory", errno)
             }
         }
+        try publisherLayout?.revalidate()
     }
 
     private static func ensureDirectory(
