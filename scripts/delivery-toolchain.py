@@ -48,11 +48,18 @@ def download_bytes(url, maximum, timeout):
                 raise
 
 
+def node_environment():
+    names = ('HOME', 'PATH', 'TMPDIR', 'DEVELOPER_DIR', 'LANG', 'LC_ALL')
+    return {name: os.environ[name] for name in names if name in os.environ}
+
+
 def _version(binary):
-    result = subprocess.run([str(binary), '--version'], capture_output=True, text=True, timeout=10, check=True)
-    if result.stdout.strip() != 'v' + NODE_VERSION:
+    binary = verify_node_binary(binary)
+    result = subprocess.run([str(binary), '--version'], capture_output=True, timeout=10, check=True,
+                            env=node_environment())
+    if result.stdout.strip() != ('v' + NODE_VERSION).encode('ascii'):
         raise ValueError('Verification requires Node ' + NODE_VERSION)
-    return Path(binary).resolve(strict=True)
+    return binary
 
 
 def _cache_directory(path, *, private=False):
@@ -62,28 +69,37 @@ def _cache_directory(path, *, private=False):
         raise ValueError('Toolchain cache must be an owner-private physical directory')
 
 
-def _verify_binary(binary):
-    for directory in (binary.parent.parent, binary.parent):
-        _cache_directory(directory)
+def _trusted_parents(path):
+    for parent in path.parents:
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid()) or
+                (info.st_mode & 0o022 and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX))):
+            raise ValueError('Toolchain ancestors must be trusted physical directories')
+
+
+def verify_node_binary(binary):
+    binary = Path(binary).resolve(strict=True)
+    _trusted_parents(binary)
     fd = os.open(binary, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     with os.fdopen(fd, 'rb') as stream:
         before = os.fstat(fd)
-        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1 or
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid not in (0, os.getuid()) or before.st_nlink != 1 or
                 before.st_mode & 0o7022 or not before.st_mode & 0o100 or before.st_size != NODE_BINARY_BYTES):
-            raise ValueError('Cached verification runtime changed')
+            raise ValueError('Pinned Node executable changed')
         digest = hashlib.sha256()
         remaining = before.st_size
         while remaining:
             chunk = stream.read(min(remaining, 1024 * 1024))
             if not chunk:
-                raise ValueError('Cached verification runtime changed')
+                raise ValueError('Pinned Node executable changed')
             digest.update(chunk)
             remaining -= len(chunk)
         identity = lambda value: (value.st_dev, value.st_ino, value.st_uid, value.st_mode, value.st_nlink,
                                   value.st_size, value.st_mtime_ns, value.st_ctime_ns)
         if (stream.read(1) or digest.hexdigest() != NODE_BINARY_SHA256 or
                 identity(before) != identity(os.fstat(fd)) or identity(before) != identity(binary.lstat())):
-            raise ValueError('Cached verification runtime changed')
+            raise ValueError('Pinned Node executable changed')
+    return binary
 
 
 def node(cache=None):
@@ -95,18 +111,14 @@ def node(cache=None):
     if installed:
         try:
             return _version(installed)
-        except (ValueError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError):
             pass
     if (platform.system(), platform.machine()) != ('Darwin', 'arm64'):
         raise RuntimeError('Pinned verification runtime requires macOS Apple Silicon')
     if cache is None:
         raise ValueError('An explicit task-owned verification cache is required')
     cache = Path(cache).absolute()
-    for parent in cache.parents:
-        info = parent.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid()) or
-                (info.st_mode & 0o022 and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX))):
-            raise ValueError('Toolchain cache ancestors must be trusted physical directories')
+    _trusted_parents(cache)
     cache.mkdir(mode=0o700, exist_ok=True)
     _cache_directory(cache, private=True)
     target = cache / f'node-v{NODE_VERSION}'
@@ -118,8 +130,11 @@ def node(cache=None):
             raise ValueError('Invalid toolchain cache lock')
         fcntl.flock(lock, fcntl.LOCK_EX)
         if os.path.lexists(target):
+            for directory in (target, target / 'bin'):
+                _cache_directory(directory)
             binary = target / 'bin/node'
-            _verify_binary(binary)
+            if binary.is_symlink():
+                raise ValueError('Pinned Node executable changed')
             return _version(binary)
         payload = download_bytes(f'https://nodejs.org/dist/v{NODE_VERSION}/{NODE_ARCHIVE}', MAX_ARCHIVE, 30)
         if len(payload) > MAX_ARCHIVE or hashlib.sha256(payload).hexdigest() != NODE_SHA256:
@@ -137,6 +152,6 @@ def node(cache=None):
                         raise ValueError('Unsafe verification runtime archive path')
                 archive.extractall(staging, filter='data')
             unpacked = staging / prefix
-            _verify_binary(unpacked / 'bin/node')
+            verify_node_binary(unpacked / 'bin/node')
             unpacked.rename(target)
         return _version(target / 'bin/node')
