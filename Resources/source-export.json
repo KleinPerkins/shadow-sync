@@ -8,6 +8,7 @@
     "Sources/ShadowSyncCore/DM2Body4SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/DM4PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/PublisherBundleLayout.swift": "Bind the sealed publisher bundle roster and regular-file digests to retained no-follow identities.",
     "Sources/ShadowSyncCore/RemovalTransaction.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
     "Sources/ShadowSyncCore/RepositoryLifecycle.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
@@ -521,9 +522,9 @@
       "sha256": "4116cb4e377598430673aac2a30f46aeeb4f255d7cc016608b5621d772c170c1"
     },
     {
-      "mode": "100644",
       "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
-      "sha256": "2e7ccaf4f68af3e4e2d9a26390322753a62feafca2c98dda75d2d9e534d90dfa"
+      "mode": "100644",
+      "sha256": "028a5d1a17eca711938474a441d4fcde93e1dbf164f8adff2ff778ae99184e1a"
     },
     {
       "mode": "100644",
@@ -671,14 +672,19 @@
       "sha256": "d8561e29fa364fc21909bd1707f5262330f7c4653e2b1d13175537d182ed5ea0"
     },
     {
+      "path": "Sources/ShadowSyncCore/PublisherBundleLayout.swift",
+      "mode": "100644",
+      "sha256": "3c35eb255b655bb2330ae4462acbab8c798c01d1dac7df161d98508aff041fc5"
+    },
+    {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/PublisherPolicyResources.swift",
       "sha256": "9f186366e8d3800a85e61d62796a3bdf1e6914b8e0b92a506d96268d815b8f7d"
     },
     {
-      "mode": "100644",
       "path": "Sources/ShadowSyncCore/PublisherPolicyResourcesSelfTests.swift",
-      "sha256": "e60a645b8d4041e62963771c1b606fab4dd0c0052bf019a6f29b6a21be25bef5"
+      "mode": "100644",
+      "sha256": "3c759ca74ae281f8e4411b009587de5ce63383578fb815f4db194caf9f54503f"
     },
     {
       "mode": "100644",
@@ -691,9 +697,9 @@
       "sha256": "051c2f8cd24da07a57e01eb8e197932b506a800ee634fd151bdce484afacdf95"
     },
     {
-      "mode": "100644",
       "path": "Sources/ShadowSyncCore/ReleaseIdentity.swift",
-      "sha256": "3704744e0df11ebd85079647ec9e72c0212a3bb3d5f33a410b80d0f588c55b51"
+      "mode": "100644",
+      "sha256": "276e48240b0e875ecb46d3f68aae8beb17a2bce5ca962688bffc2238e6825c1c"
     },
     {
       "mode": "100644",
@@ -861,9 +867,9 @@
       "sha256": "a07003b654a490049def6ad9902a44122fc3a5c6293f7a3c25fc9486ca5e7735"
     },
     {
-      "mode": "100644",
       "path": "Tests/ShadowSyncSelfTests/CISuites.swift",
-      "sha256": "9012b20ac958684c7a4e5b10bb130f946fb40ef6003615dd9e652e9d94caaa5d"
+      "mode": "100644",
+      "sha256": "60e7f6a5908caa7d0bfd086f31c23e952f5fbddc662c4046f7ee74775dd50ea2"
     },
     {
       "mode": "100644",
@@ -1006,9 +1012,9 @@
       "sha256": "cb227e2536189b502157e6c95d6d65a35f161cc086e94138cb81f4fd37b3418e"
     },
     {
-      "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
-      "sha256": "39114126dd2793a1e32d64eb71908e8531194ba1edf3ab454e5fce3dffed33ca"
+      "mode": "100644",
+      "sha256": "c5515173a7a1cc5df2cb43d7e87f9ae9b80060de577414ff81f149cd764d950c"
     },
     {
       "mode": "100644",
@@ -1023,7 +1029,7 @@
     {
       "mode": "100644",
       "path": "config/identity-exceptions.json",
-      "sha256": "6a97c53902fc6e44d1e09ef7f249132757ef81537157376aa2bef4b7c38da1b0"
+      "sha256": "31e300ff5d8f62e0694c55208d941d6f6721502f42fb554291d43447b5a8e3bc"
     },
     {
       "mode": "100644",
