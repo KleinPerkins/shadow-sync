@@ -608,6 +608,7 @@ class ChannelTests(unittest.TestCase):
         source.write_bytes(data)
         desc = {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)}
         parts = delivery.stage_artifact(self.api.config, source, 'fixture-1', 'archive', desc)
+        self.assertEqual(delivery.stage_artifact(self.api.config, source, 'fixture-1', 'archive', desc), parts)
         self.assertEqual([p['size'] for p in parts], [delivery.PIECE_SIZE]*(delivery.PART_SIZE//delivery.PIECE_SIZE)+[17])
         self.assertEqual(len(delivery.asset_inventory(self.api.config)),delivery.PART_SIZE//delivery.PIECE_SIZE+1)
         api = delivery.Cloudflare.__new__(delivery.Cloudflare);api.config = self.api.config

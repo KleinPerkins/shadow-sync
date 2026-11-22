@@ -8,7 +8,7 @@
     },
     "Tests/Tooling/test_private_delivery.py": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Extend copied grant commands with scoped expiry/status/revocation and private durable creation/replacement recovery; isolated actual-SQL fault coverage. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures. Retain every write-intent marker observation through recovery; refuse disappeared, replaced, rewritten or unexpectedly new markers, and bind newly created marker identity before provider effects. Preserve ambiguous prior attempts without replay. Distinguish verified initial-open absence from disappearance after marker descriptor acquisition; initial-read identity failure cannot permit replay. Keep publication and channel writes confined to the synthetic fixture until an authoritative release orchestrator owns those operations. Record readback grant identity before issuance; verify revocation and preserve explicit scope-bound recovery. Require an owner-private cached runtime and an independent digest of the official Node executable; cover a forged local receipt. Require the independently pinned official Node executable before version probing or running credentialed Wrangler. Exclude inherited Node and loader overrides from verified child environments. Bind the credentialed runtime to the administrator-owned toolchain and pin official Wrangler entry bytes.",
-      "sha256": "2f2fdb62325466407fe1fbc321eb5484dfdeeebf7008d422c71fc777a6d0266a",
+      "sha256": "1884201b378095c7b959f44dc3fe3e360ccf2d3a05759de26bc2c0972da7ab47",
       "source_path": "tests/test_update_channel.py",
       "source_sha256": "98bcb666e6ef6d4547be98bd4656788e873a2061ff1eacf5f05bc4c102448272"
     },
@@ -56,7 +56,7 @@
     },
     "scripts/delivery.py": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Extend copied grant commands with scoped expiry/status/revocation and private durable creation/replacement recovery; isolated actual-SQL fault coverage. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures. Retain every write-intent marker observation through recovery; refuse disappeared, replaced, rewritten or unexpectedly new markers, and bind newly created marker identity before provider effects. Preserve ambiguous prior attempts without replay. Distinguish verified initial-open absence from disappearance after marker descriptor acquisition; initial-read identity failure cannot permit replay. Keep publication and channel writes confined to the synthetic fixture until an authoritative release orchestrator owns those operations. Record readback grant identity before issuance; verify revocation and preserve explicit scope-bound recovery. Require the independently pinned official Node executable before version probing or running credentialed Wrangler. Exclude inherited Node and loader overrides from verified child environments. Bind the credentialed runtime to the administrator-owned toolchain and pin official Wrangler entry bytes.",
-      "sha256": "d5ff278964d6cf6fabbd2c7e8d7187bf5c35c64f549672849b4e0a6c7887435d",
+      "sha256": "e1a50836955020fc2993410ad517374ec0409ad16bb6cc573cc0e2795aee386d",
       "source_path": "scripts/delivery.py",
       "source_sha256": "9c11d28ab1d722519bd01d50964e826ce59ee55735da383a2a1d12c33cd63af2"
     }
@@ -73,7 +73,8 @@
     "Retain every write-intent marker observation through recovery; refuse disappeared, replaced, rewritten or unexpectedly new markers, and bind newly created marker identity before provider effects. Preserve ambiguous prior attempts without replay.",
     "Distinguish verified initial-open absence from disappearance after marker descriptor acquisition; initial-read identity failure cannot permit replay.",
     "Credentialed toolchain uses official Node and Wrangler code pins. Wrangler package integrity reviewed against the npm registry SHA-512 and dependency custody requires administrator-owned content.",
-    "Use a closed, credential-free system Git environment to verify private paths."
+    "Use a closed, credential-free system Git environment to verify private paths.",
+    "Stage retained release assets relative to validated physical directory descriptors."
   ],
   "schema": "shadow-sync-delivery-provenance/v1",
   "scope": "Copied private delivery/access component only. No native updater, Recovery app, account/resource/origin settings, grants, access files or credentials copied.",
