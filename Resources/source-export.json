@@ -399,7 +399,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/DiscoveryCallerSelfTests.swift",
-      "sha256": "cd952539534d2d31ee65882a922120c100af72610ed1b90b2478e429b0b92f81"
+      "sha256": "ff5c531f9c035f480345fedff24c02cdb872bae7241cbc7e38a3c92cc0178391"
     },
     {
       "mode": "100644",
@@ -689,7 +689,7 @@
     {
       "mode": "100644",
       "path": "Sources/ShadowSyncCore/QualifiedCommandGraph.swift",
-      "sha256": "da80b5162c75e66a495aa9857a3d01dece77c734acd7ad3a40176d96e3d2a64f"
+      "sha256": "b8a0c78a514e774f0fe14e5c266df2c8423dd128cf6f61478198e1b9d0079d4f"
     },
     {
       "mode": "100644",

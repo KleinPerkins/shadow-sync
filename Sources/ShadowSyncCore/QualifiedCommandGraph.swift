@@ -96,6 +96,21 @@ final class QualifiedCommandGraph: @unchecked Sendable {
         if path == "/usr/bin/git" { return try PublisherExecutableSnapshot.captureSystemGitLauncher() }
         return try PublisherExecutableSnapshot.capture(path: path, owner: owner)
     }
+    static func appleGitLauncherARMCode() throws -> SecStaticCode {
+        #if arch(arm64)
+        let path = URL(fileURLWithPath: "/usr/bin/git") as CFURL
+        // Security/SecStaticCode.h accepts canonical architecture names as CFString.
+        // This selects the same slice as codesign --arch arm64.
+        let attributes = [kSecCodeAttributeArchitecture as String: "arm64" as CFString] as CFDictionary
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPathAndAttributes(path, [], attributes, &code) == errSecSuccess,
+              let code else { throw PublisherPolicyError.unavailable }
+        return code
+        #else
+        throw PublisherPolicyError.unavailable
+        #endif
+    }
+
     private init(entry: CommandGraphCatalog.Entry, resource: PolicyAuthorityFile?,
                  publisher: PublisherPolicyResources? = nil) throws {
         guard (entry.adapter == .policyClassify) == (publisher != nil) else { throw PublisherPolicyError.unavailable }
@@ -124,10 +139,19 @@ final class QualifiedCommandGraph: @unchecked Sendable {
                 requirement = required
             }
             let snapshot = try Self.snapshot(path, owner: owner)
+            let flags = SecCSFlags(rawValue: kSecCSStrictValidate | SecCSFlags.noNetworkAccess.rawValue)
             var code: SecStaticCode?
-            guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess, let code,
-                  SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSStrictValidate | SecCSFlags.noNetworkAccess.rawValue), requirement) == errSecSuccess,
-                  snapshot == (try Self.snapshot(path, owner: owner)) else { throw PublisherPolicyError.unavailable }
+            let found = SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess
+            if !found || code.map({ SecStaticCodeCheckValidity($0, flags, requirement) }) != errSecSuccess {
+                // The universal Apple launcher can default to a different
+                // static slice from the ARM code selected by the kernel.
+                // Static and running checks both keep the exact approved pin.
+                guard publisher == nil, path == "/usr/bin/git",
+                      SecStaticCodeCheckValidity(try Self.appleGitLauncherARMCode(), flags, requirement) == errSecSuccess else {
+                    throw PublisherPolicyError.unavailable
+                }
+            }
+            guard snapshot == (try Self.snapshot(path, owner: owner)) else { throw PublisherPolicyError.unavailable }
             return Node(path: path, snapshot: snapshot, requirement: requirement, owner: owner)
         }
     }
