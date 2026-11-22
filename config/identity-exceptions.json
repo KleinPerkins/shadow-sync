@@ -105,7 +105,7 @@
       "scope": "content",
       "token": "Dev Main Sync",
       "count": 12,
-      "sha256": "c2af0b886d0ba71f5eab3d31393b21bef5fe90bbba36f041f67f1f4ada51f465",
+      "sha256": "028a5d1a17eca711938474a441d4fcde93e1dbf164f8adff2ff778ae99184e1a",
       "class": "migration-reader",
       "owner": "ShadowSync application architect",
       "reason": "Recognizes historical app, backup and quarantine inputs. Rollback may restore the preserved predecessor bytes to their original path only while stopped and unregistered. Newly created backup and quarantine slots use the permanent product namespace.",

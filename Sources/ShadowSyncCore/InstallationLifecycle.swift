@@ -2486,7 +2486,8 @@ public final class InstallationLifecycle: @unchecked Sendable {
         for path in paths.reversed() {
             if let publisherLayout {
                 let relative = path == root ? "" : String(path.dropFirst(root.count + 1))
-                if try publisherLayout.validateNode(relative) != nil { continue }
+                try publisherLayout.syncNode(relative)
+                continue
             }
             let descriptor = Darwin.open(
                 path,

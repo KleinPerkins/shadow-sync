@@ -583,6 +583,7 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                     let retainedFile = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)
                     _ = try retainedFile.validateNode(relative)
                     _ = try retainedFile.hashRegularFile(relative)
+                    try retainedFile.syncNode(relative)
                     let target = app + "/" + relative
                     let saved = target + ".fixture-original"
                     let content = try Data(contentsOf: URL(fileURLWithPath: target))
@@ -592,6 +593,7 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                     try require(chmod(target, info.st_mode & 0o7777) == 0, "replace file with identical mode and size")
                     _ = try retainedFile.validateNode(relative)
                     try refused { _ = try retainedFile.hashRegularFile(relative) }
+                    try refused { try retainedFile.syncNode(relative) }
                     try require(unlink(target) == 0 && rename(saved, target) == 0, "restore original file")
                 }
                 let retained = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)

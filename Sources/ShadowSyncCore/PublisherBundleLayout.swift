@@ -149,12 +149,10 @@ final class PublisherBundleLayout {
         }
     }
 
-    // Hash the retained regular file through an opened descriptor. A second
-    // pathname read could otherwise pick up a replacement after validation.
-    func hashRegularFile(_ relative: String) throws -> SHA256.Digest {
-        let expected = try retainedNode(relative)
-        guard expected.mode & S_IFMT == S_IFREG, expected.links == 1,
-              (0...536_870_912).contains(expected.size) else { throw PublisherPolicyError.unavailable }
+    // Maintain descriptor custody through each operation and verify the same
+    // node is still named under the retained directory chain afterward.
+    private func withRetainedDescriptor<T>(_ relative: String, node: PolicyRuntimeTree.Node,
+                                           _ operation: (Int32) throws -> T) throws -> T {
         let parts = relative.utf8.split(separator: 47).map { String(decoding: $0, as: UTF8.self) }
         let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
         let root = open(bundlePath, flags | O_DIRECTORY)
@@ -173,26 +171,15 @@ final class PublisherBundleLayout {
         for (index, part) in parts.enumerated() {
             try verify(descriptors[index], against: retainedNode(path))
             path = path.isEmpty ? part : path + "/" + part
-            let child = openat(descriptors[index], part, flags | (index == parts.count - 1 ? 0 : O_DIRECTORY))
+            let isDirectory = index < parts.count - 1 || node.mode & S_IFMT == S_IFDIR
+            let child = openat(descriptors[index], part, flags | (isDirectory ? O_DIRECTORY : 0))
             guard child >= 0 else { throw PublisherPolicyError.unavailable }
             descriptors.append(child)
         }
-        guard descriptors.count > 1, let file = descriptors.last else { throw PublisherPolicyError.unavailable }
-        try verify(file, against: expected)
-        var digest = SHA256()
-        var remaining = expected.size
-        var buffer = [UInt8](repeating: 0, count: 65_536)
-        while true {
-            let amount = Int(min(Int64(buffer.count), remaining + 1))
-            let count = Darwin.read(file, &buffer, amount)
-            if count < 0 && errno == EINTR { continue }
-            guard count >= 0, count <= remaining else { throw PublisherPolicyError.unavailable }
-            if count == 0 { break }
-            buffer.withUnsafeBytes { digest.update(bufferPointer: UnsafeRawBufferPointer(rebasing: $0.prefix(count))) }
-            remaining -= Int64(count)
-        }
-        guard remaining == 0 else { throw PublisherPolicyError.unavailable }
-        try verify(file, against: expected)
+        let descriptor = descriptors[parts.count]
+        try verify(descriptor, against: node)
+        let result = try operation(descriptor)
+        try verify(descriptor, against: node)
         path = ""
         for (index, part) in parts.enumerated() {
             path = path.isEmpty ? part : path + "/" + part
@@ -205,7 +192,45 @@ final class PublisherBundleLayout {
         var namedRoot = stat()
         guard lstat(bundlePath, &namedRoot) == 0 else { throw PublisherPolicyError.unavailable }
         try requireRetainedMetadata("", namedRoot)
-        return digest.finalize()
+        return result
+    }
+
+    func hashRegularFile(_ relative: String) throws -> SHA256.Digest {
+        let node = try retainedNode(relative)
+        guard node.mode & S_IFMT == S_IFREG, node.links == 1,
+              (0...536_870_912).contains(node.size) else { throw PublisherPolicyError.unavailable }
+        return try withRetainedDescriptor(relative, node: node) { file in
+            var digest = SHA256()
+            var remaining = node.size
+            var buffer = [UInt8](repeating: 0, count: 65_536)
+            while true {
+                let amount = Int(min(Int64(buffer.count), remaining + 1))
+                let count = Darwin.read(file, &buffer, amount)
+                if count < 0 && errno == EINTR { continue }
+                guard count >= 0, count <= remaining else { throw PublisherPolicyError.unavailable }
+                if count == 0 { break }
+                buffer.withUnsafeBytes { digest.update(bufferPointer: UnsafeRawBufferPointer(rebasing: $0.prefix(count))) }
+                remaining -= Int64(count)
+            }
+            guard remaining == 0 else { throw PublisherPolicyError.unavailable }
+            return digest.finalize()
+        }
+    }
+
+    func syncNode(_ relative: String) throws {
+        let node = try retainedNode(relative)
+        let type = node.mode & S_IFMT
+        if type == S_IFLNK {
+            // Sync the directory entry via its parent. Never open a link target.
+            guard try validateNode(relative) == node.target else { throw PublisherPolicyError.unavailable }
+            return
+        }
+        guard type == S_IFDIR || type == S_IFREG else { throw PublisherPolicyError.unavailable }
+        try withRetainedDescriptor(relative, node: node) { descriptor in
+            guard fsync(descriptor) == 0 else {
+                throw InstallationLifecycleError.system("fsync staged inventory", errno)
+            }
+        }
     }
 
     func requireComplete(_ observed: Set<String>) throws {

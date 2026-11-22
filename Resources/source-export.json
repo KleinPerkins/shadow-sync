@@ -524,7 +524,7 @@
     {
       "path": "Sources/ShadowSyncCore/InstallationLifecycle.swift",
       "mode": "100644",
-      "sha256": "c2af0b886d0ba71f5eab3d31393b21bef5fe90bbba36f041f67f1f4ada51f465"
+      "sha256": "028a5d1a17eca711938474a441d4fcde93e1dbf164f8adff2ff778ae99184e1a"
     },
     {
       "mode": "100644",
@@ -674,7 +674,7 @@
     {
       "path": "Sources/ShadowSyncCore/PublisherBundleLayout.swift",
       "mode": "100644",
-      "sha256": "2c70f822cfbbbad160e4a4c853a4795b1202f23c665c035430462e8debb0f18a"
+      "sha256": "2fbef357863e81cb67ebf52a1262d3113e053dd7be5154c5fc9efaea7f0e93d9"
     },
     {
       "mode": "100644",
@@ -684,7 +684,7 @@
     {
       "path": "Sources/ShadowSyncCore/PublisherPolicyResourcesSelfTests.swift",
       "mode": "100644",
-      "sha256": "82f9005aeafc76173a96e73972a2bdf7188e678ac37cadff6518bb5d638c600a"
+      "sha256": "808b342b3136de23d08b54f566450a95c4ae5ff87d5dc33cb9974a449464639e"
     },
     {
       "mode": "100644",
@@ -1029,7 +1029,7 @@
     {
       "mode": "100644",
       "path": "config/identity-exceptions.json",
-      "sha256": "f8d8e9adaf7530e342a99f3922abb46ba72fb34fa48ed9c1c4f3cc8b8fc1476f"
+      "sha256": "31e300ff5d8f62e0694c55208d941d6f6721502f42fb554291d43447b5a8e3bc"
     },
     {
       "mode": "100644",
