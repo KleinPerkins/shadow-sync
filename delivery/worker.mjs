@@ -200,8 +200,7 @@ export default {async fetch(request, env, ctx) {
     let body=null;
     if(request.method!=='HEAD') {
       const bytes=await pieceBytes(response,part,request.signal);
-      // EOF and size are validated before any bytes escape. Workers knows the
-      // fixed byte view's length without an additional stream pipeline.
+      if(await sha256(bytes)!==part.sha256)throw new Error('asset digest');
       body=bytes;
     }
     const headers=request.method==='HEAD'?new Headers(BINARY_HEADERS):BINARY_HEADERS;

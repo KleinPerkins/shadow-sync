@@ -870,7 +870,7 @@
     {
       "path": "Tests/Fixtures/private_delivery_worker.mjs",
       "mode": "100644",
-      "sha256": "fef7755f6ea05b074d077d81f6e4efb4761acd297234353910a2848f7d49c3c0"
+      "sha256": "08209f959e63d7a7fbf87e6653340af84e1bc61ddfcd6bb23c7eb3b7a57d6ba4"
     },
     {
       "mode": "100644",
@@ -1050,7 +1050,7 @@
     {
       "path": "delivery/PROVENANCE.json",
       "mode": "100644",
-      "sha256": "a3d7053e7b6e76ab02b105289ae2fb8a77dde42d1470ed4931b0cfa67cb724f6"
+      "sha256": "dc95db039eb883e008c2533446ac81c3f09f037a80c0e3ba8ccbcade15122743"
     },
     {
       "path": "delivery/README.md",
@@ -1080,7 +1080,7 @@
     {
       "path": "delivery/worker.mjs",
       "mode": "100644",
-      "sha256": "4369d7b14d1a3e3a5464e3be3618cd283db24ccf6f85322147cdf4186209eeb5"
+      "sha256": "06a480a63fe91baeeb6d2f635f8ac5513b48ffd3a8498375591f9ce01c3f72fd"
     },
     {
       "path": "delivery/wrangler.template.json",

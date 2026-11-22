@@ -101,7 +101,7 @@ async function run(){
   for(const headers of [{'Content-Length':String(f.archive.length-1)},{'Content-Length':'invalid'},{'Content-Encoding':'gzip'}]){let cancelled=0;f.env.ASSETS={fetch:async()=>new Response(new ReadableStream({cancel(){cancelled++;}}),{headers})};await expect(piece,f.friend,503);assert.equal(cancelled,1);assertions++;}
   for(const delta of [-1,1]){f.env.ASSETS={fetch:async()=>new Response(Buffer.alloc(f.archive.length+delta))};await expect(piece,f.friend,503);assertions++;}
   f.env.ASSETS={fetch:async()=>new Response(null,{status:429})};await expect(piece,f.friend,503);await expect(piece,f.revoked,401);
-  f.env.ASSETS={fetch:async()=>new Response(Buffer.alloc(f.archive.length,3))};const tampered=await expect(piece,f.friend,200);assert.notEqual(hash(Buffer.from(await tampered.arrayBuffer())),hash(f.archive));assertions++;
+  f.env.ASSETS={fetch:async()=>new Response(Buffer.alloc(f.archive.length,3))};await expect(piece,f.friend,503);assertions++;
   const timer=globalThis.setTimeout;try{
    globalThis.setTimeout=(fn,ms,...args)=>timer(fn,ms===30000?2:ms,...args);
    f.env.ASSETS={fetch:()=>new Promise(()=>{})};await expect(piece,f.friend,503);
