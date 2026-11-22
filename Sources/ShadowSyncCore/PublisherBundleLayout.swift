@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -25,6 +26,7 @@ final class PublisherBundleLayout {
         "Contents/Resources/policy-runtime-source.json",
     ]
     let bundlePath: String
+    let releaseIdentity: ReleaseIdentity?
     private let layout: PolicyRuntimeLayout
     private let tree: PolicyRuntimeTree
     private let files: [PolicyAuthorityFile]
@@ -34,9 +36,9 @@ final class PublisherBundleLayout {
     private var outerNodes: [String: PolicyRuntimeTree.Node] = [:]
 
     private init(bundlePath: String, layout: PolicyRuntimeLayout, files: [PolicyAuthorityFile],
-                 publisher: PublisherCodeVerifier.Identity?) throws {
+                 publisher: PublisherCodeVerifier.Identity?, releaseIdentity: ReleaseIdentity?) throws {
         self.bundlePath = bundlePath; self.layout = layout; self.files = files
-        self.publisher = publisher; owner = geteuid()
+        self.publisher = publisher; self.releaseIdentity = releaseIdentity; owner = geteuid()
         tree = try PolicyRuntimeTree.capture(root: bundlePath + "/" + Self.frameworkRelative,
                                             owner: owner, layout: layout)
         outerNodes = try captureOuterNodes()
@@ -86,7 +88,8 @@ final class PublisherBundleLayout {
         let release = try ReleaseIdentity(infoDictionary: values)
         try release.validate(requireProduction: true)
         guard release.releaseContractSHA256 == contract.sha256 else { throw PublisherPolicyError.unavailable }
-        let result = try Self(bundlePath: bundlePath, layout: layout, files: [info, source, contract, manifest], publisher: publisher)
+        let result = try Self(bundlePath: bundlePath, layout: layout, files: [info, source, contract, manifest],
+                              publisher: publisher, releaseIdentity: release)
         for relative in result.tree.machOFiles {
             _ = try PublisherCodeVerifier.verifiedStatic(path: framework + "/" + relative,
                 identifier: relative == PolicyRuntimeLayout.interpreter ? "com.kleinperkins.shadow-sync.policy-helper" : nil,
@@ -128,6 +131,81 @@ final class PublisherBundleLayout {
             }
         }
         return expected.target
+    }
+
+    private func retainedNode(_ relative: String) throws -> PolicyRuntimeTree.Node {
+        if let node = outerNodes[relative] { return node }
+        let prefix = Self.frameworkRelative + "/"
+        guard relative.hasPrefix(prefix), let node = tree.nodes[String(relative.dropFirst(prefix.count))] else {
+            throw PublisherPolicyError.unavailable
+        }
+        return node
+    }
+
+    func requireRetainedMetadata(_ relative: String, _ info: stat) throws {
+        let node = try retainedNode(relative)
+        guard node == PolicyRuntimeTree.Node(info, acl: node.acl, target: node.target) else {
+            throw PublisherPolicyError.unavailable
+        }
+    }
+
+    // Hash the retained regular file through an opened descriptor. A second
+    // pathname read could otherwise pick up a replacement after validation.
+    func hashRegularFile(_ relative: String) throws -> SHA256.Digest {
+        let expected = try retainedNode(relative)
+        guard expected.mode & S_IFMT == S_IFREG, expected.links == 1,
+              (0...536_870_912).contains(expected.size) else { throw PublisherPolicyError.unavailable }
+        let parts = relative.utf8.split(separator: 47).map { String(decoding: $0, as: UTF8.self) }
+        let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+        let root = open(bundlePath, flags | O_DIRECTORY)
+        guard root >= 0 else { throw PublisherPolicyError.unavailable }
+        var descriptors = [root]
+        defer { for fd in descriptors.reversed() { close(fd) } }
+
+        func verify(_ fd: Int32, against node: PolicyRuntimeTree.Node) throws {
+            var info = stat()
+            guard fstat(fd, &info) == 0, node == PolicyRuntimeTree.Node(info, acl: try PolicyAuthorityFile.safeACL(fd)) else {
+                throw PublisherPolicyError.unavailable
+            }
+        }
+
+        var path = ""
+        for (index, part) in parts.enumerated() {
+            try verify(descriptors[index], against: retainedNode(path))
+            path = path.isEmpty ? part : path + "/" + part
+            let child = openat(descriptors[index], part, flags | (index == parts.count - 1 ? 0 : O_DIRECTORY))
+            guard child >= 0 else { throw PublisherPolicyError.unavailable }
+            descriptors.append(child)
+        }
+        guard descriptors.count > 1, let file = descriptors.last else { throw PublisherPolicyError.unavailable }
+        try verify(file, against: expected)
+        var digest = SHA256()
+        var remaining = expected.size
+        var buffer = [UInt8](repeating: 0, count: 65_536)
+        while true {
+            let amount = Int(min(Int64(buffer.count), remaining + 1))
+            let count = Darwin.read(file, &buffer, amount)
+            if count < 0 && errno == EINTR { continue }
+            guard count >= 0, count <= remaining else { throw PublisherPolicyError.unavailable }
+            if count == 0 { break }
+            buffer.withUnsafeBytes { digest.update(bufferPointer: UnsafeRawBufferPointer(rebasing: $0.prefix(count))) }
+            remaining -= Int64(count)
+        }
+        guard remaining == 0 else { throw PublisherPolicyError.unavailable }
+        try verify(file, against: expected)
+        path = ""
+        for (index, part) in parts.enumerated() {
+            path = path.isEmpty ? part : path + "/" + part
+            var info = stat()
+            guard fstatat(descriptors[index], part, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+                throw PublisherPolicyError.unavailable
+            }
+            try requireRetainedMetadata(path, info)
+        }
+        var namedRoot = stat()
+        guard lstat(bundlePath, &namedRoot) == 0 else { throw PublisherPolicyError.unavailable }
+        try requireRetainedMetadata("", namedRoot)
+        return digest.finalize()
     }
 
     func requireComplete(_ observed: Set<String>) throws {
@@ -212,7 +290,7 @@ final class PublisherBundleLayout {
         guard bundlePath.hasPrefix("/private/tmp/shadow-sync-publisher-policy-") else {
             throw PublisherPolicyError.unavailable
         }
-        return try Self(bundlePath: bundlePath, layout: layout, files: [], publisher: nil)
+        return try Self(bundlePath: bundlePath, layout: layout, files: [], publisher: nil, releaseIdentity: nil)
     }
     static var testingDirectories: Set<String> { directories }
     static var testingExecutables: Set<String> { executables }

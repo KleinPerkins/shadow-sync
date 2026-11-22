@@ -206,13 +206,14 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
               hasOnlyPermittedXattrs(bundlePath, allowRootQuarantine: true) else {
             throw ReleaseIdentityError.unsafeBundle(bundlePath)
         }
-        let release = try ReleaseIdentity.load(bundlePath: bundlePath)
-        try release.validate(requireProduction: requireProduction)
         let publisherLayout = try layoutOverride ?? PublisherBundleLayout.captureIfPresent(bundlePath)
+        let release = try publisherLayout?.releaseIdentity ?? ReleaseIdentity.load(bundlePath: bundlePath)
+        try release.validate(requireProduction: requireProduction)
         #if !SHADOW_SYNC_TESTING
         guard !requireProduction || publisherLayout != nil else { throw ReleaseIdentityError.unsafeBundle(bundlePath) }
         #endif
         _ = try publisherLayout?.validateNode("")
+        try publisherLayout?.requireRetainedMetadata("", rootInfo)
         var observed: Set<String> = [""]
 
         guard let enumerator = FileManager.default.enumerator(
@@ -243,15 +244,20 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
                 throw ReleaseIdentityError.unsafeBundle(relative)
             }
             let target = try publisherLayout?.validateNode(relative)
+            try publisherLayout?.requireRetainedMetadata(relative, info)
             guard observed.insert(relative).inserted else { throw ReleaseIdentityError.unsafeBundle(relative) }
             let type = info.st_mode & S_IFMT
             let mode = info.st_mode & 0o7777
             if type == S_IFDIR {
                 records.append("d\u{0}\(relative)\u{0}\(mode)\u{0}0\u{0}-")
             } else if type == S_IFREG, info.st_nlink == 1 {
-                let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-                let digest = SHA256.hash(data: data).hex
-                records.append("f\u{0}\(relative)\u{0}\(mode)\u{0}\(info.st_size)\u{0}\(digest)")
+                let digest: SHA256.Digest
+                if let publisherLayout {
+                    digest = try publisherLayout.hashRegularFile(relative)
+                } else {
+                    digest = SHA256.hash(data: try Data(contentsOf: url, options: [.mappedIfSafe]))
+                }
+                records.append("f\u{0}\(relative)\u{0}\(mode)\u{0}\(info.st_size)\u{0}\(digest.hex)")
             } else if type == S_IFLNK, let target {
                 let bytes = Data(target.utf8)
                 records.append("l\u{0}\(relative)\u{0}\(mode)\u{0}\(bytes.count)\u{0}\(SHA256.hash(data: bytes).hex)")

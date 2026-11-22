@@ -8,6 +8,7 @@
     "Sources/ShadowSyncCore/DM2Body4SelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/DM3PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/DM4PreflightSelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Sources/ShadowSyncCore/PublisherBundleLayout.swift": "Bind the sealed publisher bundle roster and regular-file digests to retained no-follow identities.",
     "Sources/ShadowSyncCore/RemovalTransaction.swift": "Remove implicit private manager path; adapter unavailable pending policy-bound integration.",
     "Sources/ShadowSyncCore/RepositoryLifecycle.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
@@ -673,7 +674,7 @@
     {
       "path": "Sources/ShadowSyncCore/PublisherBundleLayout.swift",
       "mode": "100644",
-      "sha256": "8a6d1e946a53eb268b0a5f89a1c0aaa6d6c43abf108a566f15c219e96227d414"
+      "sha256": "2c70f822cfbbbad160e4a4c853a4795b1202f23c665c035430462e8debb0f18a"
     },
     {
       "mode": "100644",
@@ -683,7 +684,7 @@
     {
       "path": "Sources/ShadowSyncCore/PublisherPolicyResourcesSelfTests.swift",
       "mode": "100644",
-      "sha256": "ba6da3e363a27cd15e708f520617ad24e40b01862463c0120a83d1adbc5dcb58"
+      "sha256": "82f9005aeafc76173a96e73972a2bdf7188e678ac37cadff6518bb5d638c600a"
     },
     {
       "mode": "100644",
@@ -698,7 +699,7 @@
     {
       "path": "Sources/ShadowSyncCore/ReleaseIdentity.swift",
       "mode": "100644",
-      "sha256": "c27ae3a220f9b74ed64b9db41cb0e5d17a861165993c559b898e23dc59f877eb"
+      "sha256": "5d8e47779af52c46b385cec17f7c2169243b2ebcd3724e85743614aaa550d5b3"
     },
     {
       "mode": "100644",

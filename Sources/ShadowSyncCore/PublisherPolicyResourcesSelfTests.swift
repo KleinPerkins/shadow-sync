@@ -578,6 +578,22 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                     try refused { try retained.revalidate() }
                     try require(chmod(app + "/" + relative, 0o755) == 0, "late mode restore")
                 }
+                for relative in ["Contents/Helpers/ShadowSyncLifecycleCoordinator",
+                                 PublisherBundleLayout.frameworkRelative + "/" + PolicyRuntimeLayout.manifest] {
+                    let retainedFile = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)
+                    _ = try retainedFile.validateNode(relative)
+                    _ = try retainedFile.hashRegularFile(relative)
+                    let target = app + "/" + relative
+                    let saved = target + ".fixture-original"
+                    let content = try Data(contentsOf: URL(fileURLWithPath: target))
+                    var info = stat()
+                    try require(lstat(target, &info) == 0 && rename(target, saved) == 0, "retain original file")
+                    try Data(repeating: 0, count: content.count).write(to: URL(fileURLWithPath: target))
+                    try require(chmod(target, info.st_mode & 0o7777) == 0, "replace file with identical mode and size")
+                    _ = try retainedFile.validateNode(relative)
+                    try refused { _ = try retainedFile.hashRegularFile(relative) }
+                    try require(unlink(target) == 0 && rename(saved, target) == 0, "restore original file")
+                }
                 let retained = try PublisherBundleLayout.testing(bundlePath: app, layout: layout)
                 try Data("late extra".utf8).write(to: URL(fileURLWithPath: extra))
                 try refused { try retained.revalidate() }
