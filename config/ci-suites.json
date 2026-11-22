@@ -1254,6 +1254,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-release-candidate": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_release_candidate"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-release-credential-readiness": {
       "argv": [
         "python3",
@@ -1424,6 +1436,7 @@
         "tooling-test-private-delivery",
         "tooling-test-python-test-suites",
         "tooling-test-release-assembly",
+        "tooling-test-release-candidate",
         "tooling-test-release-credential-readiness",
         "tooling-test-release-metadata",
         "tooling-test-release-notarization",
@@ -3453,6 +3466,51 @@
           "test_release_assembly.ReleaseAssemblyTests.test_substitution_between_producer_check_and_raw_capture_refuses_before_signing",
           "test_release_assembly.ReleaseAssemblyTests.test_testing_or_wrong_source_metadata_refuses_before_output",
           "test_release_assembly.ReleaseAssemblyTests.test_wrong_publisher_and_ambiguous_signer_refuse"
+        ],
+        "kind": "static"
+      },
+      "tooling-test-release-candidate": {
+        "cases": [
+          "test_release_candidate.CommandEnvironmentTests.test_failed_publication_restores_parent_and_retains_no_replay_intent",
+          "test_release_candidate.CommandEnvironmentTests.test_failed_signing_runs_real_cleanup_in_closed_environment_and_restores_parent",
+          "test_release_candidate.CommandEnvironmentTests.test_original_home_oauth_remains_available_without_provider_environment_token",
+          "test_release_candidate.CommandEnvironmentTests.test_prepare_closes_environment_before_real_path_and_config_helpers",
+          "test_release_candidate.CommandEnvironmentTests.test_publish_keeps_provider_token_only_in_real_wrangler_child_boundary",
+          "test_release_candidate.CommandEnvironmentTests.test_run_uses_all_real_helper_boundaries_with_closed_environments",
+          "test_release_candidate.CommandEnvironmentTests.test_sign_closes_environment_before_real_credential_read_and_signer",
+          "test_release_candidate.OwnerControlsTests.test_github_client_refuses_redirect_handler_and_changed_response_url",
+          "test_release_candidate.OwnerControlsTests.test_live_owner_controls_and_no_app_capability",
+          "test_release_candidate.OwnerControlsTests.test_provider_explicit_auth_rejects_unrelated_capabilities_before_children",
+          "test_release_candidate.OwnerControlsTests.test_read_client_cannot_write_and_no_client_can_upload",
+          "test_release_candidate.PrivateBoundaryTests.test_real_free_gate_rejects_missing_stale_future_wrong_account_or_long_proof",
+          "test_release_candidate.PrivateBoundaryTests.test_single_run_prepares_then_secrets_only_in_sign_then_private_publish",
+          "test_release_candidate.ReleaseCandidateTests.test_after_both_readbacks_a_changed_source_refuses_channel_write",
+          "test_release_candidate.ReleaseCandidateTests.test_all_effect_intents_share_exclusive_file_then_directory_sync",
+          "test_release_candidate.ReleaseCandidateTests.test_allocation_refuses_draft_tags_reused_build_and_unknown",
+          "test_release_candidate.ReleaseCandidateTests.test_ambiguous_provider_effect_is_retained_and_not_retried",
+          "test_release_candidate.ReleaseCandidateTests.test_api_pagination_reads_every_page",
+          "test_release_candidate.ReleaseCandidateTests.test_assembly_notary_and_distribution_substitution_refuse",
+          "test_release_candidate.ReleaseCandidateTests.test_changed_prepared_inputs_refuse_signing",
+          "test_release_candidate.ReleaseCandidateTests.test_changed_reservation_or_public_assets_blocks_provider",
+          "test_release_candidate.ReleaseCandidateTests.test_ci_wrong_app_source_attempt_or_incomplete_refuses",
+          "test_release_candidate.ReleaseCandidateTests.test_cleanup_failure_blocks_provider",
+          "test_release_candidate.ReleaseCandidateTests.test_closed_environment_strips_unknown_secrets_and_restores_parent",
+          "test_release_candidate.ReleaseCandidateTests.test_complete_ci_and_immutable_admission",
+          "test_release_candidate.ReleaseCandidateTests.test_detached_producer_binds_both_artifacts_without_installed_acceptance",
+          "test_release_candidate.ReleaseCandidateTests.test_exclusive_publication_intent_is_durable_before_provider_construction",
+          "test_release_candidate.ReleaseCandidateTests.test_failed_reservation_never_retries_or_deletes",
+          "test_release_candidate.ReleaseCandidateTests.test_free_proof_failure_precedes_any_provider_effect",
+          "test_release_candidate.ReleaseCandidateTests.test_latest_ci_attempt_cannot_borrow_previous_attempt_success",
+          "test_release_candidate.ReleaseCandidateTests.test_main_source_and_repository_identity_refuse",
+          "test_release_candidate.ReleaseCandidateTests.test_missing_immutability_capability_refuses_before_allocation",
+          "test_release_candidate.ReleaseCandidateTests.test_notary_failure_uses_existing_cleanup_and_does_not_resubmit",
+          "test_release_candidate.ReleaseCandidateTests.test_owner_local_context_only",
+          "test_release_candidate.ReleaseCandidateTests.test_preparation_fetches_and_builds_without_credentials_before_reservation",
+          "test_release_candidate.ReleaseCandidateTests.test_prepare_refuses_credentials_before_any_api",
+          "test_release_candidate.ReleaseCandidateTests.test_private_publish_uses_existing_delivery_and_never_uploads_public_assets",
+          "test_release_candidate.ReleaseCandidateTests.test_public_target_changed_bytes_and_missing_signature_refuse_before_provider",
+          "test_release_candidate.ReleaseCandidateTests.test_publication_intent_creation_failure_precedes_provider",
+          "test_release_candidate.ReleaseCandidateTests.test_publication_intent_sync_failure_retains_attempt_without_retry"
         ],
         "kind": "static"
       },

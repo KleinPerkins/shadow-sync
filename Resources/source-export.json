@@ -19,6 +19,7 @@
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_private_delivery.py": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values. Scoped access-file lifecycle and durable non-replaying attempt recovery; no provider or native qualification claim. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures.",
     "Tests/Tooling/test_release_assembly.py": "Qualify source-bound assembly with synthetic layout, signing and tamper fixtures without using publisher credentials.",
+    "Tests/Tooling/test_release_candidate.py": "Port the owner-local candidate contract to current G1 controls and qualification-only private publication.",
     "Tests/Tooling/test_release_notarization.py": "Use disposable synthetic adapters to verify packaging, byte bindings, retry and refusal paths.",
     "delivery/PROVENANCE.json": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values. Scoped access-file lifecycle and durable non-replaying attempt recovery; no provider or native qualification claim. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures.",
     "delivery/README.md": "Document the private delivery contract and credential-free fixture scope before candidate orchestration is integrated.",
@@ -28,11 +29,13 @@
     "delivery/web.mjs": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
     "delivery/worker.mjs": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
     "delivery/wrangler.template.json": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "docs/runbooks/private-release.md": "Port the owner-local candidate contract to current G1 controls and qualification-only private publication.",
     "scripts/assemble-release-bundle.py": "Assemble the verified application and policy runtime under a bound Developer ID identity.",
     "scripts/ci-shards.py": "Run mandatory macOS-specific tooling and native fixture groups on standard macOS26 arm64; retain exact-run aggregation and independent full transitions.",
     "scripts/delivery-toolchain.py": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
     "scripts/delivery.py": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values. Preserve copied Free-only private immutable publication and authenticated readback; add a narrow optional source/CI/allocation revalidation callback immediately before channel advancement. Accept a closed optional owner API-token input only for Wrangler children; preserve original HOME authentication without forwarding this input to other helper processes. Scoped access-file lifecycle and durable non-replaying attempt recovery; no provider or native qualification claim. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures.",
     "scripts/notarize-release-bundle.py": "Preserve accepted submission IDs and exact stapled checkpoints across resumed validation; no publication or installation.",
+    "scripts/release-candidate.py": "Port the owner-local candidate contract to current G1 controls and qualification-only private publication.",
     "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
@@ -1014,6 +1017,11 @@
     },
     {
       "mode": "100644",
+      "path": "Tests/Tooling/test_release_candidate.py",
+      "sha256": "31996458067c202ebd79b09dd2ac568fbec79fdab1fb706a21a22027cc50d0d5"
+    },
+    {
+      "mode": "100644",
       "path": "Tests/Tooling/test_release_credential_readiness.py",
       "sha256": "22356192f37d3c2a5ffaf324c26c0757d05fa4710f6031d54e880165babfe526"
     },
@@ -1091,6 +1099,11 @@
       "mode": "100644",
       "path": "docs/runbooks/native-acceptance.md",
       "sha256": "120467e8447bdc6ec3b9cbdfb16eed6cff358b4c130dd5ae257ff4912c48fdeb"
+    },
+    {
+      "mode": "100644",
+      "path": "docs/runbooks/private-release.md",
+      "sha256": "97d91df990125b6d0aa8405543a69bb2709486bd5f6cab98cddaefd9024a47bb"
     },
     {
       "mode": "100755",
@@ -1231,6 +1244,11 @@
       "mode": "100644",
       "path": "scripts/python-test-suites.py",
       "sha256": "42cfa4df93657d4dab866657c01d1ff0f585965544c65f0fbb5f2169f725d704"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/release-candidate.py",
+      "sha256": "2976d66a6c21befe36200a5e4859d585cf5deba83d72fded73d8cc049fb13ebd"
     },
     {
       "mode": "100644",
