@@ -631,6 +631,28 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                 try require(unlink(helper) == 0, "missing helper setup")
                 try refused { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
             }
+            try withBundleFixture { fixture, app, _ in
+                let runtime = app + "/" + PublisherBundleLayout.frameworkRelative
+                try require(rename(runtime, fixture.path + "/retained.framework") == 0, "retain the publisher runtime")
+                try refused { _ = try PublisherBundleLayout.captureIfPresent(app) }
+                try refused { _ = try BundleArtifactIdentity.inspect(bundlePath: app) }
+                for name in ["PolicyAdapter.py", "awa-contract.json", "policy-runtime-source.json"] {
+                    try require(unlink(app + "/Contents/Resources/" + name) == 0, "prepare a development bundle")
+                }
+                try require(try PublisherBundleLayout.captureIfPresent(app) == nil, "development bundle rejected")
+                _ = try BundleArtifactIdentity.inspect(bundlePath: app)
+                let quarantine = Data("0081;00000000;Fixture;".utf8)
+                try quarantine.withUnsafeBytes { bytes in
+                    try require(setxattr(app, "com.apple.quarantine", bytes.baseAddress, bytes.count, 0, XATTR_NOFOLLOW) == 0,
+                                "development quarantine setup")
+                }
+                do {
+                    _ = try BundleArtifactIdentity.inspect(bundlePath: app)
+                    throw Failure.assertion("quarantined development bundle accepted")
+                } catch ReleaseIdentityError.unsafeBundle(let path) {
+                    try require(path == app, "quarantine did not reject the development bundle root")
+                }
+            }
         }
         onPass("PUBLISHER-POLICY-T17-install-required-resources-and-quarantine")
         try RuntimeFixtureSession.withCase("PUBLISHER-POLICY-T18-install-layout-does-not-grant-publisher-authority") {

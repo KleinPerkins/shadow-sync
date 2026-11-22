@@ -50,20 +50,30 @@ final class PublisherBundleLayout {
     }
 
     static func captureIfPresent(_ bundlePath: String) throws -> PublisherBundleLayout? {
-        // Check each parent physically before examining the runtime. A malformed
-        // or aliased component is never interpreted as a development bundle.
-        var current = bundlePath
-        for component in ["Contents", "Frameworks", "Python.framework"] {
-            current += "/" + component
+        func present(_ relative: String, directory: Bool = false) throws -> Bool {
             var info = stat()
-            if lstat(current, &info) != 0 {
+            if lstat(bundlePath + "/" + relative, &info) != 0 {
                 guard errno == ENOENT else { throw PublisherPolicyError.unavailable }
-                return nil
+                return false
             }
-            guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid() else {
+            if directory, info.st_mode & S_IFMT != S_IFDIR || info.st_uid != geteuid() {
                 throw PublisherPolicyError.unavailable
             }
+            return true
         }
+        guard try present("Contents", directory: true) else { return nil }
+        let hasResources = try present("Contents/Resources", directory: true)
+        let hasFrameworks = try present("Contents/Frameworks", directory: true)
+        let hasRuntime = try hasFrameworks && present(Self.frameworkRelative, directory: true)
+        let publisherResources = ["PolicyAdapter.py", "awa-contract.json", "policy-runtime-source.json"]
+        let hasPublisherResource = try hasResources && publisherResources.contains {
+            try present("Contents/Resources/" + $0)
+        }
+        let hasTicket = try present(Self.ticketRelative)
+        // Development bundles do not carry any publisher-only resource,
+        // runtime, or staple. Partial publisher bundles must fail closed.
+        guard hasRuntime || hasPublisherResource || hasTicket else { return nil }
+        guard hasRuntime && hasResources else { throw PublisherPolicyError.unavailable }
         let owner = geteuid(), framework = bundlePath + "/" + Self.frameworkRelative
         func read(_ relative: String, limit: Int = 65_536) throws -> PolicyAuthorityFile {
             try PolicyAuthorityFile.read(path: bundlePath + "/" + relative, owner: owner, maximumBytes: limit)

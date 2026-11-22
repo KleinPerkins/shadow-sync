@@ -674,7 +674,7 @@
     {
       "path": "Sources/ShadowSyncCore/PublisherBundleLayout.swift",
       "mode": "100644",
-      "sha256": "2fbef357863e81cb67ebf52a1262d3113e053dd7be5154c5fc9efaea7f0e93d9"
+      "sha256": "3c35eb255b655bb2330ae4462acbab8c798c01d1dac7df161d98508aff041fc5"
     },
     {
       "mode": "100644",
@@ -684,7 +684,7 @@
     {
       "path": "Sources/ShadowSyncCore/PublisherPolicyResourcesSelfTests.swift",
       "mode": "100644",
-      "sha256": "808b342b3136de23d08b54f566450a95c4ae5ff87d5dc33cb9974a449464639e"
+      "sha256": "3c759ca74ae281f8e4411b009587de5ce63383578fb815f4db194caf9f54503f"
     },
     {
       "mode": "100644",
@@ -699,7 +699,7 @@
     {
       "path": "Sources/ShadowSyncCore/ReleaseIdentity.swift",
       "mode": "100644",
-      "sha256": "5d8e47779af52c46b385cec17f7c2169243b2ebcd3724e85743614aaa550d5b3"
+      "sha256": "276e48240b0e875ecb46d3f68aae8beb17a2bce5ca962688bffc2238e6825c1c"
     },
     {
       "mode": "100644",

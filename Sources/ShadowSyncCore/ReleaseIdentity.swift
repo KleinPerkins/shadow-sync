@@ -202,11 +202,13 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
         guard lstat(bundlePath, &rootInfo) == 0,
               (rootInfo.st_mode & S_IFMT) == S_IFDIR,
               rootInfo.st_uid == geteuid(),
-              rootInfo.st_flags == 0,
-              hasOnlyPermittedXattrs(bundlePath, allowRootQuarantine: true) else {
+              rootInfo.st_flags == 0 else {
             throw ReleaseIdentityError.unsafeBundle(bundlePath)
         }
         let publisherLayout = try layoutOverride ?? PublisherBundleLayout.captureIfPresent(bundlePath)
+        guard hasOnlyPermittedXattrs(bundlePath, allowRootQuarantine: publisherLayout != nil) else {
+            throw ReleaseIdentityError.unsafeBundle(bundlePath)
+        }
         let release = try publisherLayout?.releaseIdentity ?? ReleaseIdentity.load(bundlePath: bundlePath)
         try release.validate(requireProduction: requireProduction)
         #if !SHADOW_SYNC_TESTING
