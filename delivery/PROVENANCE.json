@@ -56,7 +56,7 @@
     },
     "scripts/delivery.py": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Extend copied grant commands with scoped expiry/status/revocation and private durable creation/replacement recovery; isolated actual-SQL fault coverage. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures. Retain every write-intent marker observation through recovery; refuse disappeared, replaced, rewritten or unexpectedly new markers, and bind newly created marker identity before provider effects. Preserve ambiguous prior attempts without replay. Distinguish verified initial-open absence from disappearance after marker descriptor acquisition; initial-read identity failure cannot permit replay. Keep publication and channel writes confined to the synthetic fixture until an authoritative release orchestrator owns those operations. Record readback grant identity before issuance; verify revocation and preserve explicit scope-bound recovery. Require the independently pinned official Node executable before version probing or running credentialed Wrangler. Exclude inherited Node and loader overrides from verified child environments. Bind the credentialed runtime to the administrator-owned toolchain and pin official Wrangler entry bytes.",
-      "sha256": "8ab4084cf29c2173e79b32d50ef52f67b97a706cb172d23bd372b3cd3ab6c237",
+      "sha256": "14bde0021cac880c175cba2c70c5a383bc0c5e94b5428221a4b72791ae0f2848",
       "source_path": "scripts/delivery.py",
       "source_sha256": "9c11d28ab1d722519bd01d50964e826ce59ee55735da383a2a1d12c33cd63af2"
     }
@@ -75,7 +75,8 @@
     "Credentialed toolchain uses official Node and Wrangler code pins. Wrangler package integrity reviewed against the npm registry SHA-512 and dependency custody requires administrator-owned content.",
     "Use a closed, credential-free system Git environment to verify private paths.",
     "Stage retained release assets relative to validated physical directory descriptors.",
-    "Create and sync private access files and attempt markers relative to a retained parent descriptor."
+    "Create and sync private access files and attempt markers relative to a retained parent descriptor.",
+    "Hash each retained asset from a bounded physical descriptor and verify its named identity."
   ],
   "schema": "shadow-sync-delivery-provenance/v1",
   "scope": "Copied private delivery/access component only. No native updater, Recovery app, account/resource/origin settings, grants, access files or credentials copied.",

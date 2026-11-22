@@ -167,27 +167,50 @@ def private_directory(path):
 
 def asset_inventory(config):
     root = private_directory(config['assets_directory'])
+    expected_root = root.stat(follow_symlinks=False)
     inventory = {}
-    for path in root.rglob('*'):
-        info = path.lstat()
-        if path.is_symlink() or info.st_uid != os.getuid():
-            raise DeliveryError('Asset symlinks/foreign ownership are forbidden.')
-        if path.is_dir():
-            if stat.S_IMODE(info.st_mode) != 0o700:
-                raise DeliveryError('Private asset directories must have mode 0700.')
-            continue
-        relative = '/' + path.relative_to(root).as_posix()
-        pattern = r'/_private/' + re.escape(APP) + r'/[A-Za-z0-9_-]{1,128}/(?:archive|package)/[a-f0-9]{64}/(?:0|[1-9][0-9]{0,3})-([a-f0-9]{64})\.part'
-        match = re.fullmatch(pattern, relative)
-        if (not match or int(path.name.split('-', 1)[0]) >= MAX_PIECES or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or
-            not 0 < info.st_size <= PART_SIZE):
-            raise DeliveryError('Only bounded private immutable part files may be deployed; no routing/control files.')
-        digest, size = file_digest(path)
-        if digest != match[1]:
-            raise DeliveryError('Retained asset hash mismatch.')
-        inventory[relative] = {'sha256': digest, 'size': size}
-        if len(inventory) > MAX_FILES:
-            raise DeliveryError('Complete retained asset set exceeds Workers Free file-count bound.')
+    pattern = r'/_private/' + re.escape(APP) + r'/[A-Za-z0-9_-]{1,128}/(?:archive|package)/[a-f0-9]{64}/(?:0|[1-9][0-9]{0,3})-([a-f0-9]{64})\.part'
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    with ExitStack() as handles:
+        root_fd = os.open(root, flags | os.O_DIRECTORY)
+        handles.callback(os.close, root_fd)
+        for directory, subdirs, files, directory_fd in os.fwalk('.', dir_fd=root_fd):
+            opened = os.fstat(directory_fd)
+            if opened.st_uid != os.getuid() or stat.S_IMODE(opened.st_mode) != 0o700:
+                raise DeliveryError('Private asset directories must be owner-owned with mode 0700.')
+            for name in subdirs:
+                info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                    raise DeliveryError('Asset symlinks/foreign ownership are forbidden.')
+            for name in files:
+                relative = '/' + (Path(directory) / name).as_posix()
+                match = re.fullmatch(pattern, relative)
+                if not match or int(name.split('-', 1)[0]) >= MAX_PIECES:
+                    raise DeliveryError('Only bounded private immutable part files may be deployed; no routing/control files.')
+                fd = os.open(name, flags, dir_fd=directory_fd)
+                with os.fdopen(fd, 'rb') as stream:
+                    before = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1 or
+                        stat.S_IMODE(before.st_mode) != 0o600 or not 0 < before.st_size <= PART_SIZE):
+                        raise DeliveryError('Only bounded private mode-0600 regular part files may be deployed.')
+                    hashed = hashlib.sha256()
+                    remaining = before.st_size
+                    while remaining:
+                        chunk = stream.read(min(remaining, 1024 * 1024))
+                        if not chunk:
+                            raise DeliveryError('Retained asset length changed.')
+                        remaining -= len(chunk)
+                        hashed.update(chunk)
+                    if (stream.read(1) or access_stat(before) != access_stat(os.fstat(stream.fileno())) or
+                        access_stat(before) != access_stat(os.stat(name, dir_fd=directory_fd, follow_symlinks=False)) or
+                        hashed.hexdigest() != match[1]):
+                        raise DeliveryError('Retained asset hash or custody changed.')
+                    inventory[relative] = {'sha256': match[1], 'size': before.st_size}
+                    if len(inventory) > MAX_FILES:
+                        raise DeliveryError('Complete retained asset set exceeds Workers Free file-count bound.')
+        if (access_parent(expected_root) != access_parent(os.fstat(root_fd)) or
+            access_parent(expected_root) != access_parent(root.stat(follow_symlinks=False))):
+            raise DeliveryError('Private asset root changed during inventory.')
     return inventory
 
 
