@@ -977,11 +977,16 @@ def recover_grant(api, config, attempt, complete=False):
                     access_status='expired' if grant['expires_at'] <= int(time.time()) else 'active')
 
 
-def publish(api, value, receipt, archive=None, package=None, *, before_promote=None):
-    api.require_free()
+def publish(api, value, receipt, archive=None, package=None, *, before_promote):
+    # The release orchestrator owns the authoritative source and artifact checks.
+    # A supplied manifest and receipt are only the immutable transport metadata.
+    if not callable(before_promote):
+        raise DeliveryError('Release orchestration authority is required.')
     value = validate_manifest(value)
     stable = value['channel'] == 'stable'
     validate_receipt(value, receipt, stable)
+    before_promote()
+    api.require_free()
     release_id = value['archive']['path'].split('/')[-2]
     prepared = []
     if stable:
@@ -1029,11 +1034,9 @@ def publish(api, value, receipt, archive=None, package=None, *, before_promote=N
     if not stable:
         for kind, descriptor in (('archive', value['archive']), ('package', value['first_install'])):
             api.readback(release_id, descriptor, kind)
-    # The release orchestrator may revalidate exact source/CI/allocation after
-    # all authenticated readback and immediately before channel mutation.
-    if before_promote is not None:
-        before_promote()
+    # Revalidate authority after authenticated readback and before channel mutation.
     api.require_free()
+    before_promote()
     api.query('''INSERT INTO channels(app_id,channel,release_id) VALUES(?,?,?)
         ON CONFLICT(app_id,channel) DO UPDATE SET release_id=excluded.release_id
         WHERE CAST(json_extract((SELECT manifest_json FROM releases WHERE app_id=excluded.app_id AND channel=excluded.channel AND release_id=excluded.release_id),'$.build') AS INTEGER)
@@ -1110,11 +1113,6 @@ def main():
     recovery.add_argument('--complete', action='store_true', help='Issue only never-attempted steps after reconciliation')
     subs.add_parser('check-privacy')
     subs.add_parser('deploy')
-    release = subs.add_parser('publish')
-    release.add_argument('--manifest', required=True, type=Path)
-    release.add_argument('--receipt', required=True, type=Path)
-    release.add_argument('--archive', type=Path)
-    release.add_argument('--package', type=Path)
     args = parser.parse_args()
     try:
         config = load_config(args.config)
@@ -1144,9 +1142,6 @@ def main():
         elif args.command == 'deploy':
             api.deploy()
             print('Worker deployment completed. Binary publication and live qualification remain separate.')
-        else:
-            publish(api, bounded_json(args.manifest), bounded_json(args.receipt), args.archive, args.package)
-            print('Immutable release published and channel pointer verified.')
     except DeliveryError as error:
         print(str(error), file=sys.stderr)
         return 1

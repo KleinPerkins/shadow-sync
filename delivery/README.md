@@ -76,10 +76,10 @@ migration and explicit operator acceptance. A JSON assertion alone proves none
 of these outcomes. Sparkle installed-update proof and feed/Latest promotion remain
 separate post-MVP work.
 
-The CLI supports guarded deployment/privacy readback, access lifecycle commands
-and immutable qualification publication followed by identical-byte friend-channel
-promotion. Every operation retains the copied Free, source/configuration, route,
-version and artifact checks. No provider command runs merely by importing source.
+The CLI supports guarded deployment, privacy readback and access lifecycle
+commands. Binary publication requires the release orchestrator to verify
+authority before provider operations and after authenticated readback, before
+advancing the channel. Importing this source runs zero provider commands.
 
 ### Owner access lifecycle
 

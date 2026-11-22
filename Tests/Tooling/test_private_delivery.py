@@ -28,6 +28,10 @@ def node():
     return str(ChannelTests.node_binary)
 
 
+def publish_fixture(api, value, proof, archive=None, package=None):
+    return delivery.publish(api, value, proof, archive, package, before_promote=lambda: None)
+
+
 class MemoryAPI:
     def __init__(self):
         self.db = sqlite3.connect(':memory:')
@@ -115,6 +119,23 @@ class ChannelTests(unittest.TestCase):
         self.addCleanup(self.api.db.close)
         self.addCleanup(self.api.folder.cleanup)
 
+    def test_standalone_cli_cannot_publish_from_receipts(self):
+        argv = ['delivery.py', '--config', '/fixture/delivery.json', 'publish',
+                '--manifest', '/fixture/manifest.json', '--receipt', '/fixture/receipt.json']
+        with patch.object(delivery.sys, 'argv', argv), patch.object(delivery, 'Cloudflare') as provider:
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                delivery.main()
+            provider.assert_not_called()
+
+    def test_publication_revalidates_before_any_provider_operation(self):
+        api = MagicMock()
+        value = release()
+        guard = MagicMock(side_effect=delivery.DeliveryError('source is stale'))
+        with self.assertRaisesRegex(delivery.DeliveryError, 'source is stale'):
+            delivery.publish(api, value, receipt(value), before_promote=guard)
+        guard.assert_called_once_with()
+        self.assertEqual(api.mock_calls, [])
+
     def test_actual_worker_primary_reads_auth_cache_isolation_and_errors(self):
         result = subprocess.run([node(), str(ROOT / 'Tests/Fixtures/private_delivery_worker.mjs')], cwd=ROOT,
             capture_output=True, text=True, timeout=30)
@@ -194,22 +215,22 @@ class ChannelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             artifact = Path(folder) / 'artifact'
             artifact.write_bytes(b'test')
-            delivery.publish(self.api, value, proof, artifact, artifact)
+            publish_fixture(self.api, value, proof, artifact, artifact)
         self.assertTrue(self.api.checked_privacy)
         self.assertEqual(len(self.api.uploads), 2)
         stable = dict(value, channel='stable', qualified=True)
         with self.assertRaises(delivery.DeliveryError):
-            delivery.publish(self.api, stable, proof)
+            publish_fixture(self.api, stable, proof)
         proof['checks'].update(dict.fromkeys(delivery.FRIEND_CHECKS, True))
         tampered = dict(stable, source_revision='b' * 40)
         with self.assertRaises(delivery.DeliveryError):
-            delivery.publish(self.api, tampered, receipt(tampered))
-        delivery.publish(self.api, stable, proof)
+            publish_fixture(self.api, tampered, receipt(tampered))
+        publish_fixture(self.api, stable, proof)
         self.assertEqual(len(self.api.uploads), 2, 'stable cannot upload different bytes')
         self.assertEqual(len(self.api.readbacks), 4, 'qualification and stable both reverify retained bytes')
         self.assertLess(self.api.events.index('deploy'), self.api.events.index('INSERT:releases'))
         self.assertLess(self.api.events.index('readback'), self.api.events.index('INSERT:channels'))
-        delivery.publish(self.api, stable, proof)  # exact retry is idempotent
+        publish_fixture(self.api, stable, proof)  # exact retry is idempotent
         self.assertEqual(self.api.query("SELECT release_id FROM channels WHERE channel='stable'")[0]['release_id'], 'release-2')
         older = release()
         older['build'] = 1
@@ -219,7 +240,7 @@ class ChannelTests(unittest.TestCase):
             artifact = Path(folder) / 'artifact'
             artifact.write_bytes(b'test')
             with self.assertRaises(delivery.DeliveryError):
-                delivery.publish(self.api, older, receipt(older), artifact, artifact)
+                publish_fixture(self.api, older, receipt(older), artifact, artifact)
         self.assertEqual(self.api.query("SELECT release_id FROM channels WHERE channel='qualification'")[0]['release_id'], 'release-2')
 
     def test_unqualified_or_mismatched_artifact_never_published(self):
@@ -228,12 +249,12 @@ class ChannelTests(unittest.TestCase):
             bad = receipt(value)
             bad['checks'][key] = False
             with self.assertRaises(delivery.DeliveryError):
-                delivery.publish(self.api, value, bad)
+                publish_fixture(self.api, value, bad)
         with tempfile.TemporaryDirectory() as folder:
             artifact = Path(folder) / 'wrong'
             artifact.write_bytes(b'wrong')
             with self.assertRaises(delivery.DeliveryError):
-                delivery.publish(self.api, value, receipt(value), artifact, artifact)
+                publish_fixture(self.api, value, receipt(value), artifact, artifact)
         self.assertEqual(self.api.query('SELECT * FROM releases'), [])
         self.assertEqual(self.api.uploads, [])
 
@@ -250,7 +271,7 @@ class ChannelTests(unittest.TestCase):
                 before = list(self.api.calls)
                 with self.subTest(gate=gate, invalid=invalid), self.assertRaisesRegex(
                         delivery.DeliveryError, 'installation, recovery, migration and operator acceptance'):
-                    delivery.publish(self.api, value, proof)
+                    publish_fixture(self.api, value, proof)
                 self.assertEqual(self.api.calls, before)
                 self.assertEqual(self.api.uploads, [])
 
@@ -270,7 +291,7 @@ class ChannelTests(unittest.TestCase):
                               lambda: api.query('CREATE TABLE forbidden(x)'), lambda: api.create_database('new'),
                               lambda: api.create_subdomain('new'), lambda: api.deploy(),
                               lambda: api.wrangler('deploy', '--config', '/unused'),
-                              lambda: delivery.publish(api, release(), receipt(release())),
+                              lambda: publish_fixture(api, release(), receipt(release())),
                               lambda: delivery.create_grant(api, config, 'fixture', self.api.root / 'unused', int(time.time()) + 30)):
                 with self.assertRaises(delivery.DeliveryError): operation()
             api._opener.open.assert_not_called()
@@ -388,13 +409,13 @@ class ChannelTests(unittest.TestCase):
                         if sql.startswith(failure):raise delivery.DeliveryError('Synthetic interruption')
                         return original(sql, params)
                     with patch.object(api, 'query', side_effect=interrupted), self.assertRaises(delivery.DeliveryError):
-                        delivery.publish(api, value, receipt(value), source, source)
+                        publish_fixture(api, value, receipt(value), source, source)
                     self.assertEqual(original('SELECT * FROM channels'), [])
                     self.assertEqual(original('SELECT * FROM releases'), [])
                     self.assertEqual(original('SELECT * FROM artifact_parts'), [])
                     markers = original('SELECT * FROM artifact_protocols')
                     self.assertEqual(len(markers), 0 if failure.startswith('INSERT OR IGNORE INTO artifact_protocols') else 1)
-                    delivery.publish(api, value, receipt(value), source, source)
+                    publish_fixture(api, value, receipt(value), source, source)
                     self.assertEqual(len(original('SELECT * FROM artifact_parts')), 2)
                     self.assertEqual(len(original('SELECT * FROM artifact_protocols')), 2)
                     self.assertEqual(len(original('SELECT * FROM channels')), 1)
@@ -411,7 +432,7 @@ class ChannelTests(unittest.TestCase):
         self.api.query('INSERT INTO artifact_parts VALUES(?,?,?,?,?)',
                        (delivery.APP, release_id, 'archive', descriptor['sha256'], json.dumps(parts)))
         with self.assertRaises(delivery.DeliveryError):
-            delivery.publish(self.api, value, receipt(value), source, source)
+            publish_fixture(self.api, value, receipt(value), source, source)
         self.assertNotIn('deploy', self.api.events)
         self.assertEqual(self.api.query('SELECT * FROM artifact_protocols'), [])
         self.assertEqual(source.read_bytes(), b'test')
@@ -519,12 +540,12 @@ class ChannelTests(unittest.TestCase):
         value = release()
         artifact = self.api.root / 'artifact.zip';artifact.write_bytes(b'test')
         with patch.object(self.api,'readback',side_effect=delivery.DeliveryError('Synthetic readback failure')):
-            with self.assertRaises(delivery.DeliveryError):delivery.publish(self.api,value,receipt(value),artifact,artifact)
+            with self.assertRaises(delivery.DeliveryError):publish_fixture(self.api,value,receipt(value),artifact,artifact)
         self.assertEqual(self.api.query('SELECT * FROM channels'), [])
         self.assertEqual(len(self.api.query('SELECT * FROM releases')),1)
-        delivery.publish(self.api,value,receipt(value),artifact,artifact)
+        publish_fixture(self.api,value,receipt(value),artifact,artifact)
         stable = dict(value, channel='stable',qualified=True);proof=receipt(stable);proof['checks']['private_upgrade']=True
-        with self.assertRaises(delivery.DeliveryError):delivery.publish(self.api,stable,proof,artifact,artifact)
+        with self.assertRaises(delivery.DeliveryError):publish_fixture(self.api,stable,proof,artifact,artifact)
 
     def test_pinned_wrangler_auth_is_captured_without_argv_secrets(self):
         secret = 'fixture-owner-token'
