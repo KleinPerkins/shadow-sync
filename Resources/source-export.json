@@ -17,7 +17,9 @@
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "scripts/ci-shards.py": "Run mandatory macOS-specific tooling and native fixture groups on standard macOS26 arm64; retain exact-run aggregation and independent full transitions.",
-    "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
+    "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Tests/Tooling/test_release_notarization.py": "Disposable synthetic signing/notary adapters exercise packaging, retry, tamper and refusal paths; no credentials or product submission.",
+    "scripts/notarize-release-bundle.py": "Source-bound MVP app and DMG notarization, stapling and Gatekeeper gates; preserve submission IDs and input bytes; no publication, installation, or acceptance claim."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
   "files": [
@@ -993,6 +995,11 @@
     },
     {
       "mode": "100644",
+      "path": "Tests/Tooling/test_release_notarization.py",
+      "sha256": "593e9dfbc56037029f95b424ec6dbfcb3a5941c5d84891b77bd96219b00b528f"
+    },
+    {
+      "mode": "100644",
       "path": "Tests/Tooling/test_runtime_suite_inventory.py",
       "sha256": "39114126dd2793a1e32d64eb71908e8531194ba1edf3ab454e5fce3dffed33ca"
     },
@@ -1125,6 +1132,11 @@
       "mode": "100644",
       "path": "scripts/native-ui-suites.py",
       "sha256": "4d0e5b84846d11e39e24a0e52cbfc128e0046413f944c50bfd371a63b7f328bb"
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/notarize-release-bundle.py",
+      "sha256": "cec5bc094e5faa04a105214cb73cc79b1494d9c5eabead910696333b153ab774"
     },
     {
       "mode": "100644",
