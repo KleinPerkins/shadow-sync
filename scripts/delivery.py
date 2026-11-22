@@ -6,6 +6,7 @@ never printed, placed in argv, written to config, or passed to recipient apps.
 """
 import argparse
 import base64
+from contextlib import ExitStack
 import hashlib
 import importlib.util
 import json
@@ -199,32 +200,61 @@ def stage_artifact(config, source, release_id, kind, descriptor):
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', release_id) or kind not in ('archive', 'package'):
         raise DeliveryError('Invalid immutable artifact identity.')
     parts, digest, total = [], hashlib.sha256(), 0
-    with Path(source).open('rb') as stream:
+    relative = ('_private', APP, release_id, kind, descriptor['sha256'])
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    with ExitStack() as handles:
+        folder = os.open('/', directory_flags)
+        handles.callback(os.close, folder)
+        ancestry = []
+        for position, component in enumerate((*root.parts[1:], *relative), start=1):
+            if position >= len(root.parts):
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=folder)
+                    os.fsync(folder)
+                except FileExistsError:
+                    pass
+            child = os.open(component, directory_flags, dir_fd=folder)
+            handles.callback(os.close, child)
+            info = os.fstat(child)
+            private = position >= len(root.parts) - 1
+            if private and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
+                raise DeliveryError('Asset directory ownership/mode refused.')
+            ancestry.append((folder, component, child, private))
+            folder = child
+        stream = handles.enter_context(Path(source).open('rb'))
         while chunk := stream.read(PIECE_SIZE):
             total += len(chunk)
             if total > MAX_ARCHIVE:
                 raise DeliveryError('Archive exceeds the delivery bound.')
             digest.update(chunk)
             part_hash = hashlib.sha256(chunk).hexdigest()
-            path = f'/_private/{APP}/{release_id}/{kind}/{descriptor["sha256"]}/{len(parts)}-{part_hash}.part'
-            destination = root / path.lstrip('/')
-            directory = root
-            for component in destination.relative_to(root).parts[:-1]:
-                directory = directory / component
-                if not directory.exists(): directory.mkdir(mode=0o700)
-                info = directory.lstat()
-                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                    raise DeliveryError('Asset directory ownership/mode/symlink refused.')
-            if destination.exists():
-                if file_digest(destination) != (part_hash, len(chunk)):
-                    raise DeliveryError('Existing immutable part differs.')
+            name = f'{len(parts)}-{part_hash}.part'
+            flags = os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+            try:
+                fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | flags, 0o600, dir_fd=folder)
+            except FileExistsError:
+                fd = os.open(name, os.O_RDONLY | flags, dir_fd=folder)
+                with os.fdopen(fd, 'rb') as retained:
+                    info = os.fstat(retained.fileno())
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or
+                        stat.S_IMODE(info.st_mode) != 0o600 or info.st_size != len(chunk) or
+                        retained.read(len(chunk) + 1) != chunk):
+                        raise DeliveryError('Existing immutable part differs.')
             else:
-                fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, 'wb') as target:
-                    target.write(chunk); target.flush(); os.fsync(target.fileno())
-            parts.append(dict(index=len(parts), path=path, size=len(chunk), sha256=part_hash))
-    if (digest.hexdigest(), total) != (descriptor['sha256'], descriptor['size']):
-        raise DeliveryError('Archive hash or length differs from the qualified manifest.')
+                    target.write(chunk)
+                    target.flush()
+                    os.fsync(target.fileno())
+                os.fsync(folder)
+            parts.append(dict(index=len(parts), path='/' + '/'.join((*relative, name)), size=len(chunk), sha256=part_hash))
+        if (digest.hexdigest(), total) != (descriptor['sha256'], descriptor['size']):
+            raise DeliveryError('Archive hash or length differs from the qualified manifest.')
+        for parent, component, child, private in ancestry:
+            observed = os.stat(component, dir_fd=parent, follow_symlinks=False)
+            retained = os.fstat(child)
+            if (not os.path.samestat(observed, retained) or
+                (private and (retained.st_uid != os.getuid() or stat.S_IMODE(retained.st_mode) != 0o700))):
+                raise DeliveryError('Asset directory changed while staging.')
     return parts
 
 

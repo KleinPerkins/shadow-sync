@@ -475,10 +475,9 @@ class ReleaseCandidateTests(unittest.TestCase):
         def sync(descriptor):
             info = os.fstat(descriptor)
             if intent.exists():
-                if stat.S_ISDIR(info.st_mode):
-                    self.assertEqual(info.st_ino, self.work.stat().st_ino)
+                if stat.S_ISDIR(info.st_mode) and os.path.samestat(info, self.work.stat()):
                     events.append('intent-directory-sync')
-                elif info.st_ino == intent.stat().st_ino:
+                elif os.path.samestat(info, intent.stat()):
                     events.append('intent-file-sync')
             return fsync(descriptor)
         def provider(*args, **kwargs):
