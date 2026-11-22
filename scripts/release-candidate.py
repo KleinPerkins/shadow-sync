@@ -73,6 +73,24 @@ def work_directory(env):
     return path
 
 
+def qualified_target(env):
+    build = env.get('RELEASE_TARGET_SYSTEM_BUILD', '')
+    require(re.fullmatch(r'[A-Za-z0-9]{4,32}', build), 'target-system-build')
+    path = ROOT / 'Resources/command-graphs.json'
+    catalog = assembly.json_file(path)
+    contract = assembly.json_file(ROOT / 'Resources/release-contract.json')
+    require(sha(path) == contract['command_graphs_sha256'] and
+            catalog['schema'] == 'shadow-sync-command-graphs/v1', 'target-command-graph-binding')
+    adapters = ('launchctl-read/v1', 'signature-check/v1', 'discovery-git/v1',
+                'system-git-config/v1', 'policy-classify/v1')
+    entries = [row for row in catalog['graphs'] if row['system_build'] == build and row['architecture'] == 'arm64']
+    require(sorted(row['adapter'] for row in entries) == sorted(adapters)
+            and all(re.fullmatch(r'[a-f0-9]{64}', row['qualification_sha256'])
+                    and row['qualification_sha256'] != '0' * 64 and row['tools'] for row in entries),
+            'target-command-graphs-unqualified')
+    return build
+
+
 def metadata():
     info = plistlib.loads((ROOT / 'Resources/Info.plist').read_bytes())
     version, build = info['CFBundleShortVersionString'], info['CFBundleVersion']
@@ -286,6 +304,7 @@ def reserved(api, prepared):
 @isolated_stage
 def prepare(api, env):
     require(not any(env.get(key) for key in execution.CONFIG), 'credentials-before-preparation')
+    target_build = qualified_target(env)
     private_configuration(env)
     admitted = admission(api, env)
     release = metadata()
@@ -309,7 +328,7 @@ def prepare(api, env):
     # Preparation is complete before allocation and before any Apple credential.
     require(admission(api, env, admitted['source_sha256']) == admitted, 'admission-changed')
     unallocated(api, release)
-    prepared = dict(admitted, **release, run_id=int(env['RELEASE_ATTEMPT_ID']),
+    prepared = dict(admitted, **release, run_id=int(env['RELEASE_ATTEMPT_ID']), target_system_build=target_build,
                     package_sha256=sha(work / 'python.pkg'), build_sha256=sha(work / 'build/build.json'),
                     orchestrator_sha256=sha(Path(__file__)), signer_sha256=sha(work / 'sign_update'),
                     delivery_config_sha256=sha(Path(env['RELEASE_DELIVERY_CONFIG'])))
@@ -330,6 +349,7 @@ def prepared_attempt(env):
             and stat.S_IMODE(work.stat().st_mode) == 0o700, 'private-attempt')
     prepared = read(work / 'prepared.json')
     require(prepared['revision'] == context(env) and prepared['run_id'] == int(env['RELEASE_ATTEMPT_ID'])
+            and prepared['target_system_build'] == qualified_target(env)
             and {k: prepared[k] for k in metadata()} == metadata()
             and prepared['orchestrator_sha256'] == sha(Path(__file__))
             and prepared['package_sha256'] == sha(work / 'python.pkg')
@@ -595,6 +615,7 @@ def publish(api, env):
     recheck_admission()
     write(work / 'published.json', dict(schema='shadow-sync-private-candidate-publication/v1',
         revision=prepared['revision'], tag=prepared['tag'], release_id=release_id, channel='qualification',
+        target_system_build=prepared['target_system_build'],
         manifest_sha256=intent['manifest_sha256'], downloaded_bytes_verified=True,
         installed=False, product_accepted=False))
 
@@ -604,6 +625,7 @@ def main():
     parser.add_argument('stage', choices=('run', 'prepare', 'sign', 'publish', 'cleanup'))
     parser.add_argument('--source-revision', required=True)
     parser.add_argument('--attempt-id', required=True)
+    parser.add_argument('--target-system-build', help='Exact qualified destination macOS build')
     parser.add_argument('--work-directory', required=True, type=Path)
     parser.add_argument('--delivery-config', required=True, type=Path)
     parser.add_argument('--credentials', type=Path, help='Private mode-0600 eight-key signing JSON; run or sign only')
@@ -612,7 +634,8 @@ def main():
     old_handler = signal.getsignal(signal.SIGTERM)
     try:
         env = dict(os.environ, RELEASE_SOURCE_REVISION=args.source_revision, RELEASE_ATTEMPT_ID=args.attempt_id,
-                   RELEASE_WORK_DIRECTORY=str(args.work_directory), RELEASE_DELIVERY_CONFIG=str(args.delivery_config))
+                   RELEASE_WORK_DIRECTORY=str(args.work_directory), RELEASE_DELIVERY_CONFIG=str(args.delivery_config),
+                   RELEASE_TARGET_SYSTEM_BUILD=args.target_system_build or '')
         with closed_environment(env):
             context(env)
             require(not any(env.get(key) for key in execution.CONFIG), 'ambient-signing-credentials')

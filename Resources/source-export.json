@@ -1018,7 +1018,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_release_candidate.py",
-      "sha256": "31996458067c202ebd79b09dd2ac568fbec79fdab1fb706a21a22027cc50d0d5"
+      "sha256": "03def8327f113128d15028a5f280bac52ed61c0c05f9e3af4df0dca05729177d"
     },
     {
       "mode": "100644",
@@ -1103,7 +1103,7 @@
     {
       "mode": "100644",
       "path": "docs/runbooks/private-release.md",
-      "sha256": "bf9b0df830ae6d8ff98963d6b4edd6ed3bcd8acab7af1f9a9a994702e1732d43"
+      "sha256": "5125419342d9455a3cba112ec24e7772ce5a0614a250e6d9f054420ac1b6507e"
     },
     {
       "mode": "100755",
@@ -1248,7 +1248,7 @@
     {
       "mode": "100644",
       "path": "scripts/release-candidate.py",
-      "sha256": "2976d66a6c21befe36200a5e4859d585cf5deba83d72fded73d8cc049fb13ebd"
+      "sha256": "127a10e1c944e8beee338f23fb5f56d75a353b73c18baa9dfa72816aeaf0921f"
     },
     {
       "mode": "100644",

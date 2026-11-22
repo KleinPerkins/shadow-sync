@@ -24,7 +24,8 @@ SPEC = importlib.util.spec_from_file_location('release_candidate', ROOT / 'scrip
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 REVISION, DIGEST = '1' * 40, '2' * 64
-ENV = dict(RELEASE_SOURCE_REVISION=REVISION, RELEASE_ATTEMPT_ID='17')
+TARGET_BUILD = '26Fixture'
+ENV = dict(RELEASE_SOURCE_REVISION=REVISION, RELEASE_ATTEMPT_ID='17', RELEASE_TARGET_SYSTEM_BUILD=TARGET_BUILD)
 
 ADMITTED = dict(revision=REVISION, source_sha256=DIGEST, ci_run_id=9, ci_run_attempt=1, ci_check_id=7, owner_controls={'synthetic': True})
 META = dict(version='0.10.0', build='15', tag='candidate-v0.10.0-build15')
@@ -129,6 +130,7 @@ class ReleaseCandidateTests(unittest.TestCase):
         self.env = dict(ENV, RELEASE_DELIVERY_CONFIG=str(self.config_path))
         self.api = FakeGitHub()
         self.patch('source', return_value=DIGEST)
+        self.patch('qualified_target', return_value=TARGET_BUILD)
         self.immutable = self.patch('immutable_enabled', return_value=ADMITTED['owner_controls'])
         self.configuration = self.patch('private_configuration', return_value={})
         self.patch('prepare_signer', side_effect=lambda work: (work / 'sign_update').write_bytes(b'fixture signer'))
@@ -153,7 +155,7 @@ class ReleaseCandidateTests(unittest.TestCase):
         (self.work / 'sign_update').write_bytes(b'fixture signer')
         (self.work / 'python.pkg').write_bytes(b'fixture package')
         self.record(self.work / 'build/build.json', {'fixture': True})
-        prepared = dict(ADMITTED, **META, run_id=17, release_id=12,
+        prepared = dict(ADMITTED, **META, run_id=17, release_id=12, target_system_build=TARGET_BUILD,
             package_sha256=module.sha(self.work / 'python.pkg'), build_sha256=module.sha(self.work / 'build/build.json'),
             orchestrator_sha256=module.sha(Path(module.__file__)), signer_sha256=module.sha(self.work / 'sign_update'), delivery_config_sha256=module.sha(self.config_path))
         self.record(self.work / 'prepared.json', prepared)
@@ -266,6 +268,13 @@ class ReleaseCandidateTests(unittest.TestCase):
         self.assertEqual(module.read(self.work / 'prepared.json')['release_id'], 12)
         with self.assertRaises(module.Refusal):
             module.prepare(self.api, ENV)
+
+    def test_prepare_refuses_unqualified_destination_before_allocation(self):
+        module.qualified_target.side_effect = module.Refusal('target-command-graphs-unqualified')
+        with self.assertRaisesRegex(module.Refusal, 'target-command-graphs-unqualified'):
+            module.prepare(self.api, self.env)
+        self.assertFalse(self.work.exists())
+        self.assertFalse(self.api.writes)
 
     def test_prepare_refuses_credentials_before_any_api(self):
         api = mock.Mock()
@@ -591,7 +600,7 @@ class PrivateBoundaryTests(unittest.TestCase):
                     seen.append((name, {key for key in module.execution.CONFIG if key in env}))
                     if name == 'prepare': work.mkdir(mode=0o700)
                 return call
-            argv = ['release-candidate.py', 'run', '--source-revision', REVISION, '--attempt-id', '17',
+            argv = ['release-candidate.py', 'run', '--source-revision', REVISION, '--attempt-id', '17', '--target-system-build', TARGET_BUILD,
                 '--work-directory', str(work), '--delivery-config', str(root / 'config.json'),
                 '--credentials', str(root / 'credentials.json')]
             with mock.patch.object(module.sys, 'argv', argv), \
@@ -655,6 +664,7 @@ class CommandEnvironmentTests(unittest.TestCase):
         self.stack = ExitStack(); self.addCleanup(self.stack.close)
         self.addCleanup(self.joined)
         self.stack.enter_context(mock.patch.object(module, 'source', return_value=DIGEST))
+        self.stack.enter_context(mock.patch.object(module, 'qualified_target', return_value=TARGET_BUILD))
         self.stack.enter_context(mock.patch.object(module, 'immutable_enabled', return_value=ADMITTED['owner_controls']))
         self.stack.enter_context(mock.patch.object(module, 'GitHub', return_value=self.api))
         self.stack.enter_context(mock.patch.object(module.execution, 'PUBLIC_KEY_SHA256', hashlib.sha256(b'p' * 32).hexdigest()))
@@ -792,7 +802,7 @@ class CommandEnvironmentTests(unittest.TestCase):
         self.assertFalse(pending, 'Every fixture child must be joined by its original caller')
 
     def invoke(self, stage):
-        argv = ['release-candidate.py', stage, '--source-revision', REVISION, '--attempt-id', '17',
+        argv = ['release-candidate.py', stage, '--source-revision', REVISION, '--attempt-id', '17', '--target-system-build', TARGET_BUILD,
             '--work-directory', str(self.work), '--delivery-config', str(self.config_path)]
         if stage in ('run', 'sign'): argv += ['--credentials', str(self.credentials_path)]
         with mock.patch.object(module.sys, 'argv', argv), \
@@ -866,6 +876,24 @@ class CommandEnvironmentTests(unittest.TestCase):
 
 
 class OwnerControlsTests(unittest.TestCase):
+    def test_target_requires_all_adapters_at_one_arm64_os_build(self):
+        adapters = ('launchctl-read/v1', 'signature-check/v1', 'discovery-git/v1',
+                    'system-git-config/v1', 'policy-classify/v1')
+        graphs = [dict(adapter=item, architecture='arm64', system_build=TARGET_BUILD,
+                       qualification_sha256='a' * 64, tools=[{'synthetic': True}]) for item in adapters]
+        catalog = dict(schema='shadow-sync-command-graphs/v1', graphs=graphs)
+        digest = 'b' * 64
+        def synthetic(path):
+            return catalog if path.name == 'command-graphs.json' else {'command_graphs_sha256': digest}
+        with mock.patch.object(module, 'sha', return_value=digest), \
+                mock.patch.object(module.assembly, 'json_file', side_effect=synthetic):
+            self.assertEqual(module.qualified_target(ENV), TARGET_BUILD)
+            for value in ([], graphs[:-1], graphs + [graphs[0]], [dict(row, system_build='26Alternate') for row in graphs],
+                          [dict(row, qualification_sha256='0' * 64) for row in graphs]):
+                with self.subTest(graphs=len(value)), self.assertRaisesRegex(module.Refusal, 'target-command-graphs-unqualified'):
+                    catalog['graphs'] = value
+                    module.qualified_target(ENV)
+
     def test_github_client_refuses_redirect_handler_and_changed_response_url(self):
         with self.assertRaises(module.Refusal):
             module.NoRedirect().redirect_request(None, None, 302, 'fixture', {}, 'https://other.example.invalid')

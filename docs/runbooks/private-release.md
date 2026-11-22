@@ -13,6 +13,10 @@ Use an owner-controlled macOS 26 arm64 builder with Xcode 26.6 build 17F113
 selected. Install the pinned Node 26.4.0 and Wrangler 4.158.0 independently.
 Start in a clean native checkout of the exact merged main commit. Its latest
 mandatory push workflow attempt must have a successful bound aggregate.
+Pass the destination's exact macOS build. Its arm64 command graphs for launchd
+inspection, signature inspection, Git discovery, system Git configuration and
+the bundled policy runtime must already be qualified and bound to the release
+contract. An empty or incomplete catalog refuses before candidate allocation.
 
 Keep the provider configuration, retained assets and deployment receipt in
 owner-private storage outside Git. Use the [configuration
@@ -36,6 +40,7 @@ directory beneath physical `/private/tmp`. Keep the attempt records and lock.
 python3 -I -B scripts/release-candidate.py run \
   --source-revision FULL_MERGED_MAIN_SHA \
   --attempt-id UNIQUE_POSITIVE_INTEGER \
+  --target-system-build QUALIFIED_DESTINATION_BUILD \
   --work-directory /private/tmp/OWNER_PRIVATE_PARENT/UNUSED_ATTEMPT \
   --delivery-config /OWNER/PRIVATE/delivery.json \
   --credentials /OWNER/PRIVATE/signing.json
