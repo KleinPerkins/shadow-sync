@@ -180,6 +180,14 @@ class ChannelTests(unittest.TestCase):
         self.api = MemoryAPI()
         self.addCleanup(self.api.db.close)
         self.addCleanup(self.api.folder.cleanup)
+        # The SQLite/provider emulator uses temporary user-owned tool paths.
+        # The provisioned-owner guard has its own independent refusal fixture.
+        verify_fixture_node = delivery.toolchain.verify_node_binary
+        node_identity = patch.object(delivery.toolchain, 'verify_node_binary',
+            side_effect=lambda binary, *, privileged=False: verify_fixture_node(binary))
+        wrangler_identity = patch.object(delivery.toolchain, 'verify_wrangler', side_effect=Path)
+        node_identity.start(); self.addCleanup(node_identity.stop)
+        wrangler_identity.start(); self.addCleanup(wrangler_identity.stop)
 
     def test_standalone_cli_cannot_publish_from_receipts(self):
         self.assertFalse(hasattr(delivery, 'publish'))
@@ -643,7 +651,7 @@ class ChannelTests(unittest.TestCase):
             api = delivery.Cloudflare({'wrangler': '/fixture/wrangler.js'})
         self.assertEqual(api._authorization, 'Bearer ' + secret)
         for args, kwargs in seen:
-            self.assertEqual(args[:2], [binary, '/fixture/wrangler.js'])
+            self.assertEqual(args[:3], [binary, '--no-global-search-paths', '/fixture/wrangler.js'])
             self.assertNotIn(secret, repr(args))
             self.assertFalse(unsafe_environment.keys() & kwargs['env'].keys())
             self.assertEqual(kwargs['env']['WRANGLER_SEND_METRICS'], 'false')
@@ -695,6 +703,19 @@ class ChannelTests(unittest.TestCase):
                     delivery.pinned_node()
                 execute.assert_not_called()
 
+    def test_live_toolchain_requires_protected_administrator_custody(self):
+        with self.assertRaisesRegex(ValueError, 'trusted physical directories'):
+            toolchain.verify_node_binary(node(), privileged=True)
+        entry = self.api.root / 'node_modules/wrangler/bin/wrangler.js'
+        entry.parent.mkdir(parents=True)
+        entry.write_bytes(b'fixture Wrangler, never executed')
+        with self.assertRaisesRegex(ValueError, 'trusted physical directories'):
+            toolchain.verify_wrangler(entry)
+        wrong = self.api.root / 'wrangler.js'
+        wrong.write_bytes(b'fixture Wrangler with wrong official layout')
+        with self.assertRaisesRegex(ValueError, 'official installed package layout'):
+            toolchain.verify_wrangler(wrong)
+
     def test_verification_runtime_rejects_corrupt_download_before_extraction(self):
         cache = self.api.root / 'verification-cache'
         with patch.dict(os.environ, {}, clear=True), \
@@ -725,7 +746,7 @@ class ChannelTests(unittest.TestCase):
                 patch.object(toolchain.platform, 'machine', return_value='arm64'), \
                 patch.object(toolchain, 'NODE_BINARY_BYTES', len(counterfeit)), \
                 patch.object(toolchain.subprocess, 'run') as execute:
-            with self.assertRaisesRegex(ValueError, 'Pinned Node executable changed'):
+            with self.assertRaisesRegex(ValueError, 'Pinned toolchain file changed'):
                 toolchain.node(cache=cache)
         execute.assert_not_called()
 
