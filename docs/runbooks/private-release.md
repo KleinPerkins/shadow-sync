@@ -1,10 +1,11 @@
 # Private MVP candidate release
 
 The owner-local release command produces the first private qualification
-candidate, version 0.10.0 build 15. The standard CI workflow exercises the
-release contracts with synthetic inputs. Source review, hosted CI, artifact
-qualification, installation, migration and physical acceptance each require
-their own evidence.
+candidate, version 0.10.0 build 15. The standard CI workflow runs the
+release and private delivery contracts as tooling suites with synthetic inputs.
+The application repository catalog has its own native responsiveness fixtures.
+Source review, hosted CI, artifact qualification, installation, migration and
+physical acceptance each require their own evidence.
 
 ## Before building
 
@@ -20,8 +21,8 @@ account-bound Workers Free dashboard observation. Use the original provider
 OAuth or an explicit scoped Wrangler token. The command keeps signing inputs
 out of provider subprocesses.
 
-Supply the explicit owner GitHub read token and allocation token through their
-owner-managed environment settings. The command verifies the human repository
+Supply the owner GitHub read token as `OWNER_GITHUB_READ_TOKEN` and the
+allocation token as `GH_TOKEN` through owner-managed environment settings. The command verifies the human repository
 owner, protected main, immutable releases and active no-bypass candidate tag
 protection. The tag and asset-free draft reserve the candidate build. The
 qualification archive and first-install disk image remain private.
@@ -40,8 +41,11 @@ python3 -I -B scripts/release-candidate.py run \
   --credentials /OWNER/PRIVATE/signing.json
 ```
 
-The owner-owned mode-0600 credentials JSON supplies the existing Apple
-certificate, keychain, notarization and detached archive signing inputs.
+The owner-owned mode-0600 credentials JSON has eight keys. Set
+`APPLE_CERTIFICATE` to the base64-encoded PKCS#12 certificate and supply
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
+`APPLE_PASSWORD`, `APPLE_TEAM_ID`, `SPARKLE_PRIVATE_ED_KEY` and
+`SPARKLE_PUBLIC_ED_KEY`. Keep the values on the signing host.
 `--help` lists the required command arguments. Choose `prepare`, `sign`,
 `publish` or `cleanup` when running a single stage. Only `run` and `sign`
 accept the credentials file.
