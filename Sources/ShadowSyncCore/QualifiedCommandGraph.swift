@@ -99,7 +99,9 @@ final class QualifiedCommandGraph: @unchecked Sendable {
     static func appleGitLauncherARMCode() throws -> SecStaticCode {
         #if arch(arm64)
         let path = URL(fileURLWithPath: "/usr/bin/git") as CFURL
-        let attributes = [kSecCodeAttributeArchitecture as String: "arm64"] as CFDictionary
+        // Security/SecStaticCode.h accepts canonical architecture names as CFString.
+        // This selects the same slice as codesign --arch arm64.
+        let attributes = [kSecCodeAttributeArchitecture as String: "arm64" as CFString] as CFDictionary
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPathAndAttributes(path, [], attributes, &code) == errSecSuccess,
               let code else { throw PublisherPolicyError.unavailable }
