@@ -601,6 +601,15 @@ public enum PublisherPolicyResourcesSelfTestRunner {
                 try require(getxattr(app, "com.apple.quarantine", nil, 0, 0, XATTR_NOFOLLOW) == quarantine.count,
                             "quarantine removed")
                 let helper = app + "/Contents/Helpers/ShadowSyncLifecycleCoordinator"
+                try quarantine.withUnsafeBytes { bytes in
+                    try require(setxattr(helper, "com.apple.quarantine", bytes.baseAddress, bytes.count, 0, XATTR_NOFOLLOW) == 0,
+                                "nested quarantine setup")
+                }
+                try refused { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
+                try require(removexattr(helper, "com.apple.quarantine", XATTR_NOFOLLOW) == 0,
+                            "nested quarantine cleanup")
+                try require(try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) == original,
+                            "root quarantine no longer accepted")
                 try require(unlink(helper) == 0, "missing helper setup")
                 try refused { _ = try BundleArtifactIdentity.testingInspect(bundlePath: app, layout: layout) }
             }

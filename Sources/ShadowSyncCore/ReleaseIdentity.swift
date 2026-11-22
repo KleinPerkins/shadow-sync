@@ -203,7 +203,7 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
               (rootInfo.st_mode & S_IFMT) == S_IFDIR,
               rootInfo.st_uid == geteuid(),
               rootInfo.st_flags == 0,
-              hasOnlyPermittedXattrs(bundlePath) else {
+              hasOnlyPermittedXattrs(bundlePath, allowRootQuarantine: true) else {
             throw ReleaseIdentityError.unsafeBundle(bundlePath)
         }
         let release = try ReleaseIdentity.load(bundlePath: bundlePath)
@@ -277,7 +277,7 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
     }
     #endif
 
-    static func hasOnlyPermittedXattrs(_ path: String) -> Bool {
+    static func hasOnlyPermittedXattrs(_ path: String, allowRootQuarantine: Bool = false) -> Bool {
         let size = listxattr(path, nil, 0, XATTR_NOFOLLOW)
         guard size >= 0 else { return false }
         if size == 0 { return true }
@@ -289,7 +289,10 @@ public struct BundleArtifactIdentity: Equatable, Sendable {
         let names = bytes.split(separator: 0).map {
             String(decoding: $0.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         }
-        return !names.isEmpty && Set(names).isSubset(of: ["com.apple.provenance", "com.apple.quarantine"])
+        let permitted: Set<String> = allowRootQuarantine
+            ? ["com.apple.provenance", "com.apple.quarantine"]
+            : ["com.apple.provenance"]
+        return !names.isEmpty && Set(names).isSubset(of: permitted)
     }
 }
 

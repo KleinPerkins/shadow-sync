@@ -2465,7 +2465,7 @@ public final class InstallationLifecycle: @unchecked Sendable {
             guard lstat(path, &info) == 0,
                   info.st_uid == geteuid(),
                   info.st_flags == 0,
-                  BundleArtifactIdentity.hasOnlyPermittedXattrs(path) else {
+                  BundleArtifactIdentity.hasOnlyPermittedXattrs(path, allowRootQuarantine: path == root) else {
                 throw InstallationLifecycleError.unsafeInstallPath(path)
             }
             let type = info.st_mode & S_IFMT

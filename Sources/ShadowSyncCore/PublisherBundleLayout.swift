@@ -116,7 +116,7 @@ final class PublisherBundleLayout {
         guard lstat(path, &info) == 0, info.st_uid == owner, info.st_flags == 0,
               info.st_mode & S_IFMT == type, info.st_mode & 0o7777 == mode_t(expected.mode),
               expected.kind != .file || info.st_nlink == 1,
-              BundleArtifactIdentity.hasOnlyPermittedXattrs(path) else { throw PublisherPolicyError.unavailable }
+              BundleArtifactIdentity.hasOnlyPermittedXattrs(path, allowRootQuarantine: relative.isEmpty) else { throw PublisherPolicyError.unavailable }
         if relative == Self.ticketRelative {
             guard info.st_size > 0, info.st_size <= 1_048_576 else { throw PublisherPolicyError.unavailable }
         }
