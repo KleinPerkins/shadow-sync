@@ -13,13 +13,25 @@
     "Sources/ShadowSyncCore/RuntimeFixtureCustodySelfTests.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeFixtureSession.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Sources/ShadowSyncCore/RuntimeSuiteGuardian.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Tests/Fixtures/private_delivery_worker.mjs": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Tests/Tooling/test_private_delivery.py": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values. Scoped access-file lifecycle and durable non-replaying attempt recovery; no provider or native qualification claim. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures.",
     "Tests/Tooling/test_release_assembly.py": "Qualify source-bound assembly with synthetic layout, signing and tamper fixtures without using publisher credentials.",
     "Tests/Tooling/test_release_notarization.py": "Use disposable synthetic adapters to verify packaging, byte bindings, retry and refusal paths.",
+    "delivery/PROVENANCE.json": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values. Scoped access-file lifecycle and durable non-replaying attempt recovery; no provider or native qualification claim. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures.",
+    "delivery/README.md": "Document the private delivery contract and credential-free fixture scope before candidate orchestration is integrated.",
+    "delivery/contract.mjs": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/owner-config.example.json": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/schema.sql": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/web.mjs": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/worker.mjs": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "delivery/wrangler.template.json": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
     "scripts/assemble-release-bundle.py": "Assemble the verified application and policy runtime under a bound Developer ID identity.",
     "scripts/ci-shards.py": "Run mandatory macOS-specific tooling and native fixture groups on standard macOS26 arm64; retain exact-run aggregation and independent full transitions.",
+    "scripts/delivery-toolchain.py": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values.",
+    "scripts/delivery.py": "Product-specific private delivery/access component derived from the pinned public source in delivery/PROVENANCE.json; standalone coordinator and acceptance gates, isolated synthetic validation, no live deployment values. Preserve copied Free-only private immutable publication and authenticated readback; add a narrow optional source/CI/allocation revalidation callback immediately before channel advancement. Accept a closed optional owner API-token input only for Wrangler children; preserve original HOME authentication without forwarding this input to other helper processes. Scoped access-file lifecycle and durable non-replaying attempt recovery; no provider or native qualification claim. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures.",
     "scripts/notarize-release-bundle.py": "Preserve accepted submission IDs and exact stapled checkpoints across resumed validation; no publication or installation.",
     "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
@@ -856,6 +868,11 @@
       "sha256": "2a0063b7ecf416aead1eea5856cbe1e6998124df5b73d441061d60a1315accc9"
     },
     {
+      "path": "Tests/Fixtures/private_delivery_worker.mjs",
+      "mode": "100644",
+      "sha256": "fef7755f6ea05b074d077d81f6e4efb4761acd297234353910a2848f7d49c3c0"
+    },
+    {
       "mode": "100644",
       "path": "Tests/ShadowSyncCompileTests/CompileGate.swift",
       "sha256": "a07003b654a490049def6ad9902a44122fc3a5c6293f7a3c25fc9486ca5e7735"
@@ -981,6 +998,11 @@
       "sha256": "723d044570a6c6c2d03dc42cc4e8736157106482bda01d224d6213d4c475be9c"
     },
     {
+      "path": "Tests/Tooling/test_private_delivery.py",
+      "mode": "100644",
+      "sha256": "6ed855b64f4eea5e98c3eab844ed470b372f051031302a5d1965a8beb20b10d0"
+    },
+    {
       "mode": "100644",
       "path": "Tests/Tooling/test_python_test_suites.py",
       "sha256": "8a42550433c6bb8978ac131fc5f8234a60aa9506d5fce494874deec13e42aa8a"
@@ -1024,6 +1046,46 @@
       "mode": "100644",
       "path": "config/identity-exceptions.json",
       "sha256": "6a97c53902fc6e44d1e09ef7f249132757ef81537157376aa2bef4b7c38da1b0"
+    },
+    {
+      "path": "delivery/PROVENANCE.json",
+      "mode": "100644",
+      "sha256": "cff70e3dd8f3d65bcc410feb5b048fd4f26646c0966aa861b0e67abfc4284ed4"
+    },
+    {
+      "path": "delivery/README.md",
+      "mode": "100644",
+      "sha256": "5a21cc44532874161ed835330163013e1b9b187ca7fc5b8aa5df7d8bf188ad36"
+    },
+    {
+      "path": "delivery/contract.mjs",
+      "mode": "100644",
+      "sha256": "e65a4fc320cb30849606d0183f036506ac1092ba3ea8b8cb7b48f55e5f3e4ca5"
+    },
+    {
+      "path": "delivery/owner-config.example.json",
+      "mode": "100644",
+      "sha256": "fa91f94cba86799434a603a088a217b394fde22062208ed194062422b80c8f65"
+    },
+    {
+      "path": "delivery/schema.sql",
+      "mode": "100644",
+      "sha256": "80ba73edd474d3fb20a6dc0a9ef3cda19d195fa821b29b7483f6c40851ac899d"
+    },
+    {
+      "path": "delivery/web.mjs",
+      "mode": "100644",
+      "sha256": "03b4837c270427a0ef0ec28b5ac9452acf2c2913b30da4bb2fc050ae8fa26d5f"
+    },
+    {
+      "path": "delivery/worker.mjs",
+      "mode": "100644",
+      "sha256": "4369d7b14d1a3e3a5464e3be3618cd283db24ccf6f85322147cdf4186209eeb5"
+    },
+    {
+      "path": "delivery/wrangler.template.json",
+      "mode": "100644",
+      "sha256": "26a71ecb3667c601cede5d84efb9e3c5956c8b0d756729b53ee8c4e0d04055fe"
     },
     {
       "mode": "100644",
@@ -1089,6 +1151,16 @@
       "mode": "100644",
       "path": "scripts/compile-runtime-bytecode.py",
       "sha256": "42d5697c733c07419f6069ae9062598ca3bb4a3bcb865a1bfa81b0f31bce99d9"
+    },
+    {
+      "path": "scripts/delivery-toolchain.py",
+      "mode": "100644",
+      "sha256": "4a86e003707ce0cd36a1c99d1c2bc4f59c5cf7f1911def302a44ca5bb8878071"
+    },
+    {
+      "path": "scripts/delivery.py",
+      "mode": "100755",
+      "sha256": "0f9fa380b6955d2e02dbc4b368fe819ccfc8e1f5c0219ee85c0801bc94028e73"
     },
     {
       "mode": "100644",
