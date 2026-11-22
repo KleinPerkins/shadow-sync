@@ -68,10 +68,17 @@ def outside_git(path):
     parent = path.parent
     if not parent.is_dir():
         raise DeliveryError('Create the private output directory first.')
-    result = subprocess.run(['git', '-C', str(parent), 'rev-parse', '--show-toplevel'],
-                            capture_output=True, timeout=10)
+    environment = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'GIT_CONFIG_GLOBAL': os.devnull,
+                   'GIT_CONFIG_NOSYSTEM': '1', 'GIT_TERMINAL_PROMPT': '0'}
+    result = subprocess.run(['/usr/bin/git', '-C', str(parent), 'rev-parse', '--show-toplevel'],
+                            stdin=subprocess.DEVNULL, capture_output=True, timeout=10, env=environment)
     if result.returncode == 0:
         raise DeliveryError('Private configuration/access files must be outside Git repositories.')
+    missing = (b'fatal: not a git repository (or any of the parent directories): .git',
+               b'fatal: not a git repository (or any parent directories): .git')
+    stderr_lines = result.stderr.splitlines()
+    if result.returncode != 128 or not stderr_lines or stderr_lines[-1] not in missing:
+        raise DeliveryError('Could not verify private path is outside Git repositories.')
     return path
 
 

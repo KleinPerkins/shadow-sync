@@ -737,15 +737,23 @@ class CommandEnvironmentTests(unittest.TestCase):
     def child(self, args, **kwargs):
         args = [str(value) for value in args]
         environment = dict(os.environ if kwargs.get('env') is None else kwargs['env'])
+        git_probe = args[0] == '/usr/bin/git'
         wrangler = args[:3] == [str(self.node), '--no-global-search-paths', str(self.wrangler)]
         forbidden = {'GH_TOKEN', 'OWNER_GITHUB_READ_TOKEN', 'UNRELATED_SECRET', 'NODE_OPTIONS',
                      'PYTHONPATH', 'GIT_CONFIG_GLOBAL', 'WRANGLER_OUTPUT_FILE_PATH', *module.execution.CONFIG}
         if not wrangler: forbidden.add('CLOUDFLARE_API_TOKEN')
+        if git_probe: forbidden.remove('GIT_CONFIG_GLOBAL')
         if forbidden & environment.keys():
             self.environment_violations.append((args[0], sorted(forbidden & environment.keys())))
         self.assertFalse(forbidden & environment.keys(), (args[0], forbidden & environment.keys()))
-        self.assertEqual(environment['HOME'], str(self.home))
+        expected_home = None if git_probe else str(self.home)
+        self.assertEqual(environment.get('HOME'), expected_home)
         safe = {'HOME', 'PATH', 'TMPDIR', 'DEVELOPER_DIR', 'LANG', 'LC_ALL', 'SHADOW_SYNC_DELIVERY_NODE'}
+        if git_probe:
+            git_environment = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'GIT_CONFIG_GLOBAL': os.devnull,
+                               'GIT_CONFIG_NOSYSTEM': '1', 'GIT_TERMINAL_PROMPT': '0'}
+            self.assertEqual(environment, git_environment)
+            safe = git_environment.keys()
         if wrangler:
             safe |= {'WRANGLER_SEND_METRICS', 'WRANGLER_SEND_ERROR_REPORTS', 'WRANGLER_WRITE_LOGS',
                 'WRANGLER_LOG', 'WRANGLER_LOG_SANITIZE', 'CLOUDFLARE_API_BASE_URL', 'CF_API_BASE_URL',
@@ -753,9 +761,11 @@ class CommandEnvironmentTests(unittest.TestCase):
             self.assertEqual(environment.get('CLOUDFLARE_API_TOKEN'), self.env.get('CLOUDFLARE_API_TOKEN'))
         self.assertFalse(environment.keys() - safe)
         output, status, effect = '', 0, ''
-        if args[0] == 'git':
+        if git_probe:
             kind, status = 'git', 128
             self.assertEqual(args[1:2] + args[-2:], ['-C', 'rev-parse', '--show-toplevel'])
+            missing = 'fatal: not a git repository (or any of the parent directories): .git\n'
+            effect = 'sys.stderr.write(' + repr(missing) + ')\n'
         elif args[0] == str(self.node):
             if wrangler:
                 kind = 'wrangler'
@@ -792,7 +802,7 @@ class CommandEnvironmentTests(unittest.TestCase):
         self.events.append((kind, set(environment)))
         code = ('import os,sys\nfrom pathlib import Path\n'
             + 'assert not set(' + repr(sorted(forbidden)) + ') & os.environ.keys()\n'
-            + 'assert os.environ["HOME"] == ' + repr(str(self.home)) + '\n'
+            + 'assert os.environ.get("HOME") == ' + repr(expected_home) + '\n'
             + effect + 'sys.stdout.write(' + repr(output) + ')\nsys.exit(' + str(status) + ')\n')
         # Keep the original pipes, session and communicate/wait owners. Only the
         # executable is substituted, before any Git/Node/Apple/provider launch.
