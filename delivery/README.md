@@ -77,9 +77,11 @@ of these outcomes. Sparkle installed-update proof and feed/Latest promotion rema
 separate post-MVP work.
 
 The CLI supports guarded deployment, privacy readback and access lifecycle
-commands. Binary publication requires the release orchestrator to verify
-authority before provider operations and after authenticated readback, before
-advancing the channel. Each readback retains a private grant record beside the
+commands. Binary publication requires an owner-local release orchestrator with
+verified release authority before provider operations and after authenticated
+readback. This component supplies delivery and readback primitives. Publication
+and channel advancement in the source tests are confined to an in-memory
+database. Each owner readback retains a private grant record beside the
 deployment receipt before contacting the provider. If cleanup cannot be verified,
 use `recover-readback-grant --attempt <record>` after restoring current Free-plan
 evidence. The record contains the grant identity and hash. The bearer token stays

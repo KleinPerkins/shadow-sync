@@ -28,10 +28,6 @@ def node():
     return str(ChannelTests.node_binary)
 
 
-def publish_fixture(api, value, proof, archive=None, package=None):
-    return delivery.publish(api, value, proof, archive, package, before_promote=lambda: None)
-
-
 class MemoryAPI:
     def __init__(self):
         self.db = sqlite3.connect(':memory:')
@@ -69,6 +65,72 @@ class MemoryAPI:
     def readback(self, release_id, descriptor, kind):
         self.events.append('readback')
         self.readbacks.append((release_id, descriptor, kind))
+
+
+def publish_fixture(api, value, receipt, archive=None, package=None):
+    # Exercise the schema and Worker with a synthetic, in-memory publication.
+    if type(api) is not MemoryAPI:
+        raise AssertionError('Publication fixture requires the in-memory database.')
+    value = delivery.validate_manifest(value)
+    stable = value['channel'] == 'stable'
+    delivery.validate_receipt(value, receipt, stable)
+    api.require_free()
+    release_id = value['archive']['path'].split('/')[-2]
+    prepared = []
+    if stable:
+        api.privacy()
+        rows = api.query("SELECT manifest_json FROM releases WHERE app_id=? AND release_id=? AND channel='qualification'", (delivery.APP, release_id))
+        if len(rows) != 1:
+            raise delivery.DeliveryError('Publish and privately qualify this exact qualification release first.')
+        prior = json.loads(rows[0]['manifest_json'])
+        if prior != dict(value, channel='qualification', qualified=prior['qualified']):
+            raise delivery.DeliveryError('Stable promotion must preserve the exact qualification manifest and hashes.')
+        if archive or package:
+            raise delivery.DeliveryError('Promotion reuses qualified bytes; do not supply new archives.')
+        for kind, descriptor in (('archive', value['archive']), ('package', value['first_install'])):
+            api.readback(release_id, descriptor, kind)
+    else:
+        if not archive or not package:
+            raise delivery.DeliveryError('Qualification publication requires both update and first-install archives.')
+        for descriptor, source, kind in ((value['archive'], archive, 'archive'), (value['first_install'], package, 'package')):
+            existing = api.query('SELECT p.app_id,t.descriptor_schema,t.part_size FROM artifact_parts p LEFT JOIN artifact_protocols t USING(app_id,release_id,kind,artifact_sha256) WHERE p.app_id=? AND p.release_id=? AND p.kind=? AND p.artifact_sha256=?', (delivery.APP, release_id, kind, descriptor['sha256']))
+            if existing and (len(existing) != 1 or existing[0]['descriptor_schema'] != 'shadow-sync/artifact-parts/v2' or existing[0]['part_size'] != delivery.PIECE_SIZE):
+                raise delivery.DeliveryError('Legacy artifact identities are retention-only; use a new release identity.')
+            prepared.append((kind, descriptor, delivery.stage_artifact(api.config, source, release_id, kind, descriptor)))
+        api.deploy()  # complete retained set BEFORE any release/channel publication
+        for kind, descriptor, parts in prepared:
+            serialized_parts = json.dumps(parts, sort_keys=True, separators=(',', ':'))
+            # Never leave new parts without their protocol marker on interruption.
+            # Preflight has already refused every preexisting unmarked legacy row.
+            api.query('INSERT OR IGNORE INTO artifact_protocols VALUES(?,?,?,?,?,?)', (delivery.APP, release_id, kind, descriptor['sha256'], 'shadow-sync/artifact-parts/v2', delivery.PIECE_SIZE))
+            protocol = api.query('SELECT descriptor_schema,part_size FROM artifact_protocols WHERE app_id=? AND release_id=? AND kind=? AND artifact_sha256=?', (delivery.APP, release_id, kind, descriptor['sha256']))
+            if protocol != [{'descriptor_schema': 'shadow-sync/artifact-parts/v2', 'part_size': delivery.PIECE_SIZE}]:
+                raise delivery.DeliveryError('Immutable artifact protocol already differs.')
+            api.query('INSERT OR IGNORE INTO artifact_parts VALUES(?,?,?,?,?)', (delivery.APP, release_id, kind, descriptor['sha256'], serialized_parts))
+            existing = api.query('SELECT parts_json FROM artifact_parts WHERE app_id=? AND release_id=? AND kind=? AND artifact_sha256=?', (delivery.APP, release_id, kind, descriptor['sha256']))
+            if len(existing) != 1 or existing[0]['parts_json'] != serialized_parts:
+                raise delivery.DeliveryError('Immutable part identity already differs.')
+    serialized = json.dumps(value, sort_keys=True, separators=(',', ':'))
+    api.query('INSERT OR IGNORE INTO releases(app_id,release_id,channel,manifest_json,archive_sha256,archive_size,object_key,qualification_id,evidence_json) VALUES(?,?,?,?,?,?,?,?,?)',
+        (delivery.APP, release_id, value['channel'], serialized, value['archive']['sha256'], value['archive']['size'],
+         delivery.APP + '/' + value['archive']['sha256'] + '.zip', value['qualification_id'], json.dumps(receipt, sort_keys=True)))
+    existing = api.query('SELECT manifest_json FROM releases WHERE app_id=? AND release_id=? AND channel=?', (delivery.APP, release_id, value['channel']))
+    if len(existing) != 1 or existing[0]['manifest_json'] != serialized:
+        raise delivery.DeliveryError('Immutable release identity already contains different metadata.')
+    # Qualification row is reachable by owner before its channel advances.
+    api.privacy()
+    if not stable:
+        for kind, descriptor in (('archive', value['archive']), ('package', value['first_install'])):
+            api.readback(release_id, descriptor, kind)
+    api.require_free()
+    api.query('''INSERT INTO channels(app_id,channel,release_id) VALUES(?,?,?)
+        ON CONFLICT(app_id,channel) DO UPDATE SET release_id=excluded.release_id
+        WHERE CAST(json_extract((SELECT manifest_json FROM releases WHERE app_id=excluded.app_id AND channel=excluded.channel AND release_id=excluded.release_id),'$.build') AS INTEGER)
+        > CAST(json_extract((SELECT manifest_json FROM releases WHERE app_id=channels.app_id AND channel=channels.channel AND release_id=channels.release_id),'$.build') AS INTEGER)''',
+        (delivery.APP, value['channel'], release_id))
+    rows = api.query('SELECT release_id FROM channels WHERE app_id=? AND channel=?', (delivery.APP, value['channel']))
+    if len(rows) != 1 or rows[0]['release_id'] != release_id:
+        raise delivery.DeliveryError('Immutable release retained, but channel did not advance: build must increase.')
 
 
 def config_fixture(root):
@@ -120,21 +182,13 @@ class ChannelTests(unittest.TestCase):
         self.addCleanup(self.api.folder.cleanup)
 
     def test_standalone_cli_cannot_publish_from_receipts(self):
+        self.assertFalse(hasattr(delivery, 'publish'))
         argv = ['delivery.py', '--config', '/fixture/delivery.json', 'publish',
                 '--manifest', '/fixture/manifest.json', '--receipt', '/fixture/receipt.json']
         with patch.object(delivery.sys, 'argv', argv), patch.object(delivery, 'Cloudflare') as provider:
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 delivery.main()
             provider.assert_not_called()
-
-    def test_publication_revalidates_before_any_provider_operation(self):
-        api = MagicMock()
-        value = release()
-        guard = MagicMock(side_effect=delivery.DeliveryError('source is stale'))
-        with self.assertRaisesRegex(delivery.DeliveryError, 'source is stale'):
-            delivery.publish(api, value, receipt(value), before_promote=guard)
-        guard.assert_called_once_with()
-        self.assertEqual(api.mock_calls, [])
 
     def test_actual_worker_primary_reads_auth_cache_isolation_and_errors(self):
         result = subprocess.run([node(), str(ROOT / 'Tests/Fixtures/private_delivery_worker.mjs')], cwd=ROOT,
@@ -291,7 +345,6 @@ class ChannelTests(unittest.TestCase):
                               lambda: api.query('CREATE TABLE forbidden(x)'), lambda: api.create_database('new'),
                               lambda: api.create_subdomain('new'), lambda: api.deploy(),
                               lambda: api.wrangler('deploy', '--config', '/unused'),
-                              lambda: publish_fixture(api, release(), receipt(release())),
                               lambda: delivery.create_grant(api, config, 'fixture', self.api.root / 'unused', int(time.time()) + 30)):
                 with self.assertRaises(delivery.DeliveryError): operation()
             api._opener.open.assert_not_called()

@@ -3412,7 +3412,6 @@
           "test_private_delivery.ChannelTests.test_pinned_wrangler_auth_is_captured_without_argv_secrets",
           "test_private_delivery.ChannelTests.test_private_assets_bounded_immutable_retained_and_no_routing_files",
           "test_private_delivery.ChannelTests.test_private_readback_identifies_application_and_revokes_temporary_grant",
-          "test_private_delivery.ChannelTests.test_publication_revalidates_before_any_provider_operation",
           "test_private_delivery.ChannelTests.test_qualification_grants_are_owner_only_and_finite",
           "test_private_delivery.ChannelTests.test_readback_failure_never_advances_channel_and_stable_cannot_replace_bytes",
           "test_private_delivery.ChannelTests.test_standalone_cli_cannot_publish_from_receipts",
