@@ -461,12 +461,18 @@ class Cloudflare:
         self.require_free()
         token, grant = secrets.token_urlsafe(32), str(uuid.uuid4())
         now = int(time.time())
-        self.query('INSERT INTO grants(grant_id,token_hash,label,is_owner,expires_at,created_at) VALUES(?,?,?,?,?,?)',
-                   (grant, hashlib.sha256(token.encode()).hexdigest(), 'publication-readback', 1, now + 600, now))
+        identity = dict(grant_id=grant, token_hash=hashlib.sha256(token.encode()).hexdigest(),
+                        label='publication-readback', is_owner=1, expires_at=now + 600, created_at=now)
+        parent = private_directory(Path(self.config['deployment_state']).parent)
+        intent = parent / ('readback-grant-' + grant + '.json')
+        private_write(intent, dict(schema='shadow-sync/readback-grant/v1', app_id=APP,
+                                  binding=access_binding(self.config), grant=identity))
         try:
+            self.query('INSERT INTO grants(grant_id,token_hash,label,is_owner,expires_at,created_at) VALUES(?,?,?,?,?,?)',
+                       tuple(identity.values()))
             self.query('INSERT INTO entitlements(grant_id,app_id,channel) VALUES(?,?,?)', (grant, APP, 'qualification'))
             path = f'/v1/apps/{APP}/releases/{release_id}/{kind}'
-            headers = {'Authorization': 'Bearer ' + token, 'User-Agent': 'MachineMonitor-Delivery/1.0'}
+            headers = {'Authorization': 'Bearer ' + token, 'User-Agent': 'ShadowSync-Delivery/1.0'}
             digest, size = hashlib.sha256(), 0
             deadline = time.monotonic() + 300
             try:
@@ -498,7 +504,59 @@ class Cloudflare:
             if (digest.hexdigest(), size) != (descriptor['sha256'], descriptor['size']):
                 raise DeliveryError('Remote readback hash/length mismatch; channel was not advanced.')
         finally:
-            self.query('UPDATE grants SET revoked_at=? WHERE grant_id=?', (int(time.time()), grant))
+            recover_readback_grant(self, intent)
+
+
+def recover_readback_grant(api, path):
+    path = outside_git(path)
+    private_directory(path.parent)
+    record, _ = access_custody(path)
+    if (set(record) != {'schema', 'app_id', 'binding', 'grant'}
+            or record['schema'] != 'shadow-sync/readback-grant/v1'
+            or record['app_id'] != APP or record['binding'] != access_binding(api.config)
+            or path.parent != Path(api.config['deployment_state']).parent):
+        raise DeliveryError('Readback grant attempt does not match the configured private provider.')
+    grant = record['grant']
+    if (set(grant) != {'grant_id','token_hash','label','is_owner','expires_at','created_at'}
+            or str(uuid.UUID(grant['grant_id'])) != grant['grant_id']
+            or path.name != 'readback-grant-' + grant['grant_id'] + '.json'
+            or grant['label'] != 'publication-readback' or type(grant['is_owner']) is not int or grant['is_owner'] != 1
+            or not re.fullmatch(r'[a-f0-9]{64}', grant['token_hash'])
+            or type(grant['created_at']) is not int or type(grant['expires_at']) is not int
+            or not 0 < grant['created_at'] < grant['expires_at'] <= 253402300799
+            or grant['expires_at'] - grant['created_at'] != 600):
+        raise DeliveryError('Readback grant attempt is invalid.')
+    api.require_free()
+
+    def observe():
+        rows = api.query('''SELECT g.*,e.app_id,e.channel FROM grants g
+            LEFT JOIN entitlements e ON e.grant_id=g.grant_id WHERE g.grant_id=?''', (grant['grant_id'],))
+        if (len(rows) != 1 or any(rows[0].get(k) != v for k, v in grant.items())
+                or (rows[0]['app_id'], rows[0]['channel']) not in ((None, None), (APP, 'qualification'))):
+            raise DeliveryError('Readback grant could not be verified. Retain its attempt for recovery.')
+        revoked = rows[0]['revoked_at']
+        if revoked is not None and (type(revoked) is not int or not grant['created_at'] <= revoked <= 253402300799):
+            raise DeliveryError('Readback grant revocation time is invalid.')
+        return revoked
+
+    revoked = observe()
+    if revoked is None:
+        try:
+            api.query('''UPDATE grants SET revoked_at=? WHERE grant_id=? AND token_hash=?
+                AND label=? AND is_owner=? AND expires_at=? AND created_at=? AND revoked_at IS NULL
+                AND (SELECT COUNT(*) FROM entitlements e WHERE e.grant_id=grants.grant_id)<=1
+                AND NOT EXISTS (SELECT 1 FROM entitlements e WHERE e.grant_id=grants.grant_id
+                  AND (e.app_id!=? OR e.channel!='qualification'))''',
+                (int(time.time()), grant['grant_id'], grant['token_hash'], grant['label'], grant['is_owner'],
+                 grant['expires_at'], grant['created_at'], APP))
+        except (DeliveryError, OSError):
+            # An ambiguous write is resolved by observation, never by a retry in this call.
+            pass
+        revoked = observe()
+    if revoked is None:
+        raise DeliveryError('Readback revocation is unverified. Keep the private attempt and use recover-readback-grant.')
+    # The durable intent remains available if a process stops after the provider update.
+    return dict(grant_id=grant['grant_id'], revoked_at=revoked)
 
 
 def source_digest():
@@ -1111,6 +1169,8 @@ def main():
     recovery = subs.add_parser('recover-grant')
     recovery.add_argument('--attempt', required=True, type=Path)
     recovery.add_argument('--complete', action='store_true', help='Issue only never-attempted steps after reconciliation')
+    readback = subs.add_parser('recover-readback-grant')
+    readback.add_argument('--attempt', required=True, type=Path)
     subs.add_parser('check-privacy')
     subs.add_parser('deploy')
     args = parser.parse_args()
@@ -1136,6 +1196,8 @@ def main():
             print(json.dumps(result))
             if result['status'] == 'pending':
                 return 2
+        elif args.command == 'recover-readback-grant':
+            print(json.dumps(recover_readback_grant(api, args.attempt)))
         elif args.command == 'check-privacy':
             api.privacy()
             print('Exact reviewed active version, private origin and preview restrictions verified; live quota/upgrade qualification remains separate.')

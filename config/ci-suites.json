@@ -3395,6 +3395,7 @@
           "test_private_delivery.ChannelTests.test_access_file_and_config_cannot_be_written_under_git_or_symlinks",
           "test_private_delivery.ChannelTests.test_active_version_including_zero_percent_and_provider_source_readback",
           "test_private_delivery.ChannelTests.test_actual_worker_primary_reads_auth_cache_isolation_and_errors",
+          "test_private_delivery.ChannelTests.test_ambiguous_readback_revocation_keeps_exact_recovery_identity",
           "test_private_delivery.ChannelTests.test_bootstrap_only_creates_new_free_resources_with_capacity",
           "test_private_delivery.ChannelTests.test_closed_wire_contract_rejects_cross_release_and_unknown_fields",
           "test_private_delivery.ChannelTests.test_default_node_locator_is_bound_to_verified_absolute_executable",

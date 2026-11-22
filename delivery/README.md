@@ -79,7 +79,11 @@ separate post-MVP work.
 The CLI supports guarded deployment, privacy readback and access lifecycle
 commands. Binary publication requires the release orchestrator to verify
 authority before provider operations and after authenticated readback, before
-advancing the channel. Importing this source runs zero provider commands.
+advancing the channel. Each readback retains a private grant record beside the
+deployment receipt before contacting the provider. If cleanup cannot be verified,
+use `recover-readback-grant --attempt <record>` after restoring current Free-plan
+evidence. The record contains the grant identity and hash. The bearer token stays
+in process memory. Importing this source runs zero provider commands.
 
 ### Owner access lifecycle
 

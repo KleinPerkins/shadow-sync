@@ -348,14 +348,19 @@ class ChannelTests(unittest.TestCase):
         response=MagicMock();response.status=200;response.headers={'Content-Length':'4'};response.read.side_effect=[b'test',b'']
         first,second=MagicMock(),MagicMock();first.__enter__.return_value=metadata;second.__enter__.return_value=response
         api._opener.open.side_effect=[first,second]
-        with patch.object(api,'query',return_value=[]) as queries:
+        with patch.object(api,'query',wraps=self.api.query) as queries:
             api.readback('fixture',{'size':4,'sha256':hashlib.sha256(b'test').hexdigest()},'archive')
         request=api._opener.open.call_args.args[0]
-        self.assertEqual(request.get_header('User-agent'),'MachineMonitor-Delivery/1.0')
+        self.assertEqual(request.get_header('User-agent'),'ShadowSync-Delivery/1.0')
         self.assertEqual(request.full_url,self.api.config['origin']+'/v1/apps/'+delivery.APP+'/releases/fixture/archive/parts/0')
         self.assertTrue(request.get_header('Authorization').startswith('Bearer '))
         self.assertNotIn(request.get_header('Authorization')[7:],repr(queries.call_args_list))
-        self.assertIn('revoked_at',queries.call_args.args[0])
+        self.assertTrue(any('UPDATE grants SET revoked_at' in call.args[0] for call in queries.call_args_list))
+        attempts = list(Path(self.api.config['deployment_state']).parent.glob('readback-grant-*.json'))
+        self.assertEqual(len(attempts), 1)
+        self.assertNotIn(request.get_header('Authorization')[7:], attempts[0].read_text())
+        revoked = delivery.recover_readback_grant(self.api, attempts[0])
+        self.assertGreater(revoked['revoked_at'], 0)
         self.assertEqual(len(delivery.validate_piece_descriptor(json.dumps(table).encode(),'fixture','archive',{'size':4,'sha256':digest})),1)
         for change in ({'part_size':True},{'artifact_size':True},{'parts':[]},{'extra':1},{'kind':'package'},
                        {'parts':[dict(index=False,size=4,sha256=digest)]},{'parts':[dict(index=0,size=5,sha256=digest)]}):
@@ -363,6 +368,28 @@ class ChannelTests(unittest.TestCase):
                 delivery.validate_piece_descriptor(json.dumps(dict(table,**change)).encode(),'fixture','archive',{'size':4,'sha256':digest})
         with self.assertRaises(delivery.DeliveryError):
             delivery.validate_piece_descriptor(json.dumps(table).replace('"part_size":','"part_size":1,"part_size":').encode(),'fixture','archive',{'size':4,'sha256':digest})
+
+    def test_ambiguous_readback_revocation_keeps_exact_recovery_identity(self):
+        api = delivery.Cloudflare.__new__(delivery.Cloudflare)
+        api.config = self.api.config
+        api._opener = MagicMock()
+        api._opener.open.side_effect = OSError('fixture interrupted download')
+        writes = []
+
+        def ambiguous(sql, params=()):
+            if sql.startswith('UPDATE grants SET revoked_at'):
+                writes.append(sql)
+                raise delivery.DeliveryError('fixture unknown revoke result')
+            return self.api.query(sql, params)
+
+        with patch.object(api, 'query', side_effect=ambiguous):
+            with self.assertRaisesRegex(delivery.DeliveryError, 'revocation is unverified'):
+                api.readback('fixture', {'size': 4, 'sha256': hashlib.sha256(b'test').hexdigest()}, 'archive')
+        self.assertEqual(len(writes), 1)
+        attempt, = Path(self.api.config['deployment_state']).parent.glob('readback-grant-*.json')
+        revoked = delivery.recover_readback_grant(self.api, attempt)
+        rows = self.api.query('SELECT revoked_at FROM grants WHERE grant_id=?', (revoked['grant_id'],))
+        self.assertEqual(rows, [{'revoked_at': revoked['revoked_at']}])
 
     def test_maximum_v2_metadata_and_canonical_asset_indexes(self):
         release_id = 'x' * 128
