@@ -112,15 +112,18 @@ public enum DiscoveryCallerSelfTestRunner {
         SHA256.hash(data: value).map { String(format: "%02x", $0) }.joined()
     }
     private static func codeHash(_ path: String) throws -> String {
-        let code: SecStaticCode
+        var found: SecStaticCode?
+        #if arch(arm64)
         if path == "/usr/bin/git" {
-            code = try QualifiedCommandGraph.appleGitLauncherARMCode()
-        } else {
-            var found: SecStaticCode?
-            guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &found) == errSecSuccess,
-                  let found else { throw Failure.assertion("fixture tool code unavailable") }
-            code = found
+            found = try QualifiedCommandGraph.appleGitLauncherARMCode()
         }
+        #endif
+        if found == nil {
+            guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &found) == errSecSuccess else {
+                throw Failure.assertion("fixture tool code unavailable")
+            }
+        }
+        guard let code = found else { throw Failure.assertion("fixture tool code unavailable") }
         var raw: CFDictionary?
         guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &raw) == errSecSuccess,
               let info = raw as? [String: Any], let hash = info[kSecCodeInfoUnique as String] as? Data,
