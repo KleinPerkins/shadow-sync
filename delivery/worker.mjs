@@ -80,31 +80,37 @@ async function pieceBytes(response,part,signal) {
   let reader,native=false;
   try{reader=response.body.getReader({mode:'byob'});native=typeof reader.readAtLeast==='function';if(!native){reader.releaseLock();reader=null;}}catch{}
   reader??=response.body.getReader();
-  let bytes=new Uint8Array(part.size+1),count=0,cancelled=false;
+  let cancelled=false;
   const cancel=()=>{cancelled=true;reader.cancel().catch(()=>{});};
   signal?.addEventListener('abort',cancel,{once:true});
   try {
     if(signal?.aborted)throw new Error('cancelled');
     return await timed((async()=>{
+      if(native){
+        const first=await reader.readAtLeast(part.size+1,new Uint8Array(part.size+1));
+        if(cancelled||signal?.aborted||first.value?.byteLength!==part.size)throw new Error('length');
+        if(!first.done){
+          // Workers can return the final partial view with done=false.
+          // Confirm EOF with an independent one-byte read.
+          const tail=await reader.readAtLeast(1,new Uint8Array(1));
+          if(cancelled||signal?.aborted||!tail.done||tail.value?.byteLength)throw new Error('length');
+        }
+        return first.value;
+      }
+      const bytes=new Uint8Array(part.size);
+      let count=0;
       while(true){
-        if(cancelled||signal?.aborted)throw new Error('cancelled');
-        const view=count?new Uint8Array(1):bytes;
-        const item=await(native?reader.readAtLeast(view.length,view):reader.read());
+        const item=await reader.read();
         if(cancelled||signal?.aborted)throw new Error('cancelled');
         if(item.value?.byteLength){
           if(count+item.value.byteLength>part.size)throw new Error('length');
-          // Native BYOB may transfer the supplied buffer. Retain its returned
-          // storage rather than writing to a detached original view.
-          if(native&&count===0)bytes=new Uint8Array(item.value.buffer,item.value.byteOffset,item.value.byteLength);
-          else bytes.set(item.value,count);
+          bytes.set(item.value,count);
           count+=item.value.byteLength;
         }else if(!item.done)throw new Error('length');
-        // readAtLeast returns fewer than the requested minimum only at EOF.
-        // The size+1 probe therefore proves EOF without a redundant second read.
-        if(native || item.done)break;
+        if(item.done)break;
       }
-      if(cancelled||signal?.aborted||count!==part.size)throw new Error('length');
-      return bytes.subarray(0,count);
+      if(count!==part.size)throw new Error('length');
+      return bytes;
     })(),cancel);
   } finally {
     signal?.removeEventListener('abort',cancel);await reader.cancel().catch(()=>{});reader.releaseLock();

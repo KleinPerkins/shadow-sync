@@ -109,24 +109,46 @@ async function run(){
   }finally{globalThis.setTimeout=timer;}
   let cancelled=0,started;const ready=new Promise(r=>started=r);f.env.ASSETS={fetch:async()=>new Response(new ReadableStream({start(){started();},cancel(){cancelled++;}}))};const abort=new AbortController();const pending=f.request(piece,f.friend,{signal:abort.signal});await ready;abort.abort();assert.equal((await pending).status,503);assert.equal(cancelled,1);assertions++;
   f.env.ASSETS=real;
-  // Exercise the native bounded BYOB path, including EOF established by the size+1 minimum.
-  for(const transfer of [false,true]){let readCount=0,position=0;const data=f.archive;f.env.ASSETS={fetch:async()=>({status:200,headers:new Headers(),body:{getReader({mode}={}){assert.equal(mode,'byob');return{async readAtLeast(min,view){readCount++;assert.equal(min,data.length+1);const n=Math.min(view.length,data.length-position);view.set(data.subarray(position,position+n));position+=n;const offset=view.byteOffset;const result=transfer?new Uint8Array(structuredClone(view.buffer,{transfer:[view.buffer]}),offset,n):view.subarray(0,n);return{value:result,done:n===0};},async cancel(){},releaseLock(){}};}}})};assert.equal((await(await expect(piece,f.friend,200)).text()),data.toString());assert.equal(readCount,1);assertions++;}
+  // Establish EOF independently of the first BYOB response, even when
+  // readAtLeast transfers the caller-supplied buffer.
+  for(const transfer of [false,true]){
+   let reads=0;
+   const data=f.archive;
+   f.env.ASSETS={fetch:async()=>({status:200,headers:new Headers(),body:{getReader({mode}={}){
+    assert.equal(mode,'byob');
+    return {async readAtLeast(min,view){
+     const first=++reads===1;
+     assert.equal(min,first?data.length+1:1);
+     if(first)view.set(data);
+     const count=first?data.length:0,offset=view.byteOffset;
+     const result=transfer
+      ?new Uint8Array(structuredClone(view.buffer,{transfer:[view.buffer]}),offset,count)
+      :view.subarray(0,count);
+     return {value:result,done:!first};
+    },async cancel(){},releaseLock(){}};
+   }}})};
+   assert.equal(await(await expect(piece,f.friend,200)).text(),data.toString());
+   assert.equal(reads,2);assertions++;
+  }
   f.env.ASSETS=real;
-  // readAtLeast(size+1) may resolve short only at EOF. Hold that first read
-  // while EOF is unknown; an extra byte must fail before a response escapes.
+  // A size-matching prefix can never escape while the final read is pending.
   for(const extra of [false,true]){
    let releaseEOF,probeStarted,reads=0,settled=false;
    const eof=new Promise(r=>releaseEOF=r),ready=new Promise(r=>probeStarted=r);
    const data=f.objects.get(mp[0].path);
    f.env.ASSETS={fetch:async()=>({status:200,headers:new Headers(),body:{getReader(){return{
     async readAtLeast(min,view){
-     assert.equal(min,PART_SIZE+1);assert.equal(++reads,1);probeStarted();await eof;
-     view.set(data);if(extra)view[data.length]=1;
-     return{value:view.subarray(0,data.length+Number(extra)),done:false};
+     if(++reads===1){
+      assert.equal(min,PART_SIZE+1);view.set(data);
+      return {value:view.subarray(0,data.length),done:false};
+     }
+     assert.equal(reads,2);assert.equal(min,1);probeStarted();await eof;
+     if(extra){view[0]=1;return {value:view,done:false};}
+     return {value:undefined,done:true};
     },async cancel(){},releaseLock(){}
    };}}})};
    const pending=f.request(path+'/parts/0',f.friend).then(r=>{settled=true;return r;});
-   try{await ready;await new Promise(r=>setTimeout(r,0));assert.equal(settled,false);assertions++;}
+   try{await Promise.race([ready,pending]);await new Promise(r=>setTimeout(r,0));assert.equal(settled,false);assertions++;}
    finally{releaseEOF();}
    const response=await pending;assert.equal(response.status,extra?503:200);
    if(!extra){assert.equal(response.headers.get('Content-Length'),String(PART_SIZE));const bytes=Buffer.from(await response.arrayBuffer());assert.equal(bytes.length,PART_SIZE);assert.equal(hash(bytes),mp[0].sha256);}
