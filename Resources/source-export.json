@@ -1050,7 +1050,7 @@
     {
       "mode": "100644",
       "path": "delivery/PROVENANCE.json",
-      "sha256": "60a6dc460e0f739acd112f26a4599a2a5cbcb8d78fcd5994692edbf381c2e85a"
+      "sha256": "8b90987d1312328e6f7746596c6ddc6a5abe00f516afdd0cd15a52ff7cfc4b0c"
     },
     {
       "mode": "100644",
@@ -1160,7 +1160,7 @@
     {
       "mode": "100755",
       "path": "scripts/delivery.py",
-      "sha256": "8ab4084cf29c2173e79b32d50ef52f67b97a706cb172d23bd372b3cd3ab6c237"
+      "sha256": "14bde0021cac880c175cba2c70c5a383bc0c5e94b5428221a4b72791ae0f2848"
     },
     {
       "mode": "100644",
