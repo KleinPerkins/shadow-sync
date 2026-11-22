@@ -1230,6 +1230,18 @@
       ],
       "timeout_seconds": 300
     },
+    "tooling-test-release-assembly": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_release_assembly"
+      ],
+      "timeout_seconds": 300
+    },
     "tooling-test-release-credential-readiness": {
       "argv": [
         "python3",
@@ -1251,6 +1263,18 @@
         "tooling",
         "--suite",
         "test_release_metadata"
+      ],
+      "timeout_seconds": 300
+    },
+    "tooling-test-release-notarization": {
+      "argv": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/ci-suite.py",
+        "tooling",
+        "--suite",
+        "test_release_notarization"
       ],
       "timeout_seconds": 300
     },
@@ -1386,8 +1410,10 @@
         "tooling-test-policy-entry",
         "tooling-test-policy-runtime-build",
         "tooling-test-python-test-suites",
+        "tooling-test-release-assembly",
         "tooling-test-release-credential-readiness",
         "tooling-test-release-metadata",
+        "tooling-test-release-notarization",
         "tooling-test-reviewer-app",
         "tooling-test-runtime-suite-inventory",
         "tooling-test-source-export",
@@ -3329,6 +3355,26 @@
         ],
         "kind": "static"
       },
+      "tooling-test-release-assembly": {
+        "cases": [
+          "test_release_assembly.ReleaseAssemblyTests.test_ad_hoc_or_wrong_producer_runtime_refuses",
+          "test_release_assembly.ReleaseAssemblyTests.test_assembly_preserves_inputs_and_emits_explicit_unqualified_milestones",
+          "test_release_assembly.ReleaseAssemblyTests.test_changed_checkout_prevents_assembly",
+          "test_release_assembly.ReleaseAssemblyTests.test_changed_runtime_bytes_or_escaping_links_refuse",
+          "test_release_assembly.ReleaseAssemblyTests.test_entitlements_are_rejected",
+          "test_release_assembly.ReleaseAssemblyTests.test_existing_output_is_preserved",
+          "test_release_assembly.ReleaseAssemblyTests.test_extra_or_aliased_bundle_nodes_refuse",
+          "test_release_assembly.ReleaseAssemblyTests.test_runtime_change_during_copy_refuses",
+          "test_release_assembly.ReleaseAssemblyTests.test_runtime_root_mode_drift_refuses",
+          "test_release_assembly.ReleaseAssemblyTests.test_signing_failure_retains_partial_output_without_success_receipt",
+          "test_release_assembly.ReleaseAssemblyTests.test_stale_application_resource_refuses",
+          "test_release_assembly.ReleaseAssemblyTests.test_substituted_executable_with_unchanged_metadata_refuses",
+          "test_release_assembly.ReleaseAssemblyTests.test_substitution_between_producer_check_and_raw_capture_refuses_before_signing",
+          "test_release_assembly.ReleaseAssemblyTests.test_testing_or_wrong_source_metadata_refuses_before_output",
+          "test_release_assembly.ReleaseAssemblyTests.test_wrong_publisher_and_ambiguous_signer_refuse"
+        ],
+        "kind": "static"
+      },
       "tooling-test-release-credential-readiness": {
         "cases": [
           "test_release_credential_readiness.ReadinessTests.test_child_environment_excludes_credentials_and_debug_controls",
@@ -3358,6 +3404,30 @@
           "test_release_metadata.ReleaseMetadataTests.test_contract_has_standalone_authority",
           "test_release_metadata.ReleaseMetadataTests.test_initial_identity_and_platform",
           "test_release_metadata.ReleaseMetadataTests.test_old_source_installation_routes_refuse_before_home_access"
+        ],
+        "kind": "static"
+      },
+      "tooling-test-release-notarization": {
+        "cases": [
+          "test_release_notarization.ReleaseNotarizationTests.test_changed_submission_bytes_refuse_on_resume",
+          "test_release_notarization.ReleaseNotarizationTests.test_completed_artifact_tamper_refuses",
+          "test_release_notarization.ReleaseNotarizationTests.test_concurrent_resume_refuses_before_second_submission",
+          "test_release_notarization.ReleaseNotarizationTests.test_copied_app_root_mode_drift_refuses_resume",
+          "test_release_notarization.ReleaseNotarizationTests.test_existing_output_needs_explicit_resume_and_never_resubmits",
+          "test_release_notarization.ReleaseNotarizationTests.test_failed_staple_signature_gatekeeper_or_image_never_completes",
+          "test_release_notarization.ReleaseNotarizationTests.test_handoff_binds_the_real_assembler_receipt_and_inventory",
+          "test_release_notarization.ReleaseNotarizationTests.test_handoff_rejects_wrong_source_producer_and_claimed_milestones",
+          "test_release_notarization.ReleaseNotarizationTests.test_mismatched_apple_log_digest_never_qualifies",
+          "test_release_notarization.ReleaseNotarizationTests.test_notary_rejection_never_staples_or_completes",
+          "test_release_notarization.ReleaseNotarizationTests.test_package_preserves_source_and_records_separate_milestones",
+          "test_release_notarization.ReleaseNotarizationTests.test_post_staple_failures_resume_without_resubmission",
+          "test_release_notarization.ReleaseNotarizationTests.test_resume_cannot_adopt_other_source_or_extra_payload",
+          "test_release_notarization.ReleaseNotarizationTests.test_resume_revalidates_accepted_log_and_milestone_fields",
+          "test_release_notarization.ReleaseNotarizationTests.test_stapler_cannot_change_signed_payload_or_add_other_nodes",
+          "test_release_notarization.ReleaseNotarizationTests.test_ticket_modes_links_and_zero_bytes_refuse",
+          "test_release_notarization.ReleaseNotarizationTests.test_unrecorded_staple_refuses_resume",
+          "test_release_notarization.ReleaseNotarizationTests.test_unrecorded_upload_id_is_not_automatically_retried",
+          "test_release_notarization.ReleaseNotarizationTests.test_wait_failure_retains_id_and_resumes_that_submission"
         ],
         "kind": "static"
       },

@@ -16,7 +16,11 @@
     "Tests/ShadowSyncSelfTests/CISuites.swift": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
     "Tests/Tooling/test_guardian_registration.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs.",
+    "Tests/Tooling/test_release_assembly.py": "Qualify source-bound assembly with synthetic layout, signing and tamper fixtures without using publisher credentials.",
+    "Tests/Tooling/test_release_notarization.py": "Use disposable synthetic adapters to verify packaging, byte bindings, retry and refusal paths.",
+    "scripts/assemble-release-bundle.py": "Assemble the verified application and policy runtime under a bound Developer ID identity.",
     "scripts/ci-shards.py": "Run mandatory macOS-specific tooling and native fixture groups on standard macOS26 arm64; retain exact-run aggregation and independent full transitions.",
+    "scripts/notarize-release-bundle.py": "Preserve accepted submission IDs and exact stapled checkpoints across resumed validation; no publication or installation.",
     "scripts/runtime_guardian_executor.py": "Integrate existing runtime assertion cases with original-child custody, isolated fixture namespaces and complete guardian registration; preserve assertions and case IDs."
   },
   "content_commit_binding": "The Git commit containing this manifest binds these file bytes; the manifest has no self-referential tree hash. External delivery evidence records the final manifest-bearing commit/tree.",
@@ -982,6 +986,11 @@
       "sha256": "8a42550433c6bb8978ac131fc5f8234a60aa9506d5fce494874deec13e42aa8a"
     },
     {
+      "path": "Tests/Tooling/test_release_assembly.py",
+      "mode": "100644",
+      "sha256": "2a3625f53b36b0f90b48df52fc108b19943bb0cef6a13434a7ea88b72618c97e"
+    },
+    {
       "mode": "100644",
       "path": "Tests/Tooling/test_release_credential_readiness.py",
       "sha256": "22356192f37d3c2a5ffaf324c26c0757d05fa4710f6031d54e880165babfe526"
@@ -990,6 +999,11 @@
       "mode": "100644",
       "path": "Tests/Tooling/test_release_metadata.py",
       "sha256": "b27c35816daebf93f62055473b2a1468f5fba4f0b55ab54fbeb8cd5a5008338a"
+    },
+    {
+      "path": "Tests/Tooling/test_release_notarization.py",
+      "mode": "100644",
+      "sha256": "cb227e2536189b502157e6c95d6d65a35f161cc086e94138cb81f4fd37b3418e"
     },
     {
       "mode": "100644",
@@ -1025,6 +1039,11 @@
       "mode": "100644",
       "path": "scripts/app-credential-readiness.py",
       "sha256": "11b571be8b66e911cec92fce774677cc3075f1aeebb13ebc9cc716f5672d6ad9"
+    },
+    {
+      "path": "scripts/assemble-release-bundle.py",
+      "mode": "100644",
+      "sha256": "75be2d6947d78dea68c222655d3bf4f1dc22ea6f15fec43635b85e9971add79f"
     },
     {
       "mode": "100644",
@@ -1125,6 +1144,11 @@
       "mode": "100644",
       "path": "scripts/native-ui-suites.py",
       "sha256": "4d0e5b84846d11e39e24a0e52cbfc128e0046413f944c50bfd371a63b7f328bb"
+    },
+    {
+      "path": "scripts/notarize-release-bundle.py",
+      "mode": "100644",
+      "sha256": "311022f1693a2f018927e3216087122c73b9c5495d9fea1cd018582dfd2e408d"
     },
     {
       "mode": "100644",
