@@ -873,7 +873,7 @@
     {
       "path": "Tests/Fixtures/private_delivery_worker.mjs",
       "mode": "100644",
-      "sha256": "08209f959e63d7a7fbf87e6653340af84e1bc61ddfcd6bb23c7eb3b7a57d6ba4"
+      "sha256": "2113a1d589f04a59ed16451515012bfd9963d71c8a936405d11da62bae692202"
     },
     {
       "mode": "100644",
@@ -1003,7 +1003,7 @@
     {
       "path": "Tests/Tooling/test_private_delivery.py",
       "mode": "100644",
-      "sha256": "04d0df6238bd22bcb08f2d2dccdecdad8f56b780421d10a8fc102a18fa4a9898"
+      "sha256": "d0ca0bb21842c452d01c78fdcc0ef06c420f6922b4b9b06b706367b11dcdf531"
     },
     {
       "mode": "100644",
@@ -1058,7 +1058,7 @@
     {
       "path": "delivery/PROVENANCE.json",
       "mode": "100644",
-      "sha256": "8af449f209e2bcc6598652fa7a997c4b71b41b6640d668536c48181f75f66355"
+      "sha256": "810ffae1cfd2cd618c29fb6e9f0b68f97230976d7aa734c91fcfee9b23196c28"
     },
     {
       "path": "delivery/README.md",
@@ -1088,7 +1088,7 @@
     {
       "path": "delivery/worker.mjs",
       "mode": "100644",
-      "sha256": "06a480a63fe91baeeb6d2f635f8ac5513b48ffd3a8498375591f9ce01c3f72fd"
+      "sha256": "d0d38efa77d4f91784a5255c231c3388fc206dca0415788ac08a79ee67c635c7"
     },
     {
       "path": "delivery/wrangler.template.json",
@@ -1168,7 +1168,7 @@
     {
       "path": "scripts/delivery-toolchain.py",
       "mode": "100644",
-      "sha256": "4a86e003707ce0cd36a1c99d1c2bc4f59c5cf7f1911def302a44ca5bb8878071"
+      "sha256": "55bd9f31b6fc0936a5be77b412ae91674dc5753d2c081246a91dca6357b961ad"
     },
     {
       "path": "scripts/delivery.py",

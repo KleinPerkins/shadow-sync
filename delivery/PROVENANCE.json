@@ -1,14 +1,14 @@
 {
   "files": {
     "Tests/Fixtures/private_delivery_worker.mjs": {
-      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Verify each bounded piece digest before returning the bytes; cover same-length corruption.",
-      "sha256": "08209f959e63d7a7fbf87e6653340af84e1bc61ddfcd6bb23c7eb3b7a57d6ba4",
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Verify each bounded piece digest before returning the bytes; cover same-length corruption. Require explicit EOF on native BYOB reads; exercise valid prefixes and trailing-byte refusal.",
+      "sha256": "2113a1d589f04a59ed16451515012bfd9963d71c8a936405d11da62bae692202",
       "source_path": "tests/helpers/update_worker.mjs",
       "source_sha256": "485c50f7c406ded7aec3acda10a375b8cbcc71ba4fdab11644e6e82560efc805"
     },
     "Tests/Tooling/test_private_delivery.py": {
-      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Extend copied grant commands with scoped expiry/status/revocation and private durable creation/replacement recovery; isolated actual-SQL fault coverage. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures. Retain every write-intent marker observation through recovery; refuse disappeared, replaced, rewritten or unexpectedly new markers, and bind newly created marker identity before provider effects. Preserve ambiguous prior attempts without replay. Distinguish verified initial-open absence from disappearance after marker descriptor acquisition; initial-read identity failure cannot permit replay. Keep publication and channel writes confined to the synthetic fixture until an authoritative release orchestrator owns those operations. Record readback grant identity before issuance; verify revocation and preserve explicit scope-bound recovery.",
-      "sha256": "04d0df6238bd22bcb08f2d2dccdecdad8f56b780421d10a8fc102a18fa4a9898",
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Extend copied grant commands with scoped expiry/status/revocation and private durable creation/replacement recovery; isolated actual-SQL fault coverage. Validate the final coherent new/original grant snapshot and exact local byte/inode/mode/lock custody before completion; cover final-boundary drift and umask-independent unsafe-directory refusal with synthetic fixtures. Retain every write-intent marker observation through recovery; refuse disappeared, replaced, rewritten or unexpectedly new markers, and bind newly created marker identity before provider effects. Preserve ambiguous prior attempts without replay. Distinguish verified initial-open absence from disappearance after marker descriptor acquisition; initial-read identity failure cannot permit replay. Keep publication and channel writes confined to the synthetic fixture until an authoritative release orchestrator owns those operations. Record readback grant identity before issuance; verify revocation and preserve explicit scope-bound recovery. Require an owner-private cached runtime and an independent digest of the official Node executable; cover a forged local receipt.",
+      "sha256": "d0ca0bb21842c452d01c78fdcc0ef06c420f6922b4b9b06b706367b11dcdf531",
       "source_path": "tests/test_update_channel.py",
       "source_sha256": "98bcb666e6ef6d4547be98bd4656788e873a2061ff1eacf5f05bc4c102448272"
     },
@@ -37,8 +37,8 @@
       "source_sha256": "d0cc91cafc03ebaef2dc818799c1e190158ab912f884010a8e8d2130e1f03eb5"
     },
     "delivery/worker.mjs": {
-      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Verify each bounded piece digest before returning the bytes; cover same-length corruption.",
-      "sha256": "06a480a63fe91baeeb6d2f635f8ac5513b48ffd3a8498375591f9ce01c3f72fd",
+      "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Verify each bounded piece digest before returning the bytes; cover same-length corruption. Require explicit EOF on native BYOB reads; exercise valid prefixes and trailing-byte refusal.",
+      "sha256": "d0d38efa77d4f91784a5255c231c3388fc206dca0415788ac08a79ee67c635c7",
       "source_path": "delivery/worker.mjs",
       "source_sha256": "63cbb28c59736f6f9fb506717c89f83a4e24bdf0df856dc4e31c5e11b529847c"
     },
@@ -49,8 +49,8 @@
       "source_sha256": "5dfc2fb6667843adf293a3aadde4f71c6a9147afa5cdb7e6c8c011f76045a781"
     },
     "scripts/delivery-toolchain.py": {
-      "adaptation": "Same official Node26.4.0 archive/hash/cache verification, product env name and explicit task-owned test cache; no global installation.",
-      "sha256": "4a86e003707ce0cd36a1c99d1c2bc4f59c5cf7f1911def302a44ca5bb8878071",
+      "adaptation": "Same official Node26.4.0 archive/hash/cache verification, product env name and explicit task-owned test cache; no global installation. Require an owner-private cached runtime and an independent digest of the official Node executable; cover a forged local receipt.",
+      "sha256": "55bd9f31b6fc0936a5be77b412ae91674dc5753d2c081246a91dca6357b961ad",
       "source_path": "scripts/toolchain.py",
       "source_sha256": "dfa946a7289fcaee644b4855da8c9e3cb1345ca4fcf589291427b51c06b19636"
     },
