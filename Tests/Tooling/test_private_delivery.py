@@ -1043,6 +1043,25 @@ class AccessLifecycleTests(unittest.TestCase):
         self.api = MemoryAPI()
         self.addCleanup(self.api.folder.cleanup)
         self.addCleanup(self.api.db.close)
+        # Recovery exercises many observations of the same fixture directory.
+        # Run the real Git probe once and reuse its result for this root only.
+        # ChannelTests still exercise real Git checkout and symlink refusal.
+        root = self.api.root
+        delivery.outside_git(root / 'access-fixture-probe')
+        original_root = root.stat(follow_symlinks=False)
+        fixture_probe = ['/usr/bin/git', '-C', str(root), 'rev-parse', '--show-toplevel']
+        missing = b'fatal: not a git repository (or any parent directories): .git\n'
+        run = subprocess.run
+
+        def run_fixture_process(argv, *args, **kwargs):
+            if (argv == fixture_probe and not os.path.lexists(root / '.git')
+                    and os.path.samestat(root.stat(follow_symlinks=False), original_root)):
+                return subprocess.CompletedProcess(argv, 128, b'', missing)
+            return run(argv, *args, **kwargs)
+
+        probe = patch.object(delivery.subprocess, 'run', new=run_fixture_process)
+        probe.start()
+        self.addCleanup(probe.stop)
         self.expiry = int(time.time()) + 3600
 
     def create(self, name='original', owner=False, channel='stable', replaces=None):
