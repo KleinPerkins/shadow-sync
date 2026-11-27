@@ -885,6 +885,33 @@ class ChannelTests(unittest.TestCase):
                 if replace:
                     self.assertEqual(delivery.private_json(retained / target.name), {'previous': True})
 
+    def test_receipt_replacement_preserves_previous_bytes_until_directory_sync(self):
+        path = self.api.root / 'private-receipt.json'
+        delivery.private_write(path, {'previous': True})
+        previous = path.read_bytes()
+        fsync = os.fsync
+
+        def fail_after_replacement(fd):
+            if delivery.stat.S_ISDIR(os.fstat(fd).st_mode) and path.read_bytes() != previous:
+                raise OSError('fixture directory sync failure')
+            fsync(fd)
+
+        with patch.object(delivery.os, 'fsync', side_effect=fail_after_replacement):
+            with self.assertRaisesRegex(OSError, 'fixture directory sync failure'):
+                delivery.private_write(path, {'new': True}, replace=True)
+        backups = list(self.api.root.glob('private-receipt.json.*.previous'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), previous)
+
+    def test_private_delivery_provenance_matches_export_bytes(self):
+        provenance = json.loads((ROOT / 'delivery/PROVENANCE.json').read_text())['files']
+        entries = json.loads((ROOT / 'Resources/source-export.json').read_text())['files']
+        export = {entry['path']: entry['sha256'] for entry in entries}
+        for path, detail in provenance.items():
+            with self.subTest(path=path):
+                self.assertEqual(detail['sha256'], hashlib.sha256((ROOT / path).read_bytes()).hexdigest())
+                self.assertEqual(export[path], detail['sha256'])
+
     def test_live_toolchain_requires_protected_administrator_custody(self):
         with self.assertRaisesRegex(ValueError, 'trusted physical directories'):
             toolchain.verify_node_binary(node(), privileged=True)

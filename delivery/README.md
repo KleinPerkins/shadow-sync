@@ -79,6 +79,10 @@ deployment check reads the modules of the exact singly active Cloudflare Worker
 version and verifies their names, types, and SHA-256 digests. It also requires the
 active version to stay the same through the routing checks. Run the readback on
 the owner-approved qualification resource before using it for live release.
+Receipt replacement keeps a mode-0600 copy of the previous receipt until
+the new receipt has been durably written and checked. If a replacement fails
+and leaves a sibling file ending in `.previous`, retain it with the current
+receipt for private recovery.
 An older deployment receipt can protect retained assets during an upgrade. A
 channel update requires a receipt with verified module bytes.
 

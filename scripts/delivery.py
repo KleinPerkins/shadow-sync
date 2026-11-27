@@ -127,6 +127,23 @@ def private_write_parent(path, *, owner_only=False):
         yield path, directory_fd, expected
 
 
+def preserve_private_output(target, staged, directory_fd):
+    try:
+        previous = os.stat(target, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if (not stat.S_ISREG(previous.st_mode) or previous.st_uid != os.getuid() or
+            stat.S_IMODE(previous.st_mode) != 0o600 or previous.st_nlink != 1):
+        raise DeliveryError('Existing private receipt is unsafe or has an unresolved recovery copy.')
+    backup = staged + '.previous'
+    os.link(target, backup, src_dir_fd=directory_fd, dst_dir_fd=directory_fd, follow_symlinks=False)
+    preserved = os.stat(backup, dir_fd=directory_fd, follow_symlinks=False)
+    if (previous.st_dev, previous.st_ino) != (preserved.st_dev, preserved.st_ino):
+        raise DeliveryError('Previous private receipt identity changed.')
+    os.fsync(directory_fd)
+    return backup
+
+
 def private_write(path, value, *, replace=False):
     with private_write_parent(path) as (path, directory_fd, expected):
         name = path.name + '.' + secrets.token_hex(8) if replace else path.name
@@ -134,6 +151,7 @@ def private_write(path, value, *, replace=False):
         fd = os.open(name, flags, 0o600, dir_fd=directory_fd)
         with os.fdopen(fd, 'w') as stream:
             created = os.fstat(stream.fileno())
+            backup = None
             try:
                 json.dump(value, stream, separators=(',', ':'))
                 stream.write('\n')
@@ -144,13 +162,19 @@ def private_write(path, value, *, replace=False):
                     raise DeliveryError('Private output file identity changed.')
                 require_named_parent(path, directory_fd, expected)
                 if replace:
+                    backup = preserve_private_output(path.name, name, directory_fd)
+                    require_named_parent(path, directory_fd, expected)
                     os.replace(name, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
                 os.fsync(directory_fd)
                 require_named_parent(path, directory_fd, expected)
                 observed = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
                 if access_stat(observed) != access_stat(os.fstat(stream.fileno())):
                     raise DeliveryError('Private output file identity changed.')
+                if backup is not None:
+                    os.unlink(backup, dir_fd=directory_fd)
             except BaseException:
+                # A previous receipt that was durably linked remains available
+                # even if the new receipt landed but could not be confirmed.
                 try:
                     observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                     if (observed.st_dev, observed.st_ino) == (created.st_dev, created.st_ino):
