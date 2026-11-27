@@ -931,6 +931,26 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_bytes(), previous)
 
+    def test_receipt_replacement_flushes_recovery_copy_removal_after_commit(self):
+        path = self.api.root / 'private-receipt.json'
+        delivery.private_write(path, {'previous': True})
+        fsync = os.fsync
+        directory_checks = []
+
+        def record_sync(fd):
+            if delivery.stat.S_ISDIR(os.fstat(fd).st_mode):
+                directory_checks.append((delivery.private_json(path),
+                                         bool(list(path.parent.glob(path.name + '.*.previous')))))
+            fsync(fd)
+
+        with patch.object(delivery.os, 'fsync', side_effect=record_sync):
+            delivery.private_write(path, {'new': True}, replace=True)
+        self.assertEqual(directory_checks, [
+            ({'previous': True}, True),
+            ({'new': True}, True),
+            ({'new': True}, False),
+        ])
+
     def test_private_delivery_provenance_matches_export_bytes(self):
         provenance = json.loads((ROOT / 'delivery/PROVENANCE.json').read_text())['files']
         entries = json.loads((ROOT / 'Resources/source-export.json').read_text())['files']

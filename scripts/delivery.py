@@ -170,8 +170,6 @@ def private_write(path, value, *, replace=False):
                 observed = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
                 if access_stat(observed) != access_stat(os.fstat(stream.fileno())):
                     raise DeliveryError('Private output file identity changed.')
-                if backup is not None:
-                    os.unlink(backup, dir_fd=directory_fd)
             except BaseException:
                 # A previous receipt that was durably linked remains available
                 # even if the new receipt landed but could not be confirmed.
@@ -182,6 +180,14 @@ def private_write(path, value, *, replace=False):
                 except FileNotFoundError:
                     pass
                 raise
+            if backup is not None:
+                # The new receipt is durable. A cleanup error must be reported
+                # separately from a failed replacement.
+                try:
+                    os.unlink(backup, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+                except OSError:
+                    raise DeliveryError('New private receipt is committed, but recovery-copy cleanup is unconfirmed.') from None
 
 
 def load_config(path):

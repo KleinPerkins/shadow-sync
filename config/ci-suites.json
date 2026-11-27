@@ -3428,6 +3428,7 @@
           "test_private_delivery.ChannelTests.test_publication_requires_exact_version_module_bytes_and_unchanged_deployment",
           "test_private_delivery.ChannelTests.test_qualification_grants_are_owner_only_and_finite",
           "test_private_delivery.ChannelTests.test_readback_failure_never_advances_channel_and_stable_cannot_replace_bytes",
+          "test_private_delivery.ChannelTests.test_receipt_replacement_flushes_recovery_copy_removal_after_commit",
           "test_private_delivery.ChannelTests.test_receipt_replacement_preserves_previous_bytes_until_directory_sync",
           "test_private_delivery.ChannelTests.test_standalone_cli_cannot_publish_from_receipts",
           "test_private_delivery.ChannelTests.test_unqualified_or_mismatched_artifact_never_published",
