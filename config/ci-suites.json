@@ -3407,6 +3407,7 @@
           "test_private_delivery.ChannelTests.test_deploy_records_verified_module_hashes",
           "test_private_delivery.ChannelTests.test_deployment_requires_unconditional_private_worker_first_and_owned_origin",
           "test_private_delivery.ChannelTests.test_deployment_without_retained_receipt_refuses_before_any_provider_call",
+          "test_private_delivery.ChannelTests.test_domain_read_keeps_completion_metadata_only_for_the_configured_worker",
           "test_private_delivery.ChannelTests.test_exact_qualification_then_stable_promotion_and_downgrade_refusal",
           "test_private_delivery.ChannelTests.test_free_proof_blocks_every_mutation_and_no_boolean_bypass",
           "test_private_delivery.ChannelTests.test_friend_channel_requires_every_standalone_acceptance_gate",

@@ -368,6 +368,13 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise DeliveryError('Cloudflare API redirect refused.')
 
 
+def retained_deployment_path(config):
+    path = outside_git(config['deployment_state'])
+    if not path.exists():
+        raise DeliveryError('A retained deployment receipt is required. Initial provider bootstrap needs separate owner admission.')
+    return path
+
+
 class Cloudflare:
     def __init__(self, config, *, wrangler_auth=None):
         self._wrangler_auth = dict(wrangler_auth or {})
@@ -405,15 +412,12 @@ class Cloudflare:
             self.require_free()
             if len(args) != 3 or args[:2] != ('deploy', '--config'):
                 raise DeliveryError('Only the fixed Free-only deployment command is supported.')
+            retained_deployment_path(self.config)
             configured = private_json(args[2])
             validate_deployment_config(configured)
             if configured != deployment_config(self.config, self):
                 raise DeliveryError('Deployment bindings differ from the explicit private configuration.')
-            state_path = outside_git(self.config['deployment_state'])
-            if state_path.exists():
-                audit_deployment(self, require_current_source=False)
-            elif self.api('/workers/scripts/' + self.config['worker_name'] + '/deployments', allow_not_found=True) is not None:
-                raise DeliveryError('Existing Worker has no known private deployment receipt.')
+            audit_deployment(self, require_current_source=False)
             self.preflight_retention(asset_inventory(self.config))
         # Capture all output: even upstream diagnostics must never expose credentials.
         environment = dict(toolchain.node_environment(), WRANGLER_SEND_METRICS='false', WRANGLER_SEND_ERROR_REPORTS='false',
@@ -447,7 +451,10 @@ class Cloudflare:
                 raise DeliveryError('Provider mutation is outside the fixed Free-only interface.')
         module_read = (effective_method == 'GET' and body is None and re.fullmatch(
             r'/workers/workers/[a-z0-9][a-z0-9_-]{0,62}/versions/[a-f0-9-]{36}\?include=modules', suffix))
-        if not suffix.startswith('/') or ('?' in suffix and not module_read) or '#' in suffix or '..' in suffix:
+        domain_read = (effective_method == 'GET' and body is None and
+                       suffix == '/workers/domains?service=' + self.config.get('worker_name', '') and
+                       re.fullmatch(r'/workers/domains\?service=[a-z0-9][a-z0-9_-]{0,62}', suffix))
+        if not suffix.startswith('/') or ('?' in suffix and not (module_read or domain_read)) or '#' in suffix or '..' in suffix:
             raise DeliveryError('Invalid account API path.')
         account = self.config['account_id']
         if not isinstance(account, str) or not re.fullmatch(r'[a-f0-9]{32}', account):
@@ -462,10 +469,12 @@ class Cloudflare:
             if len(data) > 2 * 1024 * 1024:
                 raise DeliveryError('Cloudflare response exceeded its size limit.')
             parsed = json.loads(data)
-            if parsed.get('success') is not True:
+            if not isinstance(parsed, dict) or parsed.get('success') is not True:
                 raise DeliveryError('Cloudflare refused the operation.')
             if effective_method=='GET' and parsed.get('result') is None:
                 raise DeliveryError('Cloudflare resource inventory is unknown; no operation performed.')
+            if domain_read:
+                return {'result': parsed['result'], 'result_info': parsed.get('result_info')}
             return parsed['result']
         except urllib.error.HTTPError as error:
             absent=False
@@ -564,9 +573,7 @@ class Cloudflare:
 
     def deploy(self):
         self.require_free()
-        state_path = outside_git(self.config['deployment_state'])
-        if not state_path.exists():
-            raise DeliveryError('A retained deployment receipt is required. Initial provider bootstrap needs separate owner admission.')
+        state_path = retained_deployment_path(self.config)
         prior = audit_deployment(self, require_current_source=False)
         configured = deployment_config(self.config, self)
         modules = worker_source_hashes()
@@ -820,11 +827,16 @@ def audit_deployment(api, require_current_source=True, *, pending_state=None):
     if subdomain.get('enabled') is not True or subdomain.get('previews_enabled') is not False:
         raise DeliveryError('Default/preview route configuration is unsafe or unknown.')
     # The supported workers.dev-only profile cannot have custom routes/domains.
-    domains = api.api('/workers/domains')
-    if not isinstance(domains, list) or any(not isinstance(d, dict) or
-            not isinstance(d.get('service'), str) or not d['service'] or
-            d['service'] == config['worker_name'] for d in domains):
+    domains = api.api('/workers/domains?service=' + config['worker_name'])
+    if not isinstance(domains, dict) or domains.get('result') != []:
         raise DeliveryError('Custom routes/domains require separately qualified fail-closed routing.')
+    # Cloudflare documents count as the total for the requested service.
+    # An empty first page alone cannot establish that no custom domain exists.
+    page = domains.get('result_info')
+    if (not isinstance(page, dict) or
+            any(type(page.get(field)) is not int for field in ('count', 'page', 'total_pages')) or
+            page['count'] != 0 or page['page'] not in (0, 1) or page['total_pages'] not in (0, 1)):
+        raise DeliveryError('Complete custom domain inventory is unavailable.')
     routes = api.zone_routes()
     if not isinstance(routes, list) or any(not isinstance(r, dict) or 'script' not in r or
             (r['script'] is not None and (not isinstance(r['script'], str) or not r['script'])) or

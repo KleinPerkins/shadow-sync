@@ -548,7 +548,8 @@ class ChannelTests(unittest.TestCase):
                 f"/workers/workers/{api.config['worker_name']}/versions/{version}?include=modules":
                     {'id': version, 'main_module': 'worker.mjs', 'modules': list(modules.values())},
                 host + '/subdomain': {'enabled': True, 'previews_enabled': False},
-                '/workers/domains': [],
+                '/workers/domains?service=' + api.config['worker_name']:
+                    {'result': [], 'result_info': {'count': 0, 'page': 1, 'total_pages': 0}},
             }
             return routes[suffix]
 
@@ -698,26 +699,45 @@ class ChannelTests(unittest.TestCase):
     def test_active_version_including_zero_percent_and_provider_source_readback(self):
         api, observe, _, _, version, _, state = self.worker_deployment_fixture()
         self.assertEqual(delivery.audit_deployment(api), state)
+        domain_path = '/workers/domains?service=monitor'
+        empty_domains = observe(domain_path)
         negatives = [('/workers/scripts/monitor/deployments', {'deployments': [{'versions': [{'version_id': version,'percentage':100},{'version_id':'unsafe','percentage':0}]}]}),
                      ('/workers/scripts/monitor/deployments', {'deployments': []}),
                      ('/workers/scripts/monitor/versions/' + version, {'id': version, 'resources': {'script': {'etag': 'changed'}}}),
                      ('/workers/scripts/monitor/subdomain', {'enabled': True,'previews_enabled': True}),
-                     ('/workers/domains', [{'service':'monitor','hostname':'unsafe.invalid'}])]
+                     (domain_path, {'result': [{'service':'monitor','hostname':'unsafe.invalid'}]})]
         for path, bad in negatives:
             with self.subTest(path=path), patch.object(
                 api, 'api', side_effect=lambda key: bad if key == path else observe(key)
             ), self.assertRaises(delivery.DeliveryError):
                 delivery.audit_deployment(api)
-        for domains, routes in (([{'unknown_shape':'monitor'}],[]),([], [{'unknown_shape':'monitor','fail_open':True}]),
-                                 ([None],[]),([{'service':False}],[]),([], [{'script':[]}]),([], [{'script':''}])):
-            with patch.object(api, 'zone_routes', return_value=routes), patch.object(
-                api, 'api', side_effect=lambda key: domains if key == '/workers/domains' else observe(key)
-            ), self.assertRaises(delivery.DeliveryError):
+        for routes in ([{'unknown_shape':'monitor','fail_open':True}], [{'script':[]}], [{'script':''}]):
+            with patch.object(api, 'zone_routes', return_value=routes), self.assertRaises(delivery.DeliveryError):
                 delivery.audit_deployment(api)
-        with patch.object(api, 'zone_routes', return_value=[{'script': None}, {'script': 'other-worker'}]), patch.object(
-            api, 'api', side_effect=lambda key: [{'service': 'other-worker'}] if key == '/workers/domains' else observe(key)
-        ):
+        for metadata in (None, {}, {'count': 0, 'page': 1, 'total_pages': 2},
+                         {'count': 1, 'page': 1, 'total_pages': 1}, {'count': False, 'page': 1, 'total_pages': 1}):
+            incomplete = dict(empty_domains, result_info=metadata)
+            with patch.object(api, 'api', side_effect=lambda key: incomplete if key == domain_path else observe(key)), \
+                    self.assertRaisesRegex(delivery.DeliveryError, 'Complete custom domain inventory is unavailable'):
+                delivery.audit_deployment(api)
+        with patch.object(api, 'zone_routes', return_value=[{'script': None}, {'script': 'other-worker'}]):
             delivery.audit_deployment(api)
+
+    def test_domain_read_keeps_completion_metadata_only_for_the_configured_worker(self):
+        api = delivery.Cloudflare.__new__(delivery.Cloudflare)
+        api.config = self.api.config
+        api._authorization = 'Bearer test-fixture'
+        api._opener = MagicMock()
+        packet = {'result': [], 'result_info': {'count': 0, 'page': 1, 'total_pages': 0}}
+        api._opener.open.return_value.__enter__.return_value.read.return_value = json.dumps(
+            dict(packet, success=True)).encode()
+        suffix = '/workers/domains?service=monitor'
+        self.assertEqual(api.api(suffix), packet)
+        self.assertTrue(api._opener.open.call_args.args[0].full_url.endswith(suffix))
+        for invalid in (suffix.replace('monitor', 'other-worker'), suffix + '&service=other-worker'):
+            with self.assertRaises(delivery.DeliveryError):
+                api.api(invalid)
+        api._opener.open.assert_called_once()
 
     def test_deployment_without_retained_receipt_refuses_before_any_provider_call(self):
         api = delivery.Cloudflare.__new__(delivery.Cloudflare)
@@ -729,6 +749,11 @@ class ChannelTests(unittest.TestCase):
             provider.assert_not_called()
             query.assert_not_called()
             wrangler.assert_not_called()
+        with patch.object(api, 'api') as provider, patch.object(delivery.subprocess, 'run', wraps=subprocess.run) as process:
+            with self.assertRaisesRegex(delivery.DeliveryError, 'Initial provider bootstrap needs separate owner admission'):
+                api.wrangler('deploy', '--config', 'fixture-config')
+            provider.assert_not_called()
+            self.assertTrue(all(call.args[0][0] == '/usr/bin/git' for call in process.call_args_list))
 
     def test_zone_routes_are_exhaustive_read_only_and_fail_closed(self):
         api = delivery.Cloudflare.__new__(delivery.Cloudflare);api.config=self.api.config
