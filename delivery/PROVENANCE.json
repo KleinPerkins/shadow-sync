@@ -2,7 +2,7 @@
   "files": {
     "Tests/Fixtures/private_delivery_worker.mjs": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Verify each bounded piece digest before returning the bytes; cover same-length corruption. Require explicit EOF on native BYOB reads; exercise valid prefixes and trailing-byte refusal.",
-      "sha256": "2113a1d589f04a59ed16451515012bfd9963d71c8a936405d11da62bae692202",
+      "sha256": "a1a2f1f4ed9acf99e9d61a71a99a715268fc293cd1fd5870b5b8415d45d8259d",
       "source_path": "tests/helpers/update_worker.mjs",
       "source_sha256": "485c50f7c406ded7aec3acda10a375b8cbcc71ba4fdab11644e6e82560efc805"
     },
@@ -38,7 +38,7 @@
     },
     "delivery/worker.mjs": {
       "adaptation": "Product identity and private access-file extension; same Free-only Worker/D1/Static Assets implementation. Verify each bounded piece digest before returning the bytes; cover same-length corruption. Require explicit EOF on native BYOB reads; exercise valid prefixes and trailing-byte refusal.",
-      "sha256": "d0d38efa77d4f91784a5255c231c3388fc206dca0415788ac08a79ee67c635c7",
+      "sha256": "22560bcec09f912ffef04c2f92b34e424740eff789acea6102503714bb75a73f",
       "source_path": "delivery/worker.mjs",
       "source_sha256": "63cbb28c59736f6f9fb506717c89f83a4e24bdf0df856dc4e31c5e11b529847c"
     },

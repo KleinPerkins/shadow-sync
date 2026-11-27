@@ -98,6 +98,13 @@ async function run(){
   await expect(path+'/parts/0',f.friend,200);const assetsBeforeRevoke=f.assetReads;f.db.prepare("UPDATE grants SET revoked_at=1 WHERE grant_id='friend'").run();await expect(path+'/parts/1',f.friend,401);assert.equal(f.assetReads,assetsBeforeRevoke);f.db.prepare("UPDATE grants SET revoked_at=NULL WHERE grant_id='friend'").run();
   const second=f.objects.get(mp[1].path);f.objects.delete(mp[1].path);await expect(path+'/parts/1',f.friend,503);f.objects.set(mp[1].path,second);
   const real=f.env.ASSETS;
+  let headCancelled=0;
+  f.env.ASSETS={fetch:async request=>{
+    assert.equal(request.method,'HEAD');
+    return new Response(new ReadableStream({cancel(){headCancelled++;}}));
+  }};
+  const closedHead=await expect(piece,f.friend,200,{method:'HEAD'});
+  assert.equal(closedHead.body,null);assert.equal(headCancelled,1);assertions++;
   for(const headers of [{'Content-Length':String(f.archive.length-1)},{'Content-Length':'invalid'},{'Content-Encoding':'gzip'}]){let cancelled=0;f.env.ASSETS={fetch:async()=>new Response(new ReadableStream({cancel(){cancelled++;}}),{headers})};await expect(piece,f.friend,503);assert.equal(cancelled,1);assertions++;}
   for(const delta of [-1,1]){f.env.ASSETS={fetch:async()=>new Response(Buffer.alloc(f.archive.length+delta))};await expect(piece,f.friend,503);assertions++;}
   f.env.ASSETS={fetch:async()=>new Response(null,{status:429})};await expect(piece,f.friend,503);await expect(piece,f.revoked,401);

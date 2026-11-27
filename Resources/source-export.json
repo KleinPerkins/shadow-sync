@@ -876,7 +876,7 @@
     {
       "mode": "100644",
       "path": "Tests/Fixtures/private_delivery_worker.mjs",
-      "sha256": "2113a1d589f04a59ed16451515012bfd9963d71c8a936405d11da62bae692202"
+      "sha256": "a1a2f1f4ed9acf99e9d61a71a99a715268fc293cd1fd5870b5b8415d45d8259d"
     },
     {
       "mode": "100644",
@@ -1056,7 +1056,7 @@
     {
       "mode": "100644",
       "path": "delivery/PROVENANCE.json",
-      "sha256": "243d499c331f956b6071e2941b29f58e7a9b7f0734347cd74ab2054a61e57a54"
+      "sha256": "34f9b26ebaa5f37776d6366eba4bb839e3a0d2529f250b23ce15550a8b4704c3"
     },
     {
       "mode": "100644",
@@ -1086,7 +1086,7 @@
     {
       "mode": "100644",
       "path": "delivery/worker.mjs",
-      "sha256": "d0d38efa77d4f91784a5255c231c3388fc206dca0415788ac08a79ee67c635c7"
+      "sha256": "22560bcec09f912ffef04c2f92b34e424740eff789acea6102503714bb75a73f"
     },
     {
       "mode": "100644",

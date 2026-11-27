@@ -204,7 +204,9 @@ export default {async fetch(request, env, ctx) {
     if(!part)return reply({error:'invalid_piece'},400);
     const response=await asset(env,approved,part,request.method,request.signal);
     let body=null;
-    if(request.method!=='HEAD') {
+    if(request.method==='HEAD') {
+      await timed(response.body?.cancel());
+    } else {
       const bytes=await pieceBytes(response,part,request.signal);
       if(await sha256(bytes)!==part.sha256)throw new Error('asset digest');
       body=bytes;
