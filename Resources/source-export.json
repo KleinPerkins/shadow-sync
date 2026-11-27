@@ -1006,7 +1006,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_private_delivery.py",
-      "sha256": "1ea7e07959f1779a753ef2ac1b3935536208f7fd4a4c557d6f77ff89203705c4"
+      "sha256": "debd279faba8a2bc5eb19adfe34cdd8c418ceac6d33d20b0be34d156b233f545"
     },
     {
       "mode": "100644",
@@ -1056,12 +1056,12 @@
     {
       "mode": "100644",
       "path": "delivery/PROVENANCE.json",
-      "sha256": "838d5d66868c0cf2015aed7e229733549c532c61d2cdf1bede28d7ee04850d7e"
+      "sha256": "420dfedb7c6fb1028d4e1447506c7c7a2cf0ce93f9d50393fba4ac0261445ecd"
     },
     {
       "mode": "100644",
       "path": "delivery/README.md",
-      "sha256": "63460257c2df8f407fb7fa75c7325cd01073209d54f9d2e964c4c56a1bade38e"
+      "sha256": "61789c60d4f994b84f6e961edb0476e4381cd32d7863c98c79d135f1221f8cb8"
     },
     {
       "mode": "100644",
@@ -1166,7 +1166,7 @@
     {
       "mode": "100755",
       "path": "scripts/delivery.py",
-      "sha256": "f73bab648809b9898be33f699384d0aab7adac2a427a3aa23ff79b2f9734fe10"
+      "sha256": "9b76af6bf065d362cf3195b44cf6827134f20d258c2202faeb13ed70c0263c3b"
     },
     {
       "mode": "100644",

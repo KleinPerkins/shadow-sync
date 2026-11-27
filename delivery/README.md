@@ -60,7 +60,9 @@ be mode 0700 and retained part files mode 0600. Provider mutations require a fre
 account-bound Workers Free owner observation with provenance and expiry no later
 than one hour after observation. Unknown, expired, paid or wrong-account proof
 refuses. There is no paid fallback, plan activation, R2 subscription or
-`--assume-free` bypass. Resource bootstrap requires separate owner authority.
+`--assume-free` bypass. The deployment command requires an existing deployment
+receipt and refuses before any provider call when it is absent. Initial resource
+bootstrap and a lost receipt require separate owner handling.
 
 Provider tooling pins the official Node 26.4.0 Darwin arm64 executable and the
 Wrangler 4.158.0 launcher, package metadata and CLI from the official registry

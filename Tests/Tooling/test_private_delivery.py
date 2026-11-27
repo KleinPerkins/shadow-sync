@@ -719,13 +719,16 @@ class ChannelTests(unittest.TestCase):
         ):
             delivery.audit_deployment(api)
 
-    def test_existing_worker_with_lost_receipt_cannot_be_replaced(self):
-        api = delivery.Cloudflare.__new__(delivery.Cloudflare);api.config=self.api.config
-        def response(path, **kwargs):
-            return {'subdomain':'owned-fixture'} if path == '/workers/subdomain' else {'deployments':[]}
-        with patch.object(api,'api',side_effect=response), patch.object(api,'query') as query, patch.object(api,'wrangler') as wrangler:
-            with self.assertRaises(delivery.DeliveryError):api.deploy()
-            query.assert_not_called();wrangler.assert_not_called()
+    def test_deployment_without_retained_receipt_refuses_before_any_provider_call(self):
+        api = delivery.Cloudflare.__new__(delivery.Cloudflare)
+        api.config = self.api.config
+        with patch.object(api, 'api') as provider, patch.object(api, 'query') as query, \
+                patch.object(api, 'wrangler') as wrangler:
+            with self.assertRaisesRegex(delivery.DeliveryError, 'Initial provider bootstrap needs separate owner admission'):
+                api.deploy()
+            provider.assert_not_called()
+            query.assert_not_called()
+            wrangler.assert_not_called()
 
     def test_zone_routes_are_exhaustive_read_only_and_fail_closed(self):
         api = delivery.Cloudflare.__new__(delivery.Cloudflare);api.config=self.api.config

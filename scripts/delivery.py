@@ -564,20 +564,16 @@ class Cloudflare:
 
     def deploy(self):
         self.require_free()
+        state_path = outside_git(self.config['deployment_state'])
+        if not state_path.exists():
+            raise DeliveryError('A retained deployment receipt is required. Initial provider bootstrap needs separate owner admission.')
+        prior = audit_deployment(self, require_current_source=False)
         configured = deployment_config(self.config, self)
         modules = worker_source_hashes()
         inventory = asset_inventory(self.config)
-        state_path = outside_git(self.config['deployment_state'])
-        prior = private_json(state_path) if state_path.exists() else None
-        if not prior:
-            existing = self.api('/workers/scripts/' + self.config['worker_name'] + '/deployments', allow_not_found=True)
-            if existing is not None:
-                raise DeliveryError('An existing Worker without its private deployment receipt must be investigated; no replacement performed.')
-        if prior:
-            audit_deployment(self, require_current_source=False)
-            for path, details in prior['assets'].items():
-                if inventory.get(path) != details:
-                    raise DeliveryError('Deployment would drop/change previously retained parts; no deletion is supported.')
+        for path, details in prior['assets'].items():
+            if inventory.get(path) != details:
+                raise DeliveryError('Deployment would drop/change previously retained parts; no deletion is supported.')
         # Additive schema only, after all local/config/Free gates.
         self.query((ROOT / 'delivery/schema.sql').read_text())
         for row in self.query('SELECT parts_json FROM artifact_parts'):
