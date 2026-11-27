@@ -3433,6 +3433,7 @@
           "test_private_delivery.ChannelTests.test_verification_runtime_rejects_changed_cached_binary_before_execution",
           "test_private_delivery.ChannelTests.test_verification_runtime_rejects_corrupt_download_before_extraction",
           "test_private_delivery.ChannelTests.test_wrangler_runs_the_verified_node_despite_conflicting_path",
+          "test_private_delivery.ChannelTests.test_wrangler_verifies_in_tree_link_targets_and_their_ancestors",
           "test_private_delivery.ChannelTests.test_zone_routes_are_exhaustive_read_only_and_fail_closed"
         ],
         "kind": "static"

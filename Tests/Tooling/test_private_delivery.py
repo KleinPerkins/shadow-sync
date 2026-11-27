@@ -925,6 +925,29 @@ class ChannelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'official installed package layout'):
             toolchain.verify_wrangler(wrong)
 
+    def test_wrangler_verifies_in_tree_link_targets_and_their_ancestors(self):
+        modules = self.api.root / 'node_modules'
+        entry = modules / 'wrangler/bin/wrangler.js'
+        linked = modules / 'native/tool.js'
+        entry.parent.mkdir(parents=True)
+        linked.parent.mkdir()
+        entry.touch()
+        linked.touch()
+        (modules / 'tool.js').symlink_to(linked)
+        lstat = Path.lstat
+
+        def metadata(path):
+            observed = lstat(path)
+            return Mock(st_uid=0, st_mode=observed.st_mode)
+
+        with patch.object(toolchain, '_verify_file'), patch.object(toolchain, '_trusted_parents') as parents, \
+                patch.object(Path, 'lstat', metadata):
+            self.assertEqual(toolchain.verify_wrangler(entry), entry)
+            parents.assert_any_call(linked, privileged=True)
+            linked.chmod(0o662)
+            with self.assertRaisesRegex(ValueError, 'dependencies must remain non-writable'):
+                toolchain.verify_wrangler(entry)
+
     def test_verification_runtime_rejects_corrupt_download_before_extraction(self):
         cache = self.api.root / 'verification-cache'
         with patch.dict(os.environ, {}, clear=True), \

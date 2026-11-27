@@ -128,11 +128,16 @@ def verify_wrangler(entry):
         _trusted_parents(path, privileged=True)
         _verify_file(path, identity, privileged=True)
     # Trust only administrator-managed dependencies beneath this installation.
-    # Do not follow links during traversal or allow a link out of the tree.
+    # Resolve links inside this installation and check the physical dependencies.
     pending = [modules]
+    inspected = set()
     observed = 0
     while pending:
-        for path in pending.pop().iterdir():
+        directory = pending.pop()
+        if directory in inspected:
+            continue
+        inspected.add(directory)
+        for path in directory.iterdir():
             observed += 1
             if observed > 100_000:
                 raise ValueError('Wrangler dependency inventory exceeds its limit')
@@ -140,9 +145,14 @@ def verify_wrangler(entry):
             if info.st_uid != 0:
                 raise ValueError('Wrangler dependencies must remain administrator-owned')
             if stat.S_ISLNK(info.st_mode):
-                if not path.resolve(strict=True).is_relative_to(modules):
+                path = path.resolve(strict=True)
+                if not path.is_relative_to(modules):
                     raise ValueError('Wrangler dependency link escapes the trusted installation')
-            elif info.st_mode & 0o7022:
+                _trusted_parents(path, privileged=True)
+                info = path.lstat()
+                if info.st_uid != 0:
+                    raise ValueError('Wrangler dependency link target must remain administrator-owned')
+            if info.st_mode & 0o7022:
                 raise ValueError('Wrangler dependencies must remain non-writable')
             elif stat.S_ISDIR(info.st_mode):
                 pending.append(path)
