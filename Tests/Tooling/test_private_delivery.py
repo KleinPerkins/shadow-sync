@@ -857,6 +857,34 @@ class ChannelTests(unittest.TestCase):
             with self.assertRaisesRegex(delivery.DeliveryError, 'Could not verify private path'):
                 delivery.outside_git(path)
 
+    def test_private_write_refuses_a_parent_swap_without_touching_the_replacement(self):
+        for replace in (False, True):
+            with self.subTest(replace=replace):
+                fixture = self.api.root / str(replace)
+                custody = fixture / 'custody'
+                retained = fixture / 'retained'
+                other = fixture / 'other'
+                custody.mkdir(parents=True, mode=0o700)
+                other.mkdir(mode=0o700)
+                target = custody / 'receipt.json'
+                if replace:
+                    delivery.private_write(target, {'previous': True})
+                fsync = os.fsync
+
+                def swap_after_sync(fd):
+                    fsync(fd)
+                    if not retained.exists():
+                        custody.rename(retained)
+                        custody.symlink_to(other, target_is_directory=True)
+
+                with patch.object(delivery.os, 'fsync', side_effect=swap_after_sync):
+                    with self.assertRaisesRegex(delivery.DeliveryError, 'directory identity changed'):
+                        delivery.private_write(target, {'new': True}, replace=replace)
+                self.assertEqual(list(other.iterdir()), [])
+                self.assertEqual(sorted(p.name for p in retained.iterdir()), ['receipt.json'] if replace else [])
+                if replace:
+                    self.assertEqual(delivery.private_json(retained / target.name), {'previous': True})
+
     def test_live_toolchain_requires_protected_administrator_custody(self):
         with self.assertRaisesRegex(ValueError, 'trusted physical directories'):
             toolchain.verify_node_binary(node(), privileged=True)

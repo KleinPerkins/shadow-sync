@@ -6,7 +6,7 @@ never printed, placed in argv, written to config, or passed to recipient apps.
 """
 import argparse
 import base64
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import hashlib
 import importlib.util
 import json
@@ -97,23 +97,67 @@ def outside_git(path):
     return path
 
 
-def private_write(path, value):
+def require_named_parent(path, directory_fd, expected):
+    if (path.parent != path.parent.resolve() or
+            access_parent(path.parent.stat(follow_symlinks=False)) != expected or
+            access_parent(os.fstat(directory_fd)) != expected):
+        raise DeliveryError('Private output directory identity changed.')
+
+
+@contextmanager
+def private_write_parent(path, *, owner_only=False):
     path = outside_git(path)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    try:
-        with os.fdopen(descriptor, 'w') as stream:
-            json.dump(value, stream, separators=(',', ':'))
-            stream.write('\n')
-            stream.flush()
-            os.fsync(stream.fileno())
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC
+    with ExitStack() as handles:
+        directory_fd = os.open('/', flags)
+        handles.callback(os.close, directory_fd)
+        for component in path.parent.parts[1:]:
+            directory_fd = os.open(component, flags, dir_fd=directory_fd)
+            handles.callback(os.close, directory_fd)
+        directory = os.fstat(directory_fd)
+        if (directory.st_uid != os.getuid() or directory.st_mode & 0o022 or
+                (owner_only and stat.S_IMODE(directory.st_mode) != 0o700)):
+            raise DeliveryError('Private output requires an owner-controlled directory.')
+        expected = access_parent(directory)
+        # Recheck the Git boundary after acquiring the descriptor and bracket
+        # that observation with the physical identity of the named parent.
+        require_named_parent(path, directory_fd, expected)
+        outside_git(path)
+        require_named_parent(path, directory_fd, expected)
+        yield path, directory_fd, expected
+
+
+def private_write(path, value, *, replace=False):
+    with private_write_parent(path) as (path, directory_fd, expected):
+        name = path.name + '.' + secrets.token_hex(8) if replace else path.name
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        fd = os.open(name, flags, 0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, 'w') as stream:
+            created = os.fstat(stream.fileno())
+            try:
+                json.dump(value, stream, separators=(',', ':'))
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+                observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if access_stat(observed) != access_stat(os.fstat(stream.fileno())):
+                    raise DeliveryError('Private output file identity changed.')
+                require_named_parent(path, directory_fd, expected)
+                if replace:
+                    os.replace(name, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+                os.fsync(directory_fd)
+                require_named_parent(path, directory_fd, expected)
+                observed = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+                if access_stat(observed) != access_stat(os.fstat(stream.fileno())):
+                    raise DeliveryError('Private output file identity changed.')
+            except BaseException:
+                try:
+                    observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    if (observed.st_dev, observed.st_ino) == (created.st_dev, created.st_ino):
+                        os.unlink(name, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    pass
+                raise
 
 
 def load_config(path):
@@ -535,9 +579,7 @@ class Cloudflare:
         # A failed source, binding or routing check must preserve the last receipt.
         audit_deployment(self, pending_state=state)
         # Atomically replace only this tool's explicit state file, never asset data.
-        temporary = state_path.with_name(state_path.name + '.' + secrets.token_hex(8))
-        private_write(temporary, state)
-        os.replace(temporary, state_path)
+        private_write(state_path, state, replace=True)
 
     def readback(self, release_id, descriptor, kind):
         # Owner-only short-lived qualification grant stays in process memory.
@@ -872,20 +914,7 @@ def access_file(path, value=None):
     if value is None:
         value, custody = access_custody(path)
         return value, list(custody['identity'][:2])
-    path = outside_git(path)
-    directory = path.parent.stat(follow_symlinks=False)
-    if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid() or
-        stat.S_IMODE(directory.st_mode) != 0o700):
-        raise DeliveryError('Access custody requires an owner-private mode-0700 directory.')
-    names = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC
-    with ExitStack() as handles:
-        directory_fd = os.open('/', names)
-        handles.callback(os.close, directory_fd)
-        for component in path.parent.parts[1:]:
-            directory_fd = os.open(component, names, dir_fd=directory_fd)
-            handles.callback(os.close, directory_fd)
-        if access_parent(os.fstat(directory_fd)) != access_parent(directory):
-            raise DeliveryError('Private access directory changed before creation.')
+    with private_write_parent(path, owner_only=True) as (path, directory_fd, expected):
         flags = os.O_NOFOLLOW | os.O_NONBLOCK | os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
         fd = os.open(path.name, flags, 0o600, dir_fd=directory_fd)
         with os.fdopen(fd, 'wb') as stream:
@@ -900,10 +929,9 @@ def access_file(path, value=None):
             retained = os.fstat(stream.fileno())
             observed = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
             if (access_stat(retained) != access_stat(observed) or
-                access_stat(retained) != access_stat(path.stat(follow_symlinks=False)) or
-                access_parent(directory) != access_parent(path.parent.stat(follow_symlinks=False)) or
-                access_parent(directory) != access_parent(os.fstat(directory_fd))):
+                access_stat(retained) != access_stat(path.stat(follow_symlinks=False))):
                 raise DeliveryError('Private access custody changed during creation.')
+            require_named_parent(path, directory_fd, expected)
     return value, [info.st_dev, info.st_ino]
 
 

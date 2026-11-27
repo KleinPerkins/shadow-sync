@@ -1006,7 +1006,7 @@
     {
       "mode": "100644",
       "path": "Tests/Tooling/test_private_delivery.py",
-      "sha256": "44049e41a8c84f0083b02933a8d2f2818f541efe7a0c4c98517370765f2c59dd"
+      "sha256": "f06242e32b8acae721077e85c9f1e72dab12fea30eca9608ad2572fd6ead4c3f"
     },
     {
       "mode": "100644",
@@ -1166,7 +1166,7 @@
     {
       "mode": "100755",
       "path": "scripts/delivery.py",
-      "sha256": "b81b2640b5a1f594e76fa981c94bfdecfb4793716df4b46152c4cb51752bf150"
+      "sha256": "2b04b2ad56043c34bbbb949fa1dca29d8ca896f42dddd36e06df2859fa741ea6"
     },
     {
       "mode": "100644",
